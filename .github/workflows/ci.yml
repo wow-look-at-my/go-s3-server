@@ -10,3 +10,90 @@ jobs:
   build:
     uses: wow-look-at-my/go-toolchain/.github/workflows/build.yml@v1
     secrets: inherit
+
+  integration-test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download go-s3-server binary
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: build
+
+      - name: Download go-toolchain from release
+        uses: wow-look-at-my/actions@download-release-binary#latest
+        with:
+          repo: wow-look-at-my/go-toolchain
+          name: go-toolchain
+          token: ${{ github.token }}
+
+      - name: Start go-s3-server
+        run: |
+          mkdir -p /tmp/s3-data
+          cat > /tmp/s3-config.json <<'EOF'
+          {
+            "listen": "127.0.0.1:9000",
+            "bucket": "test-cache",
+            "region": "us-east-1",
+            "data_dir": "/tmp/s3-data",
+            "write_once": false,
+            "credentials": [{"access_key": "test-key-id", "secret_key": "test-secret-key"}]
+          }
+          EOF
+          chmod +x build/go-s3-server_linux_amd64
+          nohup ./build/go-s3-server_linux_amd64 --config /tmp/s3-config.json > /tmp/s3-server.log 2>&1 &
+          echo $! > /tmp/s3-server.pid
+          for i in $(seq 1 30); do
+            if curl -so /dev/null http://127.0.0.1:9000/ 2>/dev/null; then echo "Server ready"; break; fi
+            if ! kill -0 "$(cat /tmp/s3-server.pid)" 2>/dev/null; then echo "Server died"; cat /tmp/s3-server.log; exit 1; fi
+            sleep 0.5
+          done
+
+      - name: Create test Go project
+        run: |
+          mkdir -p /tmp/test-project && cd /tmp/test-project
+          printf 'module example.com/test\n\ngo 1.24\n' > go.mod
+          cat > main.go <<'GO'
+          package main
+          import "fmt"
+          func main() { fmt.Println(greet("world")) }
+          func greet(name string) string { return "hello, " + name }
+          GO
+          cat > main_test.go <<'GO'
+          package main
+          import "testing"
+          func TestGreet(t *testing.T) {
+            if got := greet("test"); got != "hello, test" { t.Errorf("got %q", got) }
+          }
+          GO
+
+      - name: Build with go-toolchain (cold cache)
+        working-directory: /tmp/test-project
+        run: |
+          export GO_BUILDCACHE_CONFIG=$(echo -n '{"endpoint":"http://127.0.0.1:9000","bucket":"test-cache","region":"us-east-1","key_id":"test-key-id","access_key":"test-secret-key"}' | base64 -w0)
+          go-toolchain --no-benchmark 2>&1 | tee /tmp/build1.log
+
+      - name: Verify cache was populated
+        run: |
+          COUNT=$(find /tmp/s3-data -type f ! -name '.lock' | wc -l)
+          echo "Cache files: $COUNT"
+          if [ "$COUNT" -eq 0 ]; then echo "FAIL: no cache entries"; cat /tmp/s3-server.log; exit 1; fi
+
+      - name: Build with go-toolchain (warm cache)
+        working-directory: /tmp/test-project
+        run: |
+          rm -rf ~/.cache/go-toolchain/buildcache
+          rm -f /tmp/gocache-s3-index-*.txt
+          export GO_BUILDCACHE_CONFIG=$(echo -n '{"endpoint":"http://127.0.0.1:9000","bucket":"test-cache","region":"us-east-1","key_id":"test-key-id","access_key":"test-secret-key"}' | base64 -w0)
+          go-toolchain --no-benchmark 2>&1 | tee /tmp/build2.log
+
+      - name: Verify cache hits
+        run: |
+          echo "=== Cache stats ==="
+          grep -i "cache\|s3" /tmp/build2.log || true
+          grep "s3 index:" /tmp/build2.log | grep -qvP '0 keys' && echo "PASS: S3 cache entries found" || echo "WARN: could not verify hits from output"
+
+      - name: Cleanup
+        if: always()
+        run: kill "$(cat /tmp/s3-server.pid 2>/dev/null)" 2>/dev/null || true

@@ -6,7 +6,7 @@ Minimal S3-compatible server backed by the local filesystem. Designed as a share
 
 - **S3 API subset** — `GetObject`, `PutObject`, `ListObjectsV2`
 - **AWS Signature V4** authentication
-- **Write-once mode** — skip overwriting existing keys (ideal for content-addressable caches)
+- **Write-once mode** — deny overwriting existing keys with configurable conflict notification (ideal for content-addressable caches)
 - **Sharded storage** — keys are automatically split into a two-level directory tree to avoid huge flat directories
 - **Multi-arch Docker image** — `linux/amd64` and `linux/arm64` published to `ghcr.io/wow-look-at-my/go-s3-server`
 
@@ -20,7 +20,7 @@ Create a JSON config file:
   "bucket": "my-cache",
   "region": "us-east-1",
   "data_dir": "/var/data/s3",
-  "write_once": true,
+  "write_once": {"action": "deny", "notification": "content_differs"},
   "credentials": [
     {
       "access_key": "AKID",
@@ -56,8 +56,19 @@ All flags except `--config` override the corresponding config file value.
 | `bucket` | string | — | yes | S3 bucket name to serve |
 | `region` | string | `us-east-1` | no | AWS region for signature verification |
 | `data_dir` | string | — | yes | Directory to store objects |
-| `write_once` | bool | `false` | no | Skip writes if the key already exists |
+| `write_once` | object | `{"action":"allow"}` | no | Write-once behavior (see below) |
 | `credentials` | array | — | yes | At least one `access_key`/`secret_key` pair |
+
+### `write_once` options
+
+| Field | Values | Default | Description |
+|-------|--------|---------|-------------|
+| `action` | `allow`, `deny` | `allow` | Whether to allow overwriting existing keys |
+| `notification` | `never`, `always`, `content_differs` | `never` | When to return HTTP 409 on overwrite attempts |
+
+- `action: "deny"` + `notification: "never"` — silently skip overwrites (200 response)
+- `action: "deny"` + `notification: "always"` — reject any overwrite attempt (409 response)
+- `action: "deny"` + `notification: "content_differs"` — reject only when content differs; same content is idempotent (ideal for content-addressable caches)
 
 ## Docker
 

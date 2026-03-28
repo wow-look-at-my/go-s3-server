@@ -127,6 +127,10 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	}
 
 	if err := storage.Put(key, data, meta); err != nil {
+		if errors.Is(err, ErrWriteOnceConflict) || errors.Is(err, ErrWriteOnceDuplicate) {
+			writeS3Error(w, 409, "ConflictException", err.Error())
+			return
+		}
 		writeS3Error(w, 500, "InternalError", err.Error())
 		return
 	}

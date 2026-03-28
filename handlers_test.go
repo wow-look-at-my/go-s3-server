@@ -20,11 +20,11 @@ func testSetup(t *testing.T) (*httptest.Server, *Config) {
 	dir := t.TempDir()
 
 	cfg := &Config{
-		Listen:		":0",
-		Bucket:		"testbucket",
-		Region:		"us-east-1",
-		DataDir:	dir,
-		WriteOnce:	false,
+		Listen:    ":0",
+		Bucket:    "testbucket",
+		Region:    "us-east-1",
+		DataDir:   dir,
+		WriteOnce: WriteOnceConfig{Action: "allow"},
 		Credentials: []Credential{
 			{AccessKey: "AKIAIOSFODNN7EXAMPLE", SecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
 		},
@@ -47,11 +47,11 @@ func testSetupWriteOnce(t *testing.T) (*httptest.Server, *Config) {
 	dir := t.TempDir()
 
 	cfg := &Config{
-		Listen:		":0",
-		Bucket:		"testbucket",
-		Region:		"us-east-1",
-		DataDir:	dir,
-		WriteOnce:	true,
+		Listen:    ":0",
+		Bucket:    "testbucket",
+		Region:    "us-east-1",
+		DataDir:   dir,
+		WriteOnce: WriteOnceConfig{Action: "deny", Notification: "content_differs"},
 		Credentials: []Credential{
 			{AccessKey: "AKIAIOSFODNN7EXAMPLE", SecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
 		},
@@ -351,22 +351,127 @@ func TestWriteOnce(t *testing.T) {
 	// First PUT
 	resp := doSignedRequest(t, ts, cfg, "PUT", key, content1, nil)
 	require.Equal(t, 200, resp.StatusCode)
-
 	resp.Body.Close()
 
-	// Second PUT with different data
+	// Second PUT with different data should return 409
 	resp = doSignedRequest(t, ts, cfg, "PUT", key, content2, nil)
-	require.Equal(t, 200, resp.StatusCode)
+	require.Equal(t, 409, resp.StatusCode)
+	resp.Body.Close()
 
+	// Third PUT with same data should return 200 (idempotent)
+	resp = doSignedRequest(t, ts, cfg, "PUT", key, content1, nil)
+	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 
 	// GET should return original content
 	resp = doSignedRequest(t, ts, cfg, "GET", key, nil, nil)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-
 	require.Equal(t, string(content1), string(body))
+}
 
+func testSetupWriteOnceAlways(t *testing.T) (*httptest.Server, *Config) {
+	t.Helper()
+	dir := t.TempDir()
+
+	cfg := &Config{
+		Listen:    ":0",
+		Bucket:    "testbucket",
+		Region:    "us-east-1",
+		DataDir:   dir,
+		WriteOnce: WriteOnceConfig{Action: "deny", Notification: "always"},
+		Credentials: []Credential{
+			{AccessKey: "AKIAIOSFODNN7EXAMPLE", SecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+		},
+	}
+
+	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
+	require.Nil(t, err)
+	t.Cleanup(func() { storage.Close() })
+
+	srv := NewServer(cfg, storage)
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	return ts, cfg
+}
+
+func testSetupWriteOnceNever(t *testing.T) (*httptest.Server, *Config) {
+	t.Helper()
+	dir := t.TempDir()
+
+	cfg := &Config{
+		Listen:    ":0",
+		Bucket:    "testbucket",
+		Region:    "us-east-1",
+		DataDir:   dir,
+		WriteOnce: WriteOnceConfig{Action: "deny", Notification: "never"},
+		Credentials: []Credential{
+			{AccessKey: "AKIAIOSFODNN7EXAMPLE", SecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+		},
+	}
+
+	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
+	require.Nil(t, err)
+	t.Cleanup(func() { storage.Close() })
+
+	srv := NewServer(cfg, storage)
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	return ts, cfg
+}
+
+func TestWriteOnceNotificationAlways(t *testing.T) {
+	ts, cfg := testSetupWriteOnceAlways(t)
+
+	key := "/testbucket/cache/v1aabb000000000002"
+	content := []byte("some content")
+
+	// First PUT succeeds
+	resp := doSignedRequest(t, ts, cfg, "PUT", key, content, nil)
+	require.Equal(t, 200, resp.StatusCode)
+	resp.Body.Close()
+
+	// Second PUT with same content returns 409 (always notifies)
+	resp = doSignedRequest(t, ts, cfg, "PUT", key, content, nil)
+	require.Equal(t, 409, resp.StatusCode)
+	resp.Body.Close()
+
+	// Third PUT with different content also returns 409
+	resp = doSignedRequest(t, ts, cfg, "PUT", key, []byte("different"), nil)
+	require.Equal(t, 409, resp.StatusCode)
+	resp.Body.Close()
+
+	// GET returns original
+	resp = doSignedRequest(t, ts, cfg, "GET", key, nil, nil)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.Equal(t, string(content), string(body))
+}
+
+func TestWriteOnceNotificationNever(t *testing.T) {
+	ts, cfg := testSetupWriteOnceNever(t)
+
+	key := "/testbucket/cache/v1aabb000000000003"
+	content1 := []byte("original")
+	content2 := []byte("different")
+
+	// First PUT succeeds
+	resp := doSignedRequest(t, ts, cfg, "PUT", key, content1, nil)
+	require.Equal(t, 200, resp.StatusCode)
+	resp.Body.Close()
+
+	// Second PUT with different data returns 200 (silent skip)
+	resp = doSignedRequest(t, ts, cfg, "PUT", key, content2, nil)
+	require.Equal(t, 200, resp.StatusCode)
+	resp.Body.Close()
+
+	// GET returns original content (overwrite was denied silently)
+	resp = doSignedRequest(t, ts, cfg, "GET", key, nil, nil)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.Equal(t, string(content1), string(body))
 }
 
 func TestNoSuchBucket(t *testing.T) {
@@ -381,7 +486,7 @@ func TestNoSuchBucket(t *testing.T) {
 
 func TestShardingRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	s, err := NewStorage(dir, false)
+	s, err := NewStorage(dir, WriteOnceConfig{Action: "allow"})
 	require.Nil(t, err)
 
 	defer s.Close()
@@ -406,12 +511,12 @@ func TestShardingRoundTrip(t *testing.T) {
 
 func TestLockExclusion(t *testing.T) {
 	dir := t.TempDir()
-	s1, err := NewStorage(dir, false)
+	s1, err := NewStorage(dir, WriteOnceConfig{Action: "allow"})
 	require.Nil(t, err)
 
 	defer s1.Close()
 
-	_, err = NewStorage(dir, false)
+	_, err = NewStorage(dir, WriteOnceConfig{Action: "allow"})
 	require.NotNil(t, err)
 
 }
@@ -425,7 +530,7 @@ func TestLoadConfig(t *testing.T) {
 		"bucket": "mybucket",
 		"region": "eu-west-1",
 		"data_dir": "/tmp/test",
-		"write_once": true,
+		"write_once": {"action": "deny", "notification": "content_differs"},
 		"credentials": [{"access_key": "AK", "secret_key": "SK"}]
 	}`
 	validPath := dir + "/valid.json"
@@ -435,7 +540,8 @@ func TestLoadConfig(t *testing.T) {
 	require.Equal(t, ":8080", cfg.Listen)
 	require.Equal(t, "mybucket", cfg.Bucket)
 	require.Equal(t, "eu-west-1", cfg.Region)
-	require.True(t, cfg.WriteOnce)
+	require.Equal(t, "deny", cfg.WriteOnce.Action)
+	require.Equal(t, "content_differs", cfg.WriteOnce.Notification)
 
 	// Defaults
 	defaultJSON := `{"bucket": "b", "data_dir": "/tmp/d", "credentials": [{"access_key": "AK", "secret_key": "SK"}]}`
@@ -478,6 +584,26 @@ func TestLoadConfig(t *testing.T) {
 	emptyCredPath := dir + "/emptycred.json"
 	os.WriteFile(emptyCredPath, []byte(`{"bucket": "b", "data_dir": "/tmp", "credentials": [{"access_key": "", "secret_key": "SK"}]}`), 0644)
 	_, err = LoadConfig(emptyCredPath)
+	require.NotNil(t, err)
+
+	// write_once defaults
+	woDefaultPath := dir + "/wo_default.json"
+	os.WriteFile(woDefaultPath, []byte(`{"bucket": "b", "data_dir": "/tmp", "credentials": [{"access_key": "AK", "secret_key": "SK"}]}`), 0644)
+	cfg, err = LoadConfig(woDefaultPath)
+	require.Nil(t, err)
+	require.Equal(t, "allow", cfg.WriteOnce.Action)
+	require.Equal(t, "never", cfg.WriteOnce.Notification)
+
+	// Invalid write_once.action
+	woInvalidAction := dir + "/wo_bad_action.json"
+	os.WriteFile(woInvalidAction, []byte(`{"bucket": "b", "data_dir": "/tmp", "write_once": {"action": "invalid"}, "credentials": [{"access_key": "AK", "secret_key": "SK"}]}`), 0644)
+	_, err = LoadConfig(woInvalidAction)
+	require.NotNil(t, err)
+
+	// Invalid write_once.notification
+	woInvalidNotif := dir + "/wo_bad_notif.json"
+	os.WriteFile(woInvalidNotif, []byte(`{"bucket": "b", "data_dir": "/tmp", "write_once": {"action": "deny", "notification": "invalid"}, "credentials": [{"access_key": "AK", "secret_key": "SK"}]}`), 0644)
+	_, err = LoadConfig(woInvalidNotif)
 	require.NotNil(t, err)
 }
 

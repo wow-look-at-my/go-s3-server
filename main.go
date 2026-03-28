@@ -52,8 +52,8 @@ func run(cmd *cobra.Command, args []string) error {
 
 	srv := NewServer(cfg, storage)
 
-	log.Printf("listening on %s bucket=%s region=%s data_dir=%s write_once=%v",
-		cfg.Listen, cfg.Bucket, cfg.Region, cfg.DataDir, cfg.WriteOnce)
+	log.Printf("listening on %s bucket=%s region=%s data_dir=%s write_once.action=%s write_once.notification=%s",
+		cfg.Listen, cfg.Bucket, cfg.Region, cfg.DataDir, cfg.WriteOnce.Action, cfg.WriteOnce.Notification)
 
 	return http.ListenAndServe(cfg.Listen, srv)
 }

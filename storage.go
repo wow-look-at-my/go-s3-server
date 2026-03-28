@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -11,11 +12,15 @@ import (
 	"time"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound           = errors.New("not found")
+	ErrWriteOnceConflict  = errors.New("object already exists with different content")
+	ErrWriteOnceDuplicate = errors.New("object already exists")
+)
 
 type Storage struct {
 	dataDir   string
-	writeOnce bool
+	writeOnce WriteOnceConfig
 	lockFile  *os.File
 }
 
@@ -37,7 +42,7 @@ type ListObject struct {
 	LastModified time.Time
 }
 
-func NewStorage(dataDir string, writeOnce bool) (*Storage, error) {
+func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
@@ -122,9 +127,19 @@ func (s *Storage) pathToKey(path string) string {
 func (s *Storage) Put(key string, data []byte, meta map[string]string) error {
 	path := s.keyToPath(key)
 
-	if s.writeOnce {
-		if _, err := os.Stat(path); err == nil {
-			return nil // already exists, skip
+	if s.writeOnce.Action == "deny" {
+		if existing, err := os.ReadFile(path); err == nil {
+			switch s.writeOnce.Notification {
+			case "always":
+				return ErrWriteOnceDuplicate
+			case "content_differs":
+				if bytes.Equal(existing, data) {
+					return nil
+				}
+				return ErrWriteOnceConflict
+			default:
+				return nil
+			}
 		}
 	}
 

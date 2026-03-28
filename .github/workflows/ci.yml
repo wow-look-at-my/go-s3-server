@@ -61,6 +61,66 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+  s3-api-test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download go-s3-server binary
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: build
+
+      - name: Start go-s3-server (normal mode)
+        run: |
+          mkdir -p /tmp/s3-data
+          chmod +x build/go-s3-server_linux_amd64
+          nohup ./build/go-s3-server_linux_amd64 \
+            --config .github/workflows/integration-test/s3-config.json \
+            > /tmp/s3-server-normal.log 2>&1 &
+          echo $! > /tmp/s3-server-normal.pid
+          for i in $(seq 1 30); do
+            if curl -so /dev/null http://127.0.0.1:9000/ 2>/dev/null; then echo "Normal server ready"; break; fi
+            if ! kill -0 "$(cat /tmp/s3-server-normal.pid)" 2>/dev/null; then echo "Normal server died"; cat /tmp/s3-server-normal.log; exit 1; fi
+            sleep 0.5
+          done
+
+      - name: Start go-s3-server (write-once mode)
+        run: |
+          mkdir -p /tmp/s3-data-writeonce
+          nohup ./build/go-s3-server_linux_amd64 \
+            --config .github/workflows/integration-test/s3-config-writeonce.json \
+            > /tmp/s3-server-writeonce.log 2>&1 &
+          echo $! > /tmp/s3-server-writeonce.pid
+          for i in $(seq 1 30); do
+            if curl -so /dev/null http://127.0.0.1:9001/ 2>/dev/null; then echo "Write-once server ready"; break; fi
+            if ! kill -0 "$(cat /tmp/s3-server-writeonce.pid)" 2>/dev/null; then echo "Write-once server died"; cat /tmp/s3-server-writeonce.log; exit 1; fi
+            sleep 0.5
+          done
+
+      - name: Run S3 API integration tests
+        run: bash .github/workflows/integration-test/test_s3_api.sh
+        env:
+          AWS_ACCESS_KEY_ID: test-key-id
+          AWS_SECRET_ACCESS_KEY: test-secret-key
+          AWS_DEFAULT_REGION: us-east-1
+
+      - name: Show server logs on failure
+        if: failure()
+        run: |
+          echo "=== Normal server ==="
+          cat /tmp/s3-server-normal.log || true
+          echo "=== Write-once server ==="
+          cat /tmp/s3-server-writeonce.log || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          kill "$(cat /tmp/s3-server-normal.pid 2>/dev/null)" 2>/dev/null || true
+          kill "$(cat /tmp/s3-server-writeonce.pid 2>/dev/null)" 2>/dev/null || true
+
   integration-test:
     needs: build
     runs-on: ubuntu-latest

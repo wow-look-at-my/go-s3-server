@@ -11,13 +11,18 @@ type Credential struct {
 	SecretKey string `json:"secret_key"`
 }
 
+type WriteOnceConfig struct {
+	Action       string `json:"action"`       // "allow" or "deny"
+	Notification string `json:"notification"` // "never", "always", "content_differs"
+}
+
 type Config struct {
-	Listen      string       `json:"listen"`
-	Bucket      string       `json:"bucket"`
-	Region      string       `json:"region"`
-	DataDir     string       `json:"data_dir"`
-	WriteOnce   bool         `json:"write_once"`
-	Credentials []Credential `json:"credentials"`
+	Listen      string          `json:"listen"`
+	Bucket      string          `json:"bucket"`
+	Region      string          `json:"region"`
+	DataDir     string          `json:"data_dir"`
+	WriteOnce   WriteOnceConfig `json:"write_once"`
+	Credentials []Credential    `json:"credentials"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -34,6 +39,22 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Region == "" {
 		cfg.Region = "us-east-1"
+	}
+	if cfg.WriteOnce.Action == "" {
+		cfg.WriteOnce.Action = "allow"
+	}
+	if cfg.WriteOnce.Notification == "" {
+		cfg.WriteOnce.Notification = "never"
+	}
+	switch cfg.WriteOnce.Action {
+	case "allow", "deny":
+	default:
+		return nil, fmt.Errorf("config: write_once.action must be \"allow\" or \"deny\"")
+	}
+	switch cfg.WriteOnce.Notification {
+	case "never", "always", "content_differs":
+	default:
+		return nil, fmt.Errorf("config: write_once.notification must be \"never\", \"always\", or \"content_differs\"")
 	}
 	if cfg.Bucket == "" {
 		return nil, fmt.Errorf("config: bucket is required")

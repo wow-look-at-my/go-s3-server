@@ -97,7 +97,12 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	}
 
 	for k, v := range meta.Metadata {
-		w.Header().Set("X-Amz-Meta-"+strings.Title(k), v)
+		// Capitalize first letter of metadata key
+		name := k
+		if len(name) > 0 {
+			name = strings.ToUpper(name[:1]) + name[1:]
+		}
+		w.Header().Set("X-Amz-Meta-"+name, v)
 	}
 	w.Header().Set("Last-Modified", meta.ModTime.UTC().Format(http.TimeFormat))
 	w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))

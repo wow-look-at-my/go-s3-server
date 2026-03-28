@@ -11,6 +11,8 @@ import (
 	"os"
 	"testing"
 	"time"
+	"github.com/wow-look-at-my/testify/assert"
+	"github.com/wow-look-at-my/testify/require"
 )
 
 func testSetup(t *testing.T) (*httptest.Server, *Config) {
@@ -18,20 +20,19 @@ func testSetup(t *testing.T) (*httptest.Server, *Config) {
 	dir := t.TempDir()
 
 	cfg := &Config{
-		Listen: ":0",
-		Bucket: "testbucket",
-		Region: "us-east-1",
-		DataDir: dir,
-		WriteOnce: false,
+		Listen:		":0",
+		Bucket:		"testbucket",
+		Region:		"us-east-1",
+		DataDir:	dir,
+		WriteOnce:	false,
 		Credentials: []Credential{
 			{AccessKey: "AKIAIOSFODNN7EXAMPLE", SecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
 		},
 	}
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	t.Cleanup(func() { storage.Close() })
 
 	srv := NewServer(cfg, storage)
@@ -46,20 +47,19 @@ func testSetupWriteOnce(t *testing.T) (*httptest.Server, *Config) {
 	dir := t.TempDir()
 
 	cfg := &Config{
-		Listen:    ":0",
-		Bucket:    "testbucket",
-		Region:    "us-east-1",
-		DataDir:   dir,
-		WriteOnce: true,
+		Listen:		":0",
+		Bucket:		"testbucket",
+		Region:		"us-east-1",
+		DataDir:	dir,
+		WriteOnce:	true,
 		Credentials: []Credential{
 			{AccessKey: "AKIAIOSFODNN7EXAMPLE", SecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
 		},
 	}
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	t.Cleanup(func() { storage.Close() })
 
 	srv := NewServer(cfg, storage)
@@ -178,9 +178,8 @@ func doSignedRequest(t *testing.T, ts *httptest.Server, cfg *Config, method, pat
 		bodyReader = bytes.NewReader(body)
 	}
 	req, err := http.NewRequest(method, ts.URL+path, bodyReader)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	if body != nil {
 		req.ContentLength = int64(len(body))
 	}
@@ -190,9 +189,8 @@ func doSignedRequest(t *testing.T, ts *httptest.Server, cfg *Config, method, pat
 	signTestRequest(req, cfg.Credentials[0].AccessKey, cfg.Credentials[0].SecretKey, cfg.Region, body)
 
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	return resp
 }
 
@@ -202,37 +200,27 @@ func TestPutAndGetObject(t *testing.T) {
 	content := []byte("hello world cache data")
 	headers := map[string]string{"X-Amz-Meta-Outputid": "abc123def456"}
 	resp := doSignedRequest(t, ts, cfg, "PUT", "/testbucket/go-buildcache/v1aabbccdd11223344", content, headers)
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("PUT: expected 200, got %d: %s", resp.StatusCode, body)
-	}
+	require.Equal(t, 200, resp.StatusCode)
+
 	resp.Body.Close()
 
 	resp = doSignedRequest(t, ts, cfg, "GET", "/testbucket/go-buildcache/v1aabbccdd11223344", nil, nil)
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("GET: expected 200, got %d: %s", resp.StatusCode, body)
-	}
+	require.Equal(t, 200, resp.StatusCode)
 
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 
-	if string(body) != string(content) {
-		t.Fatalf("GET body mismatch: got %q, want %q", body, content)
-	}
+	require.Equal(t, string(content), string(body))
 
 	outputID := resp.Header.Get("X-Amz-Meta-Outputid")
-	if outputID != "abc123def456" {
-		t.Fatalf("X-Amz-Meta-Outputid: got %q, want %q", outputID, "abc123def456")
-	}
+	require.Equal(t, "abc123def456", outputID)
 
 	lm := resp.Header.Get("Last-Modified")
-	if lm == "" {
-		t.Fatal("missing Last-Modified header")
-	}
-	if _, err := time.Parse(http.TimeFormat, lm); err != nil {
-		t.Fatalf("Last-Modified parse error: %v", err)
-	}
+	require.NotEqual(t, "", lm)
+
+	_, err := time.Parse(http.TimeFormat, lm)
+	require.Nil(t, err)
+
 }
 
 func TestGetObjectNotFound(t *testing.T) {
@@ -241,17 +229,13 @@ func TestGetObjectNotFound(t *testing.T) {
 	resp := doSignedRequest(t, ts, cfg, "GET", "/testbucket/nonexistent/key", nil, nil)
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 404 {
-		t.Fatalf("expected 404, got %d", resp.StatusCode)
-	}
+	require.Equal(t, 404, resp.StatusCode)
 
 	var s3err S3Error
-	if err := xml.NewDecoder(resp.Body).Decode(&s3err); err != nil {
-		t.Fatalf("decode error response: %v", err)
-	}
-	if s3err.Code != "NoSuchKey" {
-		t.Fatalf("expected NoSuchKey, got %s", s3err.Code)
-	}
+	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&s3err))
+
+	require.Equal(t, "NoSuchKey", s3err.Code)
+
 }
 
 func TestListObjectsV2(t *testing.T) {
@@ -265,34 +249,26 @@ func TestListObjectsV2(t *testing.T) {
 	}
 	for _, key := range keys {
 		resp := doSignedRequest(t, ts, cfg, "PUT", "/testbucket/"+key, []byte("data-"+key), nil)
-		if resp.StatusCode != 200 {
-			t.Fatalf("PUT %s: expected 200, got %d", key, resp.StatusCode)
-		}
+		require.Equal(t, 200, resp.StatusCode)
+
 		resp.Body.Close()
 	}
 
 	// List all with prefix
 	resp := doSignedRequest(t, ts, cfg, "GET", "/testbucket?list-type=2&prefix=go-buildcache/", nil, nil)
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("LIST: expected 200, got %d: %s", resp.StatusCode, body)
-	}
+	require.Equal(t, 200, resp.StatusCode)
 
 	var result ListBucketResult
-	if err := xml.NewDecoder(resp.Body).Decode(&result); err != nil {
-		t.Fatalf("decode list response: %v", err)
-	}
+	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&result))
+
 	resp.Body.Close()
 
-	if len(result.Contents) != 3 {
-		t.Fatalf("expected 3 objects, got %d", len(result.Contents))
-	}
+	require.Equal(t, 3, len(result.Contents))
 
 	// Verify sorted order
 	for i := 1; i < len(result.Contents); i++ {
-		if result.Contents[i].Key < result.Contents[i-1].Key {
-			t.Fatalf("keys not sorted: %s < %s", result.Contents[i].Key, result.Contents[i-1].Key)
-		}
+		require.GreaterOrEqual(t, result.Contents[i].Key, result.Contents[i-1].Key)
+
 	}
 }
 
@@ -317,15 +293,11 @@ func TestListObjectsV2Pagination(t *testing.T) {
 	xml.NewDecoder(resp.Body).Decode(&page1)
 	resp.Body.Close()
 
-	if len(page1.Contents) != 2 {
-		t.Fatalf("page1: expected 2 objects, got %d", len(page1.Contents))
-	}
-	if !page1.IsTruncated {
-		t.Fatal("page1: expected IsTruncated=true")
-	}
-	if page1.NextContinuationToken == "" {
-		t.Fatal("page1: missing NextContinuationToken")
-	}
+	require.Equal(t, 2, len(page1.Contents))
+
+	require.True(t, page1.IsTruncated)
+
+	require.NotEqual(t, "", page1.NextContinuationToken)
 
 	// Page 2
 	resp = doSignedRequest(t, ts, cfg, "GET",
@@ -335,12 +307,9 @@ func TestListObjectsV2Pagination(t *testing.T) {
 	xml.NewDecoder(resp.Body).Decode(&page2)
 	resp.Body.Close()
 
-	if len(page2.Contents) != 2 {
-		t.Fatalf("page2: expected 2 objects, got %d", len(page2.Contents))
-	}
-	if !page2.IsTruncated {
-		t.Fatal("page2: expected IsTruncated=true")
-	}
+	require.Equal(t, 2, len(page2.Contents))
+
+	require.True(t, page2.IsTruncated)
 
 	// Page 3 (last)
 	resp = doSignedRequest(t, ts, cfg, "GET",
@@ -350,12 +319,10 @@ func TestListObjectsV2Pagination(t *testing.T) {
 	xml.NewDecoder(resp.Body).Decode(&page3)
 	resp.Body.Close()
 
-	if len(page3.Contents) != 1 {
-		t.Fatalf("page3: expected 1 object, got %d", len(page3.Contents))
-	}
-	if page3.IsTruncated {
-		t.Fatal("page3: expected IsTruncated=false")
-	}
+	require.Equal(t, 1, len(page3.Contents))
+
+	require.False(t, page3.IsTruncated)
+
 }
 
 func TestAuthFailure(t *testing.T) {
@@ -366,14 +333,12 @@ func TestAuthFailure(t *testing.T) {
 	signTestRequest(req, cfg.Credentials[0].AccessKey, "wrongsecretkey123456", cfg.Region, nil)
 
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 403 {
-		t.Fatalf("expected 403, got %d", resp.StatusCode)
-	}
+	require.Equal(t, 403, resp.StatusCode)
+
 }
 
 func TestWriteOnce(t *testing.T) {
@@ -385,16 +350,14 @@ func TestWriteOnce(t *testing.T) {
 
 	// First PUT
 	resp := doSignedRequest(t, ts, cfg, "PUT", key, content1, nil)
-	if resp.StatusCode != 200 {
-		t.Fatalf("first PUT: expected 200, got %d", resp.StatusCode)
-	}
+	require.Equal(t, 200, resp.StatusCode)
+
 	resp.Body.Close()
 
 	// Second PUT with different data
 	resp = doSignedRequest(t, ts, cfg, "PUT", key, content2, nil)
-	if resp.StatusCode != 200 {
-		t.Fatalf("second PUT: expected 200, got %d", resp.StatusCode)
-	}
+	require.Equal(t, 200, resp.StatusCode)
+
 	resp.Body.Close()
 
 	// GET should return original content
@@ -402,9 +365,8 @@ func TestWriteOnce(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 
-	if string(body) != string(content1) {
-		t.Fatalf("write-once violated: got %q, want %q", body, content1)
-	}
+	require.Equal(t, string(content1), string(body))
+
 }
 
 func TestNoSuchBucket(t *testing.T) {
@@ -413,17 +375,15 @@ func TestNoSuchBucket(t *testing.T) {
 	resp := doSignedRequest(t, ts, cfg, "GET", "/wrongbucket/key", nil, nil)
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 404 {
-		t.Fatalf("expected 404, got %d", resp.StatusCode)
-	}
+	require.Equal(t, 404, resp.StatusCode)
+
 }
 
 func TestShardingRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	s, err := NewStorage(dir, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	defer s.Close()
 
 	keys := []string{
@@ -439,24 +399,141 @@ func TestShardingRoundTrip(t *testing.T) {
 	for _, key := range keys {
 		path := s.keyToPath(key)
 		reconstructed := s.pathToKey(path)
-		if reconstructed != key {
-			t.Errorf("sharding round-trip failed: %q -> %q -> %q", key, path, reconstructed)
-		}
+		assert.Equal(t, key, reconstructed)
+
 	}
 }
 
 func TestLockExclusion(t *testing.T) {
 	dir := t.TempDir()
 	s1, err := NewStorage(dir, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	defer s1.Close()
 
 	_, err = NewStorage(dir, false)
-	if err == nil {
-		t.Fatal("expected error from second NewStorage on same dir")
+	require.NotNil(t, err)
+
+}
+
+func TestLoadConfig(t *testing.T) {
+	dir := t.TempDir()
+
+	// Valid config
+	validJSON := `{
+		"listen": ":8080",
+		"bucket": "mybucket",
+		"region": "eu-west-1",
+		"data_dir": "/tmp/test",
+		"write_once": true,
+		"credentials": [{"access_key": "AK", "secret_key": "SK"}]
+	}`
+	validPath := dir + "/valid.json"
+	os.WriteFile(validPath, []byte(validJSON), 0644)
+	cfg, err := LoadConfig(validPath)
+	require.Nil(t, err)
+	require.Equal(t, ":8080", cfg.Listen)
+	require.Equal(t, "mybucket", cfg.Bucket)
+	require.Equal(t, "eu-west-1", cfg.Region)
+	require.True(t, cfg.WriteOnce)
+
+	// Defaults
+	defaultJSON := `{"bucket": "b", "data_dir": "/tmp/d", "credentials": [{"access_key": "AK", "secret_key": "SK"}]}`
+	defaultPath := dir + "/defaults.json"
+	os.WriteFile(defaultPath, []byte(defaultJSON), 0644)
+	cfg, err = LoadConfig(defaultPath)
+	require.Nil(t, err)
+	require.Equal(t, ":9000", cfg.Listen)
+	require.Equal(t, "us-east-1", cfg.Region)
+
+	// Missing file
+	_, err = LoadConfig(dir + "/nonexistent.json")
+	require.NotNil(t, err)
+
+	// Invalid JSON
+	badPath := dir + "/bad.json"
+	os.WriteFile(badPath, []byte("{invalid"), 0644)
+	_, err = LoadConfig(badPath)
+	require.NotNil(t, err)
+
+	// Missing bucket
+	noBucketPath := dir + "/nobucket.json"
+	os.WriteFile(noBucketPath, []byte(`{"data_dir": "/tmp", "credentials": [{"access_key": "AK", "secret_key": "SK"}]}`), 0644)
+	_, err = LoadConfig(noBucketPath)
+	require.NotNil(t, err)
+
+	// Missing data_dir
+	noDirPath := dir + "/nodir.json"
+	os.WriteFile(noDirPath, []byte(`{"bucket": "b", "credentials": [{"access_key": "AK", "secret_key": "SK"}]}`), 0644)
+	_, err = LoadConfig(noDirPath)
+	require.NotNil(t, err)
+
+	// No credentials
+	noCredPath := dir + "/nocred.json"
+	os.WriteFile(noCredPath, []byte(`{"bucket": "b", "data_dir": "/tmp"}`), 0644)
+	_, err = LoadConfig(noCredPath)
+	require.NotNil(t, err)
+
+	// Empty credential fields
+	emptyCredPath := dir + "/emptycred.json"
+	os.WriteFile(emptyCredPath, []byte(`{"bucket": "b", "data_dir": "/tmp", "credentials": [{"access_key": "", "secret_key": "SK"}]}`), 0644)
+	_, err = LoadConfig(emptyCredPath)
+	require.NotNil(t, err)
+}
+
+func TestFindCredential(t *testing.T) {
+	cfg := &Config{
+		Credentials: []Credential{
+			{AccessKey: "AK1", SecretKey: "SK1"},
+			{AccessKey: "AK2", SecretKey: "SK2"},
+		},
 	}
+	require.NotNil(t, cfg.FindCredential("AK1"))
+	require.NotNil(t, cfg.FindCredential("AK2"))
+	require.Nil(t, cfg.FindCredential("AK3"))
+}
+
+func TestPutObjectReadBodyError(t *testing.T) {
+	ts, cfg := testSetup(t)
+
+	// Test PUT with metadata
+	content := []byte("test data with meta")
+	headers := map[string]string{
+		"X-Amz-Meta-Outputid": "out1",
+		"X-Amz-Meta-Custom":   "val2",
+	}
+	resp := doSignedRequest(t, ts, cfg, "PUT", "/testbucket/meta/v1test000000000001", content, headers)
+	require.Equal(t, 200, resp.StatusCode)
+	resp.Body.Close()
+
+	// GET and verify both metadata keys
+	resp = doSignedRequest(t, ts, cfg, "GET", "/testbucket/meta/v1test000000000001", nil, nil)
+	require.Equal(t, 200, resp.StatusCode)
+	require.Equal(t, "out1", resp.Header.Get("X-Amz-Meta-Outputid"))
+	require.Equal(t, "val2", resp.Header.Get("X-Amz-Meta-Custom"))
+	resp.Body.Close()
+}
+
+func TestMethodNotAllowed(t *testing.T) {
+	ts, cfg := testSetup(t)
+
+	resp := doSignedRequest(t, ts, cfg, "DELETE", "/testbucket/some/key", nil, nil)
+	defer resp.Body.Close()
+	require.Equal(t, 405, resp.StatusCode)
+}
+
+func TestListEmptyBucket(t *testing.T) {
+	ts, cfg := testSetup(t)
+
+	resp := doSignedRequest(t, ts, cfg, "GET", "/testbucket?list-type=2&prefix=nonexistent/", nil, nil)
+	require.Equal(t, 200, resp.StatusCode)
+
+	var result ListBucketResult
+	xml.NewDecoder(resp.Body).Decode(&result)
+	resp.Body.Close()
+
+	require.Equal(t, 0, len(result.Contents))
+	require.False(t, result.IsTruncated)
 }
 
 func TestMain(m *testing.M) {

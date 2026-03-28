@@ -5,9 +5,5 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: wow-look-at-my/go-toolchain@v1
-        env:
-          GO_TOOLCHAIN_CACHING_INTENTIONALLY_NOT_CONFIGURED: "1"
+    uses: wow-look-at-my/go-toolchain/.github/workflows/build.yml@v1
+    secrets: inherit

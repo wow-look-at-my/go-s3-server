@@ -79,3 +79,20 @@ func getXattr(path, name string) ([]byte, error) {
 	}
 	return buf, nil
 }
+
+const originalKeyAttr = "user.s3.originalkey"
+
+func setOriginalKey(path, key string) error {
+	if err := unix.Setxattr(path, originalKeyAttr, []byte(key), 0); err != nil {
+		return fmt.Errorf("set xattr %s: %w", originalKeyAttr, err)
+	}
+	return nil
+}
+
+func getOriginalKey(path string) (string, error) {
+	val, err := getXattr(path, originalKeyAttr)
+	if err != nil {
+		return "", err
+	}
+	return string(val), nil
+}

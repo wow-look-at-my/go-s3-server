@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -72,26 +74,67 @@ func (s *Storage) Close() error {
 	return nil
 }
 
+// isKeySafe returns true if the key contains only safe filesystem characters:
+// alphanumeric, '/', '-', '_'. Dots are excluded to prevent ".." traversal.
+func isKeySafe(key string) bool {
+	if len(key) == 0 {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		c := key[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '/' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+const hashedPrefix = "__hashed__"
+
 // keyToPath converts an S3 key to a sharded filesystem path.
-// go-buildcache/v1aabbccdd11223344 → {dataDir}/go-buildcache/v1/aa/bbccdd11223344
+// Safe keys use direct sharding:
+//
+//	go-buildcache/v1aabbccdd11223344 → {dataDir}/go-buildcache/v1/aa/bbccdd11223344
+//
+// Unsafe keys are SHA256-hashed into a separate tree:
+//
+//	../../etc/passwd → {dataDir}/__hashed__/{hash[:2]}/{hash[2:4]}/{hash[4:]}
 func (s *Storage) keyToPath(key string) string {
+	if isKeySafe(key) {
+		return s.shardPath(s.dataDir, key)
+	}
+	h := sha256.Sum256([]byte(key))
+	name := hex.EncodeToString(h[:])
+	return filepath.Join(s.dataDir, hashedPrefix, name[:2], name[2:4], name[4:])
+}
+
+func (s *Storage) shardPath(base, key string) string {
 	dir := filepath.Dir(key)
 	name := filepath.Base(key)
 
 	switch {
 	case len(name) > 4:
-		return filepath.Join(s.dataDir, dir, name[:2], name[2:4], name[4:])
+		return filepath.Join(base, dir, name[:2], name[2:4], name[4:])
 	case len(name) > 2:
-		return filepath.Join(s.dataDir, dir, name[:2], name[2:])
+		return filepath.Join(base, dir, name[:2], name[2:])
 	default:
-		return filepath.Join(s.dataDir, dir, name)
+		return filepath.Join(base, dir, name)
 	}
 }
 
 // pathToKey reverses the sharding to reconstruct the original S3 key.
+// For hashed keys (under __hashed__/), the original key is read from xattr.
 func (s *Storage) pathToKey(path string) string {
 	rel, _ := filepath.Rel(s.dataDir, path)
 	rel = filepath.ToSlash(rel)
+
+	// Hashed key — original key stored in xattr
+	if strings.HasPrefix(rel, hashedPrefix+"/") {
+		if key, err := getOriginalKey(path); err == nil {
+			return key
+		}
+		return ""
+	}
 
 	parts := strings.Split(rel, "/")
 	if len(parts) >= 3 {
@@ -126,6 +169,7 @@ func (s *Storage) pathToKey(path string) string {
 
 func (s *Storage) Put(key string, data []byte, meta map[string]string) error {
 	path := s.keyToPath(key)
+	hashed := !isKeySafe(key)
 
 	if s.writeOnce.Action == "deny" {
 		if existing, err := os.ReadFile(path); err == nil {
@@ -167,6 +211,13 @@ func (s *Storage) Put(key string, data []byte, meta map[string]string) error {
 	if err := setMetadata(tmpPath, meta); err != nil {
 		os.Remove(tmpPath)
 		return err
+	}
+
+	if hashed {
+		if err := setOriginalKey(tmpPath, key); err != nil {
+			os.Remove(tmpPath)
+			return err
+		}
 	}
 
 	if err := os.Rename(tmpPath, path); err != nil {
@@ -219,7 +270,7 @@ func (s *Storage) List(prefix string, maxKeys int, continuationToken string) (*L
 		}
 
 		key := s.pathToKey(path)
-		if !strings.HasPrefix(key, prefix) {
+		if key == "" || !strings.HasPrefix(key, prefix) {
 			return nil
 		}
 

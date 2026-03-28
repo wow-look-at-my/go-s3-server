@@ -662,6 +662,85 @@ func TestListEmptyBucket(t *testing.T) {
 	require.False(t, result.IsTruncated)
 }
 
+func TestUnsafeKeyHashedStorage(t *testing.T) {
+	ts, cfg := testSetup(t)
+
+	// Path traversal key gets hashed — stored safely, not at /etc/passwd
+	traversalKey := "prefix/../../etc/passwd"
+	content := []byte("safe content")
+	resp := doSignedRequest(t, ts, cfg, "PUT", "/testbucket/"+traversalKey, content, nil)
+	require.Equal(t, 200, resp.StatusCode)
+	resp.Body.Close()
+
+	// GET with the same key retrieves the data
+	resp = doSignedRequest(t, ts, cfg, "GET", "/testbucket/"+traversalKey, nil, nil)
+	require.Equal(t, 200, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.Equal(t, string(content), string(body))
+
+	// Key with dots (not alphanumeric) gets hashed too
+	dotKey := "a..b/file.txt"
+	resp = doSignedRequest(t, ts, cfg, "PUT", "/testbucket/"+dotKey, []byte("dot data"), nil)
+	require.Equal(t, 200, resp.StatusCode)
+	resp.Body.Close()
+
+	resp = doSignedRequest(t, ts, cfg, "GET", "/testbucket/"+dotKey, nil, nil)
+	require.Equal(t, 200, resp.StatusCode)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.Equal(t, "dot data", string(body))
+}
+
+func TestSafeKeyUnchangedBehavior(t *testing.T) {
+	ts, cfg := testSetup(t)
+
+	// Normal alphanumeric key works as before
+	key := "go-buildcache/v1aabb000000000099"
+	content := []byte("cache data")
+	resp := doSignedRequest(t, ts, cfg, "PUT", "/testbucket/"+key, content, nil)
+	require.Equal(t, 200, resp.StatusCode)
+	resp.Body.Close()
+
+	resp = doSignedRequest(t, ts, cfg, "GET", "/testbucket/"+key, nil, nil)
+	require.Equal(t, 200, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.Equal(t, string(content), string(body))
+}
+
+func TestHashedKeyListing(t *testing.T) {
+	ts, cfg := testSetup(t)
+
+	// Put a hashed key
+	unsafeKey := "special.key/with.dots"
+	resp := doSignedRequest(t, ts, cfg, "PUT", "/testbucket/"+unsafeKey, []byte("data"), nil)
+	require.Equal(t, 200, resp.StatusCode)
+	resp.Body.Close()
+
+	// List should return the original key
+	resp = doSignedRequest(t, ts, cfg, "GET", "/testbucket?list-type=2&prefix=special.", nil, nil)
+	require.Equal(t, 200, resp.StatusCode)
+
+	var result ListBucketResult
+	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&result))
+	resp.Body.Close()
+
+	require.Equal(t, 1, len(result.Contents))
+	require.Equal(t, unsafeKey, result.Contents[0].Key)
+}
+
+func TestIsKeySafe(t *testing.T) {
+	assert.True(t, isKeySafe("go-buildcache/v1aabbccdd11223344"))
+	assert.True(t, isKeySafe("prefix/abc_DEF-123"))
+	assert.True(t, isKeySafe("simple"))
+	assert.False(t, isKeySafe(""))
+	assert.False(t, isKeySafe("../etc/passwd"))
+	assert.False(t, isKeySafe("a..b"))
+	assert.False(t, isKeySafe("path/with spaces"))
+	assert.False(t, isKeySafe("file.txt"))
+}
+
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }

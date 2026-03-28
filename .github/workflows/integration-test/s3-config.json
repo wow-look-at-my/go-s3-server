@@ -3,6 +3,6 @@
   "bucket": "test-cache",
   "region": "us-east-1",
   "data_dir": "/tmp/s3-data",
-  "write_once": false,
+  "write_once": {"action": "allow"},
   "credentials": [{"access_key": "test-key-id", "secret_key": "test-secret-key"}]
 }

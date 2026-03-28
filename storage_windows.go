@@ -35,3 +35,17 @@ func getMetadata(path string, meta *ObjectMeta) {
 	}
 	json.Unmarshal(data, &meta.Metadata)
 }
+
+const originalKeyFile = ".originalkey"
+
+func setOriginalKey(path, key string) error {
+	return os.WriteFile(path+"."+originalKeyFile, []byte(key), 0644)
+}
+
+func getOriginalKey(path string) (string, error) {
+	data, err := os.ReadFile(path + "." + originalKeyFile)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}

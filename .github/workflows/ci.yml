@@ -3,6 +3,9 @@ name: CI
 on:
   push:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     uses: wow-look-at-my/go-toolchain/.github/workflows/build.yml@v1

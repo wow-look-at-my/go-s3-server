@@ -15,6 +15,9 @@ FAIL=0
 pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
 
+# Helper: run a command, capture combined stdout+stderr, ignore exit code.
+capture() { "$@" 2>&1 || true; }
+
 # ── S3 API Tests (normal server) ────────────────────────────────────────────
 
 echo "=== S3 API Tests ==="
@@ -32,11 +35,12 @@ else
 fi
 
 # GetObject 404
-if aws s3api get-object --endpoint-url "$ENDPOINT_NORMAL" --bucket "$BUCKET" \
-  --key "nonexistent/v1xxxx000000000000" /tmp/test-404 --no-cli-pager 2>&1 | grep -q "NoSuchKey"; then
+OUTPUT=$(capture aws s3api get-object --endpoint-url "$ENDPOINT_NORMAL" --bucket "$BUCKET" \
+  --key "nonexistent/v1xxxx000000000000" /tmp/test-404 --no-cli-pager)
+if echo "$OUTPUT" | grep -q "NoSuchKey"; then
   pass "GetObject nonexistent returns NoSuchKey"
 else
-  fail "GetObject nonexistent did not return NoSuchKey"
+  fail "GetObject nonexistent did not return NoSuchKey: $OUTPUT"
 fi
 
 # ListObjectsV2
@@ -115,19 +119,23 @@ echo ""
 echo "=== Auth Tests ==="
 
 # Invalid secret key
-if AWS_SECRET_ACCESS_KEY=wrongsecret aws s3api get-object --endpoint-url "$ENDPOINT_NORMAL" \
-  --bucket "$BUCKET" --key "auth/v1test000000000001" /tmp/test-auth1 --no-cli-pager 2>&1 | grep -q "403\|AccessDenied"; then
+OUTPUT=$(capture env AWS_SECRET_ACCESS_KEY=wrongsecret \
+  aws s3api get-object --endpoint-url "$ENDPOINT_NORMAL" \
+  --bucket "$BUCKET" --key "auth/v1test000000000001" /tmp/test-auth1 --no-cli-pager)
+if echo "$OUTPUT" | grep -q "403\|AccessDenied"; then
   pass "Invalid secret key returns 403"
 else
-  fail "Invalid secret key did not return 403"
+  fail "Invalid secret key did not return 403: $OUTPUT"
 fi
 
 # Invalid access key
-if AWS_ACCESS_KEY_ID=NONEXISTENT aws s3api get-object --endpoint-url "$ENDPOINT_NORMAL" \
-  --bucket "$BUCKET" --key "auth/v1test000000000002" /tmp/test-auth2 --no-cli-pager 2>&1 | grep -q "403\|AccessDenied"; then
+OUTPUT=$(capture env AWS_ACCESS_KEY_ID=NONEXISTENT \
+  aws s3api get-object --endpoint-url "$ENDPOINT_NORMAL" \
+  --bucket "$BUCKET" --key "auth/v1test000000000002" /tmp/test-auth2 --no-cli-pager)
+if echo "$OUTPUT" | grep -q "403\|AccessDenied"; then
   pass "Invalid access key returns 403"
 else
-  fail "Invalid access key did not return 403"
+  fail "Invalid access key did not return 403: $OUTPUT"
 fi
 
 # No auth header (raw curl)
@@ -159,7 +167,6 @@ fi
 echo -n "idempotent content" > /tmp/test-wo-idem
 aws s3api put-object --endpoint-url "$ENDPOINT_WRITEONCE" --bucket "$BUCKET" \
   --key "wo/v1idempotent0000001" --body /tmp/test-wo-idem --no-cli-pager > /dev/null 2>&1
-# Second PUT with same content should succeed (exit 0)
 if aws s3api put-object --endpoint-url "$ENDPOINT_WRITEONCE" --bucket "$BUCKET" \
   --key "wo/v1idempotent0000001" --body /tmp/test-wo-idem --no-cli-pager > /dev/null 2>&1; then
   pass "Write-once: same content idempotent"
@@ -172,11 +179,12 @@ echo -n "original" > /tmp/test-wo-orig
 echo -n "different" > /tmp/test-wo-diff
 aws s3api put-object --endpoint-url "$ENDPOINT_WRITEONCE" --bucket "$BUCKET" \
   --key "wo/v1conflict000000001" --body /tmp/test-wo-orig --no-cli-pager > /dev/null 2>&1
-if aws s3api put-object --endpoint-url "$ENDPOINT_WRITEONCE" --bucket "$BUCKET" \
-  --key "wo/v1conflict000000001" --body /tmp/test-wo-diff --no-cli-pager 2>&1 | grep -q "409\|ConflictException"; then
+OUTPUT=$(capture aws s3api put-object --endpoint-url "$ENDPOINT_WRITEONCE" --bucket "$BUCKET" \
+  --key "wo/v1conflict000000001" --body /tmp/test-wo-diff --no-cli-pager)
+if echo "$OUTPUT" | grep -q "409\|ConflictException"; then
   pass "Write-once: different content returns 409"
 else
-  fail "Write-once: different content did not return 409"
+  fail "Write-once: different content did not return 409: $OUTPUT"
 fi
 
 # Original content preserved after conflict

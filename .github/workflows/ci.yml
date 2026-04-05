@@ -8,12 +8,22 @@ permissions:
   packages: write
 
 jobs:
-  build:
-    uses: wow-look-at-my/go-toolchain/.github/workflows/build.yml@v1
-    secrets: inherit
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wow-look-at-my/go-toolchain@v1
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: build/
 
   docker:
-    needs: build
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,7 +72,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
   s3-api-test:
-    needs: build
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -122,7 +132,7 @@ jobs:
           kill "$(cat /tmp/s3-server-writeonce.pid 2>/dev/null)" 2>/dev/null || true
 
   integration-test:
-    needs: build
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

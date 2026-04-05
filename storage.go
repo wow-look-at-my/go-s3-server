@@ -167,7 +167,16 @@ func (s *Storage) pathToKey(path string) string {
 	return rel
 }
 
-func (s *Storage) Put(key string, data []byte, meta map[string]string) error {
+func (s *Storage) Put(key string, data []byte, meta map[string]string) (err error) {
+	start := time.Now()
+	defer func() {
+		status := "ok"
+		if err != nil {
+			status = "error"
+		}
+		storageOpsTotal.WithLabelValues("put", status).Inc()
+		storageOpDuration.WithLabelValues("put").Observe(time.Since(start).Seconds())
+	}()
 	path := s.keyToPath(key)
 	hashed := !isKeySafe(key)
 
@@ -227,7 +236,16 @@ func (s *Storage) Put(key string, data []byte, meta map[string]string) error {
 	return nil
 }
 
-func (s *Storage) Get(key string) ([]byte, *ObjectMeta, error) {
+func (s *Storage) Get(key string) (_ []byte, _ *ObjectMeta, err error) {
+	start := time.Now()
+	defer func() {
+		status := "ok"
+		if err != nil {
+			status = "error"
+		}
+		storageOpsTotal.WithLabelValues("get", status).Inc()
+		storageOpDuration.WithLabelValues("get").Observe(time.Since(start).Seconds())
+	}()
 	path := s.keyToPath(key)
 
 	data, err := os.ReadFile(path)
@@ -254,10 +272,19 @@ func (s *Storage) Get(key string) ([]byte, *ObjectMeta, error) {
 	return data, meta, nil
 }
 
-func (s *Storage) List(prefix string, maxKeys int, continuationToken string) (*ListResult, error) {
+func (s *Storage) List(prefix string, maxKeys int, continuationToken string) (_ *ListResult, err error) {
+	metricsStart := time.Now()
+	defer func() {
+		status := "ok"
+		if err != nil {
+			status = "error"
+		}
+		storageOpsTotal.WithLabelValues("list", status).Inc()
+		storageOpDuration.WithLabelValues("list").Observe(time.Since(metricsStart).Seconds())
+	}()
 	var allKeys []ListObject
 
-	err := filepath.WalkDir(s.dataDir, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(s.dataDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // skip errors
 		}

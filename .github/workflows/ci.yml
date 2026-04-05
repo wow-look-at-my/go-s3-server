@@ -4,13 +4,15 @@ on:
   push:
 
 permissions:
-  id-token: write
   contents: write
   packages: write
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: wow-look-at-my/go-toolchain@v1

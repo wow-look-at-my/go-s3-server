@@ -4,10 +4,17 @@ on:
   push:
 
 permissions:
+  id-token: write
   contents: write
   packages: write
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wow-look-at-my/go-toolchain@v1
+
   build:
     uses: wow-look-at-my/go-toolchain/.github/workflows/build.yml@v1
     secrets: inherit

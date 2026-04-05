@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type Server struct {
@@ -16,9 +17,18 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	httpInFlightRequests.Inc()
+	defer httpInFlightRequests.Dec()
+
+	rec := &statusRecorder{ResponseWriter: w, statusCode: 200}
+
 	if err := verifySignature(r, s.config); err != nil {
 		log.Printf("auth: %v", err)
-		writeS3Error(w, 403, "AccessDenied", "Access Denied")
+		authFailuresTotal.Inc()
+		writeS3Error(rec, 403, "AccessDenied", "Access Denied")
+		httpRequestsTotal.WithLabelValues(r.Method, "Auth", statusStr(rec.statusCode)).Inc()
+		httpRequestDuration.WithLabelValues(r.Method, "Auth").Observe(time.Since(start).Seconds())
 		return
 	}
 
@@ -28,7 +38,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	bucket := parts[0]
 
 	if bucket != s.config.Bucket {
-		writeS3Error(w, 404, "NoSuchBucket", "The specified bucket does not exist")
+		writeS3Error(rec, 404, "NoSuchBucket", "The specified bucket does not exist")
+		httpRequestsTotal.WithLabelValues(r.Method, "NoSuchBucket", statusStr(rec.statusCode)).Inc()
+		httpRequestDuration.WithLabelValues(r.Method, "NoSuchBucket").Observe(time.Since(start).Seconds())
 		return
 	}
 
@@ -37,14 +49,27 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		key = parts[1]
 	}
 
+	var route string
 	switch {
 	case r.Method == "GET" && key == "" && r.URL.Query().Get("list-type") == "2":
-		handleListObjectsV2(w, r, s.storage, bucket)
+		route = "ListObjectsV2"
+		handleListObjectsV2(rec, r, s.storage, bucket)
 	case r.Method == "GET" && key != "":
-		handleGetObject(w, r, s.storage, key)
+		route = "GetObject"
+		handleGetObject(rec, r, s.storage, key)
 	case r.Method == "PUT" && key != "":
-		handlePutObject(w, r, s.storage, key)
+		route = "PutObject"
+		handlePutObject(rec, r, s.storage, key)
 	default:
-		writeS3Error(w, 405, "MethodNotAllowed", "Method not allowed")
+		route = "Other"
+		writeS3Error(rec, 405, "MethodNotAllowed", "Method not allowed")
+	}
+
+	duration := time.Since(start).Seconds()
+	httpRequestsTotal.WithLabelValues(r.Method, route, statusStr(rec.statusCode)).Inc()
+	httpRequestDuration.WithLabelValues(r.Method, route).Observe(duration)
+	httpResponseSize.WithLabelValues(r.Method, route).Observe(float64(rec.bytesWritten))
+	if r.ContentLength > 0 {
+		httpRequestSize.WithLabelValues(r.Method, route).Observe(float64(r.ContentLength))
 	}
 }

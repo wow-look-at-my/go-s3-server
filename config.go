@@ -17,12 +17,13 @@ type WriteOnceConfig struct {
 }
 
 type Config struct {
-	Listen      string          `json:"listen"`
-	Bucket      string          `json:"bucket"`
-	Region      string          `json:"region"`
-	DataDir     string          `json:"data_dir"`
-	WriteOnce   WriteOnceConfig `json:"write_once"`
-	Credentials []Credential    `json:"credentials"`
+	Listen        string          `json:"listen"`
+	MetricsListen string          `json:"metrics_listen"`
+	Bucket        string          `json:"bucket"`
+	Region        string          `json:"region"`
+	DataDir       string          `json:"data_dir"`
+	WriteOnce     WriteOnceConfig `json:"write_once"`
+	Credentials   []Credential    `json:"credentials"`
 }
 
 func LoadConfig(path string) (*Config, error) {

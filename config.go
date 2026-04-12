@@ -20,7 +20,6 @@ type Config struct {
 	Listen        string          `json:"listen"`
 	MetricsListen string          `json:"metrics_listen"`
 	Bucket        string          `json:"bucket"`
-	Region        string          `json:"region"`
 	DataDir       string          `json:"data_dir"`
 	WriteOnce     WriteOnceConfig `json:"write_once"`
 	Credentials   []Credential    `json:"credentials"`
@@ -37,9 +36,6 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Listen == "" {
 		cfg.Listen = ":9000"
-	}
-	if cfg.Region == "" {
-		cfg.Region = "us-east-1"
 	}
 	if cfg.WriteOnce.Action == "" {
 		cfg.WriteOnce.Action = "allow"

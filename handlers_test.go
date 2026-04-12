@@ -2,8 +2,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/xml"
 	"io"
 	"net/http"
@@ -22,9 +20,8 @@ func testSetup(t *testing.T) (*httptest.Server, *Config) {
 
 	cfg := &Config{
 		Listen:    ":0",
-		Bucket:    "testbucket",
-		Region:    "us-east-1",
-		DataDir:   dir,
+		Bucket:  "testbucket",
+		DataDir: dir,
 		WriteOnce: WriteOnceConfig{Action: "allow"},
 		Credentials: []Credential{
 			{AccessKey: "AKIAIOSFODNN7EXAMPLE", SecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
@@ -49,9 +46,8 @@ func testSetupWriteOnce(t *testing.T) (*httptest.Server, *Config) {
 
 	cfg := &Config{
 		Listen:    ":0",
-		Bucket:    "testbucket",
-		Region:    "us-east-1",
-		DataDir:   dir,
+		Bucket:  "testbucket",
+		DataDir: dir,
 		WriteOnce: WriteOnceConfig{Action: "deny", Notification: "content_differs"},
 		Credentials: []Credential{
 			{AccessKey: "AKIAIOSFODNN7EXAMPLE", SecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
@@ -70,108 +66,6 @@ func testSetupWriteOnce(t *testing.T) (*httptest.Server, *Config) {
 	return ts, cfg
 }
 
-// signTestRequest signs a request for testing using the same SigV4 logic.
-func signTestRequest(r *http.Request, accessKey, secretKey, region string, body []byte) {
-	now := time.Now().UTC()
-	datestamp := now.Format("20060102")
-	amzDate := now.Format("20060102T150405Z")
-
-	r.Header.Set("X-Amz-Date", amzDate)
-	r.Header.Set("Host", r.URL.Host)
-
-	var payloadHash string
-	if body != nil {
-		h := sha256.Sum256(body)
-		payloadHash = hex.EncodeToString(h[:])
-	} else {
-		payloadHash = "UNSIGNED-PAYLOAD"
-	}
-	r.Header.Set("X-Amz-Content-Sha256", payloadHash)
-
-	signedHeaders, canonicalHeaders := testBuildCanonicalHeaders(r)
-	canonicalRequest := r.Method + "\n" +
-		uriEncodePath(r.URL.Path) + "\n" +
-		canonicalQueryString(r.URL.RawQuery) + "\n" +
-		canonicalHeaders + "\n" +
-		signedHeaders + "\n" +
-		payloadHash
-
-	scope := datestamp + "/" + region + "/s3/aws4_request"
-	canonHash := sha256.Sum256([]byte(canonicalRequest))
-	stringToSign := "AWS4-HMAC-SHA256\n" + amzDate + "\n" + scope + "\n" + hex.EncodeToString(canonHash[:])
-
-	signingKey := deriveSigningKey(secretKey, datestamp, region, "s3")
-	sig := hmacSHA256(signingKey, []byte(stringToSign))
-	signature := hex.EncodeToString(sig)
-
-	auth := "AWS4-HMAC-SHA256 Credential=" + accessKey + "/" + scope +
-		", SignedHeaders=" + signedHeaders + ", Signature=" + signature
-	r.Header.Set("Authorization", auth)
-}
-
-func testBuildCanonicalHeaders(r *http.Request) (signedHeaders, canonicalHeaders string) {
-	type hdr struct{ k, v string }
-	var hdrs []hdr
-	hdrs = append(hdrs, hdr{"host", r.URL.Host})
-	for k, vals := range r.Header {
-		lk := toLower(k)
-		if len(lk) > 6 && lk[:6] == "x-amz-" {
-			hdrs = append(hdrs, hdr{lk, trimSpace(vals[0])})
-		}
-	}
-	// Sort
-	for i := 0; i < len(hdrs); i++ {
-		for j := i + 1; j < len(hdrs); j++ {
-			if hdrs[j].k < hdrs[i].k {
-				hdrs[i], hdrs[j] = hdrs[j], hdrs[i]
-			}
-		}
-	}
-	var names, canonical []string
-	for _, h := range hdrs {
-		names = append(names, h.k)
-		canonical = append(canonical, h.k+":"+h.v)
-	}
-	signedHeaders = join(names, ";")
-	canonicalHeaders = join(canonical, "\n") + "\n"
-	return
-}
-
-func toLower(s string) string {
-	b := make([]byte, len(s))
-	for i := range s {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		b[i] = c
-	}
-	return string(b)
-}
-
-func trimSpace(s string) string {
-	i := 0
-	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
-		i++
-	}
-	j := len(s)
-	for j > i && (s[j-1] == ' ' || s[j-1] == '\t') {
-		j--
-	}
-	return s[i:j]
-}
-
-func join(parts []string, sep string) string {
-	if len(parts) == 0 {
-		return ""
-	}
-	result := parts[0]
-	for _, p := range parts[1:] {
-		result += sep + p
-	}
-	return result
-}
-
 func doSignedRequest(t *testing.T, ts *httptest.Server, cfg *Config, method, path string, body []byte, extraHeaders map[string]string) *http.Response {
 	t.Helper()
 	var bodyReader io.Reader
@@ -187,7 +81,7 @@ func doSignedRequest(t *testing.T, ts *httptest.Server, cfg *Config, method, pat
 	for k, v := range extraHeaders {
 		req.Header.Set(k, v)
 	}
-	signTestRequest(req, cfg.Credentials[0].AccessKey, cfg.Credentials[0].SecretKey, cfg.Region, body)
+	req.SetBasicAuth(cfg.Credentials[0].AccessKey, cfg.Credentials[0].SecretKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	require.Nil(t, err)
@@ -329,17 +223,28 @@ func TestListObjectsV2Pagination(t *testing.T) {
 func TestAuthFailure(t *testing.T) {
 	ts, cfg := testSetup(t)
 
+	// Wrong secret key
 	req, _ := http.NewRequest("GET", ts.URL+"/testbucket/some/key", nil)
-	// Sign with wrong secret
-	signTestRequest(req, cfg.Credentials[0].AccessKey, "wrongsecretkey123456", cfg.Region, nil)
-
+	req.SetBasicAuth(cfg.Credentials[0].AccessKey, "wrongsecretkey123456")
 	resp, err := http.DefaultClient.Do(req)
 	require.Nil(t, err)
-
-	defer resp.Body.Close()
-
+	resp.Body.Close()
 	require.Equal(t, 403, resp.StatusCode)
 
+	// Unknown access key
+	req, _ = http.NewRequest("GET", ts.URL+"/testbucket/some/key", nil)
+	req.SetBasicAuth("NONEXISTENT", cfg.Credentials[0].SecretKey)
+	resp, err = http.DefaultClient.Do(req)
+	require.Nil(t, err)
+	resp.Body.Close()
+	require.Equal(t, 403, resp.StatusCode)
+
+	// No auth header
+	req, _ = http.NewRequest("GET", ts.URL+"/testbucket/some/key", nil)
+	resp, err = http.DefaultClient.Do(req)
+	require.Nil(t, err)
+	resp.Body.Close()
+	require.Equal(t, 403, resp.StatusCode)
 }
 
 func TestWriteOnce(t *testing.T) {
@@ -377,9 +282,8 @@ func testSetupWriteOnceAlways(t *testing.T) (*httptest.Server, *Config) {
 
 	cfg := &Config{
 		Listen:    ":0",
-		Bucket:    "testbucket",
-		Region:    "us-east-1",
-		DataDir:   dir,
+		Bucket:  "testbucket",
+		DataDir: dir,
 		WriteOnce: WriteOnceConfig{Action: "deny", Notification: "always"},
 		Credentials: []Credential{
 			{AccessKey: "AKIAIOSFODNN7EXAMPLE", SecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
@@ -403,9 +307,8 @@ func testSetupWriteOnceNever(t *testing.T) (*httptest.Server, *Config) {
 
 	cfg := &Config{
 		Listen:    ":0",
-		Bucket:    "testbucket",
-		Region:    "us-east-1",
-		DataDir:   dir,
+		Bucket:  "testbucket",
+		DataDir: dir,
 		WriteOnce: WriteOnceConfig{Action: "deny", Notification: "never"},
 		Credentials: []Credential{
 			{AccessKey: "AKIAIOSFODNN7EXAMPLE", SecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
@@ -529,7 +432,6 @@ func TestLoadConfig(t *testing.T) {
 	validJSON := `{
 		"listen": ":8080",
 		"bucket": "mybucket",
-		"region": "eu-west-1",
 		"data_dir": "/tmp/test",
 		"write_once": {"action": "deny", "notification": "content_differs"},
 		"credentials": [{"access_key": "AK", "secret_key": "SK"}]
@@ -540,7 +442,6 @@ func TestLoadConfig(t *testing.T) {
 	require.Nil(t, err)
 	require.Equal(t, ":8080", cfg.Listen)
 	require.Equal(t, "mybucket", cfg.Bucket)
-	require.Equal(t, "eu-west-1", cfg.Region)
 	require.Equal(t, "deny", cfg.WriteOnce.Action)
 	require.Equal(t, "content_differs", cfg.WriteOnce.Notification)
 
@@ -551,7 +452,6 @@ func TestLoadConfig(t *testing.T) {
 	cfg, err = LoadConfig(defaultPath)
 	require.Nil(t, err)
 	require.Equal(t, ":9000", cfg.Listen)
-	require.Equal(t, "us-east-1", cfg.Region)
 
 	// Missing file
 	_, err = LoadConfig(dir + "/nonexistent.json")

@@ -16,7 +16,7 @@ Do NOT use `go build`, `go test`, or any bare `go` commands. Always use `go-tool
 - `config.go` — JSON config loading and validation
 - `server.go` — HTTP router, auth gate, bucket dispatch
 - `handlers.go` — S3 API handlers (GetObject, PutObject, ListObjectsV2)
-- `auth.go` — AWS Signature V4 verification
+- `auth.go` — HTTP Basic Auth verification
 - `storage.go` — Filesystem storage with two-level key sharding
 - `storage_unix.go` / `storage_windows.go` — Platform-specific file locking and xattr metadata
 - `lock_windows.go` — Windows file locking via syscall

@@ -5,7 +5,7 @@ Minimal S3-compatible server backed by the local filesystem. Designed as a share
 ## Features
 
 - **S3 API subset** — `GetObject`, `PutObject`, `ListObjectsV2`
-- **AWS Signature V4** authentication
+- **HTTP Basic Auth** authentication
 - **Write-once mode** — deny overwriting existing keys with configurable conflict notification (ideal for content-addressable caches)
 - **Sharded storage** — keys are automatically split into a two-level directory tree to avoid huge flat directories
 - **Multi-arch Docker image** — `linux/amd64` and `linux/arm64` published to `ghcr.io/wow-look-at-my/go-s3-server`
@@ -18,7 +18,6 @@ Create a JSON config file:
 {
   "listen": ":9000",
   "bucket": "my-cache",
-  "region": "us-east-1",
   "data_dir": "/var/data/s3",
   "write_once": {"action": "deny", "notification": "content_differs"},
   "credentials": [
@@ -43,7 +42,6 @@ go-s3-server --config config.json
 | `--config` | Path to JSON config file (required) |
 | `--listen` | Override listen address |
 | `--bucket` | Override bucket name |
-| `--region` | Override region |
 | `--data-dir` | Override data directory |
 
 All flags except `--config` override the corresponding config file value.
@@ -54,10 +52,9 @@ All flags except `--config` override the corresponding config file value.
 |-------|------|---------|----------|-------------|
 | `listen` | string | `:9000` | no | Address to listen on |
 | `bucket` | string | — | yes | S3 bucket name to serve |
-| `region` | string | `us-east-1` | no | AWS region for signature verification |
 | `data_dir` | string | — | yes | Directory to store objects |
 | `write_once` | object | `{"action":"allow"}` | no | Write-once behavior (see below) |
-| `credentials` | array | — | yes | At least one `access_key`/`secret_key` pair |
+| `credentials` | array | — | yes | At least one `access_key`/`secret_key` pair (used as Basic Auth username/password) |
 
 ### `write_once` options
 

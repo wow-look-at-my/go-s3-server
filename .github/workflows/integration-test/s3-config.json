@@ -1,7 +1,6 @@
 {
   "listen": "127.0.0.1:9000",
   "bucket": "test-cache",
-  "region": "us-east-1",
   "data_dir": "/tmp/s3-data",
   "write_once": {"action": "allow"},
   "credentials": [{"access_key": "test-key-id", "secret_key": "test-secret-key"}]

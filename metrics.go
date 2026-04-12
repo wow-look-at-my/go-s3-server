@@ -55,6 +55,14 @@ var (
 	}, []string{"operation"})
 )
 
+// Auth metrics
+var (
+	authFailuresTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "s3_auth_failures_total",
+		Help: "Total number of authentication failures.",
+	})
+)
+
 // statusRecorder wraps http.ResponseWriter to capture status code and bytes written.
 type statusRecorder struct {
 	http.ResponseWriter

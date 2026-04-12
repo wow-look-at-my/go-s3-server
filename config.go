@@ -6,6 +6,11 @@ import (
 	"os"
 )
 
+type Credential struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
 type WriteOnceConfig struct {
 	Action       string `json:"action"`       // "allow" or "deny"
 	Notification string `json:"notification"` // "never", "always", "content_differs"
@@ -17,6 +22,7 @@ type Config struct {
 	Bucket        string          `json:"bucket"`
 	DataDir       string          `json:"data_dir"`
 	WriteOnce     WriteOnceConfig `json:"write_once"`
+	Credentials   []Credential    `json:"credentials"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -52,6 +58,14 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.DataDir == "" {
 		return nil, fmt.Errorf("config: data_dir is required")
+	}
+	if len(cfg.Credentials) == 0 {
+		return nil, fmt.Errorf("config: at least one credential is required (use empty username/password to disable auth)")
+	}
+	for i, c := range cfg.Credentials {
+		if (c.Username == "") != (c.Password == "") {
+			return nil, fmt.Errorf("config: credential %d: username and password must both be set or both be empty", i)
+		}
 	}
 	return &cfg, nil
 }

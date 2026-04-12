@@ -22,7 +22,8 @@ func testSetup(t *testing.T) *httptest.Server {
 		Listen:    ":0",
 		Bucket:    "testbucket",
 		DataDir:   dir,
-		WriteOnce: WriteOnceConfig{Action: "allow"},
+		WriteOnce:   WriteOnceConfig{Action: "allow"},
+		Credentials: []Credential{{Username: "", Password: ""}},
 	}
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
@@ -45,7 +46,8 @@ func testSetupWriteOnce(t *testing.T) *httptest.Server {
 		Listen:    ":0",
 		Bucket:    "testbucket",
 		DataDir:   dir,
-		WriteOnce: WriteOnceConfig{Action: "deny", Notification: "content_differs"},
+		WriteOnce:   WriteOnceConfig{Action: "deny", Notification: "content_differs"},
+		Credentials: []Credential{{Username: "", Password: ""}},
 	}
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
@@ -233,7 +235,8 @@ func testSetupWriteOnceAlways(t *testing.T) *httptest.Server {
 		Listen:    ":0",
 		Bucket:    "testbucket",
 		DataDir:   dir,
-		WriteOnce: WriteOnceConfig{Action: "deny", Notification: "always"},
+		WriteOnce:   WriteOnceConfig{Action: "deny", Notification: "always"},
+		Credentials: []Credential{{Username: "", Password: ""}},
 	}
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
@@ -255,7 +258,8 @@ func testSetupWriteOnceNever(t *testing.T) *httptest.Server {
 		Listen:    ":0",
 		Bucket:    "testbucket",
 		DataDir:   dir,
-		WriteOnce: WriteOnceConfig{Action: "deny", Notification: "never"},
+		WriteOnce:   WriteOnceConfig{Action: "deny", Notification: "never"},
+		Credentials: []Credential{{Username: "", Password: ""}},
 	}
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
@@ -366,7 +370,8 @@ func TestLoadConfig(t *testing.T) {
 		"listen": ":8080",
 		"bucket": "mybucket",
 		"data_dir": "/tmp/test",
-		"write_once": {"action": "deny", "notification": "content_differs"}
+		"write_once": {"action": "deny", "notification": "content_differs"},
+		"credentials": [{"username": "admin", "password": "secret"}]
 	}`
 	validPath := dir + "/valid.json"
 	os.WriteFile(validPath, []byte(validJSON), 0644)
@@ -378,7 +383,7 @@ func TestLoadConfig(t *testing.T) {
 	require.Equal(t, "content_differs", cfg.WriteOnce.Notification)
 
 	// Defaults
-	defaultJSON := `{"bucket": "b", "data_dir": "/tmp/d"}`
+	defaultJSON := `{"bucket": "b", "data_dir": "/tmp/d", "credentials": [{"username": "", "password": ""}]}`
 	defaultPath := dir + "/defaults.json"
 	os.WriteFile(defaultPath, []byte(defaultJSON), 0644)
 	cfg, err = LoadConfig(defaultPath)
@@ -395,21 +400,35 @@ func TestLoadConfig(t *testing.T) {
 	_, err = LoadConfig(badPath)
 	require.NotNil(t, err)
 
+	cred := `"credentials": [{"username": "", "password": ""}]`
+
 	// Missing bucket
 	noBucketPath := dir + "/nobucket.json"
-	os.WriteFile(noBucketPath, []byte(`{"data_dir": "/tmp"}`), 0644)
+	os.WriteFile(noBucketPath, []byte(`{"data_dir": "/tmp", `+cred+`}`), 0644)
 	_, err = LoadConfig(noBucketPath)
 	require.NotNil(t, err)
 
 	// Missing data_dir
 	noDirPath := dir + "/nodir.json"
-	os.WriteFile(noDirPath, []byte(`{"bucket": "b"}`), 0644)
+	os.WriteFile(noDirPath, []byte(`{"bucket": "b", `+cred+`}`), 0644)
 	_, err = LoadConfig(noDirPath)
+	require.NotNil(t, err)
+
+	// No credentials
+	noCredPath := dir + "/nocred.json"
+	os.WriteFile(noCredPath, []byte(`{"bucket": "b", "data_dir": "/tmp"}`), 0644)
+	_, err = LoadConfig(noCredPath)
+	require.NotNil(t, err)
+
+	// Mismatched credential (username set, password empty)
+	badCredPath := dir + "/badcred.json"
+	os.WriteFile(badCredPath, []byte(`{"bucket": "b", "data_dir": "/tmp", "credentials": [{"username": "admin", "password": ""}]}`), 0644)
+	_, err = LoadConfig(badCredPath)
 	require.NotNil(t, err)
 
 	// write_once defaults
 	woDefaultPath := dir + "/wo_default.json"
-	os.WriteFile(woDefaultPath, []byte(`{"bucket": "b", "data_dir": "/tmp"}`), 0644)
+	os.WriteFile(woDefaultPath, []byte(`{"bucket": "b", "data_dir": "/tmp", `+cred+`}`), 0644)
 	cfg, err = LoadConfig(woDefaultPath)
 	require.Nil(t, err)
 	require.Equal(t, "allow", cfg.WriteOnce.Action)
@@ -417,13 +436,13 @@ func TestLoadConfig(t *testing.T) {
 
 	// Invalid write_once.action
 	woInvalidAction := dir + "/wo_bad_action.json"
-	os.WriteFile(woInvalidAction, []byte(`{"bucket": "b", "data_dir": "/tmp", "write_once": {"action": "invalid"}}`), 0644)
+	os.WriteFile(woInvalidAction, []byte(`{"bucket": "b", "data_dir": "/tmp", "write_once": {"action": "invalid"}, `+cred+`}`), 0644)
 	_, err = LoadConfig(woInvalidAction)
 	require.NotNil(t, err)
 
 	// Invalid write_once.notification
 	woInvalidNotif := dir + "/wo_bad_notif.json"
-	os.WriteFile(woInvalidNotif, []byte(`{"bucket": "b", "data_dir": "/tmp", "write_once": {"action": "deny", "notification": "invalid"}}`), 0644)
+	os.WriteFile(woInvalidNotif, []byte(`{"bucket": "b", "data_dir": "/tmp", "write_once": {"action": "deny", "notification": "invalid"}, `+cred+`}`), 0644)
 	_, err = LoadConfig(woInvalidNotif)
 	require.NotNil(t, err)
 }

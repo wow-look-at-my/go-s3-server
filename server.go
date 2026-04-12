@@ -36,6 +36,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	if err := authenticate(r, s.config); err != nil {
+		log.Printf("auth: %v", err)
+		authFailuresTotal.Inc()
+		route = "Auth"
+		writeS3Error(rec, 403, "AccessDenied", "Access Denied")
+		return
+	}
+
 	// Parse path: /{bucket}/{key...} or /{bucket}
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	parts := strings.SplitN(path, "/", 2)

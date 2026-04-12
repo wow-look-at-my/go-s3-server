@@ -14,7 +14,9 @@ Do NOT use `go build`, `go test`, or any bare `go` commands. Always use `go-tool
 
 - `main.go` — CLI entry point (cobra)
 - `config.go` — JSON config loading and validation
-- `server.go` — HTTP router, bucket dispatch
+- `auth.go` — HTTP Basic Auth
+- `auth_test.go` — Auth tests
+- `server.go` — HTTP router, auth gate, bucket dispatch
 - `handlers.go` — S3 API handlers (GetObject, PutObject, ListObjectsV2)
 - `storage.go` — Filesystem storage with two-level key sharding
 - `storage_unix.go` / `storage_windows.go` — Platform-specific file locking and xattr metadata
@@ -30,4 +32,5 @@ Do NOT use `go build`, `go test`, or any bare `go` commands. Always use `go-tool
 - Object metadata is stored in filesystem extended attributes (xattr on Unix, ADS on Windows).
 - Storage keys are sharded: `prefix/v1aabbccdd` → `prefix/v1/aa/bbccdd`.
 - `write_once` config is an object: `{"action": "allow"|"deny", "notification": "never"|"always"|"content_differs"}`. Defaults: `action=allow`, `notification=never`.
-- No built-in authentication — use a reverse proxy (e.g. traefik) for auth.
+- HTTP Basic Auth with `username`/`password` credentials. Set both to empty to disable auth.
+- `credentials` config is required (at least one entry). Each entry needs both `username` and `password` set, or both empty.

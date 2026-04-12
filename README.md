@@ -5,6 +5,7 @@ Minimal S3-compatible server backed by the local filesystem. Designed as a share
 ## Features
 
 - **S3 API subset** — `GetObject`, `PutObject`, `ListObjectsV2`
+- **HTTP Basic Auth** — multiple users, or disable with empty credentials
 - **Write-once mode** — deny overwriting existing keys with configurable conflict notification (ideal for content-addressable caches)
 - **Sharded storage** — keys are automatically split into a two-level directory tree to avoid huge flat directories
 - **Multi-arch Docker image** — `linux/amd64` and `linux/arm64` published to `ghcr.io/wow-look-at-my/go-s3-server`
@@ -18,7 +19,11 @@ Create a JSON config file:
   "listen": ":9000",
   "bucket": "my-cache",
   "data_dir": "/var/data/s3",
-  "write_once": {"action": "deny", "notification": "content_differs"}
+  "write_once": {"action": "deny", "notification": "content_differs"},
+  "credentials": [
+    {"username": "alice", "password": "secret1"},
+    {"username": "bob", "password": "secret2"}
+  ]
 }
 ```
 
@@ -47,6 +52,7 @@ All flags except `--config` override the corresponding config file value.
 | `bucket` | string | — | yes | S3 bucket name to serve |
 | `data_dir` | string | — | yes | Directory to store objects |
 | `write_once` | object | `{"action":"allow"}` | no | Write-once behavior (see below) |
+| `credentials` | array | — | yes | At least one `username`/`password` pair |
 
 ### `write_once` options
 
@@ -61,17 +67,17 @@ All flags except `--config` override the corresponding config file value.
 
 ## Authentication
 
-The server has no built-in authentication. Use a reverse proxy (e.g. traefik) in front of it to handle auth.
+HTTP Basic Auth. Configure one or more users in the `credentials` array:
 
 ```bash
-# PUT an object
-curl -X PUT --data-binary @file.bin http://localhost:9000/my-cache/path/to/key
+curl -u alice:secret1 -X PUT --data-binary @file.bin http://localhost:9000/my-cache/path/to/key
+curl -u alice:secret1 http://localhost:9000/my-cache/path/to/key
+```
 
-# GET an object
-curl http://localhost:9000/my-cache/path/to/key
+To disable auth (e.g. behind a reverse proxy that handles it), set empty credentials:
 
-# List objects
-curl 'http://localhost:9000/my-cache?list-type=2&prefix=path/'
+```json
+"credentials": [{"username": "", "password": ""}]
 ```
 
 ## Docker

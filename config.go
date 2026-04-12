@@ -6,11 +6,6 @@ import (
 	"os"
 )
 
-type Credential struct {
-	AccessKey string `json:"access_key"`
-	SecretKey string `json:"secret_key"`
-}
-
 type WriteOnceConfig struct {
 	Action       string `json:"action"`       // "allow" or "deny"
 	Notification string `json:"notification"` // "never", "always", "content_differs"
@@ -20,10 +15,8 @@ type Config struct {
 	Listen        string          `json:"listen"`
 	MetricsListen string          `json:"metrics_listen"`
 	Bucket        string          `json:"bucket"`
-	Region        string          `json:"region"`
 	DataDir       string          `json:"data_dir"`
 	WriteOnce     WriteOnceConfig `json:"write_once"`
-	Credentials   []Credential    `json:"credentials"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -37,9 +30,6 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Listen == "" {
 		cfg.Listen = ":9000"
-	}
-	if cfg.Region == "" {
-		cfg.Region = "us-east-1"
 	}
 	if cfg.WriteOnce.Action == "" {
 		cfg.WriteOnce.Action = "allow"
@@ -63,22 +53,5 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.DataDir == "" {
 		return nil, fmt.Errorf("config: data_dir is required")
 	}
-	if len(cfg.Credentials) == 0 {
-		return nil, fmt.Errorf("config: at least one credential is required")
-	}
-	for i, c := range cfg.Credentials {
-		if c.AccessKey == "" || c.SecretKey == "" {
-			return nil, fmt.Errorf("config: credential %d: access_key and secret_key are required", i)
-		}
-	}
 	return &cfg, nil
-}
-
-func (cfg *Config) FindCredential(accessKey string) *Credential {
-	for i := range cfg.Credentials {
-		if cfg.Credentials[i].AccessKey == accessKey {
-			return &cfg.Credentials[i]
-		}
-	}
-	return nil
 }

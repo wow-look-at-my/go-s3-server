@@ -1,8 +1,6 @@
 {
   "listen": "127.0.0.1:9001",
   "bucket": "test-cache",
-  "region": "us-east-1",
   "data_dir": "/tmp/s3-data-writeonce",
-  "write_once": {"action": "deny", "notification": "content_differs"},
-  "credentials": [{"access_key": "test-key-id", "secret_key": "test-secret-key"}]
+  "write_once": {"action": "deny", "notification": "content_differs"}
 }

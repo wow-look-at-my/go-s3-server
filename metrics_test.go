@@ -31,5 +31,4 @@ func TestMetricsServer(t *testing.T) {
 	require.Nil(t, err)
 	assert.Contains(t, string(body), "s3_http_requests_total")
 	assert.Contains(t, string(body), "s3_storage_operations_total")
-	assert.Contains(t, string(body), "s3_auth_failures_total")
 }

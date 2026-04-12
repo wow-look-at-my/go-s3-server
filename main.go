@@ -20,7 +20,6 @@ func init() {
 	rootCmd.MarkFlagRequired("config")
 	rootCmd.Flags().String("listen", "", "override listen address (e.g. :9000)")
 	rootCmd.Flags().String("bucket", "", "override bucket name")
-	rootCmd.Flags().String("region", "", "override region")
 	rootCmd.Flags().String("data-dir", "", "override data directory")
 	rootCmd.Flags().String("metrics-listen", "", "address for Prometheus metrics server (e.g. :9090)")
 }
@@ -37,9 +36,6 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 	if v, _ := cmd.Flags().GetString("bucket"); v != "" {
 		cfg.Bucket = v
-	}
-	if v, _ := cmd.Flags().GetString("region"); v != "" {
-		cfg.Region = v
 	}
 	if v, _ := cmd.Flags().GetString("data-dir"); v != "" {
 		cfg.DataDir = v
@@ -61,8 +57,8 @@ func run(cmd *cobra.Command, args []string) error {
 		log.Printf("metrics server listening on %s", cfg.MetricsListen)
 	}
 
-	log.Printf("listening on %s bucket=%s region=%s data_dir=%s write_once.action=%s write_once.notification=%s",
-		cfg.Listen, cfg.Bucket, cfg.Region, cfg.DataDir, cfg.WriteOnce.Action, cfg.WriteOnce.Notification)
+	log.Printf("listening on %s bucket=%s data_dir=%s write_once.action=%s write_once.notification=%s",
+		cfg.Listen, cfg.Bucket, cfg.DataDir, cfg.WriteOnce.Action, cfg.WriteOnce.Notification)
 
 	return http.ListenAndServe(cfg.Listen, srv)
 }

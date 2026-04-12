@@ -40,7 +40,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("auth: %v", err)
 		authFailuresTotal.Inc()
 		route = "Auth"
-		writeS3Error(rec, 403, "AccessDenied", "Access Denied")
+		writeAPIError(rec, 403, "AccessDenied", "Access Denied")
 		return
 	}
 
@@ -51,7 +51,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if bucket != s.config.Bucket {
 		route = "NoSuchBucket"
-		writeS3Error(rec, 404, "NoSuchBucket", "The specified bucket does not exist")
+		writeAPIError(rec, 404, "NoSuchBucket", "The specified bucket does not exist")
 		return
 	}
 
@@ -71,6 +71,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		route = "PutObject"
 		handlePutObject(rec, r, s.storage, key)
 	default:
-		writeS3Error(rec, 405, "MethodNotAllowed", "Method not allowed")
+		writeAPIError(rec, 405, "MethodNotAllowed", "Method not allowed")
 	}
 }

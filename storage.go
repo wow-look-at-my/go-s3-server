@@ -91,7 +91,7 @@ func isKeySafe(key string) bool {
 
 const hashedPrefix = "__hashed__"
 
-// keyToPath converts an S3 key to a sharded filesystem path.
+// keyToPath converts a key to a sharded filesystem path.
 // Safe keys use direct sharding:
 //
 //	go-buildcache/v1aabbccdd11223344 → {dataDir}/go-buildcache/v1/aa/bbccdd11223344
@@ -122,7 +122,7 @@ func (s *Storage) shardPath(base, key string) string {
 	}
 }
 
-// pathToKey reverses the sharding to reconstruct the original S3 key.
+// pathToKey reverses the sharding to reconstruct the original key.
 // For hashed keys (under __hashed__/), the original key is read from xattr.
 func (s *Storage) pathToKey(path string) string {
 	rel, _ := filepath.Rel(s.dataDir, path)

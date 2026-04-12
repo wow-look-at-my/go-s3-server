@@ -11,7 +11,7 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "go-s3-server",
-	Short: "Minimal S3-compatible server",
+	Short: "Minimal cache server",
 	RunE:  run,
 }
 

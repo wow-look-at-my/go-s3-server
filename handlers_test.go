@@ -126,10 +126,10 @@ func TestGetObjectNotFound(t *testing.T) {
 
 	require.Equal(t, 404, resp.StatusCode)
 
-	var s3err S3Error
-	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&s3err))
+	var apiErr APIError
+	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&apiErr))
 
-	require.Equal(t, "NoSuchKey", s3err.Code)
+	require.Equal(t, "NoSuchKey", apiErr.Code)
 
 }
 

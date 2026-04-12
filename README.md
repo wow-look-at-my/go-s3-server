@@ -1,10 +1,10 @@
 # go-s3-server
 
-Minimal S3-compatible server backed by the local filesystem. Designed as a shared build cache for [go-toolchain](https://github.com/wow-look-at-my/go-toolchain).
+Minimal cache server backed by the local filesystem. Designed as a shared build cache for [go-toolchain](https://github.com/wow-look-at-my/go-toolchain).
 
 ## Features
 
-- **S3 API subset** — `GetObject`, `PutObject`, `ListObjectsV2`
+- **API subset** — `GetObject`, `PutObject`, `ListObjectsV2`
 - **HTTP Basic Auth** authentication
 - **Write-once mode** — deny overwriting existing keys with configurable conflict notification (ideal for content-addressable caches)
 - **Sharded storage** — keys are automatically split into a two-level directory tree to avoid huge flat directories
@@ -51,7 +51,7 @@ All flags except `--config` override the corresponding config file value.
 | Field | Type | Default | Required | Description |
 |-------|------|---------|----------|-------------|
 | `listen` | string | `:9000` | no | Address to listen on |
-| `bucket` | string | — | yes | S3 bucket name to serve |
+| `bucket` | string | — | yes | Bucket name to serve |
 | `data_dir` | string | — | yes | Directory to store objects |
 | `write_once` | object | `{"action":"allow"}` | no | Write-once behavior (see below) |
 | `credentials` | array | — | yes | At least one `access_key`/`secret_key` pair (used as Basic Auth username/password) |

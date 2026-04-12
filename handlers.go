@@ -20,26 +20,26 @@ type ListBucketResult struct {
 	Prefix                string     `xml:"Prefix"`
 	MaxKeys               int        `xml:"MaxKeys"`
 	IsTruncated           bool       `xml:"IsTruncated"`
-	Contents              []S3Object `xml:"Contents"`
+	Contents              []Object `xml:"Contents"`
 	NextContinuationToken string     `xml:"NextContinuationToken,omitempty"`
 }
 
-type S3Object struct {
+type Object struct {
 	Key          string `xml:"Key"`
 	LastModified string `xml:"LastModified"`
 	Size         int64  `xml:"Size"`
 }
 
-type S3Error struct {
+type APIError struct {
 	XMLName xml.Name `xml:"Error"`
 	Code    string   `xml:"Code"`
 	Message string   `xml:"Message"`
 }
 
-func writeS3Error(w http.ResponseWriter, httpStatus int, code, message string) {
+func writeAPIError(w http.ResponseWriter, httpStatus int, code, message string) {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(httpStatus)
-	xml.NewEncoder(w).Encode(S3Error{Code: code, Message: message})
+	xml.NewEncoder(w).Encode(APIError{Code: code, Message: message})
 }
 
 func handleListObjectsV2(w http.ResponseWriter, r *http.Request, storage *Storage, bucket string) {
@@ -57,7 +57,7 @@ func handleListObjectsV2(w http.ResponseWriter, r *http.Request, storage *Storag
 
 	result, err := storage.List(prefix, maxKeys, continuationToken)
 	if err != nil {
-		writeS3Error(w, 500, "InternalError", err.Error())
+		writeAPIError(w, 500, "InternalError", err.Error())
 		return
 	}
 
@@ -72,7 +72,7 @@ func handleListObjectsV2(w http.ResponseWriter, r *http.Request, storage *Storag
 		xmlResult.NextContinuationToken = result.NextContinuationToken
 	}
 	for _, obj := range result.Objects {
-		xmlResult.Contents = append(xmlResult.Contents, S3Object{
+		xmlResult.Contents = append(xmlResult.Contents, Object{
 			Key:          obj.Key,
 			LastModified: obj.LastModified.UTC().Format(time.RFC3339Nano),
 			Size:         obj.Size,
@@ -89,10 +89,10 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	data, meta, err := storage.Get(key)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			writeS3Error(w, 404, "NoSuchKey", fmt.Sprintf("The specified key does not exist: %s", key))
+			writeAPIError(w, 404, "NoSuchKey", fmt.Sprintf("The specified key does not exist: %s", key))
 			return
 		}
-		writeS3Error(w, 500, "InternalError", err.Error())
+		writeAPIError(w, 500, "InternalError", err.Error())
 		return
 	}
 
@@ -113,7 +113,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string) {
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeS3Error(w, 500, "InternalError", "failed to read body")
+		writeAPIError(w, 500, "InternalError", "failed to read body")
 		return
 	}
 
@@ -128,10 +128,10 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 
 	if err := storage.Put(key, data, meta); err != nil {
 		if errors.Is(err, ErrWriteOnceConflict) || errors.Is(err, ErrWriteOnceDuplicate) {
-			writeS3Error(w, 409, "ConflictException", err.Error())
+			writeAPIError(w, 409, "ConflictException", err.Error())
 			return
 		}
-		writeS3Error(w, 500, "InternalError", err.Error())
+		writeAPIError(w, 500, "InternalError", err.Error())
 		return
 	}
 

@@ -25,6 +25,15 @@ func putObject(t *testing.T, ts *http.Client, url, key string, data []byte, meta
 	require.Equal(t, 200, resp.StatusCode)
 }
 
+func doBatchGet(client *http.Client, url string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequest("GET", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return client.Do(req)
+}
+
 func parseBatchResponse(t *testing.T, body io.Reader) (batchGetManifest, map[string][]byte) {
 	t.Helper()
 	tr := tar.NewReader(body)
@@ -65,7 +74,7 @@ func TestBatchGet_Basic(t *testing.T) {
 	reqBody, _ := json.Marshal(batchGetRequest{
 		Keys: []string{"cache/v1aaa", "cache/v1ccc"},
 	})
-	resp, err := client.Post(ts.URL+"/testbucket/_batch/get", "application/json", bytes.NewReader(reqBody))
+	resp, err := doBatchGet(client, ts.URL+"/testbucket/_batch/get", reqBody)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, 200, resp.StatusCode)
@@ -93,7 +102,7 @@ func TestBatchGet_MissingKeys(t *testing.T) {
 	reqBody, _ := json.Marshal(batchGetRequest{
 		Keys: []string{"cache/v1exists", "cache/v1missing"},
 	})
-	resp, err := client.Post(ts.URL+"/testbucket/_batch/get", "application/json", bytes.NewReader(reqBody))
+	resp, err := doBatchGet(client, ts.URL+"/testbucket/_batch/get", reqBody)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, 200, resp.StatusCode)
@@ -111,7 +120,7 @@ func TestBatchGet_EmptyRequest(t *testing.T) {
 	client := ts.Client()
 
 	reqBody, _ := json.Marshal(batchGetRequest{Keys: []string{}})
-	resp, err := client.Post(ts.URL+"/testbucket/_batch/get", "application/json", bytes.NewReader(reqBody))
+	resp, err := doBatchGet(client, ts.URL+"/testbucket/_batch/get", reqBody)
 	require.NoError(t, err)
 	resp.Body.Close()
 	assert.Equal(t, 400, resp.StatusCode)
@@ -134,7 +143,7 @@ func TestBatchGet_Prefetch(t *testing.T) {
 		Keys:     []string{"cache/v1one"},
 		Prefetch: true,
 	})
-	resp, err := client.Post(ts.URL+"/testbucket/_batch/get", "application/json", bytes.NewReader(reqBody))
+	resp, err := doBatchGet(client, ts.URL+"/testbucket/_batch/get", reqBody)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, 200, resp.StatusCode)

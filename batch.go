@@ -61,7 +61,7 @@ const maxPrefetchEntries = 200
 //	manifest.json                    — index of all entries with metadata
 //	data/<key>                       — raw file content for each entry
 func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage) {
-	if r.Method != "POST" {
+	if r.Method != "GET" {
 		writeS3Error(w, 405, "MethodNotAllowed", "Method not allowed")
 		return
 	}

@@ -114,7 +114,13 @@ func parseAuthHeader(header string) (*authInfo, error) {
 
 func buildCanonicalHeaders(r *http.Request, signedHeaders []string) (canonicalHeaders, signedHeaderStr string) {
 	headerMap := make(map[string]string)
-	headerMap["host"] = r.Host
+	// Use X-Forwarded-Host if present (set by reverse proxies), otherwise r.Host.
+	// The client signs with the external endpoint, but behind a proxy r.Host is internal.
+	host := r.Header.Get("X-Forwarded-Host")
+	if host == "" {
+		host = r.Host
+	}
+	headerMap["host"] = host
 	for k, vals := range r.Header {
 		headerMap[strings.ToLower(k)] = strings.TrimSpace(vals[0])
 	}

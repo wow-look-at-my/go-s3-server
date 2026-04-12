@@ -80,6 +80,21 @@ To disable auth (e.g. behind a reverse proxy that handles it), set empty credent
 "credentials": [{"username": "", "password": ""}]
 ```
 
+### Environment variable references
+
+Any string config value can reference an environment variable instead of being hardcoded:
+
+```json
+"credentials": [
+  {
+    "username": {"type": "envvar", "name": "S3_USERNAME"},
+    "password": {"type": "envvar", "name": "S3_PASSWORD"}
+  }
+]
+```
+
+The env var is resolved at config load time.
+
 ## Docker
 
 ```

@@ -10,7 +10,7 @@ import (
 
 func authenticate(r *http.Request, cfg *Config) error {
 	for _, c := range cfg.Credentials {
-		if c.Username == "" && c.Password == "" {
+		if c.Username.Value == "" && c.Password.Value == "" {
 			return nil
 		}
 	}
@@ -35,8 +35,8 @@ func authenticate(r *http.Request, cfg *Config) error {
 	}
 
 	for i := range cfg.Credentials {
-		if subtle.ConstantTimeCompare([]byte(cfg.Credentials[i].Username), []byte(parts[0])) == 1 &&
-			subtle.ConstantTimeCompare([]byte(cfg.Credentials[i].Password), []byte(parts[1])) == 1 {
+		if subtle.ConstantTimeCompare([]byte(cfg.Credentials[i].Username.Value), []byte(parts[0])) == 1 &&
+			subtle.ConstantTimeCompare([]byte(cfg.Credentials[i].Password.Value), []byte(parts[1])) == 1 {
 			return nil
 		}
 	}

@@ -23,7 +23,7 @@ func testSetup(t *testing.T) *httptest.Server {
 		Bucket:    "testbucket",
 		DataDir:   dir,
 		WriteOnce:   WriteOnceConfig{Action: "allow"},
-		Credentials: []Credential{{Username: "", Password: ""}},
+		Credentials: []Credential{{Username: ConfigString{Value: ""}, Password: ConfigString{Value: ""}}},
 	}
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
@@ -47,7 +47,7 @@ func testSetupWriteOnce(t *testing.T) *httptest.Server {
 		Bucket:    "testbucket",
 		DataDir:   dir,
 		WriteOnce:   WriteOnceConfig{Action: "deny", Notification: "content_differs"},
-		Credentials: []Credential{{Username: "", Password: ""}},
+		Credentials: []Credential{{Username: ConfigString{Value: ""}, Password: ConfigString{Value: ""}}},
 	}
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
@@ -236,7 +236,7 @@ func testSetupWriteOnceAlways(t *testing.T) *httptest.Server {
 		Bucket:    "testbucket",
 		DataDir:   dir,
 		WriteOnce:   WriteOnceConfig{Action: "deny", Notification: "always"},
-		Credentials: []Credential{{Username: "", Password: ""}},
+		Credentials: []Credential{{Username: ConfigString{Value: ""}, Password: ConfigString{Value: ""}}},
 	}
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
@@ -259,7 +259,7 @@ func testSetupWriteOnceNever(t *testing.T) *httptest.Server {
 		Bucket:    "testbucket",
 		DataDir:   dir,
 		WriteOnce:   WriteOnceConfig{Action: "deny", Notification: "never"},
-		Credentials: []Credential{{Username: "", Password: ""}},
+		Credentials: []Credential{{Username: ConfigString{Value: ""}, Password: ConfigString{Value: ""}}},
 	}
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
@@ -444,6 +444,28 @@ func TestLoadConfig(t *testing.T) {
 	woInvalidNotif := dir + "/wo_bad_notif.json"
 	os.WriteFile(woInvalidNotif, []byte(`{"bucket": "b", "data_dir": "/tmp", "write_once": {"action": "deny", "notification": "invalid"}, `+cred+`}`), 0644)
 	_, err = LoadConfig(woInvalidNotif)
+	require.NotNil(t, err)
+
+	// Envvar credential
+	t.Setenv("TEST_CFG_USER", "myuser")
+	t.Setenv("TEST_CFG_PASS", "mypass")
+	envCredPath := dir + "/envcred.json"
+	os.WriteFile(envCredPath, []byte(`{"bucket": "b", "data_dir": "/tmp", "credentials": [{"username": {"type": "envvar", "name": "TEST_CFG_USER"}, "password": {"type": "envvar", "name": "TEST_CFG_PASS"}}]}`), 0644)
+	cfg, err = LoadConfig(envCredPath)
+	require.Nil(t, err)
+	require.Equal(t, "myuser", cfg.Credentials[0].Username.Value)
+	require.Equal(t, "mypass", cfg.Credentials[0].Password.Value)
+
+	// Invalid envvar type
+	badEnvPath := dir + "/badenv.json"
+	os.WriteFile(badEnvPath, []byte(`{"bucket": "b", "data_dir": "/tmp", "credentials": [{"username": {"type": "notenvvar", "name": "X"}, "password": "p"}]}`), 0644)
+	_, err = LoadConfig(badEnvPath)
+	require.NotNil(t, err)
+
+	// Empty envvar name
+	emptyEnvPath := dir + "/emptyenv.json"
+	os.WriteFile(emptyEnvPath, []byte(`{"bucket": "b", "data_dir": "/tmp", "credentials": [{"username": {"type": "envvar", "name": ""}, "password": "p"}]}`), 0644)
+	_, err = LoadConfig(emptyEnvPath)
 	require.NotNil(t, err)
 }
 

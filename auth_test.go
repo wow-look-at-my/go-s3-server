@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/wow-look-at-my/testify/require"
@@ -21,8 +22,8 @@ func testSetupWithAuth(t *testing.T) (*httptest.Server, *Config) {
 		DataDir:   dir,
 		WriteOnce: WriteOnceConfig{Action: "allow"},
 		Credentials: []Credential{
-			{Username: "alice", Password: "password1"},
-			{Username: "bob", Password: "password2"},
+			{Username: ConfigString{Value: "alice"}, Password: ConfigString{Value: "password1"}},
+			{Username: ConfigString{Value: "bob"}, Password: ConfigString{Value: "password2"}},
 		},
 	}
 
@@ -122,6 +123,43 @@ func TestBasicAuthMalformed(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestEnvVarCredentials(t *testing.T) {
+	t.Setenv("TEST_S3_USER", "envuser")
+	t.Setenv("TEST_S3_PASS", "envpass")
+
+	dir := t.TempDir()
+	cfgJSON := `{
+		"bucket": "testbucket",
+		"data_dir": "` + dir + `",
+		"credentials": [{"username": {"type": "envvar", "name": "TEST_S3_USER"}, "password": {"type": "envvar", "name": "TEST_S3_PASS"}}]
+	}`
+	cfgPath := dir + "/config.json"
+	os.WriteFile(cfgPath, []byte(cfgJSON), 0644)
+
+	cfg, err := LoadConfig(cfgPath)
+	require.Nil(t, err)
+	require.Equal(t, "envuser", cfg.Credentials[0].Username.Value)
+	require.Equal(t, "envpass", cfg.Credentials[0].Password.Value)
+
+	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
+	require.Nil(t, err)
+	t.Cleanup(func() { storage.Close() })
+
+	srv := NewServer(cfg, storage)
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	// Valid creds work
+	resp := doAuthRequest(t, ts, "envuser", "envpass", "PUT", "/testbucket/env/v1test000000000001", []byte("data"))
+	require.Equal(t, 200, resp.StatusCode)
+	resp.Body.Close()
+
+	// Wrong creds fail
+	resp = doAuthRequest(t, ts, "envuser", "wrong", "GET", "/testbucket/env/v1test000000000001", nil)
+	require.Equal(t, 403, resp.StatusCode)
+	resp.Body.Close()
+}
+
 func TestNoAuthWithEmptyCredentials(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{
@@ -129,7 +167,7 @@ func TestNoAuthWithEmptyCredentials(t *testing.T) {
 		Bucket:      "testbucket",
 		DataDir:     dir,
 		WriteOnce:   WriteOnceConfig{Action: "allow"},
-		Credentials: []Credential{{Username: "", Password: ""}},
+		Credentials: []Credential{{Username: ConfigString{Value: ""}, Password: ConfigString{Value: ""}}},
 	}
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)

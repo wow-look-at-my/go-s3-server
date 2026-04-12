@@ -34,3 +34,4 @@ Do NOT use `go build`, `go test`, or any bare `go` commands. Always use `go-tool
 - `write_once` config is an object: `{"action": "allow"|"deny", "notification": "never"|"always"|"content_differs"}`. Defaults: `action=allow`, `notification=never`.
 - HTTP Basic Auth with `username`/`password` credentials. Set both to empty to disable auth.
 - `credentials` config is required (at least one entry). Each entry needs both `username` and `password` set, or both empty.
+- String config values support env var references: `{"type": "envvar", "name": "VAR_NAME"}` resolves to `os.Getenv("VAR_NAME")` at load time. Used via the `ConfigString` type.

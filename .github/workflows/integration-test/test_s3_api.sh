@@ -47,7 +47,7 @@ for i in 0 1 2; do
 done
 LIST_BODY=$(curl -sf -u "$AUTH" \
   "$ENDPOINT_NORMAL/$BUCKET?list-type=2&prefix=listtest/")
-LIST_COUNT=$(echo "$LIST_BODY" | grep -c '<Key>')
+LIST_COUNT=$(echo "$LIST_BODY" | grep -o '<Key>' | wc -l)
 if [ "$LIST_COUNT" = "3" ]; then
   pass "ListObjectsV2 returns 3 objects"
 else
@@ -61,7 +61,7 @@ for i in $(seq 0 4); do
 done
 PAGE1=$(curl -sf -u "$AUTH" \
   "$ENDPOINT_NORMAL/$BUCKET?list-type=2&prefix=pagtest/&max-keys=2")
-PAGE1_COUNT=$(echo "$PAGE1" | grep -c '<Key>')
+PAGE1_COUNT=$(echo "$PAGE1" | grep -o '<Key>' | wc -l)
 PAGE1_TRUNCATED=$(echo "$PAGE1" | grep -o '<IsTruncated>[^<]*</IsTruncated>' | grep -o 'true\|false')
 if [ "$PAGE1_COUNT" = "2" ] && [ "$PAGE1_TRUNCATED" = "true" ]; then
   pass "ListObjectsV2 pagination page 1"

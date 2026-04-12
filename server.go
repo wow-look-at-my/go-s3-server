@@ -36,7 +36,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	if err := verifySignature(r, s.config); err != nil {
+	if err := authenticate(r, s.config); err != nil {
 		log.Printf("auth: %v", err)
 		authFailuresTotal.Inc()
 		route = "Auth"

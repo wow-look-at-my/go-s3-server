@@ -6,9 +6,52 @@ import (
 	"os"
 )
 
+// ConfigString is a string that can be specified as a literal or as an
+// environment variable reference: {"type": "envvar", "name": "VAR_NAME"}.
+type ConfigString struct {
+	Value  string // resolved value
+	EnvVar string // non-empty if sourced from an env var
+}
+
+func (cs *ConfigString) UnmarshalJSON(data []byte) error {
+	// Try plain string first.
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		cs.Value = s
+		return nil
+	}
+
+	// Try envvar object.
+	var obj struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return fmt.Errorf("config value must be a string or {\"type\": \"envvar\", \"name\": \"...\"}")
+	}
+	if obj.Type != "envvar" {
+		return fmt.Errorf("config value object type must be \"envvar\", got %q", obj.Type)
+	}
+	if obj.Name == "" {
+		return fmt.Errorf("config envvar name must not be empty")
+	}
+	cs.EnvVar = obj.Name
+	cs.Value = os.Getenv(obj.Name)
+	return nil
+}
+
+func (cs ConfigString) MarshalJSON() ([]byte, error) {
+	return json.Marshal(cs.Value)
+}
+
+// String returns the resolved value.
+func (cs ConfigString) String() string {
+	return cs.Value
+}
+
 type Credential struct {
-	AccessKey string `json:"access_key"`
-	SecretKey string `json:"secret_key"`
+	Username ConfigString `json:"username"`
+	Password ConfigString `json:"password"`
 }
 
 type WriteOnceConfig struct {
@@ -20,7 +63,6 @@ type Config struct {
 	Listen        string          `json:"listen"`
 	MetricsListen string          `json:"metrics_listen"`
 	Bucket        string          `json:"bucket"`
-	Region        string          `json:"region"`
 	DataDir       string          `json:"data_dir"`
 	WriteOnce     WriteOnceConfig `json:"write_once"`
 	Credentials   []Credential    `json:"credentials"`
@@ -37,9 +79,6 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Listen == "" {
 		cfg.Listen = ":9000"
-	}
-	if cfg.Region == "" {
-		cfg.Region = "us-east-1"
 	}
 	if cfg.WriteOnce.Action == "" {
 		cfg.WriteOnce.Action = "allow"
@@ -64,21 +103,12 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: data_dir is required")
 	}
 	if len(cfg.Credentials) == 0 {
-		return nil, fmt.Errorf("config: at least one credential is required")
+		return nil, fmt.Errorf("config: at least one credential is required (use empty username/password to disable auth)")
 	}
 	for i, c := range cfg.Credentials {
-		if c.AccessKey == "" || c.SecretKey == "" {
-			return nil, fmt.Errorf("config: credential %d: access_key and secret_key are required", i)
+		if (c.Username.Value == "") != (c.Password.Value == "") {
+			return nil, fmt.Errorf("config: credential %d: username and password must both be set or both be empty", i)
 		}
 	}
 	return &cfg, nil
-}
-
-func (cfg *Config) FindCredential(accessKey string) *Credential {
-	for i := range cfg.Credentials {
-		if cfg.Credentials[i].AccessKey == accessKey {
-			return &cfg.Credentials[i]
-		}
-	}
-	return nil
 }

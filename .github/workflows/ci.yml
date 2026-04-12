@@ -112,10 +112,6 @@ jobs:
 
       - name: Run S3 API integration tests
         run: bash .github/workflows/integration-test/test_s3_api.sh
-        env:
-          AWS_ACCESS_KEY_ID: test-key-id
-          AWS_SECRET_ACCESS_KEY: test-secret-key
-          AWS_DEFAULT_REGION: us-east-1
 
       - name: Show server logs on failure
         if: failure()
@@ -154,7 +150,7 @@ jobs:
         run: |
           mkdir -p /tmp/s3-data
           chmod +x build/go-s3-server_linux_amd64
-          nohup ./build/go-s3-server_linux_amd64 --config .github/workflows/integration-test/s3-config.json > /tmp/s3-server.log 2>&1 &
+          nohup ./build/go-s3-server_linux_amd64 --config .github/workflows/integration-test/s3-config-noauth.json > /tmp/s3-server.log 2>&1 &
           echo $! > /tmp/s3-server.pid
           for i in $(seq 1 30); do
             if curl -so /dev/null http://127.0.0.1:9000/ 2>/dev/null; then echo "Server ready"; break; fi

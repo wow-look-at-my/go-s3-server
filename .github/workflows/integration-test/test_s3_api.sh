@@ -96,9 +96,9 @@ fi
 curl -sf -u "$AUTH" -X PUT --data-binary "metabody" \
   -H "X-Amz-Meta-Outputid: abc123" -H "X-Amz-Meta-Custom: val2" \
   "$ENDPOINT_NORMAL/$BUCKET/metatest/v1meta000000000001" > /dev/null
-META_OUTPUTID=$(curl -sf -u "$AUTH" -I \
-  "$ENDPOINT_NORMAL/$BUCKET/metatest/v1meta000000000001" 2>/dev/null \
-  | grep -i 'x-amz-meta-outputid' | tr -d '\r' | awk '{print $2}')
+META_OUTPUTID=$(curl -sf -u "$AUTH" -D /tmp/test-meta-headers -o /dev/null \
+  "$ENDPOINT_NORMAL/$BUCKET/metatest/v1meta000000000001" \
+  && grep -i 'x-amz-meta-outputid' /tmp/test-meta-headers | tr -d '\r' | awk '{print $2}')
 if [ "$META_OUTPUTID" = "abc123" ]; then
   pass "Metadata roundtrip"
 else

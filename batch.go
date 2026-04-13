@@ -8,8 +8,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"sort"
-	"strings"
 	"time"
 )
 
@@ -107,9 +105,7 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage) {
 		windowStart := minMod.Add(-prefetchWindow)
 		windowEnd := maxMod.Add(prefetchWindow)
 
-		// Scope the scan to the common key prefix.
-		prefix := commonPrefix(req.Keys)
-		prefetched := findByModTime(storage, prefix, windowStart, windowEnd, requestedSet)
+		prefetched := findByModTime(storage, windowStart, windowEnd, requestedSet)
 		entries = append(entries, prefetched...)
 	}
 
@@ -164,78 +160,21 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage) {
 
 // findByModTime scans storage for entries with the given prefix whose
 // modification time falls within [start, end], excluding already-requested keys.
-func findByModTime(storage *Storage, prefix string, start, end time.Time, exclude map[string]bool) []batchEntry {
-	// List all entries with this prefix. The time window filter below does
-	// the actual narrowing — we can't limit the List call because storage
-	// returns entries sorted by key, not by time.
-	result, err := storage.List(prefix, 100000, "")
-	if err != nil {
+func findByModTime(storage *Storage, start, end time.Time, exclude map[string]bool) []batchEntry {
+	if storage.Index == nil {
 		return nil
 	}
 
-	// Collect candidates that fall within the time window.
-	type candidate struct {
-		key     string
-		modTime time.Time
-	}
-	var candidates []candidate
-	mid := start.Add(end.Sub(start) / 2)
-	for _, obj := range result.Objects {
-		if exclude[obj.Key] {
-			continue
-		}
-		if obj.LastModified.Before(start) || obj.LastModified.After(end) {
-			continue
-		}
-		candidates = append(candidates, candidate{key: obj.Key, modTime: obj.LastModified})
-	}
-
-	// Sort by distance from the center of the time window so entries
-	// closest to the requested ones are prioritized.
-	sort.Slice(candidates, func(i, j int) bool {
-		di := candidates[i].modTime.Sub(mid)
-		dj := candidates[j].modTime.Sub(mid)
-		if di < 0 {
-			di = -di
-		}
-		if dj < 0 {
-			dj = -dj
-		}
-		return di < dj
-	})
-
-	if len(candidates) > maxPrefetchEntries {
-		candidates = candidates[:maxPrefetchEntries]
-	}
+	keys := storage.Index.NearbyKeys(start.Unix(), end.Unix(), maxPrefetchEntries, exclude)
 
 	var out []batchEntry
-	for _, c := range candidates {
-		data, meta, err := storage.Get(c.key)
+	for _, key := range keys {
+		data, meta, err := storage.Get(key)
 		if err != nil {
 			continue
 		}
-		out = append(out, batchEntry{key: c.key, data: data, meta: meta, prefetch: true})
+		out = append(out, batchEntry{key: key, data: data, meta: meta, prefetch: true})
 	}
 	return out
 }
 
-// commonPrefix finds the longest common prefix among a set of keys,
-// truncated to the last slash for a clean directory boundary.
-func commonPrefix(keys []string) string {
-	if len(keys) == 0 {
-		return ""
-	}
-	prefix := keys[0]
-	for _, k := range keys[1:] {
-		for !strings.HasPrefix(k, prefix) {
-			prefix = prefix[:len(prefix)-1]
-			if prefix == "" {
-				return ""
-			}
-		}
-	}
-	if idx := strings.LastIndex(prefix, "/"); idx >= 0 {
-		prefix = prefix[:idx+1]
-	}
-	return prefix
-}

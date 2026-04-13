@@ -163,18 +163,3 @@ func TestBatchGet_Prefetch(t *testing.T) {
 	}
 }
 
-func TestCommonPrefix(t *testing.T) {
-	tests := []struct {
-		keys []string
-		want string
-	}{
-		{[]string{"go-buildcache/v1aabb", "go-buildcache/v1ccdd"}, "go-buildcache/"},
-		{[]string{"a/b/c", "a/b/d"}, "a/b/"},
-		{[]string{"abc", "def"}, ""},
-		{[]string{}, ""},
-		{[]string{"only/one"}, "only/"},
-	}
-	for _, tt := range tests {
-		assert.Equal(t, tt.want, commonPrefix(tt.keys))
-	}
-}

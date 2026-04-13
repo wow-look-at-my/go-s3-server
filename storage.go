@@ -24,6 +24,7 @@ type Storage struct {
 	dataDir   string
 	writeOnce WriteOnceConfig
 	lockFile  *os.File
+	Index     *Index // sqlite index for time-range queries; nil if unavailable
 }
 
 type ObjectMeta struct {
@@ -59,11 +60,14 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 		return nil, fmt.Errorf("data directory is locked by another process: %w", err)
 	}
 
-	return &Storage{
+	s := &Storage{
 		dataDir:   dataDir,
 		writeOnce: writeOnce,
 		lockFile:  lockFile,
-	}, nil
+	}
+
+	s.Index = NewIndex(s)
+	return s, nil
 }
 
 func (s *Storage) Close() error {
@@ -232,6 +236,9 @@ func (s *Storage) Put(key string, data []byte, meta map[string]string) (err erro
 	if err := os.Rename(tmpPath, path); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("rename: %w", err)
+	}
+	if s.Index != nil {
+		s.Index.Put(key, int64(len(data)))
 	}
 	return nil
 }

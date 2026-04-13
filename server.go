@@ -64,6 +64,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "GET" && key == "" && r.URL.Query().Get("list-type") == "2":
 		route = "ListObjectsV2"
 		handleListObjectsV2(rec, r, s.storage, bucket)
+	case r.Method == "GET" && key == "_batch/get":
+		route = "BatchGet"
+		handleBatchGet(rec, r, s.storage)
 	case r.Method == "GET" && key != "":
 		route = "GetObject"
 		handleGetObject(rec, r, s.storage, key)

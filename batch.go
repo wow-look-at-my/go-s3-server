@@ -165,32 +165,56 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage) {
 // findByModTime scans storage for entries with the given prefix whose
 // modification time falls within [start, end], excluding already-requested keys.
 func findByModTime(storage *Storage, prefix string, start, end time.Time, exclude map[string]bool) []batchEntry {
-	result, err := storage.List(prefix, maxPrefetchEntries+len(exclude), "")
+	// List all entries with this prefix. The time window filter below does
+	// the actual narrowing — we can't limit the List call because storage
+	// returns entries sorted by key, not by time.
+	result, err := storage.List(prefix, 100000, "")
 	if err != nil {
 		return nil
 	}
 
-	// Sort by modification time to prioritize entries closest to the request window.
-	sort.Slice(result.Objects, func(i, j int) bool {
-		return result.Objects[i].LastModified.Before(result.Objects[j].LastModified)
-	})
-
-	var out []batchEntry
+	// Collect candidates that fall within the time window.
+	type candidate struct {
+		key     string
+		modTime time.Time
+	}
+	var candidates []candidate
+	mid := start.Add(end.Sub(start) / 2)
 	for _, obj := range result.Objects {
-		if len(out) >= maxPrefetchEntries {
-			break
-		}
 		if exclude[obj.Key] {
 			continue
 		}
 		if obj.LastModified.Before(start) || obj.LastModified.After(end) {
 			continue
 		}
-		data, meta, err := storage.Get(obj.Key)
+		candidates = append(candidates, candidate{key: obj.Key, modTime: obj.LastModified})
+	}
+
+	// Sort by distance from the center of the time window so entries
+	// closest to the requested ones are prioritized.
+	sort.Slice(candidates, func(i, j int) bool {
+		di := candidates[i].modTime.Sub(mid)
+		dj := candidates[j].modTime.Sub(mid)
+		if di < 0 {
+			di = -di
+		}
+		if dj < 0 {
+			dj = -dj
+		}
+		return di < dj
+	})
+
+	if len(candidates) > maxPrefetchEntries {
+		candidates = candidates[:maxPrefetchEntries]
+	}
+
+	var out []batchEntry
+	for _, c := range candidates {
+		data, meta, err := storage.Get(c.key)
 		if err != nil {
 			continue
 		}
-		out = append(out, batchEntry{key: obj.Key, data: data, meta: meta, prefetch: true})
+		out = append(out, batchEntry{key: c.key, data: data, meta: meta, prefetch: true})
 	}
 	return out
 }

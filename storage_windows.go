@@ -49,3 +49,26 @@ func getOriginalKey(path string) (string, error) {
 	}
 	return string(data), nil
 }
+
+func setAudit(path string, audit map[string]string) error {
+	if len(audit) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(audit)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path+".audit", data, 0644)
+}
+
+func getAudit(path string) map[string]string {
+	data, err := os.ReadFile(path + ".audit")
+	if err != nil {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil
+	}
+	return m
+}

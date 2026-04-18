@@ -19,11 +19,11 @@ func testSetup(t *testing.T) *httptest.Server {
 	dir := t.TempDir()
 
 	cfg := &Config{
-		Listen:    ":0",
-		Bucket:    "testbucket",
-		DataDir:   dir,
+		Listen:      ":0",
+		Bucket:      "testbucket",
+		DataDir:     dir,
 		WriteOnce:   WriteOnceConfig{Action: "allow"},
-		Credentials: []Credential{{Username: ConfigString{Value: ""}, Password: ConfigString{Value: ""}}},
+		DisableAuth: true,
 	}
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
@@ -43,11 +43,11 @@ func testSetupWriteOnce(t *testing.T) *httptest.Server {
 	dir := t.TempDir()
 
 	cfg := &Config{
-		Listen:    ":0",
-		Bucket:    "testbucket",
-		DataDir:   dir,
+		Listen:      ":0",
+		Bucket:      "testbucket",
+		DataDir:     dir,
 		WriteOnce:   WriteOnceConfig{Action: "deny", Notification: "content_differs"},
-		Credentials: []Credential{{Username: ConfigString{Value: ""}, Password: ConfigString{Value: ""}}},
+		DisableAuth: true,
 	}
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
@@ -232,11 +232,11 @@ func testSetupWriteOnceAlways(t *testing.T) *httptest.Server {
 	dir := t.TempDir()
 
 	cfg := &Config{
-		Listen:    ":0",
-		Bucket:    "testbucket",
-		DataDir:   dir,
+		Listen:      ":0",
+		Bucket:      "testbucket",
+		DataDir:     dir,
 		WriteOnce:   WriteOnceConfig{Action: "deny", Notification: "always"},
-		Credentials: []Credential{{Username: ConfigString{Value: ""}, Password: ConfigString{Value: ""}}},
+		DisableAuth: true,
 	}
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
@@ -255,11 +255,11 @@ func testSetupWriteOnceNever(t *testing.T) *httptest.Server {
 	dir := t.TempDir()
 
 	cfg := &Config{
-		Listen:    ":0",
-		Bucket:    "testbucket",
-		DataDir:   dir,
+		Listen:      ":0",
+		Bucket:      "testbucket",
+		DataDir:     dir,
 		WriteOnce:   WriteOnceConfig{Action: "deny", Notification: "never"},
-		Credentials: []Credential{{Username: ConfigString{Value: ""}, Password: ConfigString{Value: ""}}},
+		DisableAuth: true,
 	}
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
@@ -383,12 +383,13 @@ func TestLoadConfig(t *testing.T) {
 	require.Equal(t, "content_differs", cfg.WriteOnce.Notification)
 
 	// Defaults
-	defaultJSON := `{"bucket": "b", "data_dir": "/tmp/d", "credentials": [{"username": "", "password": ""}]}`
+	defaultJSON := `{"bucket": "b", "data_dir": "/tmp/d", "disable_auth": true}`
 	defaultPath := dir + "/defaults.json"
 	os.WriteFile(defaultPath, []byte(defaultJSON), 0644)
 	cfg, err = LoadConfig(defaultPath)
 	require.Nil(t, err)
 	require.Equal(t, ":9000", cfg.Listen)
+	require.True(t, cfg.DisableAuth)
 
 	// Missing file
 	_, err = LoadConfig(dir + "/nonexistent.json")
@@ -400,7 +401,7 @@ func TestLoadConfig(t *testing.T) {
 	_, err = LoadConfig(badPath)
 	require.NotNil(t, err)
 
-	cred := `"credentials": [{"username": "", "password": ""}]`
+	cred := `"credentials": [{"username": "admin", "password": "secret"}]`
 
 	// Missing bucket
 	noBucketPath := dir + "/nobucket.json"

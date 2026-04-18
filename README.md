@@ -110,7 +110,7 @@ Windows):
 
 | Attribute | Source |
 |-----------|--------|
-| `uploader` | Authenticated username (or `-` when `disable_auth: true`) |
+| `uploader` | Authenticated username (or `<ANON>` when `disable_auth: true`) |
 | `uploaded_at` | Server wall clock at request start (RFC 3339 nano) |
 | `client_ip` | `CF-Connecting-IP` → `X-Real-IP` → first `X-Forwarded-For` → TCP peer |
 | `user_agent` | Request `User-Agent` header |

@@ -69,7 +69,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	route := "Other"
 	ip := clientIP(r)
 	ua := r.UserAgent()
-	username := "-"
+	username := anonymousUser
 	defer func() {
 		duration := time.Since(start)
 		log.Printf("req method=%s path=%s client_ip=%s user=%s user_agent=%q status=%d bytes=%d duration_ms=%d",

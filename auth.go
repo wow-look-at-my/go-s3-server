@@ -10,7 +10,7 @@ import (
 
 // anonymousUser is the username recorded in audit logs when authentication
 // has been explicitly disabled via disable_auth: true.
-const anonymousUser = "-"
+const anonymousUser = "<ANON>"
 
 // authenticate verifies the request's credentials against the configured
 // credentials. On success, it returns the authenticated username (or

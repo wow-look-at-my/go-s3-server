@@ -177,4 +177,3 @@ func findByModTime(storage *Storage, start, end time.Time, exclude map[string]bo
 	}
 	return out
 }
-

@@ -60,6 +60,10 @@ func run(cmd *cobra.Command, args []string) error {
 	log.Printf("listening on %s bucket=%s data_dir=%s write_once.action=%s write_once.notification=%s",
 		cfg.Listen, cfg.Bucket, cfg.DataDir, cfg.WriteOnce.Action, cfg.WriteOnce.Notification)
 
+	if cfg.DisableAuth {
+		log.Printf("WARNING: authentication is DISABLED (disable_auth=true). All requests will be accepted without credentials. Only use this behind a trusted reverse proxy.")
+	}
+
 	return http.ListenAndServe(cfg.Listen, srv)
 }
 

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -16,6 +18,48 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 	return &Server{config: cfg, storage: storage}
 }
 
+// auditInfo captures per-request context that is logged on every request and,
+// on uploads, persisted as extended attributes alongside the stored object.
+type auditInfo struct {
+	Username  string
+	ClientIP  string
+	UserAgent string
+	Timestamp time.Time
+}
+
+type auditKey struct{}
+
+func auditFromContext(ctx context.Context) *auditInfo {
+	if v, ok := ctx.Value(auditKey{}).(*auditInfo); ok {
+		return v
+	}
+	return nil
+}
+
+// clientIP returns the originating client IP, preferring proxy-provided headers
+// that are set by Cloudflare and standard reverse proxies. Falls back to the
+// TCP peer address. These headers are trusted unconditionally because this
+// server is expected to run behind a trusted proxy (e.g. Cloudflare Tunnel);
+// if you expose it directly to the internet, clients can spoof these headers.
+func clientIP(r *http.Request) string {
+	if v := r.Header.Get("CF-Connecting-IP"); v != "" {
+		return v
+	}
+	if v := r.Header.Get("X-Real-IP"); v != "" {
+		return v
+	}
+	if v := r.Header.Get("X-Forwarded-For"); v != "" {
+		if i := strings.IndexByte(v, ','); i >= 0 {
+			return strings.TrimSpace(v[:i])
+		}
+		return strings.TrimSpace(v)
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	httpInFlightRequests.Inc()
@@ -23,10 +67,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	rec := &statusRecorder{ResponseWriter: w, statusCode: 200}
 	route := "Other"
+	ip := clientIP(r)
+	ua := r.UserAgent()
+	username := "-"
 	defer func() {
 		duration := time.Since(start)
-		log.Printf("req method=%s path=%s remote=%s status=%d bytes=%d duration_ms=%d",
-			r.Method, r.URL.Path, r.RemoteAddr,
+		log.Printf("req method=%s path=%s client_ip=%s user=%s user_agent=%q status=%d bytes=%d duration_ms=%d",
+			r.Method, r.URL.Path, ip, username, ua,
 			rec.statusCode, rec.bytesWritten, duration.Milliseconds())
 		httpRequestsTotal.WithLabelValues(r.Method, route, statusStr(rec.statusCode)).Inc()
 		httpRequestDuration.WithLabelValues(r.Method, route).Observe(duration.Seconds())
@@ -36,13 +83,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	if err := authenticate(r, s.config); err != nil {
-		log.Printf("auth: %v", err)
+	user, err := authenticate(r, s.config)
+	if err != nil {
+		log.Printf("auth: client_ip=%s user_agent=%q err=%v", ip, ua, err)
 		authFailuresTotal.Inc()
 		route = "Auth"
 		writeS3Error(rec, 403, "AccessDenied", "Access Denied")
 		return
 	}
+	username = user
+
+	audit := &auditInfo{
+		Username:  user,
+		ClientIP:  ip,
+		UserAgent: ua,
+		Timestamp: start,
+	}
+	r = r.WithContext(context.WithValue(r.Context(), auditKey{}, audit))
 
 	// Parse path: /{bucket}/{key...} or /{bucket}
 	path := strings.TrimPrefix(r.URL.Path, "/")

@@ -162,4 +162,3 @@ func TestBatchGet_Prefetch(t *testing.T) {
 		assert.True(t, e.Prefetch, "extra entries should be marked prefetch")
 	}
 }
-

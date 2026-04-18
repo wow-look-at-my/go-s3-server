@@ -5,7 +5,7 @@ Minimal S3-compatible server backed by the local filesystem. Designed as a share
 ## Features
 
 - **S3 API subset** — `GetObject`, `PutObject`, `ListObjectsV2`
-- **HTTP Basic Auth** — multiple users, or disable with empty credentials
+- **HTTP Basic Auth** — multiple users, or explicitly disable with `disable_auth: true`
 - **Write-once mode** — deny overwriting existing keys with configurable conflict notification (ideal for content-addressable caches)
 - **Sharded storage** — keys are automatically split into a two-level directory tree to avoid huge flat directories
 - **Multi-arch Docker image** — `linux/amd64` and `linux/arm64` published to `ghcr.io/wow-look-at-my/go-s3-server`
@@ -52,7 +52,8 @@ All flags except `--config` override the corresponding config file value.
 | `bucket` | string | — | yes | S3 bucket name to serve |
 | `data_dir` | string | — | yes | Directory to store objects |
 | `write_once` | object | `{"action":"allow"}` | no | Write-once behavior (see below) |
-| `credentials` | array | — | yes | At least one `username`/`password` pair |
+| `disable_auth` | bool | `false` | no | If `true`, accept all requests without authentication. Must be set explicitly; `credentials` must be omitted when this is `true`. |
+| `credentials` | array | — | yes (unless `disable_auth: true`) | One or more `username`/`password` pairs. Both fields must be non-empty. |
 
 ### `write_once` options
 
@@ -74,11 +75,17 @@ curl -u alice:secret1 -X PUT --data-binary @file.bin http://localhost:9000/my-ca
 curl -u alice:secret1 http://localhost:9000/my-cache/path/to/key
 ```
 
-To disable auth (e.g. behind a reverse proxy that handles it), set empty credentials:
+To disable auth (e.g. behind a reverse proxy that handles it), set `disable_auth: true` and omit `credentials`:
 
 ```json
-"credentials": [{"username": "", "password": ""}]
+{
+  "bucket": "my-cache",
+  "data_dir": "/var/data/s3",
+  "disable_auth": true
+}
 ```
+
+Empty strings in a `credentials` entry are a config error — you must opt into unauthenticated operation explicitly.
 
 ### Environment variable references
 
@@ -94,6 +101,39 @@ Any string config value can reference an environment variable instead of being h
 ```
 
 The env var is resolved at config load time.
+
+## Audit metadata on uploads
+
+Every `PutObject` request records the following fields as extended attributes
+on the stored file (namespace `user.s3audit.*` on Unix, `.audit` sidecar on
+Windows):
+
+| Attribute | Source |
+|-----------|--------|
+| `uploader` | Authenticated username (or `-` when `disable_auth: true`) |
+| `uploaded_at` | Server wall clock at request start (RFC 3339 nano) |
+| `client_ip` | `CF-Connecting-IP` → `X-Real-IP` → first `X-Forwarded-For` → TCP peer |
+| `user_agent` | Request `User-Agent` header |
+| `content_length` | Size in bytes of the uploaded body |
+
+Inspect on Linux with `getfattr -d path/to/object`. These fields exist so a
+suspected compromise can be investigated without guesswork.
+
+The same fields are written to the server's request log on every request.
+
+## Cache version
+
+The server stamps each `data_dir` with a cache version marker
+(`.cache_version`). On startup, if the stored version does not match the
+server's current version, the entire `data_dir` is wiped before serving any
+requests. This is a one-way safety net: when the maintainers ship a fix that
+should invalidate previously-stored content (for example, after closing a
+vulnerability that could let an attacker populate the cache), they bump the
+version. Next restart on every deployment forces the cache to be rebuilt from
+trusted inputs.
+
+A corrupt or unparseable marker file is a startup error — fix it manually,
+don't leave it to a silent purge.
 
 ## Docker
 

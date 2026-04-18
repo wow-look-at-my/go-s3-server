@@ -126,7 +126,9 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		}
 	}
 
-	if err := storage.Put(key, data, meta); err != nil {
+	audit := auditMapFromContext(r, int64(len(data)))
+
+	if err := storage.Put(key, data, meta, audit); err != nil {
 		if errors.Is(err, ErrWriteOnceConflict) || errors.Is(err, ErrWriteOnceDuplicate) {
 			writeS3Error(w, 409, "ConflictException", err.Error())
 			return
@@ -136,4 +138,23 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	}
 
 	w.WriteHeader(200)
+}
+
+// auditMapFromContext converts per-request audit info into a flat map that
+// storage.Put can persist as extended attributes on the uploaded object.
+// These fields answer: who uploaded this, when, from where, and with what
+// client — the data needed to investigate a suspected compromise.
+func auditMapFromContext(r *http.Request, size int64) map[string]string {
+	a := auditFromContext(r.Context())
+	if a == nil {
+		return nil
+	}
+	m := map[string]string{
+		"uploader":       a.Username,
+		"uploaded_at":    a.Timestamp.UTC().Format(time.RFC3339Nano),
+		"client_ip":      a.ClientIP,
+		"user_agent":     a.UserAgent,
+		"content_length": strconv.FormatInt(size, 10),
+	}
+	return m
 }

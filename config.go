@@ -65,6 +65,7 @@ type Config struct {
 	Bucket        string          `json:"bucket"`
 	DataDir       string          `json:"data_dir"`
 	WriteOnce     WriteOnceConfig `json:"write_once"`
+	DisableAuth   bool            `json:"disable_auth"`
 	Credentials   []Credential    `json:"credentials"`
 }
 
@@ -102,12 +103,18 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.DataDir == "" {
 		return nil, fmt.Errorf("config: data_dir is required")
 	}
-	if len(cfg.Credentials) == 0 {
-		return nil, fmt.Errorf("config: at least one credential is required (use empty username/password to disable auth)")
-	}
-	for i, c := range cfg.Credentials {
-		if (c.Username.Value == "") != (c.Password.Value == "") {
-			return nil, fmt.Errorf("config: credential %d: username and password must both be set or both be empty", i)
+	if cfg.DisableAuth {
+		if len(cfg.Credentials) != 0 {
+			return nil, fmt.Errorf("config: disable_auth is true but credentials are set; remove credentials or set disable_auth to false")
+		}
+	} else {
+		if len(cfg.Credentials) == 0 {
+			return nil, fmt.Errorf("config: at least one credential is required (or set disable_auth: true to run without authentication)")
+		}
+		for i, c := range cfg.Credentials {
+			if c.Username.Value == "" || c.Password.Value == "" {
+				return nil, fmt.Errorf("config: credential %d: username and password must both be non-empty (set disable_auth: true to run without authentication)", i)
+			}
 		}
 	}
 	return &cfg, nil

@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,6 +21,20 @@ var (
 	ErrWriteOnceConflict  = errors.New("object already exists with different content")
 	ErrWriteOnceDuplicate = errors.New("object already exists")
 )
+
+// currentCacheVersion is the on-disk data-dir format version. When this
+// server starts and finds a data_dir with a different version (or no version
+// marker, which is treated as version 1), it wipes the data_dir to avoid
+// serving content written under an older, possibly-compromised regime.
+//
+// Bump this whenever prior cache contents should not be trusted. For
+// example, version 2 forces a purge of any cache that was populated while
+// the auth-bypass bug in auth.go (pre-fix) could have been exploited to
+// upload attacker-controlled artifacts.
+const currentCacheVersion = 2
+
+const cacheVersionFile = ".cache_version"
+const lockFileName = ".lock"
 
 type Storage struct {
 	dataDir   string
@@ -50,7 +66,7 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 
-	lockPath := filepath.Join(dataDir, ".lock")
+	lockPath := filepath.Join(dataDir, lockFileName)
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("open lock file: %w", err)
@@ -58,6 +74,12 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 	if err := lockExclusive(lockFile); err != nil {
 		lockFile.Close()
 		return nil, fmt.Errorf("data directory is locked by another process: %w", err)
+	}
+
+	if err := ensureCacheVersion(dataDir); err != nil {
+		unlockFile(lockFile)
+		lockFile.Close()
+		return nil, err
 	}
 
 	s := &Storage{
@@ -68,6 +90,72 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 
 	s.Index = NewIndex(s)
 	return s, nil
+}
+
+// ensureCacheVersion reads the data_dir's version marker. If missing, it is
+// treated as version 1. If the stored version does not match
+// currentCacheVersion, every entry in the data_dir (except the lock file) is
+// removed and a new version marker is written. This forces the operator to
+// rebuild the cache from trusted inputs whenever we bump the version, e.g.
+// after fixing a vulnerability that could have let an attacker populate the
+// cache.
+func ensureCacheVersion(dataDir string) error {
+	stored, err := readCacheVersion(dataDir)
+	if err != nil {
+		return err
+	}
+	if stored == currentCacheVersion {
+		return nil
+	}
+	log.Printf("cache: stored version %d != current %d; purging data_dir=%s", stored, currentCacheVersion, dataDir)
+	if err := purgeDataDir(dataDir); err != nil {
+		return fmt.Errorf("purge data dir: %w", err)
+	}
+	if err := writeCacheVersion(dataDir, currentCacheVersion); err != nil {
+		return fmt.Errorf("write cache version: %w", err)
+	}
+	log.Printf("cache: purged and marked as version %d", currentCacheVersion)
+	return nil
+}
+
+func readCacheVersion(dataDir string) (int, error) {
+	data, err := os.ReadFile(filepath.Join(dataDir, cacheVersionFile))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// No marker: treat as version 1 (any cache predating this feature).
+			return 1, nil
+		}
+		return 0, fmt.Errorf("read cache version: %w", err)
+	}
+	s := strings.TrimSpace(string(data))
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("cache version file %s is corrupt (%q): %w", cacheVersionFile, s, err)
+	}
+	return v, nil
+}
+
+func writeCacheVersion(dataDir string, v int) error {
+	return os.WriteFile(filepath.Join(dataDir, cacheVersionFile), []byte(strconv.Itoa(v)+"\n"), 0644)
+}
+
+// purgeDataDir removes every entry in dataDir except the lock file. Used when
+// the cache version is incompatible.
+func purgeDataDir(dataDir string) error {
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.Name() == lockFileName {
+			continue
+		}
+		p := filepath.Join(dataDir, e.Name())
+		if err := os.RemoveAll(p); err != nil {
+			return fmt.Errorf("remove %s: %w", p, err)
+		}
+	}
+	return nil
 }
 
 func (s *Storage) Close() error {
@@ -171,7 +259,7 @@ func (s *Storage) pathToKey(path string) string {
 	return rel
 }
 
-func (s *Storage) Put(key string, data []byte, meta map[string]string) (err error) {
+func (s *Storage) Put(key string, data []byte, meta map[string]string, audit map[string]string) (err error) {
 	start := time.Now()
 	defer func() {
 		status := "ok"
@@ -224,6 +312,14 @@ func (s *Storage) Put(key string, data []byte, meta map[string]string) (err erro
 	if err := setMetadata(tmpPath, meta); err != nil {
 		os.Remove(tmpPath)
 		return err
+	}
+
+	// Audit is best-effort: if the filesystem doesn't support extended
+	// attributes, the request log still captures the same fields, and it's
+	// better to accept the upload than to refuse it over missing forensics.
+	// Log loudly so operators notice if they're losing the on-disk trail.
+	if err := setAudit(tmpPath, audit); err != nil {
+		log.Printf("audit: failed to persist xattrs for key %q (request log still has the data): %v", key, err)
 	}
 
 	if hashed {
@@ -299,7 +395,7 @@ func (s *Storage) List(prefix string, maxKeys int, continuationToken string) (_ 
 			return nil
 		}
 		name := d.Name()
-		if name == ".lock" || strings.HasPrefix(name, ".tmp-") {
+		if name == lockFileName || name == cacheVersionFile || strings.HasPrefix(name, ".tmp-") {
 			return nil
 		}
 

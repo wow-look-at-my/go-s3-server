@@ -96,3 +96,34 @@ func getOriginalKey(path string) (string, error) {
 	}
 	return string(val), nil
 }
+
+// Server-managed audit attributes are stored under a distinct prefix so that
+// user-supplied S3 metadata (user.s3.*) can never spoof them.
+const auditAttrPrefix = "user.s3audit."
+
+func setAudit(path string, audit map[string]string) error {
+	for k, v := range audit {
+		attrName := auditAttrPrefix + k
+		if err := unix.Setxattr(path, attrName, []byte(v), 0); err != nil {
+			return fmt.Errorf("set xattr %s: %w", attrName, err)
+		}
+	}
+	return nil
+}
+
+func getAudit(path string) map[string]string {
+	attrs, err := listXattrs(path)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]string)
+	for _, attr := range attrs {
+		if strings.HasPrefix(attr, auditAttrPrefix) {
+			val, err := getXattr(path, attr)
+			if err == nil {
+				out[strings.TrimPrefix(attr, auditAttrPrefix)] = string(val)
+			}
+		}
+	}
+	return out
+}

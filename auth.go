@@ -38,8 +38,18 @@ func authenticate(r *http.Request, cfg *Config) (string, error) {
 	if len(parts) != 2 {
 		return "", fmt.Errorf("invalid basic auth format")
 	}
+	if parts[0] == "" || parts[1] == "" {
+		return "", fmt.Errorf("empty basic auth username or password")
+	}
 
 	for i := range cfg.Credentials {
+		// Defense in depth: never match a credential with an empty
+		// username or password. LoadConfig already rejects these, but
+		// an empty entry constructed via the Go API must not allow
+		// authentication with an all-empty Basic Auth header.
+		if cfg.Credentials[i].Username.Value == "" || cfg.Credentials[i].Password.Value == "" {
+			continue
+		}
 		if subtle.ConstantTimeCompare([]byte(cfg.Credentials[i].Username.Value), []byte(parts[0])) == 1 &&
 			subtle.ConstantTimeCompare([]byte(cfg.Credentials[i].Password.Value), []byte(parts[1])) == 1 {
 			return cfg.Credentials[i].Username.Value, nil

@@ -23,9 +23,8 @@ import (
 func skipIfNoXattr(t *testing.T, dir string) {
 	t.Helper()
 	canary, err := os.CreateTemp(dir, "xattr-probe-*")
-	if err != nil {
-		t.Fatalf("probe: %v", err)
-	}
+	require.Nil(t, err)
+
 	canary.Close()
 	defer os.Remove(canary.Name())
 	if err := setAudit(canary.Name(), map[string]string{"probe": "1"}); err != nil {

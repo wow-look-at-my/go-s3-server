@@ -25,51 +25,24 @@ jobs:
   docker:
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Download go-s3-server binaries
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: build-output
           path: build
-
-      - name: Prepare binaries
-        run: |
-          cp build/go-s3-server_linux_amd64 go-s3-server_linux_amd64
-          cp build/go-s3-server_linux_arm64 go-s3-server_linux_arm64
-          chmod +x go-s3-server_linux_amd64 go-s3-server_linux_arm64
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+      - uses: wow-look-at-my/actions@go-packages#latest
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Generate Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
+          skip-build: 'true'
+          tag: ${{ github.sha }}
+      - if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: wow-look-at-my/actions@go-packages#latest
         with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          skip-build: 'true'
+          tag: latest
 
   s3-api-test:
     needs: test

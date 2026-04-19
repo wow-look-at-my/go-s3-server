@@ -38,11 +38,13 @@ jobs:
         with:
           skip-build: 'true'
           tag: ${{ github.sha }}
+          token: ${{ github.token }}
       - if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         uses: wow-look-at-my/actions@go-packages#latest
         with:
           skip-build: 'true'
           tag: latest
+          token: ${{ github.token }}
 
   s3-api-test:
     needs: test

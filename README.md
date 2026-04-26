@@ -4,7 +4,8 @@ Minimal S3-compatible server backed by the local filesystem. Designed as a share
 
 ## Features
 
-- **S3 API subset** — `GetObject`, `PutObject`, `ListObjectsV2`
+- **S3 API subset** — `GetObject`, `PutObject`
+- **Cache-key index** — `GET /<bucket>/_index` returns a precomputed binary blob (GBCI v1) of every cacheprog action-ID hash, with strong ETag and `If-None-Match` 304 support
 - **HTTP Basic Auth** — multiple users, or explicitly disable with `disable_auth: true`
 - **Write-once mode** — deny overwriting existing keys with configurable conflict notification (ideal for content-addressable caches)
 - **Sharded storage** — keys are automatically split into a two-level directory tree to avoid huge flat directories

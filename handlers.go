@@ -148,23 +148,28 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 }
 
 // objectLabel builds a short human-readable description of a cache entry
-// from its stored metadata, e.g. "go-archive github.com/foo/bar go1.24.0 linux/amd64".
+// from its stored metadata, e.g. "go-archive github.com/foo/bar (bar.go) go1.24.0 linux/amd64".
 func objectLabel(meta map[string]string) string {
 	objType := meta["object-type"]
 	if objType == "" {
 		return ""
 	}
 	pkg := meta["pkg"]
+	src := meta["src"]
 	goVer := meta["go-version"]
 	target := meta["target"]
-	switch {
-	case pkg != "" && goVer != "" && target != "":
-		return objType + " " + pkg + " " + goVer + " " + target
-	case goVer != "" && target != "":
-		return objType + " " + goVer + " " + target
-	default:
-		return objType
+
+	label := objType
+	if pkg != "" {
+		label += " " + pkg
 	}
+	if src != "" {
+		label += " (" + src + ")"
+	}
+	if goVer != "" && target != "" {
+		label += " " + goVer + " " + target
+	}
+	return label
 }
 
 // auditMapFromContext converts per-request audit info into a flat map that

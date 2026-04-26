@@ -1,25 +1,94 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"log"
 	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// Index maintains an in-memory map of S3 keys to modification times.
+// gbciKeyPrefix is the constant leading portion of every cacheprog cache key.
+// The binary index format ships only the 32-byte action-ID hash that follows
+// this prefix; keys not matching the pattern are skipped.
+const gbciKeyPrefix = "go-buildcache/v1"
+
+// gbciHashSize is the number of bytes per entry in the binary index body.
+const gbciHashSize = 32
+
+// gbciHeaderSize is the fixed header size in bytes.
+const gbciHeaderSize = 24
+
+// gbciVersion is the wire-format version stored in the header.
+const gbciVersion = 1
+
+// gbciMagic is the four-byte file-format identifier "GBCI".
+var gbciMagic = [4]byte{'G', 'B', 'C', 'I'}
+
+// Index maintains an in-memory map of S3 keys to modification times, plus
+// a precomputed binary blob of all action-ID hashes for the GET /_index
+// endpoint.
+//
 // It's rebuilt from the filesystem on startup and updated on every PUT.
 // Since it's derived from the actual storage, it can never be out of sync
 // (at worst, a crash loses index entries for in-flight PUTs, which are
 // re-added on the next startup rebuild).
 type Index struct {
 	mu      sync.RWMutex
-	entries []indexEntry // sorted by mtime for binary search
+	entries []indexEntry // sorted by mtime for NearbyKeys binary search
+
+	// hashes is the sorted, deduplicated master list of action-ID hashes
+	// extracted from S3 keys matching gbciKeyPrefix. Only mutated inside
+	// Blob() under mu.Lock().
+	hashes [][gbciHashSize]byte
+
+	// pending is an unsorted append-only buffer of new hashes added by Put.
+	// Drained into hashes during the next Blob() call. Keeping the per-PUT
+	// path to a single mutex-guarded slice append (microseconds) is what
+	// lets the server absorb bursts of ~1000 PUTs/sec without contention.
+	pending [][gbciHashSize]byte
+
+	// dirty is set true whenever pending grows or the master is rebuilt;
+	// cleared by Blob() after a successful serialization.
+	dirty atomic.Bool
+
+	// generation is bumped each time Blob() rebuilds the cached output.
+	// Stored in the header so clients can reason about progress.
+	generation atomic.Uint64
+
+	// cachedBlob and cachedETag hold the most recently built output. Read
+	// under mu.RLock on the fast path when dirty is false.
+	cachedBlob []byte
+	cachedETag string
 }
 
 type indexEntry struct {
 	key       string
 	mtimeUnix int64
+}
+
+// extractActionHash decodes the 32-byte action ID from a cacheprog cache key.
+// Returns (hash, true) if key matches `^go-buildcache/v1[0-9a-f]{64}$`,
+// otherwise (zero, false).
+func extractActionHash(key string) ([gbciHashSize]byte, bool) {
+	var zero [gbciHashSize]byte
+	if !strings.HasPrefix(key, gbciKeyPrefix) {
+		return zero, false
+	}
+	hex64 := key[len(gbciKeyPrefix):]
+	if len(hex64) != gbciHashSize*2 {
+		return zero, false
+	}
+	var h [gbciHashSize]byte
+	if _, err := hex.Decode(h[:], []byte(hex64)); err != nil {
+		return zero, false
+	}
+	return h, true
 }
 
 // NewIndex builds the index by scanning the filesystem.
@@ -29,19 +98,32 @@ func NewIndex(storage *Storage) *Index {
 	return idx
 }
 
-// Put records a key with the current time.
+// Put records a key with the current time and queues its action-ID hash
+// (if the key is well-formed) for inclusion in the next /_index serialization.
+//
+// The hot path is a single mutex-guarded slice append: microseconds at
+// any reasonable cache size. Sorting and serialization are deferred to
+// the next Blob() call.
 func (idx *Index) Put(key string, size int64) {
 	now := time.Now().Unix()
+	hash, hashOK := extractActionHash(key)
+
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	// Append and re-sort. This is O(n log n) but PUTs are infrequent
-	// relative to the index size, and the sort is over a pre-sorted slice
-	// (one element out of place → nearly O(n)).
+	// Existing mtime index: append + re-sort. This is O(n) per PUT and is
+	// a known pre-existing bottleneck under high write load; replacing it
+	// with the same pending-merge pattern used for hashes is tracked as a
+	// follow-up.
 	idx.entries = append(idx.entries, indexEntry{key: key, mtimeUnix: now})
 	sort.Slice(idx.entries, func(i, j int) bool {
 		return idx.entries[i].mtimeUnix < idx.entries[j].mtimeUnix
 	})
+
+	if hashOK {
+		idx.pending = append(idx.pending, hash)
+		idx.dirty.Store(true)
+	}
 }
 
 // NearbyKeys returns up to limit keys whose modification time falls within
@@ -91,6 +173,72 @@ func (idx *Index) NearbyKeys(startUnix, endUnix int64, limit int, exclude map[st
 	return keys
 }
 
+// Blob returns the precomputed GBCI v1 binary index and its strong ETag
+// (hex-encoded SHA-256 of the blob, surrounded by quotes per RFC 7232).
+//
+// Fast path: if the cached blob is up-to-date (dirty == false), return it
+// under a read lock. Slow path: drain pending into hashes, re-sort, dedupe,
+// serialize header + body + trailer, cache the result, clear dirty.
+func (idx *Index) Blob() ([]byte, string) {
+	if !idx.dirty.Load() {
+		idx.mu.RLock()
+		blob, etag := idx.cachedBlob, idx.cachedETag
+		idx.mu.RUnlock()
+		if blob != nil {
+			return blob, etag
+		}
+	}
+
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	// Re-check: another caller may have rebuilt the blob while we were
+	// waiting on the lock.
+	if !idx.dirty.Load() && idx.cachedBlob != nil {
+		return idx.cachedBlob, idx.cachedETag
+	}
+
+	if len(idx.pending) > 0 {
+		idx.hashes = append(idx.hashes, idx.pending...)
+		idx.pending = idx.pending[:0]
+	}
+	sort.Slice(idx.hashes, func(i, j int) bool {
+		return bytes.Compare(idx.hashes[i][:], idx.hashes[j][:]) < 0
+	})
+	// Dedupe sorted slice in place.
+	w := 0
+	for r := 0; r < len(idx.hashes); r++ {
+		if w == 0 || idx.hashes[r] != idx.hashes[w-1] {
+			idx.hashes[w] = idx.hashes[r]
+			w++
+		}
+	}
+	idx.hashes = idx.hashes[:w]
+
+	gen := idx.generation.Add(1)
+	count := uint64(len(idx.hashes))
+
+	blob := make([]byte, gbciHeaderSize+int(count)*gbciHashSize+sha256.Size)
+	copy(blob[0:4], gbciMagic[:])
+	blob[4] = gbciVersion
+	blob[5] = gbciHashSize
+	binary.LittleEndian.PutUint16(blob[6:8], 0)
+	binary.LittleEndian.PutUint64(blob[8:16], gen)
+	binary.LittleEndian.PutUint64(blob[16:24], count)
+	off := gbciHeaderSize
+	for i := range idx.hashes {
+		copy(blob[off:off+gbciHashSize], idx.hashes[i][:])
+		off += gbciHashSize
+	}
+	digest := sha256.Sum256(blob[:off])
+	copy(blob[off:], digest[:])
+
+	idx.cachedBlob = blob
+	idx.cachedETag = `"` + hex.EncodeToString(digest[:]) + `"`
+	idx.dirty.Store(false)
+	return idx.cachedBlob, idx.cachedETag
+}
+
 func (idx *Index) rebuild(storage *Storage) {
 	start := time.Now()
 	result, err := storage.List("", 1000000, "")
@@ -101,16 +249,26 @@ func (idx *Index) rebuild(storage *Storage) {
 
 	idx.mu.Lock()
 	idx.entries = make([]indexEntry, 0, len(result.Objects))
+	idx.hashes = idx.hashes[:0]
+	idx.pending = make([][gbciHashSize]byte, 0, len(result.Objects))
 	for _, obj := range result.Objects {
 		idx.entries = append(idx.entries, indexEntry{
 			key:       obj.Key,
 			mtimeUnix: obj.LastModified.Unix(),
 		})
+		if h, ok := extractActionHash(obj.Key); ok {
+			idx.pending = append(idx.pending, h)
+		}
 	}
 	sort.Slice(idx.entries, func(i, j int) bool {
 		return idx.entries[i].mtimeUnix < idx.entries[j].mtimeUnix
 	})
+	idx.cachedBlob = nil
+	idx.cachedETag = ""
+	idx.dirty.Store(true)
+	hashCount := len(idx.pending)
 	idx.mu.Unlock()
 
-	log.Printf("index: built %d entries in %v", len(idx.entries), time.Since(start).Round(time.Millisecond))
+	log.Printf("index: built %d entries (%d hashes) in %v",
+		len(result.Objects), hashCount, time.Since(start).Round(time.Millisecond))
 }

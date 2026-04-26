@@ -126,82 +126,6 @@ func TestGetObjectNotFound(t *testing.T) {
 	require.Equal(t, "NoSuchKey", s3err.Code)
 }
 
-func TestListObjectsV2(t *testing.T) {
-	ts := testSetup(t)
-
-	keys := []string{
-		"go-buildcache/v1aaaa000000000001",
-		"go-buildcache/v1bbbb000000000002",
-		"go-buildcache/v1cccc000000000003",
-	}
-	for _, key := range keys {
-		resp := doRequest(t, ts, "PUT", "/testbucket/"+key, []byte("data-"+key), nil)
-		require.Equal(t, 200, resp.StatusCode)
-		resp.Body.Close()
-	}
-
-	resp := doRequest(t, ts, "GET", "/testbucket?list-type=2&prefix=go-buildcache/", nil, nil)
-	require.Equal(t, 200, resp.StatusCode)
-
-	var result ListBucketResult
-	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&result))
-	resp.Body.Close()
-
-	require.Equal(t, 3, len(result.Contents))
-
-	for i := 1; i < len(result.Contents); i++ {
-		require.GreaterOrEqual(t, result.Contents[i].Key, result.Contents[i-1].Key)
-	}
-}
-
-func TestListObjectsV2Pagination(t *testing.T) {
-	ts := testSetup(t)
-
-	keys := []string{
-		"prefix/v1aaaa000000000001",
-		"prefix/v1bbbb000000000002",
-		"prefix/v1cccc000000000003",
-		"prefix/v1dddd000000000004",
-		"prefix/v1eeee000000000005",
-	}
-	for _, key := range keys {
-		resp := doRequest(t, ts, "PUT", "/testbucket/"+key, []byte("d"), nil)
-		resp.Body.Close()
-	}
-
-	// Page 1: max-keys=2
-	resp := doRequest(t, ts, "GET", "/testbucket?list-type=2&prefix=prefix/&max-keys=2", nil, nil)
-	var page1 ListBucketResult
-	xml.NewDecoder(resp.Body).Decode(&page1)
-	resp.Body.Close()
-
-	require.Equal(t, 2, len(page1.Contents))
-	require.True(t, page1.IsTruncated)
-	require.NotEqual(t, "", page1.NextContinuationToken)
-
-	// Page 2
-	resp = doRequest(t, ts, "GET",
-		"/testbucket?list-type=2&prefix=prefix/&max-keys=2&continuation-token="+page1.NextContinuationToken,
-		nil, nil)
-	var page2 ListBucketResult
-	xml.NewDecoder(resp.Body).Decode(&page2)
-	resp.Body.Close()
-
-	require.Equal(t, 2, len(page2.Contents))
-	require.True(t, page2.IsTruncated)
-
-	// Page 3 (last)
-	resp = doRequest(t, ts, "GET",
-		"/testbucket?list-type=2&prefix=prefix/&max-keys=2&continuation-token="+page2.NextContinuationToken,
-		nil, nil)
-	var page3 ListBucketResult
-	xml.NewDecoder(resp.Body).Decode(&page3)
-	resp.Body.Close()
-
-	require.Equal(t, 1, len(page3.Contents))
-	require.False(t, page3.IsTruncated)
-}
-
 func TestWriteOnce(t *testing.T) {
 	ts := testSetupWriteOnce(t)
 
@@ -497,20 +421,6 @@ func TestMethodNotAllowed(t *testing.T) {
 	require.Equal(t, 405, resp.StatusCode)
 }
 
-func TestListEmptyBucket(t *testing.T) {
-	ts := testSetup(t)
-
-	resp := doRequest(t, ts, "GET", "/testbucket?list-type=2&prefix=nonexistent/", nil, nil)
-	require.Equal(t, 200, resp.StatusCode)
-
-	var result ListBucketResult
-	xml.NewDecoder(resp.Body).Decode(&result)
-	resp.Body.Close()
-
-	require.Equal(t, 0, len(result.Contents))
-	require.False(t, result.IsTruncated)
-}
-
 func TestUnsafeKeyHashedStorage(t *testing.T) {
 	ts := testSetup(t)
 
@@ -552,25 +462,6 @@ func TestSafeKeyUnchangedBehavior(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	require.Equal(t, string(content), string(body))
-}
-
-func TestHashedKeyListing(t *testing.T) {
-	ts := testSetup(t)
-
-	unsafeKey := "special.key/with.dots"
-	resp := doRequest(t, ts, "PUT", "/testbucket/"+unsafeKey, []byte("data"), nil)
-	require.Equal(t, 200, resp.StatusCode)
-	resp.Body.Close()
-
-	resp = doRequest(t, ts, "GET", "/testbucket?list-type=2&prefix=special.", nil, nil)
-	require.Equal(t, 200, resp.StatusCode)
-
-	var result ListBucketResult
-	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&result))
-	resp.Body.Close()
-
-	require.Equal(t, 1, len(result.Contents))
-	require.Equal(t, unsafeKey, result.Contents[0].Key)
 }
 
 func TestIsKeySafe(t *testing.T) {

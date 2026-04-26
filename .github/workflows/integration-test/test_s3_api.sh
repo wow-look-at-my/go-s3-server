@@ -40,33 +40,76 @@ else
   fail "GetObject nonexistent: code=$HTTP_CODE body=$(cat /tmp/test-404-body)"
 fi
 
-# ListObjectsV2
-for i in 0 1 2; do
+# Cache key index endpoint (/_index): replaces ListObjectsV2 with a binary
+# blob (24 B header + sorted 32 B SHA-256 hashes + 32 B SHA-256 trailer).
+KEY_A="go-buildcache/v1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+KEY_B="go-buildcache/v1bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+KEY_C="go-buildcache/v1cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+for k in "$KEY_A" "$KEY_B" "$KEY_C"; do
   curl -sf -u "$AUTH" -X PUT --data-binary "data" \
-    "$ENDPOINT_NORMAL/$BUCKET/listtest/v1aaaa$(printf '%012d' $i)" > /dev/null
+    "$ENDPOINT_NORMAL/$BUCKET/$k" > /dev/null
 done
-LIST_BODY=$(curl -sf -u "$AUTH" \
-  "$ENDPOINT_NORMAL/$BUCKET?list-type=2&prefix=listtest/")
-LIST_COUNT=$(echo "$LIST_BODY" | grep -o '<Key>' | wc -l)
-if [ "$LIST_COUNT" = "3" ]; then
-  pass "ListObjectsV2 returns 3 objects"
+
+INDEX_BODY=$(mktemp)
+INDEX_HEADERS=$(mktemp)
+HTTP_CODE=$(curl -s -o "$INDEX_BODY" -D "$INDEX_HEADERS" -w "%{http_code}" \
+  -u "$AUTH" "$ENDPOINT_NORMAL/$BUCKET/_index")
+INDEX_SIZE=$(stat -c %s "$INDEX_BODY")
+EXPECTED_SIZE=$((24 + 3*32 + 32))
+if [ "$HTTP_CODE" = "200" ] && [ "$INDEX_SIZE" = "$EXPECTED_SIZE" ]; then
+  pass "/_index returns 200 with expected blob size"
 else
-  fail "ListObjectsV2 expected 3 objects, got $LIST_COUNT"
+  fail "/_index: code=$HTTP_CODE size=$INDEX_SIZE expected=$EXPECTED_SIZE"
 fi
 
-# ListObjectsV2 pagination
-for i in $(seq 0 4); do
-  curl -sf -u "$AUTH" -X PUT --data-binary "d" \
-    "$ENDPOINT_NORMAL/$BUCKET/pagtest/v1aaaa$(printf '%012d' $i)" > /dev/null
-done
-PAGE1=$(curl -sf -u "$AUTH" \
-  "$ENDPOINT_NORMAL/$BUCKET?list-type=2&prefix=pagtest/&max-keys=2")
-PAGE1_COUNT=$(echo "$PAGE1" | grep -o '<Key>' | wc -l)
-PAGE1_TRUNCATED=$(echo "$PAGE1" | grep -o '<IsTruncated>[^<]*</IsTruncated>' | grep -o 'true\|false')
-if [ "$PAGE1_COUNT" = "2" ] && [ "$PAGE1_TRUNCATED" = "true" ]; then
-  pass "ListObjectsV2 pagination page 1"
+INDEX_MAGIC=$(head -c 4 "$INDEX_BODY")
+if [ "$INDEX_MAGIC" = "GBCI" ]; then
+  pass "/_index body has GBCI magic"
 else
-  fail "ListObjectsV2 pagination page 1: count=$PAGE1_COUNT truncated=$PAGE1_TRUNCATED"
+  fail "/_index body magic: got '$INDEX_MAGIC'"
+fi
+
+ETAG=$(grep -i '^etag:' "$INDEX_HEADERS" | tr -d '\r' | awk '{print $2}')
+if [ -n "$ETAG" ]; then
+  pass "/_index sets ETag header"
+else
+  fail "/_index missing ETag header"
+fi
+
+# If-None-Match with the matching ETag should return 304.
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u "$AUTH" \
+  -H "If-None-Match: $ETAG" "$ENDPOINT_NORMAL/$BUCKET/_index")
+if [ "$HTTP_CODE" = "304" ]; then
+  pass "/_index If-None-Match returns 304"
+else
+  fail "/_index If-None-Match: code=$HTTP_CODE expected 304"
+fi
+
+# Non-cacheprog keys must not appear in the index (size stays the same).
+curl -sf -u "$AUTH" -X PUT --data-binary "x" \
+  "$ENDPOINT_NORMAL/$BUCKET/notcacheprog/foo" > /dev/null
+INDEX_SIZE2=$(curl -sf -u "$AUTH" -o /tmp/index2.bin -w "%{size_download}" \
+  "$ENDPOINT_NORMAL/$BUCKET/_index")
+if [ "$INDEX_SIZE2" = "$EXPECTED_SIZE" ]; then
+  pass "/_index excludes non-cacheprog keys"
+else
+  fail "/_index after non-cacheprog PUT: size=$INDEX_SIZE2 expected=$EXPECTED_SIZE"
+fi
+
+# A new well-formed PUT bumps the index size and changes the ETag.
+KEY_D="go-buildcache/v1dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+curl -sf -u "$AUTH" -X PUT --data-binary "data" \
+  "$ENDPOINT_NORMAL/$BUCKET/$KEY_D" > /dev/null
+INDEX_HEADERS2=$(mktemp)
+HTTP_CODE=$(curl -s -o /tmp/index3.bin -D "$INDEX_HEADERS2" -w "%{http_code}" \
+  -u "$AUTH" "$ENDPOINT_NORMAL/$BUCKET/_index")
+INDEX_SIZE3=$(stat -c %s /tmp/index3.bin)
+ETAG2=$(grep -i '^etag:' "$INDEX_HEADERS2" | tr -d '\r' | awk '{print $2}')
+EXPECTED_SIZE2=$((24 + 4*32 + 32))
+if [ "$HTTP_CODE" = "200" ] && [ "$INDEX_SIZE3" = "$EXPECTED_SIZE2" ] && [ "$ETAG2" != "$ETAG" ]; then
+  pass "/_index reflects new PUT (size + ETag changed)"
+else
+  fail "/_index after new PUT: code=$HTTP_CODE size=$INDEX_SIZE3 expected=$EXPECTED_SIZE2 etag_changed=$([ "$ETAG2" != "$ETAG" ] && echo yes || echo no)"
 fi
 
 # Overwrite allowed in normal mode

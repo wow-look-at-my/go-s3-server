@@ -126,6 +126,55 @@ func TestBatchGet_EmptyRequest(t *testing.T) {
 	assert.Equal(t, 400, resp.StatusCode)
 }
 
+func TestBatchGet_PrefetchSuppression(t *testing.T) {
+	ts := testSetup(t)
+	client := ts.Client()
+
+	// Upload a cluster of entries close together in time.
+	putObject(t, client, ts.URL, "cache/v1key1", []byte("data1"), map[string]string{"Outputid": "o1"})
+	putObject(t, client, ts.URL, "cache/v1key2", []byte("data2"), map[string]string{"Outputid": "o2"})
+	putObject(t, client, ts.URL, "cache/v1key3", []byte("data3"), map[string]string{"Outputid": "o3"})
+
+	batchURL := ts.URL + "/testbucket/_batch/get"
+
+	// First request: ask for key1 with prefetch. The server should return key1
+	// plus key2 and key3 as prefetch.
+	req1, _ := json.Marshal(batchGetRequest{Keys: []string{"cache/v1key1"}, Prefetch: true})
+	resp1, err := doBatchGet(client, batchURL, req1)
+	require.NoError(t, err)
+	defer resp1.Body.Close()
+	require.Equal(t, 200, resp1.StatusCode)
+	manifest1, _ := parseBatchResponse(t, resp1.Body)
+	require.GreaterOrEqual(t, len(manifest1.Entries), 2, "first request should include prefetch entries")
+
+	// Collect which keys were prefetched in the first response.
+	prefetchedInFirst := map[string]bool{}
+	for _, e := range manifest1.Entries {
+		if e.Prefetch {
+			prefetchedInFirst[e.Key] = true
+		}
+	}
+	require.NotEmpty(t, prefetchedInFirst, "first request should have prefetched some entries")
+
+	// Second request: ask for key2 (a different key in the same cluster) with prefetch.
+	// The tracker should suppress keys already sent in the first response.
+	req2, _ := json.Marshal(batchGetRequest{Keys: []string{"cache/v1key2"}, Prefetch: true})
+	resp2, err := doBatchGet(client, batchURL, req2)
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	require.Equal(t, 200, resp2.StatusCode)
+	manifest2, _ := parseBatchResponse(t, resp2.Body)
+
+	// None of the prefetch entries from the first response should reappear as
+	// prefetch in the second response.
+	for _, e := range manifest2.Entries {
+		if e.Prefetch {
+			assert.False(t, prefetchedInFirst[e.Key],
+				"key %q was already prefetched in first response; should be suppressed", e.Key)
+		}
+	}
+}
+
 func TestBatchGet_Prefetch(t *testing.T) {
 	ts := testSetup(t)
 	client := ts.Client()

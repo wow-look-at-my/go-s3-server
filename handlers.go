@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -10,25 +11,6 @@ import (
 	"strings"
 	"time"
 )
-
-const maxMaxKeys = 10000
-
-type ListBucketResult struct {
-	XMLName               xml.Name   `xml:"ListBucketResult"`
-	Xmlns                 string     `xml:"xmlns,attr"`
-	Name                  string     `xml:"Name"`
-	Prefix                string     `xml:"Prefix"`
-	MaxKeys               int        `xml:"MaxKeys"`
-	IsTruncated           bool       `xml:"IsTruncated"`
-	Contents              []S3Object `xml:"Contents"`
-	NextContinuationToken string     `xml:"NextContinuationToken,omitempty"`
-}
-
-type S3Object struct {
-	Key          string `xml:"Key"`
-	LastModified string `xml:"LastModified"`
-	Size         int64  `xml:"Size"`
-}
 
 type S3Error struct {
 	XMLName xml.Name `xml:"Error"`
@@ -40,49 +22,6 @@ func writeS3Error(w http.ResponseWriter, httpStatus int, code, message string) {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(httpStatus)
 	xml.NewEncoder(w).Encode(S3Error{Code: code, Message: message})
-}
-
-func handleListObjectsV2(w http.ResponseWriter, r *http.Request, storage *Storage, bucket string) {
-	prefix := r.URL.Query().Get("prefix")
-	maxKeys := 1000
-	if mk := r.URL.Query().Get("max-keys"); mk != "" {
-		if v, err := strconv.Atoi(mk); err == nil && v > 0 {
-			maxKeys = v
-		}
-	}
-	if maxKeys > maxMaxKeys {
-		maxKeys = maxMaxKeys
-	}
-	continuationToken := r.URL.Query().Get("continuation-token")
-
-	result, err := storage.List(prefix, maxKeys, continuationToken)
-	if err != nil {
-		writeS3Error(w, 500, "InternalError", err.Error())
-		return
-	}
-
-	xmlResult := ListBucketResult{
-		Xmlns:       "http://s3.amazonaws.com/doc/2006-03-01/",
-		Name:        bucket,
-		Prefix:      prefix,
-		MaxKeys:     maxKeys,
-		IsTruncated: result.IsTruncated,
-	}
-	if result.NextContinuationToken != "" {
-		xmlResult.NextContinuationToken = result.NextContinuationToken
-	}
-	for _, obj := range result.Objects {
-		xmlResult.Contents = append(xmlResult.Contents, S3Object{
-			Key:          obj.Key,
-			LastModified: obj.LastModified.UTC().Format(time.RFC3339Nano),
-			Size:         obj.Size,
-		})
-	}
-
-	w.Header().Set("Content-Type", "application/xml")
-	w.WriteHeader(200)
-	w.Write([]byte(xml.Header))
-	xml.NewEncoder(w).Encode(xmlResult)
 }
 
 func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string) {
@@ -145,6 +84,21 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		a.Label = objectLabel(meta)
 	}
 	w.WriteHeader(200)
+}
+
+// handleGetIndex serves the precomputed GBCI v1 binary cache-key index.
+// The body is a fixed 24-byte header + sorted action-ID hashes + 32-byte
+// SHA-256 trailer. The strong ETag is the hex-encoded trailer; conditional
+// GETs (If-None-Match) are handled by http.ServeContent and return 304.
+func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
+	if idx == nil {
+		writeS3Error(w, 500, "InternalError", "index unavailable")
+		return
+	}
+	blob, etag := idx.Blob()
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("ETag", etag)
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(blob))
 }
 
 // objectLabel builds a short human-readable description of a cache entry

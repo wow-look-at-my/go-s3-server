@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -46,19 +47,79 @@ const prefetchWindow = 30 * time.Second
 // beyond what was explicitly requested.
 const maxPrefetchEntries = 200
 
-// handleBatchGet handles POST /_batch/get requests. The client sends a JSON
+// prefetchTrackerTTL is how long the server remembers having sent a key to a
+// given user. Prefetch entries are suppressed for this duration.
+const prefetchTrackerTTL = 5 * time.Minute
+
+// prefetchTracker remembers which keys were recently sent as prefetch to each
+// user so that subsequent batch requests from the same user do not receive the
+// same bulk data over and over (e.g. the same 200-entry pool on every request).
+type prefetchTracker struct {
+	mu   sync.Mutex
+	sent map[string]map[string]time.Time // user → key → sent_at
+}
+
+func newPrefetchTracker() *prefetchTracker {
+	return &prefetchTracker{sent: make(map[string]map[string]time.Time)}
+}
+
+// filterAndRecord returns the subset of candidates not recently sent to user,
+// records those entries as sent, and evicts stale entries for that user.
+func (t *prefetchTracker) filterAndRecord(user string, candidates []batchEntry) []batchEntry {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	now := time.Now()
+	userSent := t.sent[user]
+
+	var out []batchEntry
+	for _, e := range candidates {
+		if userSent != nil {
+			if sentAt, ok := userSent[e.key]; ok && now.Sub(sentAt) < prefetchTrackerTTL {
+				continue
+			}
+		}
+		out = append(out, e)
+	}
+
+	if len(out) > 0 {
+		if userSent == nil {
+			userSent = make(map[string]time.Time)
+			t.sent[user] = userSent
+		}
+		for _, e := range out {
+			userSent[e.key] = now
+		}
+	}
+
+	// Amortised eviction: clean stale keys for this user on every call.
+	for k, sentAt := range userSent {
+		if now.Sub(sentAt) >= prefetchTrackerTTL {
+			delete(userSent, k)
+		}
+	}
+	if len(userSent) == 0 {
+		delete(t.sent, user)
+	}
+
+	return out
+}
+
+// handleBatchGet handles GET /_batch/get requests. The client sends a JSON
 // list of keys it needs, and the server responds with a tar stream containing
 // the data and metadata for each found entry.
 //
 // If prefetch is enabled, the server also includes entries whose modification
 // time falls within ±30s of the requested entries, capturing entries from the
-// same build that the client is likely to need next.
+// same build that the client is likely to need next. The prefetchTracker
+// suppresses keys already sent to this user recently, preventing the same
+// 200-entry pool from flooding the client on every request.
 //
 // The tar layout is:
 //
 //	manifest.json                    — index of all entries with metadata
 //	data/<key>                       — raw file content for each entry
-func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage) {
+func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tracker *prefetchTracker) {
 	if r.Method != "GET" {
 		writeS3Error(w, 405, "MethodNotAllowed", "Method not allowed")
 		return
@@ -73,6 +134,11 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage) {
 	if len(req.Keys) == 0 {
 		writeS3Error(w, 400, "InvalidRequest", "no keys specified")
 		return
+	}
+
+	user := anonymousUser
+	if a := auditFromContext(r.Context()); a != nil {
+		user = a.Username
 	}
 
 	// Fetch all requested entries.
@@ -100,12 +166,16 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage) {
 		}
 	}
 
-	// Prefetch: find related entries by modification time proximity.
+	// Prefetch: find related entries by modification time proximity, then
+	// suppress any the server has already sent to this user recently.
+	var nSuppressed int
 	if req.Prefetch && len(entries) > 0 && !minMod.IsZero() {
 		windowStart := minMod.Add(-prefetchWindow)
 		windowEnd := maxMod.Add(prefetchWindow)
 
-		prefetched := findByModTime(storage, windowStart, windowEnd, requestedSet)
+		candidates := findByModTime(storage, windowStart, windowEnd, requestedSet)
+		prefetched := tracker.filterAndRecord(user, candidates)
+		nSuppressed = len(candidates) - len(prefetched)
 		entries = append(entries, prefetched...)
 	}
 
@@ -154,8 +224,8 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage) {
 		tw.Write(e.data)
 	}
 
-	log.Printf("batch get: requested=%d found=%d prefetched=%d",
-		len(req.Keys), len(entries)-nPrefetch, nPrefetch)
+	log.Printf("batch get: requested=%d found=%d prefetched=%d suppressed=%d",
+		len(req.Keys), len(entries)-nPrefetch, nPrefetch, nSuppressed)
 }
 
 // findByModTime scans storage for entries with the given prefix whose

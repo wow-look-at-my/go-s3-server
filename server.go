@@ -10,12 +10,13 @@ import (
 )
 
 type Server struct {
-	config  *Config
-	storage *Storage
+	config          *Config
+	storage         *Storage
+	prefetchTracker *prefetchTracker
 }
 
 func NewServer(cfg *Config, storage *Storage) *Server {
-	return &Server{config: cfg, storage: storage}
+	return &Server{config: cfg, storage: storage, prefetchTracker: newPrefetchTracker()}
 }
 
 // auditInfo captures per-request context that is logged on every request and,
@@ -128,7 +129,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		handleGetIndex(rec, r, s.storage.Index)
 	case r.Method == "GET" && key == "_batch/get":
 		route = "BatchGet"
-		handleBatchGet(rec, r, s.storage)
+		handleBatchGet(rec, r, s.storage, s.prefetchTracker)
 	case r.Method == "GET" && key != "":
 		route = "GetObject"
 		handleGetObject(rec, r, s.storage, key)

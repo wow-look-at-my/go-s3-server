@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -97,8 +96,6 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		return
 	}
 
-	log.Printf("get key=%s [%s] size=%d", key, objectLabel(meta.Metadata), meta.Size)
-
 	for k, v := range meta.Metadata {
 		// Capitalize first letter of metadata key
 		name := k
@@ -140,23 +137,7 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		return
 	}
 
-	log.Printf("put key=%s [%s] size=%d", key, objectLabel(meta), len(data))
 	w.WriteHeader(200)
-}
-
-// objectLabel builds a short human-readable description of a cache entry
-// from its stored metadata, e.g. "go-archive go1.24.0 linux/amd64".
-func objectLabel(meta map[string]string) string {
-	objType := meta["object-type"]
-	if objType == "" {
-		objType = "unknown"
-	}
-	goVer := meta["go-version"]
-	target := meta["target"]
-	if goVer != "" && target != "" {
-		return objType + " " + goVer + " " + target
-	}
-	return objType
 }
 
 // auditMapFromContext converts per-request audit info into a flat map that

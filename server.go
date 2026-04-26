@@ -25,6 +25,7 @@ type auditInfo struct {
 	ClientIP  string
 	UserAgent string
 	Timestamp time.Time
+	Label     string // decoded object description (type, package, go version, target)
 }
 
 type auditKey struct{}
@@ -72,8 +73,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	username := anonymousUser
 	defer func() {
 		duration := time.Since(start)
-		log.Printf("req method=%s path=%s client_ip=%s user=%s user_agent=%q status=%d bytes=%d duration_ms=%d",
-			r.Method, r.URL.Path, ip, username, ua,
+		label := ""
+		if a := auditFromContext(r.Context()); a != nil && a.Label != "" {
+			label = " [" + a.Label + "]"
+		}
+		log.Printf("req method=%s path=%s%s client_ip=%s user=%s user_agent=%q status=%d bytes=%d duration_ms=%d",
+			r.Method, r.URL.Path, label, ip, username, ua,
 			rec.statusCode, rec.bytesWritten, duration.Milliseconds())
 		httpRequestsTotal.WithLabelValues(r.Method, route, statusStr(rec.statusCode)).Inc()
 		httpRequestDuration.WithLabelValues(r.Method, route).Observe(duration.Seconds())

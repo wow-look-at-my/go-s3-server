@@ -35,6 +35,10 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		return
 	}
 
+	if a := auditFromContext(r.Context()); a != nil {
+		a.Label = objectLabel(meta.Metadata)
+	}
+
 	for k, v := range meta.Metadata {
 		// Capitalize first letter of metadata key
 		name := k
@@ -76,6 +80,9 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		return
 	}
 
+	if a := auditFromContext(r.Context()); a != nil {
+		a.Label = objectLabel(meta)
+	}
 	w.WriteHeader(200)
 }
 
@@ -92,6 +99,31 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("ETag", etag)
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(blob))
+}
+
+// objectLabel builds a short human-readable description of a cache entry
+// from its stored metadata, e.g. "go-archive github.com/foo/bar (bar.go) go1.24.0 linux/amd64".
+func objectLabel(meta map[string]string) string {
+	objType := meta["object-type"]
+	if objType == "" {
+		return ""
+	}
+	pkg := meta["pkg"]
+	src := meta["src"]
+	goVer := meta["go-version"]
+	target := meta["target"]
+
+	label := objType
+	if pkg != "" {
+		label += " " + pkg
+	}
+	if src != "" {
+		label += " (" + src + ")"
+	}
+	if goVer != "" && target != "" {
+		label += " " + goVer + " " + target
+	}
+	return label
 }
 
 // auditMapFromContext converts per-request audit info into a flat map that

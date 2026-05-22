@@ -127,6 +127,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "GET" && key == "_index":
 		route = "Index"
 		handleGetIndex(rec, r, s.storage.Index)
+	case r.Method == "PUT" && key == "_index":
+		route = "PutIndex"
+		handlePutIndex(rec, r, s.storage.Index)
 	case r.Method == "GET" && key == "_batch/get":
 		route = "BatchGet"
 		handleBatchGet(rec, r, s.storage, s.prefetchTracker)

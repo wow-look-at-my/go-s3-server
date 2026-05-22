@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -237,6 +238,53 @@ func (idx *Index) Blob() ([]byte, string) {
 	idx.cachedETag = `"` + hex.EncodeToString(digest[:]) + `"`
 	idx.dirty.Store(false)
 	return idx.cachedBlob, idx.cachedETag
+}
+
+// Merge adds hashes from a client-uploaded index blob into the pending queue.
+// Duplicates are handled during the next Blob() serialization (sort + dedupe).
+func (idx *Index) Merge(hashes [][gbciHashSize]byte) {
+	if len(hashes) == 0 {
+		return
+	}
+	idx.mu.Lock()
+	idx.pending = append(idx.pending, hashes...)
+	idx.dirty.Store(true)
+	idx.mu.Unlock()
+	log.Printf("index: merged %d hashes from client upload", len(hashes))
+}
+
+// parseIndexHashes validates a GBCI v1 blob and returns the raw action-ID
+// hashes it contains. Unlike the client-side parseIndexBlob (which reconstructs
+// full key strings), this returns just the binary hashes for direct merge into
+// the server's pending queue.
+func parseIndexHashes(blob []byte) ([][gbciHashSize]byte, error) {
+	if len(blob) < gbciHeaderSize+sha256.Size {
+		return nil, fmt.Errorf("blob too small (%d bytes)", len(blob))
+	}
+	if !bytes.Equal(blob[0:4], gbciMagic[:]) {
+		return nil, fmt.Errorf("bad magic")
+	}
+	if blob[4] != gbciVersion {
+		return nil, fmt.Errorf("unsupported version %d", blob[4])
+	}
+	if blob[5] != gbciHashSize {
+		return nil, fmt.Errorf("unsupported hash size %d", blob[5])
+	}
+	count := binary.LittleEndian.Uint64(blob[16:24])
+	bodyEnd := gbciHeaderSize + int(count)*gbciHashSize
+	if bodyEnd+sha256.Size != len(blob) {
+		return nil, fmt.Errorf("length %d != header+%d*%d+trailer", len(blob), count, gbciHashSize)
+	}
+	expected := sha256.Sum256(blob[:bodyEnd])
+	if !bytes.Equal(expected[:], blob[bodyEnd:]) {
+		return nil, fmt.Errorf("trailer hash mismatch")
+	}
+	hashes := make([][gbciHashSize]byte, count)
+	for i := uint64(0); i < count; i++ {
+		off := gbciHeaderSize + int(i)*gbciHashSize
+		copy(hashes[i][:], blob[off:off+gbciHashSize])
+	}
+	return hashes, nil
 }
 
 func (idx *Index) rebuild(storage *Storage) {

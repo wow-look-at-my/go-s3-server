@@ -17,8 +17,8 @@ Do NOT use `go build`, `go test`, or any bare `go` commands. Always use `go-tool
 - `auth.go` — HTTP Basic Auth; returns the authenticated username
 - `auth_test.go` — Auth tests (including the "empty credential must not bypass auth" regression)
 - `server.go` — HTTP router, auth gate, client-IP resolution, audit context, bucket dispatch
-- `handlers.go` — S3 API handlers (GetObject, PutObject) plus `handleGetIndex` for the `/_index` endpoint; PutObject writes audit xattrs
-- `index.go` — In-memory key index. Maintains an mtime-sorted list for `_batch/get` prefetch *and* a sorted slice of action-ID hashes that serializes to the GBCI v1 binary blob served at `GET /<bucket>/_index`. PUTs append to an unsorted `pending` buffer under a microsecond-scale mutex; sort+dedupe+serialize is deferred to the next `Blob()` read.
+- `handlers.go` — S3 API handlers (GetObject, PutObject, handleGetIndex, handlePutIndex) for the `/_index` endpoint; PutObject writes audit xattrs
+- `index.go` — In-memory key index. Maintains an mtime-sorted list for `_batch/get` prefetch *and* a sorted slice of action-ID hashes that serializes to the GBCI v1 binary blob served at `GET /<bucket>/_index`. PUTs append to an unsorted `pending` buffer under a microsecond-scale mutex; sort+dedupe+serialize is deferred to the next `Blob()` read. `PUT /_index` accepts a client-uploaded GBCI blob and merges its hashes into the pending queue via `Index.Merge`.
 - `storage.go` — Filesystem storage with two-level key sharding, cache version auto-purge
 - `storage_test.go` — Cache version / purge tests
 - `storage_unix.go` / `storage_windows.go` — Platform-specific file locking, user metadata xattrs, and server audit xattrs
@@ -30,7 +30,7 @@ Do NOT use `go build`, `go test`, or any bare `go` commands. Always use `go-tool
 ## Conventions
 
 - CLI parsing uses cobra. The single root command is in `main.go`.
-- S3 error responses are XML-encoded using `encoding/xml`. The `/_index` endpoint serves a binary GBCI v1 blob (`application/octet-stream`) with a strong ETag (hex-encoded SHA-256 trailer); conditional GETs are handled by `http.ServeContent`.
+- S3 error responses are XML-encoded using `encoding/xml`. The `/_index` endpoint serves a binary GBCI v1 blob (`application/octet-stream`) with a strong ETag (hex-encoded SHA-256 trailer); conditional GETs are handled by `http.ServeContent`. `PUT /_index` accepts a GBCI v1 blob from clients and merges its action-ID hashes into the in-memory index.
 - Object metadata is stored in filesystem extended attributes (xattr on Unix, ADS on Windows).
 - Storage keys are sharded: `prefix/v1aabbccdd` → `prefix/v1/aa/bbccdd`.
 - `write_once` config is an object: `{"action": "allow"|"deny", "notification": "never"|"always"|"content_differs"}`. Defaults: `action=allow`, `notification=never`.

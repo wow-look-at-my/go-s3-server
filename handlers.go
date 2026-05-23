@@ -98,6 +98,7 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 	blob, etag := idx.Blob()
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(blob))
 }
 

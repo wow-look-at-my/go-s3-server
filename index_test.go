@@ -360,6 +360,7 @@ func TestIndexHTTPMatchesInProcess(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, 200, resp.StatusCode)
 	require.Equal(t, "application/octet-stream", resp.Header.Get("Content-Type"))
+	require.Equal(t, "no-cache", resp.Header.Get("Cache-Control"))
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)

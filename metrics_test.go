@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMetricsServer(t *testing.T) {

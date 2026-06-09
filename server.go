@@ -136,6 +136,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "PUT" && key != "":
 		route = "PutObject"
 		handlePutObject(rec, r, s.storage, key)
+	case r.Method == "DELETE" && key != "":
+		route = "DeleteObject"
+		handleDeleteObject(rec, r, s.storage, key)
 	default:
 		writeS3Error(rec, 405, "MethodNotAllowed", "Method not allowed")
 	}

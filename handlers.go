@@ -86,6 +86,20 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	w.WriteHeader(200)
 }
 
+// handleDeleteObject removes a single object (S3 DeleteObject). It is the
+// surgical eviction lever for a poisoned build-cache entry: delete the bad key
+// and the next build recomputes and re-uploads the correct object. Like S3,
+// DELETE is idempotent — removing a missing key still reports success (204), so
+// retries and races are harmless. Auth is enforced upstream in ServeHTTP, the
+// same gate PUT goes through.
+func handleDeleteObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string) {
+	if err := storage.Delete(key); err != nil && !errors.Is(err, ErrNotFound) {
+		writeS3Error(w, 500, "InternalError", err.Error())
+		return
+	}
+	w.WriteHeader(204)
+}
+
 // handleGetIndex serves the precomputed GBCI v1 binary cache-key index.
 // The body is a fixed 24-byte header + sorted action-ID hashes + 32-byte
 // SHA-256 trailer. The strong ETag is the hex-encoded trailer; conditional

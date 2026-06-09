@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func putObject(t *testing.T, ts *http.Client, url, key string, data []byte, meta map[string]string) {

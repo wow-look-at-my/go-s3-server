@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/xml"
 	"io"
 	"net/http"
@@ -10,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func testSetup(t *testing.T) *httptest.Server {
@@ -416,9 +417,54 @@ func TestPutObjectReadBodyError(t *testing.T) {
 func TestMethodNotAllowed(t *testing.T) {
 	ts := testSetup(t)
 
-	resp := doRequest(t, ts, "DELETE", "/testbucket/some/key", nil, nil)
+	resp := doRequest(t, ts, "PATCH", "/testbucket/some/key", nil, nil)
 	defer resp.Body.Close()
 	require.Equal(t, 405, resp.StatusCode)
+}
+
+// TestDeleteObject covers the surgical eviction lever: a stored object can be
+// removed, a subsequent GET 404s, the key is dropped from the /_index blob, and
+// DELETE is idempotent (deleting a missing key still succeeds). This is the
+// mechanism for evicting a poisoned build-cache entry without a full purge.
+func TestDeleteObject(t *testing.T) {
+	ts := testSetup(t)
+
+	const actionHex = "10f94fc02dcc245820dd861f4c6c25dee23ceb750f6be498fe84f67dfd2f1f9b"
+	hashBytes, err := hex.DecodeString(actionHex)
+	require.Nil(t, err)
+	key := "/testbucket/go-buildcache/v1" + actionHex
+	content := []byte("cache data to evict")
+
+	resp := doRequest(t, ts, "PUT", key, content, map[string]string{"X-Amz-Meta-Outputid": "deadbeef"})
+	require.Equal(t, 200, resp.StatusCode)
+	resp.Body.Close()
+
+	// The key's action hash is advertised in the index before deletion.
+	resp = doRequest(t, ts, "GET", "/testbucket/_index", nil, nil)
+	idxBefore, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.True(t, bytes.Contains(idxBefore, hashBytes), "index should list the key before delete")
+
+	// Delete it.
+	resp = doRequest(t, ts, "DELETE", key, nil, nil)
+	require.Equal(t, 204, resp.StatusCode)
+	resp.Body.Close()
+
+	// GET now 404s.
+	resp = doRequest(t, ts, "GET", key, nil, nil)
+	require.Equal(t, 404, resp.StatusCode)
+	resp.Body.Close()
+
+	// And the key is gone from the index blob.
+	resp = doRequest(t, ts, "GET", "/testbucket/_index", nil, nil)
+	idxAfter, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.False(t, bytes.Contains(idxAfter, hashBytes), "index must not list the key after delete")
+
+	// DELETE is idempotent: removing it again still succeeds.
+	resp = doRequest(t, ts, "DELETE", key, nil, nil)
+	require.Equal(t, 204, resp.StatusCode)
+	resp.Body.Close()
 }
 
 func TestUnsafeKeyHashedStorage(t *testing.T) {

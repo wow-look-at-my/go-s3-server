@@ -377,9 +377,9 @@ func (s *Storage) Get(key string) (_ []byte, _ *ObjectMeta, err error) {
 
 // Delete removes the object stored under key, returning ErrNotFound if no such
 // object exists. It is the surgical counterpart to the whole-dir cache-version
-// purge: an operator can evict a single poisoned entry — e.g. a cross-
+// purge: an operator can evict a single poisoned entry -- e.g. a cross-
 // contaminated build-cache object that hashes to its own outputID yet belongs
-// under a different action key — without rebuilding the entire cache. The
+// under a different action key -- without rebuilding the entire cache. The
 // index entry is dropped too, so the server stops advertising a key it no
 // longer stores.
 func (s *Storage) Delete(key string) (err error) {

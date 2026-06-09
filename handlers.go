@@ -89,7 +89,7 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 // handleDeleteObject removes a single object (S3 DeleteObject). It is the
 // surgical eviction lever for a poisoned build-cache entry: delete the bad key
 // and the next build recomputes and re-uploads the correct object. Like S3,
-// DELETE is idempotent — removing a missing key still reports success (204), so
+// DELETE is idempotent -- removing a missing key still reports success (204), so
 // retries and races are harmless. Auth is enforced upstream in ServeHTTP, the
 // same gate PUT goes through.
 func handleDeleteObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string) {

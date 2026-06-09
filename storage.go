@@ -375,6 +375,36 @@ func (s *Storage) Get(key string) (_ []byte, _ *ObjectMeta, err error) {
 	return data, meta, nil
 }
 
+// Delete removes the object stored under key, returning ErrNotFound if no such
+// object exists. It is the surgical counterpart to the whole-dir cache-version
+// purge: an operator can evict a single poisoned entry -- e.g. a cross-
+// contaminated build-cache object that hashes to its own outputID yet belongs
+// under a different action key -- without rebuilding the entire cache. The
+// index entry is dropped too, so the server stops advertising a key it no
+// longer stores.
+func (s *Storage) Delete(key string) (err error) {
+	start := time.Now()
+	defer func() {
+		status := "ok"
+		if err != nil {
+			status = "error"
+		}
+		storageOpsTotal.WithLabelValues("delete", status).Inc()
+		storageOpDuration.WithLabelValues("delete").Observe(time.Since(start).Seconds())
+	}()
+	path := s.keyToPath(key)
+	if rmErr := os.Remove(path); rmErr != nil {
+		if errors.Is(rmErr, fs.ErrNotExist) {
+			return ErrNotFound
+		}
+		return rmErr
+	}
+	if s.Index != nil {
+		s.Index.Remove(key)
+	}
+	return nil
+}
+
 func (s *Storage) List(prefix string, maxKeys int, continuationToken string) (_ *ListResult, err error) {
 	metricsStart := time.Now()
 	defer func() {

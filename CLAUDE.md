@@ -17,9 +17,9 @@ Do NOT use `go build`, `go test`, or any bare `go` commands. Always use `go-tool
 - `auth.go` — HTTP Basic Auth; returns the authenticated username
 - `auth_test.go` — Auth tests (including the "empty credential must not bypass auth" regression)
 - `server.go` — HTTP router, auth gate, client-IP resolution, audit context, bucket dispatch
-- `handlers.go` — S3 API handlers (GetObject, PutObject) plus `handleGetIndex` for the `/_index` endpoint; PutObject writes audit xattrs
+- `handlers.go` — S3 API handlers (GetObject, PutObject, DeleteObject) plus `handleGetIndex` for the `/_index` endpoint; PutObject writes audit xattrs. DeleteObject is idempotent (204 even for a missing key) and is the surgical eviction lever for a poisoned cache entry — it removes the file and drops the key from the index (`Index.Remove`)
 - `index.go` — In-memory key index. Maintains an mtime-sorted list for `_batch/get` prefetch *and* a sorted slice of action-ID hashes that serializes to the GBCI v1 binary blob served at `GET /<bucket>/_index`. PUTs append to an unsorted `pending` buffer under a microsecond-scale mutex; sort+dedupe+serialize is deferred to the next `Blob()` read.
-- `storage.go` — Filesystem storage with two-level key sharding, cache version auto-purge
+- `storage.go` — Filesystem storage with two-level key sharding, cache version auto-purge, and single-key `Delete` (used by DeleteObject)
 - `storage_test.go` — Cache version / purge tests
 - `storage_unix.go` / `storage_windows.go` — Platform-specific file locking, user metadata xattrs, and server audit xattrs
 - `lock_windows.go` — Windows file locking via syscall

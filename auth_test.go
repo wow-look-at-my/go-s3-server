@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/require"
 )
 
 // skipIfNoXattr skips the test when dir's filesystem cannot persist the

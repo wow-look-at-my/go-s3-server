@@ -126,6 +126,44 @@ func (idx *Index) Put(key string, size int64) {
 	}
 }
 
+// Remove drops key from the index: its mtime entry and, when the key is a
+// well-formed cacheprog key, its action-ID hash from the GBCI blob. Called when
+// an object is deleted so the index stops advertising a key the store no longer
+// has. Best-effort and O(n) in the index size; deletes are rare (operator
+// eviction of a poisoned entry), so the linear scan is not on any hot path.
+func (idx *Index) Remove(key string) {
+	hash, hashOK := extractActionHash(key)
+
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	for i := range idx.entries {
+		if idx.entries[i].key == key {
+			idx.entries = append(idx.entries[:i], idx.entries[i+1:]...)
+			break
+		}
+	}
+
+	if hashOK {
+		idx.pending = removeHash(idx.pending, hash)
+		idx.hashes = removeHash(idx.hashes, hash)
+		idx.dirty.Store(true)
+	}
+}
+
+// removeHash returns s with every occurrence of h filtered out, reusing s's
+// backing array (the result is always a prefix of s). The action-ID hash is a
+// 1:1 function of the key, so at most one entry matches.
+func removeHash(s [][gbciHashSize]byte, h [gbciHashSize]byte) [][gbciHashSize]byte {
+	out := s[:0]
+	for _, x := range s {
+		if x != h {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
 // NearbyKeys returns up to limit keys whose modification time falls within
 // [startUnix, endUnix], sorted by distance from the midpoint, excluding
 // keys in the exclude set.

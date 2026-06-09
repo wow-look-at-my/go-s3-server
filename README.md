@@ -4,7 +4,7 @@ Minimal S3-compatible server backed by the local filesystem. Designed as a share
 
 ## Features
 
-- **S3 API subset** — `GetObject`, `PutObject`
+- **S3 API subset** — `GetObject`, `PutObject`, `DeleteObject` (idempotent, returns `204`; the surgical lever for evicting a single poisoned cache entry without a whole-cache version-bump purge)
 - **Cache-key index** — `GET /<bucket>/_index` returns a precomputed binary blob (GBCI v1) of every cacheprog action-ID hash, with strong ETag and `If-None-Match` 304 support
 - **HTTP Basic Auth** — multiple users, or explicitly disable with `disable_auth: true`
 - **Write-once mode** — deny overwriting existing keys with configurable conflict notification (ideal for content-addressable caches)
@@ -74,6 +74,7 @@ HTTP Basic Auth. Configure one or more users in the `credentials` array:
 ```bash
 curl -u alice:secret1 -X PUT --data-binary @file.bin http://localhost:9000/my-cache/path/to/key
 curl -u alice:secret1 http://localhost:9000/my-cache/path/to/key
+curl -u alice:secret1 -X DELETE http://localhost:9000/my-cache/path/to/key   # evict one entry (e.g. a poisoned key)
 ```
 
 To disable auth (e.g. behind a reverse proxy that handles it), set `disable_auth: true` and omit `credentials`:

@@ -39,6 +39,15 @@ var (
 		Name: "s3_http_in_flight_requests",
 		Help: "Number of HTTP requests currently being served.",
 	})
+
+	// httpRejectedTotal counts requests shed by admission control (503 +
+	// Retry-After) because the server was at MaxConcurrentRequests. A nonzero,
+	// rising value is the direct signal that the server is saturated and load
+	// should be reduced or capacity added — the observable backpressure metric.
+	httpRejectedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "s3_http_rejected_total",
+		Help: "Total number of requests rejected with 503 due to the concurrency limit.",
+	})
 )
 
 // Storage metrics

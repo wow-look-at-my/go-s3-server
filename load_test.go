@@ -128,7 +128,17 @@ func TestLoad_ConcurrentMatrixStreamsWithBoundedMemory(t *testing.T) {
 
 	var maxStatus int64
 	var totalServed int64
-	var firstErr atomic.Value
+	var (
+		errMu    sync.Mutex
+		firstErr error
+	)
+	recordErr := func(e error) {
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = e
+		}
+		errMu.Unlock()
+	}
 	recordStatus := func(code int) {
 		for {
 			old := atomic.LoadInt64(&maxStatus)
@@ -156,14 +166,14 @@ func TestLoad_ConcurrentMatrixStreamsWithBoundedMemory(t *testing.T) {
 			req, _ := http.NewRequest("GET", ts.URL+"/testbucket/_batch/get", bytes.NewReader(reqBody))
 			resp, err := client.Do(req)
 			if err != nil {
-				firstErr.CompareAndSwap(nil, err)
+				recordErr(err)
 				return
 			}
 			recordStatus(resp.StatusCode)
 			n, _, terr := consumeTar(resp.Body)
 			resp.Body.Close()
 			if terr != nil {
-				firstErr.CompareAndSwap(nil, fmt.Errorf("tar parse: %w", terr))
+				recordErr(fmt.Errorf("tar parse: %w", terr))
 			}
 			atomic.AddInt64(&totalServed, n)
 
@@ -173,7 +183,7 @@ func TestLoad_ConcurrentMatrixStreamsWithBoundedMemory(t *testing.T) {
 				preq, _ := http.NewRequest("PUT", ts.URL+"/testbucket/"+pk, bytes.NewReader(body))
 				presp, err := client.Do(preq)
 				if err != nil {
-					firstErr.CompareAndSwap(nil, err)
+					recordErr(err)
 					continue
 				}
 				recordStatus(presp.StatusCode)
@@ -187,9 +197,8 @@ func TestLoad_ConcurrentMatrixStreamsWithBoundedMemory(t *testing.T) {
 	close(stopSampler)
 	samplerWG.Wait()
 
-	if e := firstErr.Load(); e != nil {
-		t.Fatalf("client error under load (connection dropped / malformed response): %v", e)
-	}
+	require.NoError(t, firstErr)
+
 	require.Less(t, int(atomic.LoadInt64(&maxStatus)), 500,
 		"server must never return a 5xx under sustained concurrent load (got max status %d)", maxStatus)
 	require.Greater(t, atomic.LoadInt64(&totalServed), int64(1)<<30,

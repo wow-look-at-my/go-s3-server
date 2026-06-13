@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -259,7 +260,19 @@ func (s *Storage) pathToKey(path string) string {
 	return rel
 }
 
-func (s *Storage) Put(key string, data []byte, meta map[string]string, audit map[string]string) (err error) {
+// Put stores data under key. It is a convenience wrapper around PutStream for
+// callers (and tests) that already hold the full body in memory.
+func (s *Storage) Put(key string, data []byte, meta map[string]string, audit map[string]string) error {
+	return s.PutStream(key, bytes.NewReader(data), meta, audit)
+}
+
+// PutStream stores the body read from r under key, streaming it straight to disk
+// so the server never buffers a whole upload in memory. This is the OOM-safety
+// property that lets many large concurrent PUTs coexist under a tight memory
+// budget: io.Copy uses a fixed 32 KiB buffer, so resident memory per upload is
+// flat regardless of object size. The actual byte count is recorded as the
+// audit content_length.
+func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, audit map[string]string) (err error) {
 	start := time.Now()
 	defer func() {
 		status := "ok"
@@ -272,22 +285,6 @@ func (s *Storage) Put(key string, data []byte, meta map[string]string, audit map
 	path := s.keyToPath(key)
 	hashed := !isKeySafe(key)
 
-	if s.writeOnce.Action == "deny" {
-		if existing, err := os.ReadFile(path); err == nil {
-			switch s.writeOnce.Notification {
-			case "always":
-				return ErrWriteOnceDuplicate
-			case "content_differs":
-				if bytes.Equal(existing, data) {
-					return nil
-				}
-				return ErrWriteOnceConflict
-			default:
-				return nil
-			}
-		}
-	}
-
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create dirs: %w", err)
@@ -299,14 +296,40 @@ func (s *Storage) Put(key string, data []byte, meta map[string]string, audit map
 	}
 	tmpPath := tmp.Name()
 
-	if _, err := tmp.Write(data); err != nil {
+	n, copyErr := io.Copy(tmp, r)
+	if copyErr != nil {
 		tmp.Close()
 		os.Remove(tmpPath)
-		return fmt.Errorf("write temp: %w", err)
+		return fmt.Errorf("write temp: %w", copyErr)
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("close temp: %w", err)
+	}
+
+	// write_once is applied after the body is on disk so the content comparison
+	// streams from two files instead of buffering either in memory.
+	if s.writeOnce.Action == "deny" {
+		if _, statErr := os.Stat(path); statErr == nil { // object already exists
+			switch s.writeOnce.Notification {
+			case "always":
+				os.Remove(tmpPath)
+				return ErrWriteOnceDuplicate
+			case "content_differs":
+				eq, eqErr := filesEqual(tmpPath, path)
+				os.Remove(tmpPath)
+				if eqErr != nil {
+					return fmt.Errorf("write_once compare: %w", eqErr)
+				}
+				if eq {
+					return nil
+				}
+				return ErrWriteOnceConflict
+			default:
+				os.Remove(tmpPath)
+				return nil
+			}
+		}
 	}
 
 	if err := setMetadata(tmpPath, meta); err != nil {
@@ -318,6 +341,9 @@ func (s *Storage) Put(key string, data []byte, meta map[string]string, audit map
 	// attributes, the request log still captures the same fields, and it's
 	// better to accept the upload than to refuse it over missing forensics.
 	// Log loudly so operators notice if they're losing the on-disk trail.
+	if audit != nil {
+		audit["content_length"] = strconv.FormatInt(n, 10)
+	}
 	if err := setAudit(tmpPath, audit); err != nil {
 		log.Printf("audit: failed to persist xattrs for key %q (request log still has the data): %v", key, err)
 	}
@@ -334,9 +360,46 @@ func (s *Storage) Put(key string, data []byte, meta map[string]string, audit map
 		return fmt.Errorf("rename: %w", err)
 	}
 	if s.Index != nil {
-		s.Index.Put(key, int64(len(data)))
+		s.Index.Put(key, n)
 	}
 	return nil
+}
+
+// filesEqual reports whether two files have identical contents, comparing in
+// fixed-size chunks so neither file is ever loaded into memory whole.
+func filesEqual(a, b string) (bool, error) {
+	fa, err := os.Open(a)
+	if err != nil {
+		return false, err
+	}
+	defer fa.Close()
+	fb, err := os.Open(b)
+	if err != nil {
+		return false, err
+	}
+	defer fb.Close()
+
+	const chunk = 64 * 1024
+	ba := make([]byte, chunk)
+	bb := make([]byte, chunk)
+	for {
+		na, ea := io.ReadFull(fa, ba)
+		nb, eb := io.ReadFull(fb, bb)
+		if na != nb || !bytes.Equal(ba[:na], bb[:nb]) {
+			return false, nil
+		}
+		aDone := ea == io.EOF || ea == io.ErrUnexpectedEOF
+		bDone := eb == io.EOF || eb == io.ErrUnexpectedEOF
+		if ea != nil && !aDone {
+			return false, ea
+		}
+		if eb != nil && !bDone {
+			return false, eb
+		}
+		if aDone || bDone {
+			return aDone && bDone, nil
+		}
+	}
 }
 
 func (s *Storage) Get(key string) (_ []byte, _ *ObjectMeta, err error) {
@@ -373,6 +436,65 @@ func (s *Storage) Get(key string) (_ []byte, _ *ObjectMeta, err error) {
 	getMetadata(path, meta)
 
 	return data, meta, nil
+}
+
+// Stat returns an object's metadata (size, mtime, user metadata) WITHOUT reading
+// its body. The batch endpoint uses it to build the response manifest, and the
+// GET path uses it where only size/metadata are needed — so a large object's
+// bytes are never pulled into memory just to learn how big it is.
+func (s *Storage) Stat(key string) (*ObjectMeta, error) {
+	path := s.keyToPath(key)
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	meta := &ObjectMeta{
+		Metadata: make(map[string]string),
+		ModTime:  info.ModTime(),
+		Size:     info.Size(),
+	}
+	getMetadata(path, meta)
+	return meta, nil
+}
+
+// Open opens an object's body for streaming and returns it with its metadata.
+// The caller MUST Close the returned file. Streaming straight from the open file
+// (instead of ReadFile + Write) is what keeps GET and batch-GET memory flat
+// under load: only an io.Copy-sized buffer is resident, never the whole object.
+// meta.Size comes from the open fd, so it matches the bytes that will be read.
+func (s *Storage) Open(key string) (_ *os.File, _ *ObjectMeta, err error) {
+	start := time.Now()
+	defer func() {
+		status := "ok"
+		if err != nil {
+			status = "error"
+		}
+		storageOpsTotal.WithLabelValues("get", status).Inc()
+		storageOpDuration.WithLabelValues("get").Observe(time.Since(start).Seconds())
+	}()
+	path := s.keyToPath(key)
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil, ErrNotFound
+		}
+		return nil, nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	meta := &ObjectMeta{
+		Metadata: make(map[string]string),
+		ModTime:  info.ModTime(),
+		Size:     info.Size(),
+	}
+	getMetadata(path, meta)
+	return f, meta, nil
 }
 
 // Delete removes the object stored under key, returning ErrNotFound if no such

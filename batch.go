@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,13 +32,20 @@ type batchGetManifest struct {
 	Entries []batchGetManifestEntry `json:"entries"`
 }
 
-// batchEntry holds a fetched cache entry for inclusion in a batch response.
+// batchEntry identifies a cache entry to include in a batch response. It holds
+// only metadata (key, size, mtime, user metadata) — never the body. Bodies are
+// streamed straight from disk into the tar at write time, so a batch of hundreds
+// of large objects is never materialized in the heap at once.
 type batchEntry struct {
 	key      string
-	data     []byte
 	meta     *ObjectMeta
 	prefetch bool
 }
+
+// maxBatchKeys caps how many keys one batch request may ask for. The cacheprog
+// client batches in chunks of 128, so this is generous headroom; it bounds the
+// per-request manifest/stat work and rejects a pathological request with 400.
+const maxBatchKeys = 4096
 
 // prefetchWindow is the time window around requested entries within which
 // other entries are considered related and included as prefetch.
@@ -135,28 +143,33 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 		writeS3Error(w, 400, "InvalidRequest", "no keys specified")
 		return
 	}
+	if len(req.Keys) > maxBatchKeys {
+		writeS3Error(w, 400, "InvalidRequest", fmt.Sprintf("too many keys: %d (max %d)", len(req.Keys), maxBatchKeys))
+		return
+	}
 
 	user := anonymousUser
 	if a := auditFromContext(r.Context()); a != nil {
 		user = a.Username
 	}
 
-	// Fetch all requested entries.
+	// Phase 1: collect metadata for the requested keys WITHOUT reading bodies.
+	// Stat is cheap (os.Stat + xattrs); the bodies are streamed later, one at a
+	// time, so the whole batch never sits in memory.
 	var entries []batchEntry
 	requestedSet := make(map[string]bool, len(req.Keys))
 	var minMod, maxMod time.Time
 
 	for _, key := range req.Keys {
 		requestedSet[key] = true
-		data, meta, err := storage.Get(key)
+		meta, err := storage.Stat(key)
 		if err != nil {
-			if errors.Is(err, ErrNotFound) {
-				continue
+			if !errors.Is(err, ErrNotFound) {
+				log.Printf("batch get: %s: %v", key, err)
 			}
-			log.Printf("batch get: %s: %v", key, err)
 			continue
 		}
-		entries = append(entries, batchEntry{key: key, data: data, meta: meta})
+		entries = append(entries, batchEntry{key: key, meta: meta})
 
 		if minMod.IsZero() || meta.ModTime.Before(minMod) {
 			minMod = meta.ModTime
@@ -179,12 +192,12 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 		entries = append(entries, prefetched...)
 	}
 
-	// Build manifest.
+	// Build manifest from metadata only — no body bytes are held here.
 	manifest := batchGetManifest{}
 	for _, e := range entries {
 		manifest.Entries = append(manifest.Entries, batchGetManifestEntry{
 			Key:      e.key,
-			Size:     int64(len(e.data)),
+			Size:     e.meta.Size,
 			Metadata: e.meta.Metadata,
 			Prefetch: e.prefetch,
 		})
@@ -205,31 +218,55 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 	tw := tar.NewWriter(w)
 	defer tw.Close()
 
-	// Write manifest first.
+	// Manifest first.
 	manifestData, _ := json.Marshal(manifest)
-	tw.WriteHeader(&tar.Header{
-		Name: "manifest.json",
-		Size: int64(len(manifestData)),
-		Mode: 0644,
-	})
-	tw.Write(manifestData)
-
-	// Write data entries.
-	for _, e := range entries {
-		tw.WriteHeader(&tar.Header{
-			Name: "data/" + e.key,
-			Size: int64(len(e.data)),
-			Mode: 0644,
-		})
-		tw.Write(e.data)
+	if err := writeTarEntry(tw, "manifest.json", int64(len(manifestData)), bytes.NewReader(manifestData)); err != nil {
+		log.Printf("batch get: write manifest: %v", err)
+		return
 	}
 
-	log.Printf("batch get: requested=%d found=%d prefetched=%d suppressed=%d",
-		len(req.Keys), len(entries)-nPrefetch, nPrefetch, nSuppressed)
+	// Phase 2: stream each body straight from disk into the tar. Only one body
+	// is in flight at a time (an io.Copy-sized buffer), so a batch of hundreds
+	// of large objects no longer materializes hundreds of bodies in the heap —
+	// the change that keeps the server within its memory budget under the
+	// concurrent CI matrix load that previously OOM-killed it.
+	var streamed int
+	for _, e := range entries {
+		f, meta, err := storage.Open(e.key)
+		if err != nil {
+			// Vanished between stat and stream (e.g. operator eviction). Skip it:
+			// the client matches data entries by name and treats a missing one as
+			// a cache miss, so omitting it is safe.
+			continue
+		}
+		err = writeTarEntry(tw, "data/"+e.key, meta.Size, f)
+		f.Close()
+		if err != nil {
+			// A write error here is almost always the client going away mid-stream;
+			// stop rather than spin through the rest of the batch.
+			log.Printf("batch get: stream %s: %v", e.key, err)
+			return
+		}
+		streamed++
+	}
+
+	log.Printf("batch get: requested=%d found=%d prefetched=%d suppressed=%d streamed=%d",
+		len(req.Keys), len(entries)-nPrefetch, nPrefetch, nSuppressed, streamed)
 }
 
-// findByModTime scans storage for entries with the given prefix whose
-// modification time falls within [start, end], excluding already-requested keys.
+// writeTarEntry writes one tar member, copying exactly size bytes from r so the
+// bytes written always match the declared header size (a tar invariant).
+func writeTarEntry(tw *tar.Writer, name string, size int64, r io.Reader) error {
+	if err := tw.WriteHeader(&tar.Header{Name: name, Size: size, Mode: 0644}); err != nil {
+		return err
+	}
+	_, err := io.CopyN(tw, r, size)
+	return err
+}
+
+// findByModTime returns related entries (metadata only) whose modification time
+// falls within [start, end], excluding already-requested keys. Bodies are not
+// read here — they are streamed later alongside the explicitly requested ones.
 func findByModTime(storage *Storage, start, end time.Time, exclude map[string]bool) []batchEntry {
 	if storage.Index == nil {
 		return nil
@@ -239,11 +276,11 @@ func findByModTime(storage *Storage, start, end time.Time, exclude map[string]bo
 
 	var out []batchEntry
 	for _, key := range keys {
-		data, meta, err := storage.Get(key)
+		meta, err := storage.Stat(key)
 		if err != nil {
 			continue
 		}
-		out = append(out, batchEntry{key: key, data: data, meta: meta, prefetch: true})
+		out = append(out, batchEntry{key: key, meta: meta, prefetch: true})
 	}
 	return out
 }

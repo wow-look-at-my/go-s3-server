@@ -25,7 +25,11 @@ func writeS3Error(w http.ResponseWriter, httpStatus int, code, message string) {
 }
 
 func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string) {
-	data, meta, err := storage.Get(key)
+	// Open + stream rather than ReadFile + Write: the body is copied straight
+	// from disk to the socket with a fixed-size buffer, so a large object never
+	// becomes a large heap allocation. This is what keeps memory flat when many
+	// GETs run concurrently.
+	f, meta, err := storage.Open(key)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeS3Error(w, 404, "NoSuchKey", fmt.Sprintf("The specified key does not exist: %s", key))
@@ -34,6 +38,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		writeS3Error(w, 500, "InternalError", err.Error())
 		return
 	}
+	defer f.Close()
 
 	if a := auditFromContext(r.Context()); a != nil {
 		a.Label = objectLabel(meta.Metadata)
@@ -50,16 +55,10 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	w.Header().Set("Last-Modified", meta.ModTime.UTC().Format(http.TimeFormat))
 	w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
 	w.WriteHeader(200)
-	w.Write(data)
+	io.Copy(w, f)
 }
 
-func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string) {
-	data, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeS3Error(w, 500, "InternalError", "failed to read body")
-		return
-	}
-
+func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string, maxObjectBytes int64) {
 	meta := make(map[string]string)
 	for k, vals := range r.Header {
 		lk := strings.ToLower(k)
@@ -69,11 +68,20 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		}
 	}
 
-	audit := auditMapFromContext(r, int64(len(data)))
+	audit := auditMapFromContext(r)
 
-	if err := storage.Put(key, data, meta, audit); err != nil {
+	// Cap a single upload and stream it straight to disk. PutStream never
+	// buffers the whole body, so concurrent large PUTs no longer multiply into
+	// the heap; MaxBytesReader bounds a runaway/oversized upload (413).
+	body := http.MaxBytesReader(w, r.Body, maxObjectBytes)
+	if err := storage.PutStream(key, body, meta, audit); err != nil {
 		if errors.Is(err, ErrWriteOnceConflict) || errors.Is(err, ErrWriteOnceDuplicate) {
 			writeS3Error(w, 409, "ConflictException", err.Error())
+			return
+		}
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeS3Error(w, 413, "EntityTooLarge", fmt.Sprintf("object exceeds max size of %d bytes", maxObjectBytes))
 			return
 		}
 		writeS3Error(w, 500, "InternalError", err.Error())
@@ -144,17 +152,19 @@ func objectLabel(meta map[string]string) string {
 // storage.Put can persist as extended attributes on the uploaded object.
 // These fields answer: who uploaded this, when, from where, and with what
 // client — the data needed to investigate a suspected compromise.
-func auditMapFromContext(r *http.Request, size int64) map[string]string {
+// content_length is filled in by storage.PutStream from the actual number of
+// bytes streamed to disk, since the size is not known up front when the body is
+// not buffered.
+func auditMapFromContext(r *http.Request) map[string]string {
 	a := auditFromContext(r.Context())
 	if a == nil {
 		return nil
 	}
 	m := map[string]string{
-		"uploader":       a.Username,
-		"uploaded_at":    a.Timestamp.UTC().Format(time.RFC3339Nano),
-		"client_ip":      a.ClientIP,
-		"user_agent":     a.UserAgent,
-		"content_length": strconv.FormatInt(size, 10),
+		"uploader":    a.Username,
+		"uploaded_at": a.Timestamp.UTC().Format(time.RFC3339Nano),
+		"client_ip":   a.ClientIP,
+		"user_agent":  a.UserAgent,
 	}
 	return m
 }

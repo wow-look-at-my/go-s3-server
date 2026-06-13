@@ -67,7 +67,23 @@ type Config struct {
 	WriteOnce     WriteOnceConfig `json:"write_once"`
 	DisableAuth   bool            `json:"disable_auth"`
 	Credentials   []Credential    `json:"credentials"`
+
+	// MaxConcurrentRequests bounds in-flight requests; excess requests are shed
+	// with 503 + Retry-After instead of piling up until the process OOMs (which
+	// a fronting proxy then surfaces as a 502). 0 → default.
+	MaxConcurrentRequests int `json:"max_concurrent_requests"`
+	// MaxObjectBytes caps a single PUT body. 0 → default. The body is streamed
+	// to disk, so this guards disk, not memory.
+	MaxObjectBytes int64 `json:"max_object_bytes"`
 }
+
+// Resource-limit defaults. Both are generous: under normal CI load the server
+// never approaches them, but they bound the worst case so a load spike degrades
+// (503 / 413) instead of OOM-killing the process.
+const (
+	defaultMaxConcurrentRequests = 128
+	defaultMaxObjectBytes        = 1 << 30 // 1 GiB
+)
 
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -102,6 +118,12 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.DataDir == "" {
 		return nil, fmt.Errorf("config: data_dir is required")
+	}
+	if cfg.MaxConcurrentRequests <= 0 {
+		cfg.MaxConcurrentRequests = defaultMaxConcurrentRequests
+	}
+	if cfg.MaxObjectBytes <= 0 {
+		cfg.MaxObjectBytes = defaultMaxObjectBytes
 	}
 	if cfg.DisableAuth {
 		if len(cfg.Credentials) != 0 {

@@ -9,6 +9,7 @@ Minimal S3-compatible server backed by the local filesystem. Designed as a share
 - **HTTP Basic Auth** — multiple users, or explicitly disable with `disable_auth: true`
 - **Write-once mode** — deny overwriting existing keys with configurable conflict notification (ideal for content-addressable caches)
 - **Sharded storage** — keys are automatically split into a two-level directory tree to avoid huge flat directories
+- **Streaming, OOM-safe under load** — object bodies are streamed straight to/from disk on GET, PUT, and batch GET, so the server never buffers whole objects in memory. A concurrency limit sheds excess load with `503 + Retry-After` instead of queueing until it OOMs (which a fronting proxy would surface as a `502`). See [Behavior under load](#behavior-under-load).
 - **Multi-arch Docker image** — `linux/amd64` and `linux/arm64` published to `ghcr.io/wow-look-at-my/go-s3-server`
 
 ## Quick start
@@ -55,6 +56,8 @@ All flags except `--config` override the corresponding config file value.
 | `write_once` | object | `{"action":"allow"}` | no | Write-once behavior (see below) |
 | `disable_auth` | bool | `false` | no | If `true`, accept all requests without authentication. Must be set explicitly; `credentials` must be omitted when this is `true`. |
 | `credentials` | array | — | yes (unless `disable_auth: true`) | One or more `username`/`password` pairs. Both fields must be non-empty. |
+| `max_concurrent_requests` | int | `128` | no | Max in-flight requests; excess is shed with `503 + Retry-After`. `0` → default. |
+| `max_object_bytes` | int | `1073741824` (1 GiB) | no | Max single PUT body; larger uploads get `413`. The body is streamed to disk, so this guards disk, not memory. `0` → default. |
 
 ### `write_once` options
 
@@ -136,6 +139,33 @@ trusted inputs.
 
 A corrupt or unparseable marker file is a startup error — fix it manually,
 don't leave it to a silent purge.
+
+## Behavior under load
+
+This server is built to absorb the concurrent load of a parallel CI matrix
+(many jobs each batch-fetching and uploading hundreds of content-addressed
+keys) without OOM-ing or returning `502`s:
+
+- **Bodies are streamed, never buffered.** `GetObject`, `PutObject`, and the
+  `_batch/get` tar response copy object bytes directly between disk and the
+  socket with a fixed-size buffer. A batch of hundreds of large objects holds
+  only one body in flight at a time, so memory stays flat regardless of how
+  many objects (or how large) are requested concurrently.
+- **Backpressure, not collapse.** At most `max_concurrent_requests` are served
+  at once; further requests are shed immediately with `503 Service Unavailable`
+  and a `Retry-After` header — a signal clients back off on. The server never
+  queues unbounded work until the process is OOM-killed (the failure a fronting
+  proxy reports as a `502`). Overload-shed requests are counted in the
+  `s3_http_rejected_total` metric.
+- **Bounded requests.** A single PUT is capped at `max_object_bytes` (`413` over
+  the limit); a `_batch/get` is capped at 4096 keys (`400` over the limit).
+- **Timeouts.** The HTTP server sets `ReadHeaderTimeout` (slowloris guard) plus
+  generous `Read`/`Write`/`Idle` timeouts so a stuck connection cannot pin a
+  concurrency slot indefinitely.
+- **Observability.** When `--metrics-listen` is set, `/metrics` exposes request,
+  storage, in-flight, and rejection counters alongside the standard Go runtime
+  and process collectors (`go_memstats_*`, `process_resident_memory_bytes`,
+  `go_goroutines`) — enough to see saturation and memory pressure directly.
 
 ## Docker
 

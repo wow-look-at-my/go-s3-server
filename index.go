@@ -42,6 +42,15 @@ type Index struct {
 	mu      sync.RWMutex
 	entries []indexEntry // sorted by mtime for NearbyKeys binary search
 
+	// pendingEntries is an unsorted append-only buffer of new mtime entries
+	// added by Put. Like pending (for hashes), it keeps the per-PUT path to a
+	// single O(1) mutex-guarded append; the O(n log n) merge+sort is deferred to
+	// the next reader (NearbyKeys/Remove). Previously Put re-sorted the whole
+	// mtime list on every call under this same lock, which serialized writers
+	// into a lock convoy under the concurrent CI matrix load — the upstream
+	// stall a fronting proxy reported as a 502.
+	pendingEntries []indexEntry
+
 	// hashes is the sorted, deduplicated master list of action-ID hashes
 	// extracted from S3 keys matching gbciKeyPrefix. Only mutated inside
 	// Blob() under mu.Lock().
@@ -111,19 +120,29 @@ func (idx *Index) Put(key string, size int64) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	// Existing mtime index: append + re-sort. This is O(n) per PUT and is
-	// a known pre-existing bottleneck under high write load; replacing it
-	// with the same pending-merge pattern used for hashes is tracked as a
-	// follow-up.
-	idx.entries = append(idx.entries, indexEntry{key: key, mtimeUnix: now})
-	sort.Slice(idx.entries, func(i, j int) bool {
-		return idx.entries[i].mtimeUnix < idx.entries[j].mtimeUnix
-	})
+	// Append to the unsorted pending buffer only — O(1). The merge+sort into the
+	// mtime-ordered list is deferred to the next reader (see drainEntriesLocked),
+	// so a burst of concurrent PUTs no longer convoys behind a full re-sort.
+	idx.pendingEntries = append(idx.pendingEntries, indexEntry{key: key, mtimeUnix: now})
 
 	if hashOK {
 		idx.pending = append(idx.pending, hash)
 		idx.dirty.Store(true)
 	}
+}
+
+// drainEntriesLocked merges any pending mtime entries into the sorted master
+// list and re-sorts. Must be called under idx.mu.Lock by any reader that needs
+// idx.entries to be complete and mtime-ordered (NearbyKeys, Remove).
+func (idx *Index) drainEntriesLocked() {
+	if len(idx.pendingEntries) == 0 {
+		return
+	}
+	idx.entries = append(idx.entries, idx.pendingEntries...)
+	idx.pendingEntries = idx.pendingEntries[:0]
+	sort.Slice(idx.entries, func(i, j int) bool {
+		return idx.entries[i].mtimeUnix < idx.entries[j].mtimeUnix
+	})
 }
 
 // Remove drops key from the index: its mtime entry and, when the key is a
@@ -137,6 +156,8 @@ func (idx *Index) Remove(key string) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
+	// Drain first so a key still sitting in pendingEntries is removable too.
+	idx.drainEntriesLocked()
 	for i := range idx.entries {
 		if idx.entries[i].key == key {
 			idx.entries = append(idx.entries[:i], idx.entries[i+1:]...)
@@ -168,9 +189,26 @@ func removeHash(s [][gbciHashSize]byte, h [gbciHashSize]byte) [][gbciHashSize]by
 // [startUnix, endUnix], sorted by distance from the midpoint, excluding
 // keys in the exclude set.
 func (idx *Index) NearbyKeys(startUnix, endUnix int64, limit int, exclude map[string]bool) []string {
+	// Fast path: nothing pending means the sorted list is current — a read lock
+	// lets concurrent batch GETs run in parallel. Slow path takes the write lock
+	// once to drain+sort, then searches.
 	idx.mu.RLock()
-	defer idx.mu.RUnlock()
+	if len(idx.pendingEntries) == 0 {
+		keys := idx.nearbyKeysLocked(startUnix, endUnix, limit, exclude)
+		idx.mu.RUnlock()
+		return keys
+	}
+	idx.mu.RUnlock()
 
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.drainEntriesLocked()
+	return idx.nearbyKeysLocked(startUnix, endUnix, limit, exclude)
+}
+
+// nearbyKeysLocked is the search itself. The caller must hold idx.mu (read or
+// write) and must have ensured idx.entries is drained and mtime-sorted.
+func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, exclude map[string]bool) []string {
 	// Binary search for the start of the time window.
 	lo := sort.Search(len(idx.entries), func(i int) bool {
 		return idx.entries[i].mtimeUnix >= startUnix
@@ -287,6 +325,7 @@ func (idx *Index) rebuild(storage *Storage) {
 
 	idx.mu.Lock()
 	idx.entries = make([]indexEntry, 0, len(result.Objects))
+	idx.pendingEntries = nil
 	idx.hashes = idx.hashes[:0]
 	idx.pending = make([][gbciHashSize]byte, 0, len(result.Objects))
 	for _, obj := range result.Objects {

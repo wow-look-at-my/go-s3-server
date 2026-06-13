@@ -5,8 +5,21 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
+)
+
+// HTTP server timeouts. ReadHeaderTimeout is the important slowloris guard
+// (request lines/headers must arrive promptly); Read/Write are generous
+// backstops so a stuck connection cannot pin a concurrency slot forever, while
+// still allowing CI-sized object uploads and batch streams to complete. Idle
+// reaps unused keep-alive connections from many CI runners.
+const (
+	httpReadHeaderTimeout = 15 * time.Second
+	httpReadTimeout       = 5 * time.Minute
+	httpWriteTimeout      = 5 * time.Minute
+	httpIdleTimeout       = 120 * time.Second
 )
 
 var rootCmd = &cobra.Command{
@@ -64,7 +77,17 @@ func run(cmd *cobra.Command, args []string) error {
 		log.Printf("WARNING: authentication is DISABLED (disable_auth=true). All requests will be accepted without credentials. Only use this behind a trusted reverse proxy.")
 	}
 
-	return http.ListenAndServe(cfg.Listen, srv)
+	log.Printf("limits: max_concurrent_requests=%d max_object_bytes=%d", cfg.MaxConcurrentRequests, cfg.MaxObjectBytes)
+
+	httpSrv := &http.Server{
+		Addr:              cfg.Listen,
+		Handler:           srv,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		ReadTimeout:       httpReadTimeout,
+		WriteTimeout:      httpWriteTimeout,
+		IdleTimeout:       httpIdleTimeout,
+	}
+	return httpSrv.ListenAndServe()
 }
 
 func main() {

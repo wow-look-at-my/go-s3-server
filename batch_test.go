@@ -17,7 +17,7 @@ func putObject(t *testing.T, ts *http.Client, url, key string, data []byte, meta
 	t.Helper()
 	req, _ := http.NewRequest("PUT", url+"/testbucket/"+key, bytes.NewReader(data))
 	for k, v := range meta {
-		req.Header.Set("X-Amz-Meta-"+k, v)
+		req.Header.Set("X-Cache-Meta-"+k, v)
 	}
 	resp, err := ts.Do(req)
 	require.NoError(t, err)

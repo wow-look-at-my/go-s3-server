@@ -176,10 +176,9 @@ mtime until they are read again — at worst this delays, never wrongly hastens,
 an eviction.
 
 Eviction never threatens correctness: a wrongly evicted entry is simply a cache
-miss that the next build recomputes and re-uploads. The sweeper runs every
-`interval` (default 3 days); the first sweep is one interval after startup. Evicted
-counts and reclaimed bytes are exported as `s3_evictions_total`,
-`s3_evicted_bytes_total`, and `s3_cache_bytes` (see below).
+miss that the next build recomputes and re-uploads. Evicted counts and reclaimed
+bytes are exported as `s3_evictions_total`, `s3_evicted_bytes_total`, and
+`s3_cache_bytes` (see below).
 
 Eviction is **on by default** with a conservative 30-day idle window. To opt out
 entirely, set both limits off:

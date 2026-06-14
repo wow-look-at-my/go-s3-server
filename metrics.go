@@ -48,6 +48,17 @@ var (
 		Name: "s3_http_rejected_total",
 		Help: "Total number of requests rejected with 503 due to the concurrency limit.",
 	})
+
+	// deprecatedRequestsTotal counts requests that used a deprecated
+	// S3-compatibility feature (e.g. X-Amz-Meta-* metadata headers). A nonzero
+	// value means not-yet-upgraded clients are still relying on the S3 shims; it
+	// should trend to zero once every client speaks the native protocol, at
+	// which point the shims can be removed. (The metric name keeps the s3_
+	// prefix for consistency with the others until the repository rename.)
+	deprecatedRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "s3_deprecated_requests_total",
+		Help: "Total requests that used a deprecated S3-compatibility feature.",
+	}, []string{"feature"})
 )
 
 // Storage metrics

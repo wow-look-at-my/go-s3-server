@@ -18,7 +18,7 @@ const retryAfterSeconds = 2
 // healthPath is the unauthenticated liveness/readiness probe. It is answered
 // before authentication and admission control so an orchestrator (e.g.
 // docker-updater's health-check / pre-check) or a reverse proxy can poll it
-// without S3 credentials and without consuming a concurrency slot. It reports
+// without credentials and without consuming a concurrency slot. It reports
 // 503 once a graceful shutdown has begun (see Server.BeginShutdown), so traffic
 // drains away from this instance while in-flight requests finish.
 const healthPath = "/_health"
@@ -111,7 +111,7 @@ func clientIP(r *http.Request) string {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Liveness/readiness probe, answered before logging, metrics, authentication,
 	// and admission control: a frequent orchestrator/proxy poll must not spam the
-	// access log, skew metrics, need S3 credentials, or consume a concurrency
+	// access log, skew metrics, need credentials, or consume a concurrency
 	// slot. While draining it returns 503 so traffic moves off this instance and
 	// in-flight requests can finish before the process exits.
 	if r.URL.Path == healthPath {
@@ -162,7 +162,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		route = "Overload"
 		httpRejectedTotal.Inc()
 		rec.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
-		writeS3Error(rec, 503, "SlowDown", "server is at capacity, retry after a moment")
+		writeError(rec, 503, "overloaded", "server is at capacity, retry after a moment")
 		return
 	}
 
@@ -171,7 +171,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("auth: client_ip=%s user_agent=%q err=%v", ip, ua, err)
 		authFailuresTotal.Inc()
 		route = "Auth"
-		writeS3Error(rec, 403, "AccessDenied", "Access Denied")
+		writeError(rec, 403, "access_denied", "access denied")
 		return
 	}
 	username = user
@@ -191,7 +191,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if bucket != s.config.Bucket {
 		route = "NoSuchBucket"
-		writeS3Error(rec, 404, "NoSuchBucket", "The specified bucket does not exist")
+		writeError(rec, 404, "unknown_bucket", "the specified bucket does not exist")
 		return
 	}
 
@@ -217,6 +217,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		route = "DeleteObject"
 		handleDeleteObject(rec, r, s.storage, key)
 	default:
-		writeS3Error(rec, 405, "MethodNotAllowed", "Method not allowed")
+		writeError(rec, 405, "method_not_allowed", "method not allowed")
 	}
 }

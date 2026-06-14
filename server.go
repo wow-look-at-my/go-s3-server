@@ -19,8 +19,10 @@ const retryAfterSeconds = 2
 // before authentication and admission control so an orchestrator (e.g.
 // docker-updater's health-check / pre-check) or a reverse proxy can poll it
 // without credentials and without consuming a concurrency slot. It reports
-// 503 once a graceful shutdown has begun (see Server.BeginShutdown), so traffic
-// drains away from this instance while in-flight requests finish.
+// 503 once a graceful shutdown has begun (see Server.BeginShutdown) so a
+// health-checking proxy or load balancer in front (if any) takes this instance
+// out of rotation; the listener is closed by Shutdown regardless, so the drain
+// itself does not depend on the probe being watched.
 const healthPath = "/_health"
 
 type Server struct {
@@ -112,8 +114,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Liveness/readiness probe, answered before logging, metrics, authentication,
 	// and admission control: a frequent orchestrator/proxy poll must not spam the
 	// access log, skew metrics, need credentials, or consume a concurrency
-	// slot. While draining it returns 503 so traffic moves off this instance and
-	// in-flight requests can finish before the process exits.
+	// slot. While draining it returns 503 so a health-checking proxy/LB in front
+	// (if any) stops routing here; in-flight requests finish either way because
+	// Shutdown closes the listener.
 	if r.URL.Path == healthPath {
 		if s.shuttingDown.Load() {
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))

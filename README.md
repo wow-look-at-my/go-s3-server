@@ -162,6 +162,12 @@ keys) without OOM-ing or returning `502`s:
 - **Timeouts.** The HTTP server sets `ReadHeaderTimeout` (slowloris guard) plus
   generous `Read`/`Write`/`Idle` timeouts so a stuck connection cannot pin a
   concurrency slot indefinitely.
+- **Memory-limit backstop.** On startup the server sets a soft Go memory limit
+  (`GOMEMLIMIT`) to 90% of the container's cgroup memory limit (v2 or v1), so
+  any unexpected allocation pressure triggers GC before the kernel OOM-killer
+  fires. Streaming already keeps the heap tiny; this is belt-and-suspenders. An
+  explicit `GOMEMLIMIT` env var takes precedence, and outside a constrained
+  cgroup nothing is set.
 - **Observability.** When `--metrics-listen` is set, `/metrics` exposes request,
   storage, in-flight, and rejection counters alongside the standard Go runtime
   and process collectors (`go_memstats_*`, `process_resident_memory_bytes`,

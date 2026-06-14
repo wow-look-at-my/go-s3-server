@@ -38,6 +38,10 @@ func init() {
 }
 
 func run(cmd *cobra.Command, args []string) error {
+	// Cap the Go runtime's memory against the container limit so allocation
+	// pressure triggers GC instead of an OOM-kill (which a proxy reports as 502).
+	configureMemoryLimit()
+
 	configPath, _ := cmd.Flags().GetString("config")
 	cfg, err := LoadConfig(configPath)
 	if err != nil {

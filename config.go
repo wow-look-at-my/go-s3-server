@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 )
 
 // ConfigString is a string that can be specified as a literal or as an
@@ -59,6 +60,76 @@ type WriteOnceConfig struct {
 	Notification string `json:"notification"` // "never", "always", "content_differs"
 }
 
+// Duration is a time.Duration that unmarshals from a Go duration string
+// ("720h", "30m", "0") or from a JSON number interpreted as seconds. It
+// marshals back to the canonical Go duration string.
+type Duration time.Duration
+
+func (d *Duration) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		if s == "" {
+			*d = 0
+			return nil
+		}
+		parsed, err := time.ParseDuration(s)
+		if err != nil {
+			return fmt.Errorf("invalid duration %q (use a Go duration like \"720h\" or \"30m\"): %w", s, err)
+		}
+		*d = Duration(parsed)
+		return nil
+	}
+	var n float64
+	if err := json.Unmarshal(data, &n); err != nil {
+		return fmt.Errorf("duration must be a string like \"720h\" or a number of seconds")
+	}
+	*d = Duration(time.Duration(n * float64(time.Second)))
+	return nil
+}
+
+func (d Duration) MarshalJSON() ([]byte, error) {
+	return json.Marshal(time.Duration(d).String())
+}
+
+// Std returns the underlying time.Duration.
+func (d Duration) Std() time.Duration { return time.Duration(d) }
+
+// EvictionConfig controls automatic pruning of cache entries so the data_dir
+// does not grow without bound. Both limits are independent and may be combined.
+//
+// Eviction is driven by an entry's "last used" time, defined as the later of
+// its on-disk mtime (when it was written) and its last-access time (tracked
+// in memory while the server runs). This keeps frequently-read but rarely-
+// rewritten entries alive, which is exactly what "not accessed in a while"
+// means for a write-once content-addressed cache. mtime itself is never
+// rewritten on read, so the prefetch system's "same build" grouping (which
+// keys on mtime) is unaffected.
+type EvictionConfig struct {
+	// MaxAge removes entries not used within this window. A pointer so an
+	// absent field can take the built-in default while an explicit 0 / "0"
+	// disables age-based eviction. Negative is a config error.
+	MaxAge *Duration `json:"max_age"`
+	// MaxBytes is a total-size budget for the data_dir. When exceeded, the
+	// least-recently-used entries are evicted until the total is back under
+	// budget. 0 disables size-based eviction.
+	MaxBytes int64 `json:"max_bytes"`
+	// Interval is how often the background sweeper runs. 0 → default.
+	Interval Duration `json:"interval"`
+}
+
+// AgeLimit returns the configured max-age as a time.Duration (0 if disabled).
+func (e EvictionConfig) AgeLimit() time.Duration {
+	if e.MaxAge == nil {
+		return 0
+	}
+	return e.MaxAge.Std()
+}
+
+// Enabled reports whether any eviction policy is active.
+func (e EvictionConfig) Enabled() bool {
+	return e.AgeLimit() > 0 || e.MaxBytes > 0
+}
+
 type Config struct {
 	Listen        string          `json:"listen"`
 	MetricsListen string          `json:"metrics_listen"`
@@ -75,6 +146,11 @@ type Config struct {
 	// MaxObjectBytes caps a single PUT body. 0 → default. The body is streamed
 	// to disk, so this guards disk, not memory.
 	MaxObjectBytes int64 `json:"max_object_bytes"`
+
+	// Eviction bounds the on-disk cache so it does not grow until the disk
+	// fills. See EvictionConfig. Enabled by default with a conservative
+	// max_age; set eviction.max_age to 0 to opt out.
+	Eviction EvictionConfig `json:"eviction"`
 }
 
 // Resource-limit defaults. Both are generous: under normal CI load the server
@@ -83,6 +159,17 @@ type Config struct {
 const (
 	defaultMaxConcurrentRequests = 128
 	defaultMaxObjectBytes        = 1 << 30 // 1 GiB
+	// defaultEvictionMaxAge is the idle window after which an unused cache
+	// entry is pruned by default. 30 days is generous: anything not touched in
+	// a month is almost certainly a stale action ID from code that has since
+	// changed, and re-fetching a wrongly-evicted entry only costs one rebuild.
+	defaultEvictionMaxAge = 30 * 24 * time.Hour
+	// defaultEvictionInterval is how often the sweeper runs when eviction is on.
+	// Deliberately infrequent: with a 30-day age window there is nothing to gain
+	// from sweeping more often, and each sweep walks the whole data_dir. If you
+	// set a tight max_bytes, consider a shorter interval so the cache overshoots
+	// the budget less between sweeps.
+	defaultEvictionInterval = 72 * time.Hour
 )
 
 func LoadConfig(path string) (*Config, error) {
@@ -124,6 +211,20 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.MaxObjectBytes <= 0 {
 		cfg.MaxObjectBytes = defaultMaxObjectBytes
+	}
+	// Eviction: an absent max_age takes the default; an explicit 0 disables it.
+	if cfg.Eviction.MaxAge == nil {
+		d := Duration(defaultEvictionMaxAge)
+		cfg.Eviction.MaxAge = &d
+	}
+	if cfg.Eviction.AgeLimit() < 0 {
+		return nil, fmt.Errorf("config: eviction.max_age must not be negative")
+	}
+	if cfg.Eviction.MaxBytes < 0 {
+		return nil, fmt.Errorf("config: eviction.max_bytes must not be negative")
+	}
+	if cfg.Eviction.Interval <= 0 {
+		cfg.Eviction.Interval = Duration(defaultEvictionInterval)
 	}
 	if cfg.DisableAuth {
 		if len(cfg.Credentials) != 0 {

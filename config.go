@@ -165,7 +165,11 @@ const (
 	// changed, and re-fetching a wrongly-evicted entry only costs one rebuild.
 	defaultEvictionMaxAge = 30 * 24 * time.Hour
 	// defaultEvictionInterval is how often the sweeper runs when eviction is on.
-	defaultEvictionInterval = time.Hour
+	// Deliberately infrequent: with a 30-day age window there is nothing to gain
+	// from sweeping more often, and each sweep walks the whole data_dir. If you
+	// set a tight max_bytes, consider a shorter interval so the cache overshoots
+	// the budget less between sweeps.
+	defaultEvictionInterval = 72 * time.Hour
 )
 
 func LoadConfig(path string) (*Config, error) {

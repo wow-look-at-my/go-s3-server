@@ -23,7 +23,7 @@ Create a JSON config file:
   "bucket": "my-cache",
   "data_dir": "/var/data/s3",
   "write_once": {"action": "deny", "notification": "content_differs"},
-  "eviction": {"max_age": "720h", "max_bytes": 53687091200, "interval": "1h"},
+  "eviction": {"max_age": "720h", "max_bytes": 53687091200, "interval": "72h"},
   "credentials": [
     {"username": "alice", "password": "secret1"},
     {"username": "bob", "password": "secret2"}
@@ -79,7 +79,7 @@ All flags except `--config` override the corresponding config file value.
 |-------|------|---------|-------------|
 | `max_age` | duration | `"720h"` (30 days) | Remove entries not *used* within this window. A Go duration string (`"720h"`, `"30m"`) or a number of seconds. `"0"` disables age-based eviction. |
 | `max_bytes` | int | `0` (disabled) | Total-size budget for `data_dir` in bytes. When exceeded, least-recently-used entries are evicted until the total is back under budget. `0` disables size-based eviction. |
-| `interval` | duration | `"1h"` | How often the background sweeper runs. |
+| `interval` | duration | `"72h"` (3 days) | How often the background sweeper runs. With a 30-day `max_age` there is little point sweeping more often; shorten it only if you set a tight `max_bytes` and want to bound how far the cache overshoots the budget between sweeps. |
 
 Setting both `max_age: "0"` and `max_bytes: 0` disables eviction entirely (the server logs a warning that the cache will grow without bound).
 
@@ -177,7 +177,7 @@ an eviction.
 
 Eviction never threatens correctness: a wrongly evicted entry is simply a cache
 miss that the next build recomputes and re-uploads. The sweeper runs every
-`interval` (default 1h); the first sweep is one interval after startup. Evicted
+`interval` (default 3 days); the first sweep is one interval after startup. Evicted
 counts and reclaimed bytes are exported as `s3_evictions_total`,
 `s3_evicted_bytes_total`, and `s3_cache_bytes` (see below).
 

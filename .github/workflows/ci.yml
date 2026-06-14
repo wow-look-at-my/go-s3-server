@@ -16,7 +16,21 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v4
-      - uses: wow-look-at-my/go-toolchain@v1
+      # TEMPORARY: the shared build cache (s3.pazer.io) holds a poisoned `runtime`
+      # object that breaks the build at package load ("runtime" imported as
+      # reflectlite). Until that poison is purged, build with the remote cache
+      # DISABLED (cold build, no shared cache) so CI is green and this job still
+      # produces the go-s3-server binary. Deploying the resulting v3 server
+      # (currentCacheVersion=3) purges s3.pazer.io on boot, after which this should
+      # be reverted to `uses: wow-look-at-my/go-toolchain@v1`.
+      - name: Download go-toolchain
+        uses: wow-look-at-my/actions@download-release-binary#latest
+        with:
+          repo: wow-look-at-my/go-toolchain
+          name: go-toolchain
+          token: ${{ github.token }}
+      - name: Build (remote cache disabled to bypass poisoned shared cache)
+        run: GO_BUILDCACHE_CONFIG= go-toolchain
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:

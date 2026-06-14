@@ -7,12 +7,21 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
 // retryAfterSeconds is the Retry-After value sent with a 503 when the server is
 // shedding load, telling clients how long to back off before retrying.
 const retryAfterSeconds = 2
+
+// healthPath is the unauthenticated liveness/readiness probe. It is answered
+// before authentication and admission control so an orchestrator (e.g.
+// docker-updater's health-check / pre-check) or a reverse proxy can poll it
+// without S3 credentials and without consuming a concurrency slot. It reports
+// 503 once a graceful shutdown has begun (see Server.BeginShutdown), so traffic
+// drains away from this instance while in-flight requests finish.
+const healthPath = "/_health"
 
 type Server struct {
 	config          *Config
@@ -23,6 +32,11 @@ type Server struct {
 	// than queued until memory is exhausted (the OOM a fronting proxy reports as
 	// a 502). Buffered to MaxConcurrentRequests.
 	sem chan struct{}
+	// shuttingDown is set by BeginShutdown when a termination signal is received.
+	// While set, the health endpoint reports 503 so an orchestrator or reverse
+	// proxy stops routing new requests here as http.Server.Shutdown drains the
+	// in-flight ones.
+	shuttingDown atomic.Bool
 }
 
 func NewServer(cfg *Config, storage *Storage) *Server {
@@ -41,6 +55,14 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 		prefetchTracker: newPrefetchTracker(),
 		sem:             make(chan struct{}, cfg.MaxConcurrentRequests),
 	}
+}
+
+// BeginShutdown marks the server as draining, so the health endpoint starts
+// reporting 503. Call it just before http.Server.Shutdown: an orchestrator or
+// reverse proxy watching /_health then stops sending new requests to this
+// instance while Shutdown lets the in-flight ones finish.
+func (s *Server) BeginShutdown() {
+	s.shuttingDown.Store(true)
 }
 
 // auditInfo captures per-request context that is logged on every request and,
@@ -87,6 +109,22 @@ func clientIP(r *http.Request) string {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Liveness/readiness probe, answered before logging, metrics, authentication,
+	// and admission control: a frequent orchestrator/proxy poll must not spam the
+	// access log, skew metrics, need S3 credentials, or consume a concurrency
+	// slot. While draining it returns 503 so traffic moves off this instance and
+	// in-flight requests can finish before the process exits.
+	if r.URL.Path == healthPath {
+		if s.shuttingDown.Load() {
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
+			http.Error(w, "draining", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("ok\n"))
+		return
+	}
+
 	start := time.Now()
 	httpInFlightRequests.Inc()
 	defer httpInFlightRequests.Dec()

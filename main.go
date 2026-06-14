@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -20,6 +23,12 @@ const (
 	httpReadTimeout       = 5 * time.Minute
 	httpWriteTimeout      = 5 * time.Minute
 	httpIdleTimeout       = 120 * time.Second
+
+	// shutdownTimeout bounds how long graceful shutdown waits for in-flight
+	// requests to finish after SIGINT/SIGTERM. Kept under a typical orchestrator
+	// stop grace period (docker-updater issues ContainerStop with a 300s timeout)
+	// so the process drains and exits cleanly before a SIGKILL would arrive.
+	shutdownTimeout = 280 * time.Second
 )
 
 var rootCmd = &cobra.Command{
@@ -87,7 +96,36 @@ func run(cmd *cobra.Command, args []string) error {
 		WriteTimeout:      httpWriteTimeout,
 		IdleTimeout:       httpIdleTimeout,
 	}
-	return httpSrv.ListenAndServe()
+
+	// Serve in a goroutine so the main goroutine can wait for a termination
+	// signal and drain in-flight requests before exiting. Without this, the
+	// SIGTERM that `docker stop` sends during a rolling update kills the process
+	// immediately and cuts off in-flight GET/PUT streams; draining lets the
+	// orchestrator's stop grace period be spent finishing those requests.
+	serveErr := make(chan error, 1)
+	go func() {
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serveErr <- err
+		}
+	}()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-serveErr:
+		return fmt.Errorf("http server: %w", err)
+	case sig := <-sigCh:
+		log.Printf("received signal %v, draining in-flight requests (up to %s)", sig, shutdownTimeout)
+		srv.BeginShutdown()
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := httpSrv.Shutdown(ctx); err != nil {
+			return fmt.Errorf("graceful shutdown: %w", err)
+		}
+		log.Printf("drain complete, exiting")
+		return nil
+	}
 }
 
 func main() {

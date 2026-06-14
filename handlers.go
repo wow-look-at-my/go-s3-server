@@ -74,7 +74,35 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	// buffers the whole body, so concurrent large PUTs no longer multiply into
 	// the heap; MaxBytesReader bounds a runaway/oversized upload (413).
 	body := http.MaxBytesReader(w, r.Body, maxObjectBytes)
-	if err := storage.PutStream(key, body, meta, audit); err != nil {
+
+	// Refuse Go module-index blobs (see looksLikeGoModuleIndex): they cannot be
+	// verified against their key and a mis-keyed one poisons every consumer's
+	// build, so this shared cache must never hold one. Peek only the leading
+	// bytes (cheap; the magic is at the very start), then stream the rest. A
+	// dropped index is a no-op for the client -- it recomputes the index locally
+	// on the resulting miss -- so we report success rather than an error.
+	prefix := make([]byte, indexPeekBytes)
+	n, peekErr := io.ReadFull(body, prefix)
+	prefix = prefix[:n]
+	if peekErr != nil && peekErr != io.EOF && peekErr != io.ErrUnexpectedEOF {
+		// A MaxBytesReader overflow (or other read error) on the very first read.
+		var maxErr *http.MaxBytesError
+		if errors.As(peekErr, &maxErr) {
+			writeS3Error(w, 413, "EntityTooLarge", fmt.Sprintf("object exceeds max size of %d bytes", maxObjectBytes))
+			return
+		}
+		writeS3Error(w, 500, "InternalError", peekErr.Error())
+		return
+	}
+	if looksLikeGoModuleIndex(prefix, meta["compression"]) {
+		io.Copy(io.Discard, body) // drain so the client's write completes cleanly
+		w.WriteHeader(200)
+		return
+	}
+
+	// Not an index: stitch the peeked prefix back in front of the unread rest.
+	full := io.MultiReader(bytes.NewReader(prefix), body)
+	if err := storage.PutStream(key, full, meta, audit); err != nil {
 		if errors.Is(err, ErrWriteOnceConflict) || errors.Is(err, ErrWriteOnceDuplicate) {
 			writeS3Error(w, 409, "ConflictException", err.Error())
 			return

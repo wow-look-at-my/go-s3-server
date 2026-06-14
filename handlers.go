@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -12,16 +11,17 @@ import (
 	"time"
 )
 
-type S3Error struct {
-	XMLName xml.Name `xml:"Error"`
-	Code    string   `xml:"Code"`
-	Message string   `xml:"Message"`
-}
-
-func writeS3Error(w http.ResponseWriter, httpStatus int, code, message string) {
-	w.Header().Set("Content-Type", "application/xml")
+// writeError sends a native plain-text error response. The body is
+// "<code>: <message>" and the short machine-readable code is repeated in the
+// X-Cache-Error-Code header. This replaces the old S3-style XML <Error> body:
+// the cache protocol is no longer S3-compatible, and the only client
+// (go-toolchain) reads just the status code and logs the body, so the XML
+// envelope bought nothing.
+func writeError(w http.ResponseWriter, httpStatus int, code, message string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Cache-Error-Code", code)
 	w.WriteHeader(httpStatus)
-	xml.NewEncoder(w).Encode(S3Error{Code: code, Message: message})
+	fmt.Fprintf(w, "%s: %s\n", code, message)
 }
 
 func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string) {
@@ -32,10 +32,10 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	f, meta, err := storage.Open(key)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			writeS3Error(w, 404, "NoSuchKey", fmt.Sprintf("The specified key does not exist: %s", key))
+			writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
 			return
 		}
-		writeS3Error(w, 500, "InternalError", err.Error())
+		writeError(w, 500, "internal_error", err.Error())
 		return
 	}
 	defer f.Close()
@@ -50,6 +50,11 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		if len(name) > 0 {
 			name = strings.ToUpper(name[:1]) + name[1:]
 		}
+		// Emit the native header, plus the deprecated S3-style header so that
+		// not-yet-upgraded clients (which read X-Amz-Meta-*) still get the
+		// outputid and keep hitting the cache. The legacy header is dropped at
+		// the repository rename.
+		w.Header().Set("X-Cache-Meta-"+name, v)
 		w.Header().Set("X-Amz-Meta-"+name, v)
 	}
 	w.Header().Set("Last-Modified", meta.ModTime.UTC().Format(http.TimeFormat))
@@ -60,12 +65,28 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 
 func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string, maxObjectBytes int64) {
 	meta := make(map[string]string)
+	// Native metadata headers first.
 	for k, vals := range r.Header {
 		lk := strings.ToLower(k)
-		if strings.HasPrefix(lk, "x-amz-meta-") {
-			metaKey := strings.TrimPrefix(lk, "x-amz-meta-")
-			meta[metaKey] = vals[0]
+		if strings.HasPrefix(lk, nativeMetaPrefix) {
+			meta[strings.TrimPrefix(lk, nativeMetaPrefix)] = vals[0]
 		}
+	}
+	// Deprecated S3-style headers, filling only keys the native headers did not
+	// supply (native wins). Their presence flags a not-yet-upgraded client.
+	usedLegacyMeta := false
+	for k, vals := range r.Header {
+		lk := strings.ToLower(k)
+		if strings.HasPrefix(lk, legacyMetaPrefix) {
+			usedLegacyMeta = true
+			metaKey := strings.TrimPrefix(lk, legacyMetaPrefix)
+			if _, ok := meta[metaKey]; !ok {
+				meta[metaKey] = vals[0]
+			}
+		}
+	}
+	if usedLegacyMeta {
+		noteDeprecatedS3Meta(r)
 	}
 
 	audit := auditMapFromContext(r)
@@ -88,10 +109,10 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		// A MaxBytesReader overflow (or other read error) on the very first read.
 		var maxErr *http.MaxBytesError
 		if errors.As(peekErr, &maxErr) {
-			writeS3Error(w, 413, "EntityTooLarge", fmt.Sprintf("object exceeds max size of %d bytes", maxObjectBytes))
+			writeError(w, 413, "too_large", fmt.Sprintf("object exceeds max size of %d bytes", maxObjectBytes))
 			return
 		}
-		writeS3Error(w, 500, "InternalError", peekErr.Error())
+		writeError(w, 500, "internal_error", peekErr.Error())
 		return
 	}
 	if looksLikeGoModuleIndex(prefix, meta["compression"]) {
@@ -104,15 +125,15 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	full := io.MultiReader(bytes.NewReader(prefix), body)
 	if err := storage.PutStream(key, full, meta, audit); err != nil {
 		if errors.Is(err, ErrWriteOnceConflict) || errors.Is(err, ErrWriteOnceDuplicate) {
-			writeS3Error(w, 409, "ConflictException", err.Error())
+			writeError(w, 409, "conflict", err.Error())
 			return
 		}
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeS3Error(w, 413, "EntityTooLarge", fmt.Sprintf("object exceeds max size of %d bytes", maxObjectBytes))
+			writeError(w, 413, "too_large", fmt.Sprintf("object exceeds max size of %d bytes", maxObjectBytes))
 			return
 		}
-		writeS3Error(w, 500, "InternalError", err.Error())
+		writeError(w, 500, "internal_error", err.Error())
 		return
 	}
 
@@ -122,15 +143,15 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	w.WriteHeader(200)
 }
 
-// handleDeleteObject removes a single object (S3 DeleteObject). It is the
-// surgical eviction lever for a poisoned build-cache entry: delete the bad key
-// and the next build recomputes and re-uploads the correct object. Like S3,
-// DELETE is idempotent -- removing a missing key still reports success (204), so
-// retries and races are harmless. Auth is enforced upstream in ServeHTTP, the
-// same gate PUT goes through.
+// handleDeleteObject removes a single object. It is the surgical eviction lever
+// for a poisoned build-cache entry: delete the bad key and the next build
+// recomputes and re-uploads the correct object. DELETE is idempotent --
+// removing a missing key still reports success (204), so retries and races are
+// harmless. Auth is enforced upstream in ServeHTTP, the same gate PUT goes
+// through.
 func handleDeleteObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string) {
 	if err := storage.Delete(key); err != nil && !errors.Is(err, ErrNotFound) {
-		writeS3Error(w, 500, "InternalError", err.Error())
+		writeError(w, 500, "internal_error", err.Error())
 		return
 	}
 	w.WriteHeader(204)
@@ -142,7 +163,7 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request, storage *Storage
 // GETs (If-None-Match) are handled by http.ServeContent and return 304.
 func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 	if idx == nil {
-		writeS3Error(w, 500, "InternalError", "index unavailable")
+		writeError(w, 500, "internal_error", "index unavailable")
 		return
 	}
 	blob, etag := idx.Blob()

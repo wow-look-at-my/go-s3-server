@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/hex"
-	"encoding/xml"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -89,7 +89,7 @@ func TestPutAndGetObject(t *testing.T) {
 	ts := testSetup(t)
 
 	content := []byte("hello world cache data")
-	headers := map[string]string{"X-Amz-Meta-Outputid": "abc123def456"}
+	headers := map[string]string{"X-Cache-Meta-Outputid": "abc123def456"}
 	resp := doRequest(t, ts, "PUT", "/testbucket/go-buildcache/v1aabbccdd11223344", content, headers)
 	require.Equal(t, 200, resp.StatusCode)
 
@@ -103,8 +103,10 @@ func TestPutAndGetObject(t *testing.T) {
 
 	require.Equal(t, string(content), string(body))
 
-	outputID := resp.Header.Get("X-Amz-Meta-Outputid")
-	require.Equal(t, "abc123def456", outputID)
+	// Native header carries the metadata.
+	require.Equal(t, "abc123def456", resp.Header.Get("X-Cache-Meta-Outputid"))
+	// Deprecated S3 header is still emitted for not-yet-upgraded clients.
+	require.Equal(t, "abc123def456", resp.Header.Get("X-Amz-Meta-Outputid"))
 
 	lm := resp.Header.Get("Last-Modified")
 	require.NotEqual(t, "", lm)
@@ -121,10 +123,11 @@ func TestGetObjectNotFound(t *testing.T) {
 
 	require.Equal(t, 404, resp.StatusCode)
 
-	var s3err S3Error
-	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&s3err))
-
-	require.Equal(t, "NoSuchKey", s3err.Code)
+	// Native plain-text error: the machine-readable code is in a header and the
+	// body is "<code>: <message>" (no S3 XML envelope).
+	require.Equal(t, "not_found", resp.Header.Get("X-Cache-Error-Code"))
+	body, _ := io.ReadAll(resp.Body)
+	require.Contains(t, string(body), "not_found")
 }
 
 func TestWriteOnce(t *testing.T) {
@@ -395,13 +398,13 @@ func TestLoadConfig(t *testing.T) {
 	require.NotNil(t, err)
 }
 
-func TestPutObjectReadBodyError(t *testing.T) {
+func TestMetadataRoundTrip(t *testing.T) {
 	ts := testSetup(t)
 
 	content := []byte("test data with meta")
 	headers := map[string]string{
-		"X-Amz-Meta-Outputid": "out1",
-		"X-Amz-Meta-Custom":   "val2",
+		"X-Cache-Meta-Outputid": "out1",
+		"X-Cache-Meta-Custom":   "val2",
 	}
 	resp := doRequest(t, ts, "PUT", "/testbucket/meta/v1test000000000001", content, headers)
 	require.Equal(t, 200, resp.StatusCode)
@@ -409,9 +412,34 @@ func TestPutObjectReadBodyError(t *testing.T) {
 
 	resp = doRequest(t, ts, "GET", "/testbucket/meta/v1test000000000001", nil, nil)
 	require.Equal(t, 200, resp.StatusCode)
-	require.Equal(t, "out1", resp.Header.Get("X-Amz-Meta-Outputid"))
-	require.Equal(t, "val2", resp.Header.Get("X-Amz-Meta-Custom"))
+	require.Equal(t, "out1", resp.Header.Get("X-Cache-Meta-Outputid"))
+	require.Equal(t, "val2", resp.Header.Get("X-Cache-Meta-Custom"))
 	resp.Body.Close()
+}
+
+// TestLegacyAmzMetaCompat verifies the deprecated S3 metadata path still works:
+// a client uploading with X-Amz-Meta-* headers stores metadata, and a GET serves
+// it back under both the native and legacy header names. The deprecation counter
+// is bumped so the lingering S3 traffic stays observable.
+func TestLegacyAmzMetaCompat(t *testing.T) {
+	ts := testSetup(t)
+
+	before := testutil.ToFloat64(deprecatedRequestsTotal.WithLabelValues(featureAmzMeta))
+
+	content := []byte("legacy client data")
+	headers := map[string]string{"X-Amz-Meta-Outputid": "legacy123"}
+	resp := doRequest(t, ts, "PUT", "/testbucket/meta/v1legacy00000000001", content, headers)
+	require.Equal(t, 200, resp.StatusCode)
+	resp.Body.Close()
+
+	resp = doRequest(t, ts, "GET", "/testbucket/meta/v1legacy00000000001", nil, nil)
+	require.Equal(t, 200, resp.StatusCode)
+	require.Equal(t, "legacy123", resp.Header.Get("X-Cache-Meta-Outputid"))
+	require.Equal(t, "legacy123", resp.Header.Get("X-Amz-Meta-Outputid"))
+	resp.Body.Close()
+
+	after := testutil.ToFloat64(deprecatedRequestsTotal.WithLabelValues(featureAmzMeta))
+	require.Greater(t, after, before, "deprecated-request counter should increase on X-Amz-Meta use")
 }
 
 func TestMethodNotAllowed(t *testing.T) {
@@ -435,7 +463,7 @@ func TestDeleteObject(t *testing.T) {
 	key := "/testbucket/go-buildcache/v1" + actionHex
 	content := []byte("cache data to evict")
 
-	resp := doRequest(t, ts, "PUT", key, content, map[string]string{"X-Amz-Meta-Outputid": "deadbeef"})
+	resp := doRequest(t, ts, "PUT", key, content, map[string]string{"X-Cache-Meta-Outputid": "deadbeef"})
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 

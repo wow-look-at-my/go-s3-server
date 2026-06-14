@@ -1,10 +1,12 @@
 # go-s3-server
 
-Minimal S3-compatible server backed by the local filesystem. Designed as a shared build cache for [go-toolchain](https://github.com/wow-look-at-my/go-toolchain).
+Shared build cache server for [go-toolchain](https://github.com/wow-look-at-my/go-toolchain), backed by the local filesystem. (Slated to be renamed **go-toolchain-cache**.)
+
+This server speaks go-toolchain's native cache protocol. It began life S3-compatible, but S3 is not an efficient format for exchanging build-cache objects, so the protocol was replaced with a faster, purpose-built design — a binary key index (`/_index`, GBCI v1) and a batched tar transfer (`/_batch/get`) with prefetch. The only S3 surface that remains is **deprecated, not removed**: the legacy `X-Amz-Meta-*` request headers are still accepted so not-yet-upgraded clients keep working, but every use is logged once and counted in `s3_deprecated_requests_total`, and the shim will be dropped when the repository is renamed. See [Cache protocol & deprecations](#cache-protocol--deprecations).
 
 ## Features
 
-- **S3 API subset** — `GetObject`, `PutObject`, `DeleteObject` (idempotent, returns `204`; the surgical lever for evicting a single poisoned cache entry without a whole-cache version-bump purge)
+- **Object API** — `GET`/`PUT`/`DELETE` of cache objects by key (`DELETE` is idempotent, returns `204`; the surgical lever for evicting a single poisoned cache entry without a whole-cache version-bump purge). Errors are native plain text (`<code>: <message>`, with the code repeated in an `X-Cache-Error-Code` header) — not S3 XML.
 - **Cache-key index** — `GET /<bucket>/_index` returns a precomputed binary blob (GBCI v1) of every cacheprog action-ID hash, with strong ETag and `If-None-Match` 304 support
 - **HTTP Basic Auth** — multiple users, or explicitly disable with `disable_auth: true`
 - **Write-once mode** — deny overwriting existing keys with configurable conflict notification (ideal for content-addressable caches)
@@ -13,6 +15,22 @@ Minimal S3-compatible server backed by the local filesystem. Designed as a share
 - **Streaming, OOM-safe under load** — object bodies are streamed straight to/from disk on GET, PUT, and batch GET, so the server never buffers whole objects in memory. A concurrency limit sheds excess load with `503 + Retry-After` instead of queueing until it OOMs (which a fronting proxy would surface as a `502`). See [Behavior under load](#behavior-under-load).
 - **Graceful drain on shutdown** — on `SIGTERM`/`SIGINT` the server stops accepting new requests and lets in-flight ones finish (up to a drain timeout) before exiting, so a rolling update never cuts off an in-progress CI upload or download. An unauthenticated `GET /_health` probe returns `200` when ready and `503` while draining. See [Graceful shutdown & rolling updates](#graceful-shutdown--rolling-updates).
 - **Multi-arch Docker image** — `linux/amd64` and `linux/arm64` published to `ghcr.io/wow-look-at-my/go-s3-server`
+
+## Cache protocol & deprecations
+
+The cache protocol is **no longer S3-compatible**. Clients (go-toolchain) talk to it with:
+
+- **Object transfer** — `GET`/`PUT`/`DELETE /<bucket>/<key>`. Object metadata travels in native `X-Cache-Meta-*` headers (e.g. `X-Cache-Meta-Outputid`). Errors are native plain text with an `X-Cache-Error-Code` header.
+- **Key index** — `GET /<bucket>/_index` returns the GBCI v1 binary blob (the client loads it once to know which keys exist, instead of probing per key).
+- **Batched fetch** — `GET /<bucket>/_batch/get` (JSON body of keys) returns a tar of bodies + a `manifest.json`, with temporal prefetch of related entries. This is the scalable replacement for per-object S3 GETs.
+
+### Deprecated (still works, warns on use)
+
+| Feature | Replacement | Behavior |
+|---------|-------------|----------|
+| `X-Amz-Meta-*` request headers | `X-Cache-Meta-*` | Still accepted on `PUT`; still emitted on `GET` alongside the native header so old clients keep hitting the cache. First use logs a `DEPRECATION:` warning; every use increments `s3_deprecated_requests_total{feature="amz_meta_header"}`. |
+
+These shims exist so a fleet of pinned/older go-toolchain clients keeps working during the rollout. Once `s3_deprecated_requests_total` stays flat at zero, the shims (and the `s3_`/`bucket` naming) are removed as part of renaming this repository to **go-toolchain-cache**. Nothing here changes on-disk storage, so no cache rebuild is required to deploy this server.
 
 ## Quick start
 
@@ -54,7 +72,7 @@ All flags except `--config` override the corresponding config file value.
 | Field | Type | Default | Required | Description |
 |-------|------|---------|----------|-------------|
 | `listen` | string | `:9000` | no | Address to listen on |
-| `bucket` | string | — | yes | S3 bucket name to serve |
+| `bucket` | string | — | yes | Cache namespace served at `/<bucket>/...` (kept as `bucket` until the repo rename) |
 | `data_dir` | string | — | yes | Directory to store objects |
 | `write_once` | object | `{"action":"allow"}` | no | Write-once behavior (see below) |
 | `disable_auth` | bool | `false` | no | If `true`, accept all requests without authentication. Must be set explicitly; `credentials` must be omitted when this is `true`. |

@@ -51,6 +51,18 @@ type Storage struct {
 	writeOnce WriteOnceConfig
 	lockFile  *os.File
 	Index     *Index // sqlite index for time-range queries; nil if unavailable
+
+	// accessShards tracks the last-access time (unix seconds) of each key so the
+	// eviction sweeper can prune entries by least-recent *use*, not merely by
+	// write time. It is allocated only when eviction is enabled
+	// (EnableAccessTracking); while nil, recordAccess is a no-op and the read
+	// hot path pays nothing. Sharded so the per-GET update never serializes on a
+	// single global lock — the same lock-convoy concern that shaped the index's
+	// hot path. mtime stays the authoritative write time (the prefetch system
+	// keys on it); access time is kept here, separately, so the two never
+	// interfere. The map holds only keys read since startup (the working set),
+	// not the whole cache. The type and methods live in eviction.go.
+	accessShards []*accessShard
 }
 
 type ObjectMeta struct {
@@ -443,6 +455,7 @@ func (s *Storage) Get(key string) (_ []byte, _ *ObjectMeta, err error) {
 	}
 
 	getMetadata(path, meta)
+	s.recordAccess(key)
 
 	return data, meta, nil
 }
@@ -503,6 +516,7 @@ func (s *Storage) Open(key string) (_ *os.File, _ *ObjectMeta, err error) {
 		Size:     info.Size(),
 	}
 	getMetadata(path, meta)
+	s.recordAccess(key)
 	return f, meta, nil
 }
 
@@ -533,6 +547,7 @@ func (s *Storage) Delete(key string) (err error) {
 	if s.Index != nil {
 		s.Index.Remove(key)
 	}
+	s.forgetAccess(key)
 	return nil
 }
 

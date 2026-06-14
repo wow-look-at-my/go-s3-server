@@ -230,11 +230,20 @@ upload or batch download.
   begun. It is answered *before* authentication and admission control, so it
   needs no S3 credentials and is never shed under load — point your reverse
   proxy and orchestrator at it.
-- **Drain on signal.** On `SIGTERM`/`SIGINT` the server flips `/_health` to
-  `503` (so traffic routes away from this instance) and then waits for in-flight
-  requests to finish — up to a 280s drain timeout, kept under a typical
-  container stop grace period — before exiting. New connections are refused
-  immediately; established requests are allowed to complete.
+- **Drain on signal.** On `SIGTERM`/`SIGINT` the server marks `/_health`
+  unhealthy (`503`) and calls `http.Server.Shutdown`: the listener closes
+  immediately (new connections are refused) while in-flight requests are given
+  up to a 280s drain budget — kept under a typical container stop grace period —
+  to finish before the process exits.
+- **Where the `503` actually reroutes traffic.** The `503` is the signal for a
+  **health-checking** reverse proxy or load balancer in front (Traefik / nginx /
+  HAProxy with active health checks, a Cloudflare load balancer, a k8s readiness
+  probe, etc.) to take this instance out of rotation so new requests go to the
+  replacement. It is *not* automatic: docker-updater does not poll the old
+  container's `/_health` while draining, and Docker's built-in DNS round-robin is
+  not health-aware. With no health-aware front end the `503` is informational —
+  rerouting then comes only from the closed listener refusing new connections,
+  not from the probe.
 
 ### Rolling update with docker-updater
 

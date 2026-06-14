@@ -11,6 +11,7 @@ Minimal S3-compatible server backed by the local filesystem. Designed as a share
 - **Bounded cache (automatic eviction)** — a background sweeper prunes entries by idle age (`max_age`) and/or a total-size budget (`max_bytes`) so the `data_dir` never grows until the disk fills. Eviction is by *last use* (read or write), not just write time. On by default with a conservative 30-day idle window; see [Cache eviction](#cache-eviction).
 - **Sharded storage** — keys are automatically split into a two-level directory tree to avoid huge flat directories
 - **Streaming, OOM-safe under load** — object bodies are streamed straight to/from disk on GET, PUT, and batch GET, so the server never buffers whole objects in memory. A concurrency limit sheds excess load with `503 + Retry-After` instead of queueing until it OOMs (which a fronting proxy would surface as a `502`). See [Behavior under load](#behavior-under-load).
+- **Graceful drain on shutdown** — on `SIGTERM`/`SIGINT` the server stops accepting new requests and lets in-flight ones finish (up to a drain timeout) before exiting, so a rolling update never cuts off an in-progress CI upload or download. An unauthenticated `GET /_health` probe returns `200` when ready and `503` while draining. See [Graceful shutdown & rolling updates](#graceful-shutdown--rolling-updates).
 - **Multi-arch Docker image** — `linux/amd64` and `linux/arm64` published to `ghcr.io/wow-look-at-my/go-s3-server`
 
 ## Quick start
@@ -217,6 +218,50 @@ keys) without OOM-ing or returning `502`s:
   (`s3_cache_bytes`), alongside the standard Go runtime and process collectors
   (`go_memstats_*`, `process_resident_memory_bytes`, `go_goroutines`) — enough to
   see saturation, memory pressure, and cache growth directly.
+
+## Graceful shutdown & rolling updates
+
+The server drains in-flight requests instead of dropping them when told to stop,
+so a rolling deploy (or any `docker stop`) does not cut off an in-progress CI
+upload or batch download.
+
+- **`GET /_health`** — an unauthenticated readiness probe. Returns `200` with
+  body `ok` while serving, and `503` (with `Retry-After`) once a shutdown has
+  begun. It is answered *before* authentication and admission control, so it
+  needs no S3 credentials and is never shed under load — point your reverse
+  proxy and orchestrator at it.
+- **Drain on signal.** On `SIGTERM`/`SIGINT` the server flips `/_health` to
+  `503` (so traffic routes away from this instance) and then waits for in-flight
+  requests to finish — up to a 280s drain timeout, kept under a typical
+  container stop grace period — before exiting. New connections are refused
+  immediately; established requests are allowed to complete.
+
+### Rolling update with docker-updater
+
+[`docker-updater`](https://github.com/wow-look-at-my/docker-updater) performs a
+zero-downtime update against this drain: it starts the replacement, waits for the
+new instance's `/_health` to go green, then stops the old one with a grace
+period long enough for it to drain. Label the container:
+
+```yaml
+services:
+  s3:
+    image: ghcr.io/wow-look-at-my/go-s3-server
+    command: ["--config", "/data/config.json"]
+    volumes: ["/data:/data"]
+    stop_grace_period: 300s   # let the drain finish before Docker sends SIGKILL
+    labels:
+      docker-updater.enable: "true"
+      docker-updater.rolling: "true"
+      docker-updater.health-check.url: ":9000/_health"  # ":port" → container IP
+```
+
+docker-updater resolves the `:`-prefixed URL to the new container's IP and polls
+it until it returns `2xx`. In recreate mode (omit `docker-updater.rolling`) the
+same `/_health` works as the post-update health check; the optional
+`docker-updater.pre-check.url` gate is consulted only in recreate mode, not
+rolling. For a shared build cache, prefer **rolling** mode — it keeps the cache
+reachable throughout the deploy while the old instance drains.
 
 ## Docker
 

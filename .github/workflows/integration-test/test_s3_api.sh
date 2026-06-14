@@ -148,6 +148,20 @@ else
   fail "Metadata roundtrip: outputid='$META_OUTPUTID'"
 fi
 
+# ── Health Endpoint Tests ───────────────────────────────────────────────────
+
+echo ""
+echo "=== Health Endpoint Tests ==="
+
+# /_health is unauthenticated (answered before the auth gate) and returns 200 "ok".
+HEALTH_BODY=$(mktemp)
+HTTP_CODE=$(curl -s -o "$HEALTH_BODY" -w "%{http_code}" "$ENDPOINT_NORMAL/_health")
+if [ "$HTTP_CODE" = "200" ] && grep -q "ok" "$HEALTH_BODY"; then
+  pass "/_health returns 200 without auth"
+else
+  fail "/_health: code=$HTTP_CODE body=$(cat "$HEALTH_BODY")"
+fi
+
 # ── Auth Tests ──────────────────────────────────────────────────────────────
 
 echo ""

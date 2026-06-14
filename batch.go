@@ -129,22 +129,22 @@ func (t *prefetchTracker) filterAndRecord(user string, candidates []batchEntry) 
 //	data/<key>                       — raw file content for each entry
 func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tracker *prefetchTracker) {
 	if r.Method != "GET" {
-		writeS3Error(w, 405, "MethodNotAllowed", "Method not allowed")
+		writeError(w, 405, "method_not_allowed", "method not allowed")
 		return
 	}
 
 	var req batchGetRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
-		writeS3Error(w, 400, "InvalidRequest", fmt.Sprintf("invalid JSON: %v", err))
+		writeError(w, 400, "invalid_request", fmt.Sprintf("invalid JSON: %v", err))
 		return
 	}
 
 	if len(req.Keys) == 0 {
-		writeS3Error(w, 400, "InvalidRequest", "no keys specified")
+		writeError(w, 400, "invalid_request", "no keys specified")
 		return
 	}
 	if len(req.Keys) > maxBatchKeys {
-		writeS3Error(w, 400, "InvalidRequest", fmt.Sprintf("too many keys: %d (max %d)", len(req.Keys), maxBatchKeys))
+		writeError(w, 400, "invalid_request", fmt.Sprintf("too many keys: %d (max %d)", len(req.Keys), maxBatchKeys))
 		return
 	}
 

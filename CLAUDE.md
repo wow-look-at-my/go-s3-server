@@ -12,8 +12,7 @@ Do NOT use `go build`, `go test`, or any bare `go` commands. Always use `go-tool
 
 ## Project layout
 
-- `main.go` — CLI entry point (cobra); also installs the HTTP server timeouts and calls `configureMemoryLimit()` at startup
-- `memlimit.go` — startup soft memory limit. Auto-sets `GOMEMLIMIT` to 90% of the detected cgroup memory limit (v2 `memory.max`, then v1 `memory.limit_in_bytes`) via `debug.SetMemoryLimit`, unless `GOMEMLIMIT` is already set or there is no finite cgroup limit. Defense-in-depth so allocation pressure triggers GC instead of an OOM-kill (a proxy 502)
+- `main.go` — CLI entry point (cobra)
 - `config.go` — JSON config loading and validation
 - `auth.go` — HTTP Basic Auth; returns the authenticated username
 - `auth_test.go` — Auth tests (including the "empty credential must not bypass auth" regression)

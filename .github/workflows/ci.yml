@@ -30,7 +30,7 @@ jobs:
           name: go-toolchain
           token: ${{ github.token }}
       - name: Build (remote cache disabled to bypass poisoned shared cache)
-        run: GO_BUILDCACHE_CONFIG= go-toolchain
+        run: GO_BUILDCACHE_CONFIG= GO_TOOLCHAIN_CACHING_INTENTIONALLY_NOT_CONFIGURED=1 go-toolchain
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:

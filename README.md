@@ -8,6 +8,7 @@ Minimal S3-compatible server backed by the local filesystem. Designed as a share
 - **Cache-key index** — `GET /<bucket>/_index` returns a precomputed binary blob (GBCI v1) of every cacheprog action-ID hash, with strong ETag and `If-None-Match` 304 support
 - **HTTP Basic Auth** — multiple users, or explicitly disable with `disable_auth: true`
 - **Write-once mode** — deny overwriting existing keys with configurable conflict notification (ideal for content-addressable caches)
+- **Bounded cache (automatic eviction)** — a background sweeper prunes entries by idle age (`max_age`) and/or a total-size budget (`max_bytes`) so the `data_dir` never grows until the disk fills. Eviction is by *last use* (read or write), not just write time. On by default with a conservative 30-day idle window; see [Cache eviction](#cache-eviction).
 - **Sharded storage** — keys are automatically split into a two-level directory tree to avoid huge flat directories
 - **Streaming, OOM-safe under load** — object bodies are streamed straight to/from disk on GET, PUT, and batch GET, so the server never buffers whole objects in memory. A concurrency limit sheds excess load with `503 + Retry-After` instead of queueing until it OOMs (which a fronting proxy would surface as a `502`). See [Behavior under load](#behavior-under-load).
 - **Multi-arch Docker image** — `linux/amd64` and `linux/arm64` published to `ghcr.io/wow-look-at-my/go-s3-server`
@@ -22,6 +23,7 @@ Create a JSON config file:
   "bucket": "my-cache",
   "data_dir": "/var/data/s3",
   "write_once": {"action": "deny", "notification": "content_differs"},
+  "eviction": {"max_age": "720h", "max_bytes": 53687091200, "interval": "1h"},
   "credentials": [
     {"username": "alice", "password": "secret1"},
     {"username": "bob", "password": "secret2"}
@@ -58,6 +60,7 @@ All flags except `--config` override the corresponding config file value.
 | `credentials` | array | — | yes (unless `disable_auth: true`) | One or more `username`/`password` pairs. Both fields must be non-empty. |
 | `max_concurrent_requests` | int | `128` | no | Max in-flight requests; excess is shed with `503 + Retry-After`. `0` → default. |
 | `max_object_bytes` | int | `1073741824` (1 GiB) | no | Max single PUT body; larger uploads get `413`. The body is streamed to disk, so this guards disk, not memory. `0` → default. |
+| `eviction` | object | `{"max_age":"720h"}` | no | Automatic pruning of the cache (see below). |
 
 ### `write_once` options
 
@@ -69,6 +72,16 @@ All flags except `--config` override the corresponding config file value.
 - `action: "deny"` + `notification: "never"` — silently skip overwrites (200 response)
 - `action: "deny"` + `notification: "always"` — reject any overwrite attempt (409 response)
 - `action: "deny"` + `notification: "content_differs"` — reject only when content differs; same content is idempotent (ideal for content-addressable caches)
+
+### `eviction` options
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_age` | duration | `"720h"` (30 days) | Remove entries not *used* within this window. A Go duration string (`"720h"`, `"30m"`) or a number of seconds. `"0"` disables age-based eviction. |
+| `max_bytes` | int | `0` (disabled) | Total-size budget for `data_dir` in bytes. When exceeded, least-recently-used entries are evicted until the total is back under budget. `0` disables size-based eviction. |
+| `interval` | duration | `"1h"` | How often the background sweeper runs. |
+
+Setting both `max_age: "0"` and `max_bytes: 0` disables eviction entirely (the server logs a warning that the cache will grow without bound).
 
 ## Authentication
 
@@ -140,6 +153,43 @@ trusted inputs.
 A corrupt or unparseable marker file is a startup error — fix it manually,
 don't leave it to a silent purge.
 
+## Cache eviction
+
+A build cache accumulates entries forever as code and dependencies change —
+every new action ID is a new object, and old ones are never referenced again.
+Without pruning, the `data_dir` grows until the disk fills. A background sweeper
+prevents that, with two independent and combinable limits (configured under
+[`eviction`](#eviction-options)):
+
+- **`max_age`** — remove entries not used within the window (default 30 days).
+- **`max_bytes`** — keep the total cache size under a budget, evicting
+  least-recently-used entries first when it is exceeded.
+
+"Used" means the later of an entry's write time (mtime) and its last read.
+Last-read time is tracked in memory while the server runs, so a frequently
+fetched but rarely rewritten object is kept alive — exactly what you want for a
+content-addressed cache where popular entries are written once and read forever.
+(Read time is *not* written back to the file's mtime: mtime stays the entry's
+write time, which the prefetch system relies on to group "same build" entries.)
+Across a restart the in-memory read times reset, so entries are aged from their
+mtime until they are read again — at worst this delays, never wrongly hastens,
+an eviction.
+
+Eviction never threatens correctness: a wrongly evicted entry is simply a cache
+miss that the next build recomputes and re-uploads. The sweeper runs every
+`interval` (default 1h); the first sweep is one interval after startup. Evicted
+counts and reclaimed bytes are exported as `s3_evictions_total`,
+`s3_evicted_bytes_total`, and `s3_cache_bytes` (see below).
+
+Eviction is **on by default** with a conservative 30-day idle window. To opt out
+entirely, set both limits off:
+
+```json
+"eviction": {"max_age": "0", "max_bytes": 0}
+```
+
+The server then logs a startup warning that the cache will grow without bound.
+
 ## Behavior under load
 
 This server is built to absorb the concurrent load of a parallel CI matrix
@@ -163,9 +213,11 @@ keys) without OOM-ing or returning `502`s:
   generous `Read`/`Write`/`Idle` timeouts so a stuck connection cannot pin a
   concurrency slot indefinitely.
 - **Observability.** When `--metrics-listen` is set, `/metrics` exposes request,
-  storage, in-flight, and rejection counters alongside the standard Go runtime
-  and process collectors (`go_memstats_*`, `process_resident_memory_bytes`,
-  `go_goroutines`) — enough to see saturation and memory pressure directly.
+  storage, in-flight, and rejection counters, plus eviction counters
+  (`s3_evictions_total`, `s3_evicted_bytes_total`) and the current cache size
+  (`s3_cache_bytes`), alongside the standard Go runtime and process collectors
+  (`go_memstats_*`, `process_resident_memory_bytes`, `go_goroutines`) — enough to
+  see saturation, memory pressure, and cache growth directly.
 
 ## Docker
 

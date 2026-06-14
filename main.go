@@ -65,6 +65,16 @@ func run(cmd *cobra.Command, args []string) error {
 
 	srv := NewServer(cfg, storage)
 
+	if cfg.Eviction.Enabled() {
+		storage.EnableAccessTracking()
+		maxAge := cfg.Eviction.AgeLimit()
+		go storage.RunEvictionLoop(maxAge, cfg.Eviction.MaxBytes, cfg.Eviction.Interval.Std())
+		log.Printf("cache eviction: enabled max_age=%s max_bytes=%d interval=%s",
+			maxAge, cfg.Eviction.MaxBytes, cfg.Eviction.Interval.Std())
+	} else {
+		log.Printf("WARNING: cache eviction is DISABLED (eviction.max_age=0 and eviction.max_bytes=0); the cache will grow without bound until the disk fills. Set eviction.max_age (e.g. \"720h\") and/or eviction.max_bytes to enable automatic pruning.")
+	}
+
 	if cfg.MetricsListen != "" {
 		go startMetricsServer(cfg.MetricsListen)
 		log.Printf("metrics server listening on %s", cfg.MetricsListen)

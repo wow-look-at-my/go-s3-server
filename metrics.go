@@ -72,6 +72,27 @@ var (
 	})
 )
 
+// Eviction metrics
+var (
+	evictionsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "s3_evictions_total",
+		Help: "Total number of cache entries evicted (age- plus size-based).",
+	})
+
+	evictedBytesTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "s3_evicted_bytes_total",
+		Help: "Total bytes reclaimed by cache eviction.",
+	})
+
+	// cacheBytes is the total size of stored objects as of the last eviction
+	// sweep. Watch it against eviction.max_bytes to see headroom; a value that
+	// keeps climbing with eviction disabled is the unbounded-growth warning.
+	cacheBytes = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "s3_cache_bytes",
+		Help: "Total size of stored cache objects in bytes, measured at the last eviction sweep.",
+	})
+)
+
 // statusRecorder wraps http.ResponseWriter to capture status code and bytes written.
 type statusRecorder struct {
 	http.ResponseWriter

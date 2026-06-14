@@ -32,7 +32,16 @@ var (
 // example, version 2 forces a purge of any cache that was populated while
 // the auth-bypass bug in auth.go (pre-fix) could have been exploited to
 // upload attacker-controlled artifacts.
-const currentCacheVersion = 2
+//
+// Version 3 purges caches that may hold poisoned Go module-index objects. The
+// module index is stored opaquely here (the server cannot tell a good index
+// from a mis-keyed one), and a wrong one served for a std package's key breaks
+// every consumer's build at package load ("package runtime is not in std" /
+// "corrupt index"). The go-toolchain client now refuses to upload or serve
+// module-index blobs, but that only protects clients that have updated; this
+// purge removes the already-stored poison so EVERY client -- updated or not --
+// is repaired at once (a missing index key is simply recomputed locally).
+const currentCacheVersion = 3
 
 const cacheVersionFile = ".cache_version"
 const lockFileName = ".lock"

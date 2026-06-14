@@ -48,14 +48,20 @@ func computeMemLimit(limit int64, ratio float64) int64 {
 	return int64(float64(limit) * ratio)
 }
 
+// cgroup memory-limit paths, as vars so tests can point them at fixtures.
+var (
+	cgroupV2MemMaxPath   = "/sys/fs/cgroup/memory.max"
+	cgroupV1MemLimitPath = "/sys/fs/cgroup/memory/memory.limit_in_bytes"
+)
+
 // detectCgroupMemoryLimit reads the container memory limit from cgroup v2, then
 // v1. Returns ok=false when there is no finite limit (unlimited, or not in a
 // constrained cgroup), in which case no soft limit is set.
 func detectCgroupMemoryLimit() (int64, bool) {
-	if v, ok := parseCgroupMemMax(readFileTrim("/sys/fs/cgroup/memory.max")); ok {
+	if v, ok := parseCgroupMemMax(readFileTrim(cgroupV2MemMaxPath)); ok {
 		return v, true // cgroup v2
 	}
-	if v, ok := parseCgroupMemMax(readFileTrim("/sys/fs/cgroup/memory/memory.limit_in_bytes")); ok {
+	if v, ok := parseCgroupMemMax(readFileTrim(cgroupV1MemLimitPath)); ok {
 		return v, true // cgroup v1
 	}
 	return 0, false

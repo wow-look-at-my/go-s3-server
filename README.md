@@ -8,7 +8,7 @@ This server speaks go-toolchain's native cache protocol. It began life S3-compat
 
 - **Object API** — `GET`/`PUT`/`DELETE` of cache objects by key (`DELETE` is idempotent, returns `204`; the surgical lever for evicting a single poisoned cache entry without a whole-cache version-bump purge). Errors are native plain text (`<code>: <message>`, with the code repeated in an `X-Cache-Error-Code` header) — not S3 XML.
 - **Cache-key index** — `GET /<bucket>/_index` returns a precomputed binary blob (GBCI v1) of every cacheprog action-ID hash, with strong ETag and `If-None-Match` 304 support
-- **Self-healing reads** — an object with no `outputid` metadata can never be a cache hit (the client needs the content address to verify the body) yet pins its key in `_index`, so clients skip re-uploading it — a permanent forced miss. Such relics (from earlier cache-data iterations, or an xattr-stripping `data_dir` move) are evicted the moment they are read: a single `GET` returns a clean `404` and the batch path omits them, dropping the key from `_index` so the next `PUT` repopulates a correct object. The cache converges to healthy as it is used. Counted by `s3_self_heal_evictions_total`.
+- **Self-healing reads (in-place repair)** — an object with no `outputid` metadata can never be a cache hit (the client needs the content address to verify the body) yet pins its key in `_index`, so clients skip re-uploading it — a permanent forced miss. Such relics (from earlier cache-data iterations, or an xattr-stripping `data_dir` move) are **repaired in place** the moment they are read: the `outputid` is, by definition, `sha256` of the decompressed body, so the server recomputes it from the body and writes it back as an xattr. The object keeps its bytes and its audit trail, stays in `_index`, and serves as a hit — no eviction, no re-upload, no churn, and the repair is one-time. A body that can't be decompressed (and so is unusable by the client anyway) is reported as a clean miss and left untouched for the normal eviction policy. Counted by `s3_self_heal_repairs_total`.
 - **HTTP Basic Auth** — multiple users, or explicitly disable with `disable_auth: true`
 - **Write-once mode** — deny overwriting existing keys with configurable conflict notification (ideal for content-addressable caches)
 - **Bounded cache (automatic eviction)** — a background sweeper prunes entries by idle age (`max_age`) and/or a total-size budget (`max_bytes`) so the `data_dir` never grows until the disk fills. Eviction is by *last use* (read or write), not just write time. On by default with a conservative 30-day idle window; see [Cache eviction](#cache-eviction).
@@ -233,8 +233,8 @@ keys) without OOM-ing or returning `502`s:
   concurrency slot indefinitely.
 - **Observability.** When `--metrics-listen` is set, `/metrics` exposes request,
   storage, in-flight, and rejection counters, plus eviction counters
-  (`s3_evictions_total`, `s3_evicted_bytes_total`, and `s3_self_heal_evictions_total`
-  for outputid-less relics evicted on read) and the current cache size
+  (`s3_evictions_total`, `s3_evicted_bytes_total`) and `s3_self_heal_repairs_total`
+  (outputid-less relics repaired in place on read) and the current cache size
   (`s3_cache_bytes`), alongside the standard Go runtime and process collectors
   (`go_memstats_*`, `process_resident_memory_bytes`, `go_goroutines`) — enough to
   see saturation, memory pressure, and cache growth directly.

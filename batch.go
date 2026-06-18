@@ -169,12 +169,12 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 			}
 			continue
 		}
-		// Self-heal: omit and evict an outputid-less object (same rationale as
-		// handleGetObject). Leaving it out of the manifest makes the client treat
-		// it as a miss; dropping it from /_index lets the next PUT repopulate a
-		// usable object.
-		if missingOutputID(meta) {
-			selfHeal(storage, key)
+		// Self-heal: repair an outputid-less object in place (same rationale as
+		// handleGetObject) so it can be served as a hit. If it cannot be repaired,
+		// omit it from the manifest -- the client then treats it as a miss -- but
+		// leave it on disk (no eviction). ensureOutputID fills meta.Metadata with
+		// the reconstructed outputid on success.
+		if !ensureOutputID(storage, key, meta) {
 			continue
 		}
 		entries = append(entries, batchEntry{key: key, meta: meta})
@@ -288,10 +288,10 @@ func findByModTime(storage *Storage, start, end time.Time, exclude map[string]bo
 		if err != nil {
 			continue
 		}
-		// Self-heal here too: never offer an outputid-less object as prefetch --
-		// it would only waste the client's bandwidth on bytes it must discard.
-		if missingOutputID(meta) {
-			selfHeal(storage, key)
+		// Self-heal here too: repair an outputid-less object in place so it is
+		// usable prefetch; if it cannot be repaired, skip it (leave it on disk)
+		// rather than offer the client bytes it would have to discard.
+		if !ensureOutputID(storage, key, meta) {
 			continue
 		}
 		out = append(out, batchEntry{key: key, meta: meta, prefetch: true})

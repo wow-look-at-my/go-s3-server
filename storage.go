@@ -460,6 +460,24 @@ func (s *Storage) Get(key string) (_ []byte, _ *ObjectMeta, err error) {
 	return data, meta, nil
 }
 
+// SetMeta adds or overwrites the given user-metadata keys on the object stored
+// under key, leaving its body and every other xattr (audit included, and the
+// mtime the prefetch system keys on) untouched. It is the in-place repair lever
+// for an object missing required metadata -- specifically the outputid self-heal,
+// which reconstructs the content address from the body and persists it here
+// rather than evicting and forcing a re-upload. Returns ErrNotFound if no object
+// exists for key.
+func (s *Storage) SetMeta(key string, kv map[string]string) error {
+	path := s.keyToPath(key)
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return ErrNotFound
+		}
+		return err
+	}
+	return setMetadata(path, kv)
+}
+
 // Stat returns an object's metadata (size, mtime, user metadata) WITHOUT reading
 // its body. The batch endpoint uses it to build the response manifest, and the
 // GET path uses it where only size/metadata are needed — so a large object's

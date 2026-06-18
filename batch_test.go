@@ -3,6 +3,8 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -94,26 +96,31 @@ func TestBatchGet_Basic(t *testing.T) {
 	assert.Equal(t, "data-c", string(data["cache/v1ccc"]))
 }
 
-// TestBatchGet_SelfHealMissingOutputID verifies the batch path applies the same
-// self-heal as a single GET: an outputid-less entry is omitted from the manifest
-// (so the client treats it as a miss) and evicted (so it leaves /_index and the
-// next PUT repopulates it), while well-formed entries are unaffected.
-func TestBatchGet_SelfHealMissingOutputID(t *testing.T) {
+// TestBatchGet_SelfHealRepairsMissingOutputID verifies the batch path applies the
+// same in-place repair as a single GET: an outputid-less entry has its outputid
+// reconstructed from the body and is returned in the manifest with that outputid
+// (not evicted, not skipped), while well-formed entries are unaffected.
+func TestBatchGet_SelfHealRepairsMissingOutputID(t *testing.T) {
 	ts := testSetup(t)
 	client := ts.Client()
 
-	// One good entry (has outputid) and one legacy entry (no outputid metadata).
+	// One good entry (has outputid) and one relic (lz4 body, no outputid metadata).
 	putObject(t, client, ts.URL, "cache/v1good", []byte("good"), map[string]string{"Outputid": "g"})
-	badKey := "cache/v1bad"
-	req, _ := http.NewRequest("PUT", ts.URL+"/testbucket/"+badKey, bytes.NewReader([]byte("bad")))
+
+	raw := []byte("relic body missing its outputid")
+	compressed := lz4Compress(t, raw)
+	sum := sha256.Sum256(raw)
+	wantOutputID := hex.EncodeToString(sum[:])
+	relicKey := "cache/v1relic"
+	req, _ := http.NewRequest("PUT", ts.URL+"/testbucket/"+relicKey, bytes.NewReader(compressed))
 	resp, err := client.Do(req)
 	require.NoError(t, err)
 	resp.Body.Close()
 	require.Equal(t, 200, resp.StatusCode)
 
-	healedBefore := testutil.ToFloat64(selfHealEvictionsTotal)
+	repairsBefore := testutil.ToFloat64(selfHealRepairsTotal)
 
-	reqBody, _ := json.Marshal(batchGetRequest{Keys: []string{"cache/v1good", badKey}})
+	reqBody, _ := json.Marshal(batchGetRequest{Keys: []string{"cache/v1good", relicKey}})
 	resp, err = doBatchGet(client, ts.URL+"/testbucket/_batch/get", reqBody)
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -121,20 +128,20 @@ func TestBatchGet_SelfHealMissingOutputID(t *testing.T) {
 
 	manifest, data := parseBatchResponse(t, resp.Body)
 
-	// Only the good entry comes back; the outputid-less one is skipped + evicted.
-	require.Len(t, manifest.Entries, 1)
-	assert.Equal(t, "cache/v1good", manifest.Entries[0].Key)
+	// Both entries come back; the relic was repaired in place, not skipped.
+	require.Len(t, manifest.Entries, 2)
+	byKey := map[string]batchGetManifestEntry{}
+	for _, e := range manifest.Entries {
+		byKey[e.Key] = e
+	}
+	require.Contains(t, byKey, relicKey)
+	assert.Equal(t, wantOutputID, byKey[relicKey].Metadata["outputid"],
+		"the relic's reconstructed outputid must appear in the manifest")
+	assert.Equal(t, compressed, data[relicKey], "the relic body must be streamed untouched")
 	assert.Equal(t, "good", string(data["cache/v1good"]))
-	_, hasBad := data[badKey]
-	assert.False(t, hasBad, "outputid-less entry must not be streamed")
 
-	assert.Greater(t, testutil.ToFloat64(selfHealEvictionsTotal), healedBefore,
-		"batch self-heal should increment the eviction counter")
-
-	// The bad entry is evicted: a direct GET now 404s.
-	resp2 := doRequest(t, ts, "GET", "/testbucket/"+badKey, nil, nil)
-	require.Equal(t, 404, resp2.StatusCode)
-	resp2.Body.Close()
+	assert.Greater(t, testutil.ToFloat64(selfHealRepairsTotal), repairsBefore,
+		"batch self-heal should increment the repair counter")
 }
 
 func TestBatchGet_MissingKeys(t *testing.T) {

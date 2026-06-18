@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"io"
 	"net/http"
@@ -493,6 +494,104 @@ func TestDeleteObject(t *testing.T) {
 	resp = doRequest(t, ts, "DELETE", key, nil, nil)
 	require.Equal(t, 204, resp.StatusCode)
 	resp.Body.Close()
+}
+
+// TestSelfHealRepairsOutputIDInPlace covers the self-healing path: an object
+// stored without outputid metadata -- a relic of an earlier cache-data
+// iteration, or one whose xattrs were stripped by a data-dir move -- is repaired
+// in place on the first read rather than evicted. The server reconstructs the
+// outputid from the body (it IS sha256 of the decompressed body), writes it back,
+// and serves the object as a hit. The body is untouched, the key stays in
+// /_index (so clients keep hitting it instead of re-uploading), and the repair is
+// one-time. No eviction, no re-upload, no churn.
+func TestSelfHealRepairsOutputIDInPlace(t *testing.T) {
+	ts := testSetup(t)
+
+	const actionHex = "a1b2c3d4e5f6071829304a5b6c7d8e9f0011223344556677889900aabbccddee"
+	hashBytes, err := hex.DecodeString(actionHex)
+	require.Nil(t, err)
+	key := "/testbucket/go-buildcache/v1" + actionHex
+
+	// The body is an lz4 frame (what the client always stores); the outputid is
+	// sha256 of the decompressed content.
+	raw := []byte("a compiled object body that lost its outputid xattr")
+	compressed := lz4Compress(t, raw)
+	sum := sha256.Sum256(raw)
+	wantOutputID := hex.EncodeToString(sum[:])
+
+	// Store the body with NO outputid metadata -- the relic shape we must heal.
+	resp := doRequest(t, ts, "PUT", key, compressed, nil)
+	require.Equal(t, 200, resp.StatusCode)
+	resp.Body.Close()
+
+	repairsBefore := testutil.ToFloat64(selfHealRepairsTotal)
+
+	// First GET repairs in place and serves a hit -- 200 with the reconstructed
+	// outputid and the body byte-for-byte, NOT a 404.
+	resp = doRequest(t, ts, "GET", key, nil, nil)
+	require.Equal(t, 200, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.Equal(t, compressed, body, "the stored body must be served untouched")
+	require.Equal(t, wantOutputID, resp.Header.Get("X-Cache-Meta-Outputid"),
+		"the reconstructed outputid must be sha256 of the decompressed body")
+	require.Equal(t, wantOutputID, resp.Header.Get("X-Amz-Meta-Outputid"))
+
+	require.Greater(t, testutil.ToFloat64(selfHealRepairsTotal), repairsBefore,
+		"self-heal repair counter should increase")
+
+	// The key stays in the index -- repaired, not evicted -- so clients keep
+	// hitting it instead of re-uploading.
+	resp = doRequest(t, ts, "GET", "/testbucket/_index", nil, nil)
+	idx, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.True(t, bytes.Contains(idx, hashBytes), "repaired key must remain in the index")
+
+	// Second GET is a normal hit with no further repair (the outputid now persists).
+	repairsAfterFirst := testutil.ToFloat64(selfHealRepairsTotal)
+	resp = doRequest(t, ts, "GET", key, nil, nil)
+	require.Equal(t, 200, resp.StatusCode)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.Equal(t, compressed, body)
+	require.Equal(t, wantOutputID, resp.Header.Get("X-Cache-Meta-Outputid"))
+	require.Equal(t, repairsAfterFirst, testutil.ToFloat64(selfHealRepairsTotal),
+		"a repaired object must not be repaired again")
+}
+
+// TestSelfHealLeavesUnrepairableObjectInPlace verifies the non-destructive
+// fallback: an outputid-less object whose body is not a decodable lz4 frame
+// cannot be repaired (and the client could not consume it anyway), so the server
+// reports a clean miss but does NOT delete it -- the body and its index entry are
+// left in place for the normal age/size eviction policy, never churned away here.
+func TestSelfHealLeavesUnrepairableObjectInPlace(t *testing.T) {
+	ts := testSetup(t)
+
+	const actionHex = "ffeeddccbbaa00998877665544332211ffeeddccbbaa00998877665544332211"
+	hashBytes, err := hex.DecodeString(actionHex)
+	require.Nil(t, err)
+	key := "/testbucket/go-buildcache/v1" + actionHex
+
+	// A body that is not a valid lz4 frame and has no outputid: unrepairable.
+	resp := doRequest(t, ts, "PUT", key, []byte("not lz4 and no outputid"), nil)
+	require.Equal(t, 200, resp.StatusCode)
+	resp.Body.Close()
+
+	repairsBefore := testutil.ToFloat64(selfHealRepairsTotal)
+
+	// GET reports a clean miss (cannot repair) ...
+	resp = doRequest(t, ts, "GET", key, nil, nil)
+	require.Equal(t, 404, resp.StatusCode)
+	require.Equal(t, "not_found", resp.Header.Get("X-Cache-Error-Code"))
+	resp.Body.Close()
+
+	// ... but nothing was repaired (counter unchanged) and nothing was evicted:
+	// the key is still advertised in the index, i.e. the object remains on disk.
+	require.Equal(t, repairsBefore, testutil.ToFloat64(selfHealRepairsTotal))
+	resp = doRequest(t, ts, "GET", "/testbucket/_index", nil, nil)
+	idx, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.True(t, bytes.Contains(idx, hashBytes), "an unrepairable object must be left in place, not evicted")
 }
 
 func TestUnsafeKeyHashedStorage(t *testing.T) {

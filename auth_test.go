@@ -80,16 +80,8 @@ func TestBasicAuth(t *testing.T) {
 
 	content := []byte("auth test data")
 
-	// alice can PUT + GET. A real cache PUT always carries an outputid, so include
-	// one -- without it the object is treated as an unusable relic and self-healed
-	// away on the first GET (see TestSelfHealEvictsOutputIDLessObject).
-	putReq, err := http.NewRequest("PUT", ts.URL+"/testbucket/auth/v1aabb000000000001", bytes.NewReader(content))
-	require.Nil(t, err)
-	putReq.ContentLength = int64(len(content))
-	putReq.SetBasicAuth("alice", "password1")
-	putReq.Header.Set("X-Cache-Meta-Outputid", "auth1")
-	resp, err := http.DefaultClient.Do(putReq)
-	require.Nil(t, err)
+	// alice can PUT + GET
+	resp := doAuthRequest(t, ts, "alice", "password1", "PUT", "/testbucket/auth/v1aabb000000000001", content)
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 

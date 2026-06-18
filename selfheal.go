@@ -52,6 +52,16 @@ func ensureOutputID(storage *Storage, key string, meta *ObjectMeta) bool {
 	if !missingOutputID(meta) {
 		return true
 	}
+	// Self-heal applies only to GOCACHEPROG cache objects -- the
+	// go-buildcache/v1<64-hex> keys that are advertised in /_index. Those are the
+	// only keys with the permanent-miss problem: a client consults /_index and
+	// skips re-uploading a key it sees there, so an indexed-but-outputid-less
+	// object wedges forever. Any other key is not indexed, carries no cache-
+	// protocol contract, and is served exactly as stored (an outputid is simply
+	// not expected), so we never touch arbitrary objects.
+	if _, ok := extractActionHash(key); !ok {
+		return true
+	}
 	outputID, err := reconstructOutputID(storage, key)
 	if err != nil {
 		log.Printf("self-heal: cannot reconstruct outputid for %q (left in place, treated as miss): %v", key, err)

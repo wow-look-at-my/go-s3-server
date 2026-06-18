@@ -70,10 +70,7 @@ func TestPutObject_RefusesModuleIndex(t *testing.T) {
 	// Control: a normal (non-index) object is stored and served unchanged.
 	objKey := "/testbucket/go-buildcache/v1bbbbbbbbbbbbbbbb"
 	payload := lz4Compress(t, []byte("!<arch>\nnormal compiled object body"))
-	resp = doRequest(t, ts, "PUT", objKey, payload, map[string]string{
-		"X-Amz-Meta-Outputid":    "c0ffee",
-		"X-Amz-Meta-Compression": "lz4",
-	})
+	resp = doRequest(t, ts, "PUT", objKey, payload, map[string]string{"X-Amz-Meta-Compression": "lz4"})
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 

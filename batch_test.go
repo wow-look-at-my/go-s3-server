@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,14 +105,17 @@ func TestBatchGet_SelfHealRepairsMissingOutputID(t *testing.T) {
 	ts := testSetup(t)
 	client := ts.Client()
 
-	// One good entry (has outputid) and one relic (lz4 body, no outputid metadata).
-	putObject(t, client, ts.URL, "cache/v1good", []byte("good"), map[string]string{"Outputid": "g"})
+	// One good entry (has outputid) and one relic (lz4 body, no outputid
+	// metadata). Self-heal only applies to indexed cacheprog keys
+	// (go-buildcache/v1<64-hex>), so the relic must use that form.
+	goodKey := "go-buildcache/v1" + strings.Repeat("a", 64)
+	putObject(t, client, ts.URL, goodKey, []byte("good"), map[string]string{"Outputid": "g"})
 
 	raw := []byte("relic body missing its outputid")
 	compressed := lz4Compress(t, raw)
 	sum := sha256.Sum256(raw)
 	wantOutputID := hex.EncodeToString(sum[:])
-	relicKey := "cache/v1relic"
+	relicKey := "go-buildcache/v1" + strings.Repeat("b", 64)
 	req, _ := http.NewRequest("PUT", ts.URL+"/testbucket/"+relicKey, bytes.NewReader(compressed))
 	resp, err := client.Do(req)
 	require.NoError(t, err)
@@ -120,7 +124,7 @@ func TestBatchGet_SelfHealRepairsMissingOutputID(t *testing.T) {
 
 	repairsBefore := testutil.ToFloat64(selfHealRepairsTotal)
 
-	reqBody, _ := json.Marshal(batchGetRequest{Keys: []string{"cache/v1good", relicKey}})
+	reqBody, _ := json.Marshal(batchGetRequest{Keys: []string{goodKey, relicKey}})
 	resp, err = doBatchGet(client, ts.URL+"/testbucket/_batch/get", reqBody)
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -138,7 +142,7 @@ func TestBatchGet_SelfHealRepairsMissingOutputID(t *testing.T) {
 	assert.Equal(t, wantOutputID, byKey[relicKey].Metadata["outputid"],
 		"the relic's reconstructed outputid must appear in the manifest")
 	assert.Equal(t, compressed, data[relicKey], "the relic body must be streamed untouched")
-	assert.Equal(t, "good", string(data["cache/v1good"]))
+	assert.Equal(t, "good", string(data[goodKey]))
 
 	assert.Greater(t, testutil.ToFloat64(selfHealRepairsTotal), repairsBefore,
 		"batch self-heal should increment the repair counter")

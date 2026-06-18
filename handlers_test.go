@@ -137,17 +137,16 @@ func TestWriteOnce(t *testing.T) {
 	key := "/testbucket/cache/v1aabb000000000001"
 	content1 := []byte("original content")
 	content2 := []byte("overwrite attempt")
-	oid := map[string]string{"X-Cache-Meta-Outputid": "o1"}
 
-	resp := doRequest(t, ts, "PUT", key, content1, oid)
+	resp := doRequest(t, ts, "PUT", key, content1, nil)
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 
-	resp = doRequest(t, ts, "PUT", key, content2, oid)
+	resp = doRequest(t, ts, "PUT", key, content2, nil)
 	require.Equal(t, 409, resp.StatusCode)
 	resp.Body.Close()
 
-	resp = doRequest(t, ts, "PUT", key, content1, oid)
+	resp = doRequest(t, ts, "PUT", key, content1, nil)
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 
@@ -208,17 +207,16 @@ func TestWriteOnceNotificationAlways(t *testing.T) {
 
 	key := "/testbucket/cache/v1aabb000000000002"
 	content := []byte("some content")
-	oid := map[string]string{"X-Cache-Meta-Outputid": "o2"}
 
-	resp := doRequest(t, ts, "PUT", key, content, oid)
+	resp := doRequest(t, ts, "PUT", key, content, nil)
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 
-	resp = doRequest(t, ts, "PUT", key, content, oid)
+	resp = doRequest(t, ts, "PUT", key, content, nil)
 	require.Equal(t, 409, resp.StatusCode)
 	resp.Body.Close()
 
-	resp = doRequest(t, ts, "PUT", key, []byte("different"), oid)
+	resp = doRequest(t, ts, "PUT", key, []byte("different"), nil)
 	require.Equal(t, 409, resp.StatusCode)
 	resp.Body.Close()
 
@@ -234,13 +232,12 @@ func TestWriteOnceNotificationNever(t *testing.T) {
 	key := "/testbucket/cache/v1aabb000000000003"
 	content1 := []byte("original")
 	content2 := []byte("different")
-	oid := map[string]string{"X-Cache-Meta-Outputid": "o3"}
 
-	resp := doRequest(t, ts, "PUT", key, content1, oid)
+	resp := doRequest(t, ts, "PUT", key, content1, nil)
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 
-	resp = doRequest(t, ts, "PUT", key, content2, oid)
+	resp = doRequest(t, ts, "PUT", key, content2, nil)
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 
@@ -600,10 +597,9 @@ func TestSelfHealLeavesUnrepairableObjectInPlace(t *testing.T) {
 func TestUnsafeKeyHashedStorage(t *testing.T) {
 	ts := testSetup(t)
 
-	oid := map[string]string{"X-Cache-Meta-Outputid": "u1"}
 	traversalKey := "prefix/../../etc/passwd"
 	content := []byte("safe content")
-	resp := doRequest(t, ts, "PUT", "/testbucket/"+traversalKey, content, oid)
+	resp := doRequest(t, ts, "PUT", "/testbucket/"+traversalKey, content, nil)
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 
@@ -614,7 +610,7 @@ func TestUnsafeKeyHashedStorage(t *testing.T) {
 	require.Equal(t, string(content), string(body))
 
 	dotKey := "a..b/file.txt"
-	resp = doRequest(t, ts, "PUT", "/testbucket/"+dotKey, []byte("dot data"), oid)
+	resp = doRequest(t, ts, "PUT", "/testbucket/"+dotKey, []byte("dot data"), nil)
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 
@@ -630,7 +626,7 @@ func TestSafeKeyUnchangedBehavior(t *testing.T) {
 
 	key := "go-buildcache/v1aabb000000000099"
 	content := []byte("cache data")
-	resp := doRequest(t, ts, "PUT", "/testbucket/"+key, content, map[string]string{"X-Cache-Meta-Outputid": "s1"})
+	resp := doRequest(t, ts, "PUT", "/testbucket/"+key, content, nil)
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 

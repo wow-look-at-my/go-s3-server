@@ -136,16 +136,17 @@ func TestWriteOnce(t *testing.T) {
 	key := "/testbucket/cache/v1aabb000000000001"
 	content1 := []byte("original content")
 	content2 := []byte("overwrite attempt")
+	oid := map[string]string{"X-Cache-Meta-Outputid": "o1"}
 
-	resp := doRequest(t, ts, "PUT", key, content1, nil)
+	resp := doRequest(t, ts, "PUT", key, content1, oid)
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 
-	resp = doRequest(t, ts, "PUT", key, content2, nil)
+	resp = doRequest(t, ts, "PUT", key, content2, oid)
 	require.Equal(t, 409, resp.StatusCode)
 	resp.Body.Close()
 
-	resp = doRequest(t, ts, "PUT", key, content1, nil)
+	resp = doRequest(t, ts, "PUT", key, content1, oid)
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 
@@ -206,16 +207,17 @@ func TestWriteOnceNotificationAlways(t *testing.T) {
 
 	key := "/testbucket/cache/v1aabb000000000002"
 	content := []byte("some content")
+	oid := map[string]string{"X-Cache-Meta-Outputid": "o2"}
 
-	resp := doRequest(t, ts, "PUT", key, content, nil)
+	resp := doRequest(t, ts, "PUT", key, content, oid)
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 
-	resp = doRequest(t, ts, "PUT", key, content, nil)
+	resp = doRequest(t, ts, "PUT", key, content, oid)
 	require.Equal(t, 409, resp.StatusCode)
 	resp.Body.Close()
 
-	resp = doRequest(t, ts, "PUT", key, []byte("different"), nil)
+	resp = doRequest(t, ts, "PUT", key, []byte("different"), oid)
 	require.Equal(t, 409, resp.StatusCode)
 	resp.Body.Close()
 
@@ -231,12 +233,13 @@ func TestWriteOnceNotificationNever(t *testing.T) {
 	key := "/testbucket/cache/v1aabb000000000003"
 	content1 := []byte("original")
 	content2 := []byte("different")
+	oid := map[string]string{"X-Cache-Meta-Outputid": "o3"}
 
-	resp := doRequest(t, ts, "PUT", key, content1, nil)
+	resp := doRequest(t, ts, "PUT", key, content1, oid)
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 
-	resp = doRequest(t, ts, "PUT", key, content2, nil)
+	resp = doRequest(t, ts, "PUT", key, content2, oid)
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 
@@ -495,12 +498,72 @@ func TestDeleteObject(t *testing.T) {
 	resp.Body.Close()
 }
 
+// TestSelfHealEvictsOutputIDLessObject covers the self-healing path: an object
+// stored without outputid metadata -- a relic of an earlier cache-data
+// iteration, or one whose xattrs were stripped by a data-dir move -- is unusable
+// by every client yet pins its key in /_index, so clients skip re-uploading it
+// and every build that needs the action takes a forced miss. The first GET must
+// evict it (dropping it from the index, returning a clean 404) so a subsequent
+// PUT repopulates a correct, usable object. This is what keeps a "missing
+// outputid metadata" relic from permanently wedging a hot cache key.
+func TestSelfHealEvictsOutputIDLessObject(t *testing.T) {
+	ts := testSetup(t)
+
+	const actionHex = "a1b2c3d4e5f6071829304a5b6c7d8e9f0011223344556677889900aabbccddee"
+	hashBytes, err := hex.DecodeString(actionHex)
+	require.Nil(t, err)
+	key := "/testbucket/go-buildcache/v1" + actionHex
+
+	// Store a body with NO outputid metadata -- the poisoned shape we must heal.
+	resp := doRequest(t, ts, "PUT", key, []byte("stale body"), nil)
+	require.Equal(t, 200, resp.StatusCode)
+	resp.Body.Close()
+
+	// It starts out advertised in the index, so clients would skip re-uploading.
+	resp = doRequest(t, ts, "GET", "/testbucket/_index", nil, nil)
+	idxBefore, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.True(t, bytes.Contains(idxBefore, hashBytes), "outputid-less key should start in the index")
+
+	healedBefore := testutil.ToFloat64(selfHealEvictionsTotal)
+
+	// First GET self-heals: a clean miss (404), not a 200 the client cannot use.
+	resp = doRequest(t, ts, "GET", key, nil, nil)
+	require.Equal(t, 404, resp.StatusCode)
+	require.Equal(t, "not_found", resp.Header.Get("X-Cache-Error-Code"))
+	resp.Body.Close()
+
+	require.Greater(t, testutil.ToFloat64(selfHealEvictionsTotal), healedBefore,
+		"self-heal eviction counter should increase")
+
+	// The key is gone from the index, so the next client re-uploads instead of skipping.
+	resp = doRequest(t, ts, "GET", "/testbucket/_index", nil, nil)
+	idxAfter, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.False(t, bytes.Contains(idxAfter, hashBytes), "evicted key must leave the index")
+
+	// A subsequent correct PUT (with outputid) repopulates a usable object.
+	resp = doRequest(t, ts, "PUT", key, []byte("rebuilt body"),
+		map[string]string{"X-Cache-Meta-Outputid": "abc123"})
+	require.Equal(t, 200, resp.StatusCode)
+	resp.Body.Close()
+
+	resp = doRequest(t, ts, "GET", key, nil, nil)
+	require.Equal(t, 200, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	gotOutputID := resp.Header.Get("X-Cache-Meta-Outputid")
+	resp.Body.Close()
+	require.Equal(t, "rebuilt body", string(body))
+	require.Equal(t, "abc123", gotOutputID, "repopulated object must serve its outputid")
+}
+
 func TestUnsafeKeyHashedStorage(t *testing.T) {
 	ts := testSetup(t)
 
+	oid := map[string]string{"X-Cache-Meta-Outputid": "u1"}
 	traversalKey := "prefix/../../etc/passwd"
 	content := []byte("safe content")
-	resp := doRequest(t, ts, "PUT", "/testbucket/"+traversalKey, content, nil)
+	resp := doRequest(t, ts, "PUT", "/testbucket/"+traversalKey, content, oid)
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 
@@ -511,7 +574,7 @@ func TestUnsafeKeyHashedStorage(t *testing.T) {
 	require.Equal(t, string(content), string(body))
 
 	dotKey := "a..b/file.txt"
-	resp = doRequest(t, ts, "PUT", "/testbucket/"+dotKey, []byte("dot data"), nil)
+	resp = doRequest(t, ts, "PUT", "/testbucket/"+dotKey, []byte("dot data"), oid)
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 
@@ -527,7 +590,7 @@ func TestSafeKeyUnchangedBehavior(t *testing.T) {
 
 	key := "go-buildcache/v1aabb000000000099"
 	content := []byte("cache data")
-	resp := doRequest(t, ts, "PUT", "/testbucket/"+key, content, nil)
+	resp := doRequest(t, ts, "PUT", "/testbucket/"+key, content, map[string]string{"X-Cache-Meta-Outputid": "s1"})
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
 

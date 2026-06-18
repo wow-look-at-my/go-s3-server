@@ -38,6 +38,22 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		writeError(w, 500, "internal_error", err.Error())
 		return
 	}
+
+	// Self-heal: an object with no outputid metadata can never be a cache hit --
+	// the client needs the outputid (the content address) to verify the body, and
+	// without it discards the download and rebuilds -- yet its key stays in
+	// /_index, so clients skip re-uploading it and every build that needs the
+	// action takes a forced miss. These are leftovers from earlier cache-data
+	// iterations or a data-dir move that stripped xattrs. Evict it (which also
+	// drops the key from /_index) and return a clean 404, so the next PUT
+	// repopulates a correct object instead of the client tripping over a 200 it
+	// cannot use. Close the handle first so Delete can unlink on Windows too.
+	if missingOutputID(meta) {
+		f.Close()
+		selfHeal(storage, key)
+		writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
+		return
+	}
 	defer f.Close()
 
 	if a := auditFromContext(r.Context()); a != nil {

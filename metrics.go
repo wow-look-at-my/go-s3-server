@@ -102,6 +102,19 @@ var (
 		Name: "s3_cache_bytes",
 		Help: "Total size of stored cache objects in bytes, measured at the last eviction sweep.",
 	})
+
+	// selfHealEvictionsTotal counts objects evicted on read because they carried
+	// no usable outputid metadata (see selfheal.go). These are leftovers from
+	// earlier cache-data iterations, or objects whose xattrs were stripped by a
+	// data-dir move; each one can never be a cache hit yet pins its key in
+	// /_index, forcing a rebuild on every consumer. A nonzero value that trends
+	// to zero is the cache healing itself; a persistently rising one means
+	// something keeps writing outputid-less objects. (s3_ prefix kept for
+	// consistency with the other metrics until the repository rename.)
+	selfHealEvictionsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "s3_self_heal_evictions_total",
+		Help: "Total cache objects evicted on read for missing outputid metadata.",
+	})
 )
 
 // statusRecorder wraps http.ResponseWriter to capture status code and bytes written.

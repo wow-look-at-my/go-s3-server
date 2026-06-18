@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -91,6 +92,49 @@ func TestBatchGet_Basic(t *testing.T) {
 
 	assert.Equal(t, "data-a", string(data["cache/v1aaa"]))
 	assert.Equal(t, "data-c", string(data["cache/v1ccc"]))
+}
+
+// TestBatchGet_SelfHealMissingOutputID verifies the batch path applies the same
+// self-heal as a single GET: an outputid-less entry is omitted from the manifest
+// (so the client treats it as a miss) and evicted (so it leaves /_index and the
+// next PUT repopulates it), while well-formed entries are unaffected.
+func TestBatchGet_SelfHealMissingOutputID(t *testing.T) {
+	ts := testSetup(t)
+	client := ts.Client()
+
+	// One good entry (has outputid) and one legacy entry (no outputid metadata).
+	putObject(t, client, ts.URL, "cache/v1good", []byte("good"), map[string]string{"Outputid": "g"})
+	badKey := "cache/v1bad"
+	req, _ := http.NewRequest("PUT", ts.URL+"/testbucket/"+badKey, bytes.NewReader([]byte("bad")))
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode)
+
+	healedBefore := testutil.ToFloat64(selfHealEvictionsTotal)
+
+	reqBody, _ := json.Marshal(batchGetRequest{Keys: []string{"cache/v1good", badKey}})
+	resp, err = doBatchGet(client, ts.URL+"/testbucket/_batch/get", reqBody)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode)
+
+	manifest, data := parseBatchResponse(t, resp.Body)
+
+	// Only the good entry comes back; the outputid-less one is skipped + evicted.
+	require.Len(t, manifest.Entries, 1)
+	assert.Equal(t, "cache/v1good", manifest.Entries[0].Key)
+	assert.Equal(t, "good", string(data["cache/v1good"]))
+	_, hasBad := data[badKey]
+	assert.False(t, hasBad, "outputid-less entry must not be streamed")
+
+	assert.Greater(t, testutil.ToFloat64(selfHealEvictionsTotal), healedBefore,
+		"batch self-heal should increment the eviction counter")
+
+	// The bad entry is evicted: a direct GET now 404s.
+	resp2 := doRequest(t, ts, "GET", "/testbucket/"+badKey, nil, nil)
+	require.Equal(t, 404, resp2.StatusCode)
+	resp2.Body.Close()
 }
 
 func TestBatchGet_MissingKeys(t *testing.T) {

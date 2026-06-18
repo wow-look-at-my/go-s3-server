@@ -169,6 +169,14 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 			}
 			continue
 		}
+		// Self-heal: omit and evict an outputid-less object (same rationale as
+		// handleGetObject). Leaving it out of the manifest makes the client treat
+		// it as a miss; dropping it from /_index lets the next PUT repopulate a
+		// usable object.
+		if missingOutputID(meta) {
+			selfHeal(storage, key)
+			continue
+		}
 		entries = append(entries, batchEntry{key: key, meta: meta})
 
 		if minMod.IsZero() || meta.ModTime.Before(minMod) {
@@ -278,6 +286,12 @@ func findByModTime(storage *Storage, start, end time.Time, exclude map[string]bo
 	for _, key := range keys {
 		meta, err := storage.Stat(key)
 		if err != nil {
+			continue
+		}
+		// Self-heal here too: never offer an outputid-less object as prefetch --
+		// it would only waste the client's bandwidth on bytes it must discard.
+		if missingOutputID(meta) {
+			selfHeal(storage, key)
 			continue
 		}
 		out = append(out, batchEntry{key: key, meta: meta, prefetch: true})

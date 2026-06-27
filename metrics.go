@@ -117,6 +117,21 @@ var (
 		Name: "s3_self_heal_repairs_total",
 		Help: "Total cache objects whose missing outputid metadata was reconstructed in place on read.",
 	})
+
+	// moduleIndexEvictionsTotal counts already-stored Go module-index blobs that
+	// were detected and evicted on a read path (single GET, batch GET, or
+	// prefetch scan) -- see modindex.go's evictModuleIndexOnRead. The PUT guard
+	// only stops NEW indexes from being stored; this counts the lazy removal of
+	// poison already on disk (e.g. uploaded before the PUT guard existed, when
+	// the v3 startup purge had already run). Each poisoned key is evicted on its
+	// first post-deploy fetch -- the client gets a clean miss and recomputes the
+	// index locally -- so a nonzero value that trends to zero is the cache
+	// shedding residual module-index poison as it is read. (s3_ prefix kept for
+	// consistency with the other metrics until the repository rename.)
+	moduleIndexEvictionsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "s3_module_index_evictions_total",
+		Help: "Total Go module-index blobs detected and evicted on a read path (GET, batch get, or prefetch).",
+	})
 )
 
 // statusRecorder wraps http.ResponseWriter to capture status code and bytes written.

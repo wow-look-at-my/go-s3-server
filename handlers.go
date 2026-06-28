@@ -40,6 +40,23 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	}
 	defer f.Close()
 
+	// Refuse + evict a stored Go module-index blob on read. The PutObject guard
+	// only blocks NEW indexes; one already on disk (uploaded before that guard, or
+	// surviving because the one-time v3 startup purge already ran) would otherwise
+	// be served verbatim here and re-advertised in /_index forever, and the client
+	// -- which never re-uploads an index and has no remote DELETE -- refuses and
+	// re-fetches it on every build. evictModuleIndexOnRead detects it, evicts it
+	// (dropping the file and the /_index entry), and signals a miss; the peek is
+	// non-destructive (it rewinds f), so the non-index serve path below reads the
+	// body from byte 0 unchanged. This is orthogonal to the outputid self-heal --
+	// an index carries an outputid, so ensureOutputID would happily pass it -- and
+	// must run first. A miss recomputes the index locally on the client, so 404
+	// (the normal not-found path) is exactly right.
+	if evictModuleIndexOnRead(storage, key, f, meta) {
+		writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
+		return
+	}
+
 	// Self-heal: an object with no outputid metadata can never be a cache hit --
 	// the client needs the outputid (the content address) to verify the body, and
 	// without it discards the download and rebuilds -- yet its key stays in

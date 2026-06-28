@@ -169,6 +169,13 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 			}
 			continue
 		}
+		// Module-index guard: refuse + evict a stored Go module-index blob (same
+		// rationale as handleGetObject) before it ever enters the manifest. On
+		// detection the key is evicted and omitted entirely -- the client treats
+		// the missing entry as a miss and recomputes the index locally.
+		if evictModuleIndexOnReadByKey(storage, key, meta) {
+			continue
+		}
 		// Self-heal: repair an outputid-less object in place (same rationale as
 		// handleGetObject) so it can be served as a hit. If it cannot be repaired,
 		// omit it from the manifest -- the client then treats it as a miss -- but
@@ -286,6 +293,12 @@ func findByModTime(storage *Storage, start, end time.Time, exclude map[string]bo
 	for _, key := range keys {
 		meta, err := storage.Stat(key)
 		if err != nil {
+			continue
+		}
+		// Module-index guard here too: never prefetch a stored module-index blob.
+		// Detect it, evict it, and skip it -- offering it would just hand the
+		// client poison it would refuse anyway.
+		if evictModuleIndexOnReadByKey(storage, key, meta) {
 			continue
 		}
 		// Self-heal here too: repair an outputid-less object in place so it is

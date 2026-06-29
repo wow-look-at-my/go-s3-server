@@ -48,10 +48,17 @@ func testSetupWithStorage(t *testing.T) (*httptest.Server, *Storage) {
 // outputid (so the outputid self-heal would happily pass it -- proving the
 // module-index guard, not the self-heal, is what catches it) and is lz4
 // compressed on the wire, so we store the lz4 frame and tag compression=lz4.
+//
+// The payload is REALISTICALLY incompressible (magic + crypto/rand entropy), so
+// its single lz4 block compresses to several KB -- far past the old 512-byte
+// peek that masked the bug. This is the exact shape of the real production
+// poison blobs (compressed 600 B - ~36 KB), so these read-path tests genuinely
+// exercise "the compressed first block is bigger than the peek window".
 func plantModuleIndexBlob(t *testing.T, storage *Storage, key string) {
 	t.Helper()
-	raw := []byte("go index v2\n" + string(bytes.Repeat([]byte("x"), 2048)))
+	raw := incompressibleIndexBody(t, 16384)
 	compressed := lz4Compress(t, raw)
+	require.Greater(t, len(compressed), 512, "a realistic index must compress to more than the old 512-byte peek")
 	sum := sha256.Sum256(raw)
 	meta := map[string]string{
 		"outputid":    hex.EncodeToString(sum[:]),
@@ -123,18 +130,18 @@ func TestGetObject_EvictsModuleIndexOnRead(t *testing.T) {
 func TestGetObject_NonIndexBodyServedUnchanged(t *testing.T) {
 	ts := testSetup(t)
 
-	// The served body must be LONGER than indexPeekBytes so a botched peek (one
-	// that read but failed to rewind) would visibly truncate it. The server
-	// serves the stored bytes verbatim, so we store a large, random (hence
+	// The served body must be LONGER than any peek the guard does so a botched
+	// peek (one that read but failed to rewind) would visibly truncate it. The
+	// server serves the stored bytes verbatim, so we store a large, random (hence
 	// definitely-not-index, and not lz4-shrinkable) body uncompressed -- with no
-	// compression hint the guard checks the raw prefix, and a >512-byte body
-	// directly exceeds the peek window.
+	// compression hint the guard checks the raw leading bytes, and a multi-KB body
+	// dwarfs the read-path probe.
 	const actionHex = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 	key := "go-buildcache/v1" + actionHex
 	payload := make([]byte, 4096)
 	_, err := rand.Read(payload)
 	require.NoError(t, err)
-	require.Greater(t, len(payload), indexPeekBytes, "stored payload must exceed the peek window to catch truncation")
+	require.Greater(t, len(payload), indexMagicProbeBytes, "stored payload must exceed the read probe to catch truncation")
 
 	resp := doRequest(t, ts, "PUT", "/testbucket/"+key, payload,
 		map[string]string{"X-Cache-Meta-Outputid": "abc123"})

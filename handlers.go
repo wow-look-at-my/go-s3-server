@@ -131,11 +131,16 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 
 	// Refuse Go module-index blobs (see looksLikeGoModuleIndex): they cannot be
 	// verified against their key and a mis-keyed one poisons every consumer's
-	// build, so this shared cache must never hold one. Peek only the leading
-	// bytes (cheap; the magic is at the very start), then stream the rest. A
-	// dropped index is a no-op for the client -- it recomputes the index locally
-	// on the resulting miss -- so we report success rather than an error.
-	prefix := make([]byte, indexPeekBytes)
+	// build, so this shared cache must never hold one. Peek a bounded but
+	// block-sized prefix -- enough to cover a real index's first lz4 block, since
+	// the magic only decodes once the whole first block is present (a fixed
+	// 512-byte peek truncated the single-block bodies the client sends and missed
+	// every real index; see modindex.go). The peeked bytes are stitched back in
+	// front of the unread rest so a non-index body is still stored intact and
+	// large bodies keep streaming. A dropped index is a no-op for the client -- it
+	// recomputes the index locally on the resulting miss -- so we report success
+	// rather than an error.
+	prefix := make([]byte, indexPutPeekBytes)
 	n, peekErr := io.ReadFull(body, prefix)
 	prefix = prefix[:n]
 	if peekErr != nil && peekErr != io.EOF && peekErr != io.ErrUnexpectedEOF {

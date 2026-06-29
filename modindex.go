@@ -16,16 +16,53 @@ import (
 // prefix keeps the check correct across index format bumps.
 const goModuleIndexMagic = "go index v"
 
-// indexPeekBytes is how many leading bytes of an upload we inspect. The magic is
-// the very first thing in an index blob, and lz4 stores a small input's opening
-// bytes as literals in the first block, so a few hundred compressed bytes always
-// cover it. We never need the whole object, so the peek stays cheap and the rest
-// of the body keeps streaming.
-const indexPeekBytes = 512
+// indexMagicProbeBytes is how many DEcompressed bytes we read to recognize the
+// magic: enough to cover "go index v" with a little slack. We never decode more
+// of the body than this.
+const indexMagicProbeBytes = 16
 
-// looksLikeGoModuleIndex reports whether prefix (the leading bytes of an upload,
-// possibly lz4-compressed per the compression hint) begins with the Go module
-// index magic.
+// indexPutPeekBytes bounds how many COMPRESSED leading bytes the PUT path reads
+// before deciding whether an upload is a module index. It must be large enough
+// to contain a real index's first lz4 block, because the lz4 reader needs the
+// WHOLE first block to decode any output -- the bug this constant replaces was a
+// fixed 512-byte peek (see the package note below) that truncated the
+// single-block bodies the client actually sends, so the magic was never seen.
+//
+// The go-toolchain client packs each cached body into a single lz4 block whose
+// max size is 4 MiB; real indexes observed on the production cache compress to
+// ~600 bytes - ~36 KB. 1 MiB is comfortably above the observed range while still
+// far below the 4 MiB block ceiling, so it reliably covers a real index's first
+// block without buffering an arbitrarily large non-index upload. If a body's
+// first block somehow exceeds this (it never does in practice), the decode comes
+// up short and the upload is treated as "not an index" and stored -- fail-open,
+// matching the historic default and bounded by the client-side guard + the v3
+// purge.
+const indexPutPeekBytes = 1 << 20
+
+// The detection here used to peek only the first 512 COMPRESSED bytes of a body
+// (const indexPeekBytes = 512) and lz4-decompress that prefix. That was wrong:
+// the client stores each body as a SINGLE lz4 block, and pierrec/lz4's reader
+// must have the entire block before it can decode any output. Real module
+// indexes compress to 521 bytes - ~36 KB -- always more than 512 -- so the
+// reader, handed a truncated 512-byte prefix, returned n=0 (unexpected EOF), the
+// magic was never seen, and the poison was SERVED (and, on PUT, STORED). Both the
+// read/evict path and the PUT guard were broken by the same truncation. The
+// existing synthetic test passed only because its 2 KiB-of-'x' payload
+// compressed to ~61 bytes, which fit in 512 -- non-representative. The fix feeds
+// the detector enough input to decode the first block (where the magic lives):
+// the read path streams an lz4.Reader straight off the open file (it pulls
+// exactly one block); the PUT path reads a bounded but block-sized prefix.
+
+// looksLikeGoModuleIndex reports whether the input (the leading bytes of an
+// upload, possibly lz4-compressed per the compression hint) begins with the Go
+// module index magic.
+//
+// IMPORTANT: when compression == "lz4", the input MUST contain at least the
+// body's first complete lz4 block. pierrec/lz4's reader cannot decode any output
+// from a partial block, so a prefix shorter than the first block decodes to
+// nothing and the magic is missed. Callers pass either the whole body (read
+// path) or a block-sized bounded prefix (PUT path, indexPutPeekBytes), never a
+// fixed small peek.
 //
 // The module index is the one build-cache payload this server must refuse: it
 // carries no build id and does not bind to its action key, so a mis-keyed one
@@ -35,34 +72,59 @@ const indexPeekBytes = 512
 // locally for ~free, so dropping it from the shared cache costs nothing.
 //
 // A read/decompress error yields false (store it): the magic sits at the very
-// start, so a well-formed index is always recognized; failing open keeps a
-// truncated peek from dropping a legitimate object. A false positive would only
-// cost a recompute, but false negatives are the safer default here because the
-// version-3 purge plus the client-side guard already bound any residual risk.
-func looksLikeGoModuleIndex(prefix []byte, compression string) bool {
-	data := prefix
+// start, so a well-formed index given a full first block is always recognized;
+// failing open keeps a partial/garbled input from dropping a legitimate object.
+// A false positive would only cost a recompute, but false negatives are the
+// safer default here because the version-3 purge plus the client-side guard
+// already bound any residual risk.
+func looksLikeGoModuleIndex(input []byte, compression string) bool {
+	data := input
 	if compression == "lz4" {
-		buf := make([]byte, len(goModuleIndexMagic))
-		n, _ := io.ReadFull(lz4.NewReader(bytes.NewReader(prefix)), buf)
+		buf := make([]byte, indexMagicProbeBytes)
+		n, _ := io.ReadFull(lz4.NewReader(bytes.NewReader(input)), buf)
 		data = buf[:n]
 	}
 	return bytes.HasPrefix(data, []byte(goModuleIndexMagic))
 }
 
-// readIsModuleIndex reads at most indexPeekBytes leading bytes from r and
-// reports whether they are the Go module-index magic, under the same
-// `compression` metadata hint the PUT path consults. It is the shared detection
-// core for every read path (the rewinding peek for a GET that keeps the file
-// open, and the open-peek-close variant for the batch paths). A read error
-// yields (false, err): the magic is at the very start, so a well-formed index is
-// always recognized, and the caller decides what a read failure means for it.
+// readIsModuleIndex reports whether r begins with the Go module-index magic,
+// under the same `compression` metadata hint the PUT path consults. It is the
+// shared detection core for every read path (the rewinding peek for a GET that
+// keeps the file open, and the open-peek-close variant for the batch paths).
+//
+// For an lz4 body it streams an lz4.Reader straight over r and reads only the
+// few decompressed bytes the magic needs: the reader pulls exactly as much
+// COMPRESSED input from r as it takes to decode the first block, so the magic --
+// which lives in that first block -- is always recovered regardless of how large
+// the compressed block is. (This is the fix for the old fixed-512-byte peek,
+// which truncated the single-block bodies the client sends and so never decoded
+// the magic; see the package note above.) An uncompressed body is matched
+// directly off its leading bytes.
+//
+// A read error yields (false, err): the magic is at the very start, so a
+// well-formed index is always recognized, and the caller decides what a read
+// failure means for it. The reader consumes from r, so a seekable caller that
+// needs the stream intact afterward must rewind (the GET path does); the batch
+// path opens a throwaway handle solely for this peek.
 func readIsModuleIndex(r io.Reader, compression string) (bool, error) {
-	prefix := make([]byte, indexPeekBytes)
-	n, err := io.ReadFull(r, prefix)
+	if compression == "lz4" {
+		buf := make([]byte, indexMagicProbeBytes)
+		n, err := io.ReadFull(lz4.NewReader(r), buf)
+		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+			// A decompression failure means the body is not a well-formed lz4
+			// frame, hence not a module index we should evict; report "not an
+			// index" so the caller serves/keeps the object (fail-open).
+			return false, nil
+		}
+		return bytes.HasPrefix(buf[:n], []byte(goModuleIndexMagic)), nil
+	}
+	// Uncompressed: the magic is the very first bytes, so a tiny read suffices.
+	buf := make([]byte, indexMagicProbeBytes)
+	n, err := io.ReadFull(r, buf)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return false, err
 	}
-	return looksLikeGoModuleIndex(prefix[:n], compression), nil
+	return bytes.HasPrefix(buf[:n], []byte(goModuleIndexMagic)), nil
 }
 
 // evictModuleIndexOnRead is the read-path counterpart to the PutObject module-

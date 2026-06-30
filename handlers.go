@@ -140,11 +140,23 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	// large bodies keep streaming. A dropped index is a no-op for the client -- it
 	// recomputes the index locally on the resulting miss -- so we report success
 	// rather than an error.
-	prefix := make([]byte, indexPutPeekBytes)
-	n, peekErr := io.ReadFull(body, prefix)
-	prefix = prefix[:n]
-	if peekErr != nil && peekErr != io.EOF && peekErr != io.ErrUnexpectedEOF {
-		// A MaxBytesReader overflow (or other read error) on the very first read.
+	//
+	// The read SELF-SIZES to the bytes actually present rather than
+	// pre-allocating the full indexPutPeekBytes cap on every PUT. io.ReadAll
+	// grows its buffer from the body's real size (a typical ~8 KiB object
+	// allocates ~8-16 KiB), while io.LimitReader caps the worst case (a large
+	// body) at exactly indexPutPeekBytes -- identical detection input, but
+	// without the per-PUT 1 MiB allocation. That fixed cap-sized allocation was a
+	// measured regression: ~1 MiB churned per PUT (vs ~body size) made a CI burst
+	// of ~7000 PUTs thrash GC and saturate the admission-control sem, shedding
+	// PUTs with 503 so nothing got stored/indexed and the next build saw an empty
+	// /_index (hits=0). LimitReader keeps the detection bytes identical to the old
+	// cap; the cap stays generous so a real index's first block is always covered.
+	peek, peekErr := io.ReadAll(io.LimitReader(body, int64(indexPutPeekBytes)))
+	if peekErr != nil {
+		// A MaxBytesReader overflow (or other read error) during the peek. This
+		// only fires when maxObjectBytes <= indexPutPeekBytes, since otherwise the
+		// LimitReader caps the peek below the MaxBytesReader limit.
 		var maxErr *http.MaxBytesError
 		if errors.As(peekErr, &maxErr) {
 			writeError(w, 413, "too_large", fmt.Sprintf("object exceeds max size of %d bytes", maxObjectBytes))
@@ -153,14 +165,14 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		writeError(w, 500, "internal_error", peekErr.Error())
 		return
 	}
-	if looksLikeGoModuleIndex(prefix, meta["compression"]) {
+	if looksLikeGoModuleIndex(peek, meta["compression"]) {
 		io.Copy(io.Discard, body) // drain so the client's write completes cleanly
 		w.WriteHeader(200)
 		return
 	}
 
 	// Not an index: stitch the peeked prefix back in front of the unread rest.
-	full := io.MultiReader(bytes.NewReader(prefix), body)
+	full := io.MultiReader(bytes.NewReader(peek), body)
 	if err := storage.PutStream(key, full, meta, audit); err != nil {
 		if errors.Is(err, ErrWriteOnceConflict) || errors.Is(err, ErrWriteOnceDuplicate) {
 			writeError(w, 409, "conflict", err.Error())

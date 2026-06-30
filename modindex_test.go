@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -11,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func lz4Compress(t *testing.T, data []byte) []byte {
+func lz4Compress(t testing.TB, data []byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	w := lz4.NewWriter(&buf)
@@ -104,6 +107,49 @@ func TestReadIsModuleIndex_FullBlock(t *testing.T) {
 	isIndex, err = readIsModuleIndex(bytes.NewReader([]byte("not a valid lz4 frame at all")), "lz4")
 	require.NoError(t, err)
 	require.False(t, isIndex)
+}
+
+// BenchmarkPutObjectPeek exercises the PUT-path module-index guard for a typical
+// small (8 KiB) non-index object and reports -benchmem. It is the proof for the
+// allocation fix: the guard's prefix read must self-size to the body (~tens of
+// KiB), NOT pre-allocate the full indexPutPeekBytes (1 MiB) cap on every PUT.
+//
+// Before the fix (prefix := make([]byte, indexPutPeekBytes); io.ReadFull), this
+// reported ~1.09 MB/op. After (io.ReadAll(io.LimitReader(body, cap))), it drops
+// to roughly the body size. Driving handlePutObject directly (not over HTTP)
+// keeps the measurement on the body-read + store path where the regression lived.
+func BenchmarkPutObjectPeek(b *testing.B) {
+	dir := b.TempDir()
+	storage, err := NewStorage(dir, WriteOnceConfig{Action: "allow"})
+	require.NoError(b, err)
+	b.Cleanup(func() { storage.Close() })
+
+	// A realistic ~8 KiB compiled-object body (non-index), lz4-compressed as the
+	// client sends it. Incompressible so the stored body is genuinely ~8 KiB.
+	raw := make([]byte, 8192)
+	_, err = rand.Read(raw)
+	require.NoError(b, err)
+	copy(raw, "!<arch>\n") // an ar archive header, not an index
+	payload := lz4Compress(b, raw)
+
+	hdr := http.Header{}
+	hdr.Set("X-Cache-Meta-Outputid", "benchoutputid")
+	hdr.Set("X-Cache-Meta-Compression", "lz4")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// write_once action=allow lets each iteration overwrite the same key, so
+		// the storage layer stays bounded while the peek path runs every time.
+		key := fmt.Sprintf("go-buildcache/v1%064x", i%4)
+		req := httptest.NewRequest("PUT", "/testbucket/"+key, bytes.NewReader(payload))
+		req.Header = hdr
+		req.ContentLength = int64(len(payload))
+		rec := httptest.NewRecorder()
+		handlePutObject(rec, req, storage, key, defaultMaxObjectBytes)
+		require.Equal(b, 200, rec.Code)
+
+	}
 }
 
 // TestPutObject_RefusesModuleIndex is the server half of the poison fix: a

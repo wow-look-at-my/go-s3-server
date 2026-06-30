@@ -25,6 +25,7 @@ The cache protocol is **no longer S3-compatible**. Clients (go-toolchain) talk t
 - **Object transfer** — `GET`/`PUT`/`DELETE /<bucket>/<key>`. Object metadata travels in native `X-Cache-Meta-*` headers (e.g. `X-Cache-Meta-Outputid`). Errors are native plain text with an `X-Cache-Error-Code` header.
 - **Key index** — `GET /<bucket>/_index` returns the GBCI v1 binary blob (the client loads it once to know which keys exist, instead of probing per key).
 - **Batched fetch** — `GET /<bucket>/_batch/get` (JSON body of keys) returns a tar of bodies + a `manifest.json`, with temporal prefetch of related entries. This is the scalable replacement for per-object S3 GETs.
+- **Batched upload** — `PUT /<bucket>/_batch/put` (Content-Type `application/x-tar`) stores many objects in a single request. The tar holds a `manifest.json` first member (`{"entries":[{"key":...,"metadata":{...}}]}`, metadata keyed by the lowercased meta name without the `X-Cache-Meta-` prefix) followed by one `data/<key>` member per entry in manifest order. The response is JSON `{"results":[{"key":...,"status":"stored|dropped|conflict|error","message":...}]}`. Each member is stored through the same path as a single `PUT` (module-index refusal, write_once, audit xattrs, index append). The whole batch holds **one** admission-control slot — the scalable replacement for the thousands of per-object `PUT`s a CI build would otherwise issue, each taking a slot and saturating the server. Capped at 4096 entries (`413` over the cap); a malformed tar, missing/late `manifest.json`, or a key mismatch between the manifest and the data members is a `400 invalid_request`.
 
 ### Deprecated (still works, warns on use)
 
@@ -228,7 +229,10 @@ keys) without OOM-ing or returning `502`s:
   proxy reports as a `502`). Overload-shed requests are counted in the
   `s3_http_rejected_total` metric.
 - **Bounded requests.** A single PUT is capped at `max_object_bytes` (`413` over
-  the limit); a `_batch/get` is capped at 4096 keys (`400` over the limit).
+  the limit); a `_batch/get` is capped at 4096 keys (`400` over the limit); a
+  `_batch/put` is capped at 4096 entries and at `4096 × max_object_bytes` total
+  body bytes (`413` over either limit), with each member individually bounded to
+  `max_object_bytes`.
 - **Timeouts.** The HTTP server sets `ReadHeaderTimeout` (slowloris guard) plus
   generous `Read`/`Write`/`Idle` timeouts so a stuck connection cannot pin a
   concurrency slot indefinitely.

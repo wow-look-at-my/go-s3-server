@@ -63,6 +63,12 @@ type Storage struct {
 	// interfere. The map holds only keys read since startup (the working set),
 	// not the whole cache. The type and methods live in eviction.go.
 	accessShards []*accessShard
+
+	// cleanKeys memoizes indexed cacheprog keys whose stored body already
+	// passed the read-path module-index probe, so warm keys skip the per-GET
+	// lz4 decode. Invalidated on overwrite PUT, DELETE, and eviction. See
+	// cleanmemo.go.
+	cleanKeys *cleanKeyMemo
 }
 
 type ObjectMeta struct {
@@ -108,6 +114,7 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 		dataDir:   dataDir,
 		writeOnce: writeOnce,
 		lockFile:  lockFile,
+		cleanKeys: newCleanKeyMemo(maxCleanMemoEntries),
 	}
 
 	s.Index = NewIndex(s)
@@ -380,6 +387,9 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 		os.Remove(tmpPath)
 		return fmt.Errorf("rename: %w", err)
 	}
+	// The body under this key just changed: the next read must re-probe it
+	// rather than trust a stale known-clean verdict for the previous body.
+	s.forgetClean(key)
 	if s.Index != nil {
 		s.Index.Put(key, n)
 	}
@@ -566,6 +576,7 @@ func (s *Storage) Delete(key string) (err error) {
 		s.Index.Remove(key)
 	}
 	s.forgetAccess(key)
+	s.forgetClean(key)
 	return nil
 }
 

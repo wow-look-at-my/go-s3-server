@@ -203,6 +203,7 @@ func (s *Storage) evictOne(key string) bool {
 		return false
 	}
 	s.forgetAccess(key)
+	s.forgetClean(key)
 	return true
 }
 

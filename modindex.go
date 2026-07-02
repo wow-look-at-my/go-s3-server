@@ -170,7 +170,14 @@ func readIsModuleIndex(r io.Reader, compression string) (bool, error) {
 func evictModuleIndexOnRead(storage *Storage, key string, f io.ReadSeeker, meta *ObjectMeta) bool {
 	// Only indexed cacheprog keys can be a poisoned module index; never inspect
 	// or evict anything else.
-	if _, ok := extractActionHash(key); !ok {
+	hash, ok := extractActionHash(key)
+	if !ok {
+		return false
+	}
+	// Known-clean memo: this exact body already passed the probe on an earlier
+	// read (and nothing has overwritten/deleted it since, or the memo entry
+	// would have been invalidated), so skip the lz4 decode entirely.
+	if storage.keyKnownClean(hash) {
 		return false
 	}
 	isIndex, readErr := readIsModuleIndex(f, meta.Metadata["compression"])
@@ -186,6 +193,7 @@ func evictModuleIndexOnRead(storage *Storage, key string, f io.ReadSeeker, meta 
 		return true
 	}
 	if !isIndex {
+		storage.markKeyClean(hash)
 		return false
 	}
 	evictModuleIndex(storage, key)
@@ -203,7 +211,13 @@ func evictModuleIndexOnRead(storage *Storage, key string, f io.ReadSeeker, meta 
 // or cannot be opened is reported as "not an index" (false): the batch loops
 // already treat a Stat/Open failure as a plain miss, so nothing regresses.
 func evictModuleIndexOnReadByKey(storage *Storage, key string, meta *ObjectMeta) bool {
-	if _, ok := extractActionHash(key); !ok {
+	hash, ok := extractActionHash(key)
+	if !ok {
+		return false
+	}
+	// Known-clean memo: skip the open+decode when this body already passed the
+	// probe on an earlier read (see evictModuleIndexOnRead).
+	if storage.keyKnownClean(hash) {
 		return false
 	}
 	f, _, err := storage.Open(key)
@@ -217,6 +231,7 @@ func evictModuleIndexOnReadByKey(storage *Storage, key string, meta *ObjectMeta)
 		return false
 	}
 	if !isIndex {
+		storage.markKeyClean(hash)
 		return false
 	}
 	evictModuleIndex(storage, key)

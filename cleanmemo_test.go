@@ -110,7 +110,7 @@ func TestCleanMemo_ForgetOnEviction(t *testing.T) {
 	storage.markKeyClean(hash)
 	require.True(t, storage.keyKnownClean(hash))
 
-	require.True(t, storage.evictOne(key))
+	require.True(t, storage.evictOne(key, 0))
 	require.False(t, storage.keyKnownClean(hash), "eviction must drop the memo entry")
 }
 

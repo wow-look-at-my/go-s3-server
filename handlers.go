@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"strconv"
@@ -117,7 +118,19 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	w.Header().Set("Last-Modified", meta.ModTime.UTC().Format(http.TimeFormat))
 	w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
 	w.WriteHeader(200)
-	io.Copy(w, f)
+	// Stream the body, logging DISK-side failures. The status is already
+	// written, so an error here truncates the response; the client's hash
+	// check refuses the partial body, but without a log the server would be
+	// silently serving from a failing disk. Read errors from f surface as
+	// *fs.PathError; anything else is the peer going away mid-download, which
+	// is normal and not logged. (f stays the direct copy source so the
+	// ResponseWriter's ReadFrom/sendfile fast path remains available.)
+	if _, err := io.Copy(w, f); err != nil {
+		var pathErr *fs.PathError
+		if errors.As(err, &pathErr) {
+			log.Printf("get %q: body read failed mid-copy (truncated response; check storage health): %v", key, err)
+		}
+	}
 }
 
 func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string, maxObjectBytes int64) {

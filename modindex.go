@@ -117,18 +117,30 @@ func looksLikeGoModuleIndex(input []byte, compression string) bool {
 // failure means for it. The reader consumes from r, so a seekable caller that
 // needs the stream intact afterward must rewind (the GET path does); the batch
 // path opens a throwaway handle solely for this peek.
+//
+// In the lz4 branch, an error from the UNDERLYING reader (disk I/O) is
+// distinguished from an lz4 FORMAT error: a garbled-but-readable body is not
+// an index (fail-open: serve/keep it — the client hash-verifies anyway), but a
+// body that cannot even be read is a real storage failure the caller must not
+// hide. Previously both collapsed into "not an index", so a failing disk read
+// let the serve path emit a 200 header and then die mid-copy, invisibly.
 func readIsModuleIndex(r io.Reader, compression string) (bool, error) {
 	if compression == "lz4" {
 		buf := make([]byte, indexMagicProbeBytes)
-		zr := lz4.NewReader(r)
+		src := &errTrackingReader{r: r}
+		zr := lz4.NewReader(src)
 		n, err := io.ReadFull(zr, buf)
 		// Return the reader's two pooled 4 MiB buffers (see the matching Reset in
 		// looksLikeGoModuleIndex): without this every read-path probe abandoned
 		// them, costing ~8.4 MiB of allocation churn per inspected object on the
 		// GET, batch, and prefetch paths.
 		zr.Reset(nil)
+		if src.err != nil {
+			// The SOURCE failed: a genuine I/O error, not a format problem.
+			return false, src.err
+		}
 		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
-			// A decompression failure means the body is not a well-formed lz4
+			// The source read fine but the bytes are not a well-formed lz4
 			// frame, hence not a module index we should evict; report "not an
 			// index" so the caller serves/keeps the object (fail-open).
 			return false, nil
@@ -142,6 +154,22 @@ func readIsModuleIndex(r io.Reader, compression string) (bool, error) {
 		return false, err
 	}
 	return bytes.HasPrefix(buf[:n], []byte(goModuleIndexMagic)), nil
+}
+
+// errTrackingReader records the first non-EOF error returned by the wrapped
+// reader, so a consumer that transforms errors (e.g. an lz4 decoder reporting
+// a truncated frame) cannot mask a genuine I/O failure from the source.
+type errTrackingReader struct {
+	r   io.Reader
+	err error
+}
+
+func (t *errTrackingReader) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) {
+		t.err = err
+	}
+	return n, err
 }
 
 // readGuardVerdict is the outcome of the GET-path module-index guard, so the

@@ -276,10 +276,14 @@ func statusStr(code int) string {
 	return strconv.Itoa(code)
 }
 
+// startMetricsServer serves /metrics on addr. A failure (typically the port
+// being in use) is logged and the cache keeps running WITHOUT metrics — the
+// old log.Fatalf here killed the whole cache server at startup over a busy
+// metrics port, taking down the data path to preserve the monitoring path.
 func startMetricsServer(addr string) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	if err := http.ListenAndServe(addr, mux); err != nil {
-		log.Fatalf("metrics server: %v", err)
+		log.Printf("metrics server unavailable (continuing WITHOUT metrics): %v", err)
 	}
 }

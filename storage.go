@@ -46,6 +46,10 @@ const currentCacheVersion = 3
 const cacheVersionFile = ".cache_version"
 const lockFileName = ".lock"
 
+// fsyncThresholdBytes: PutStream fsyncs temp files at or above this size
+// before renaming them into place (see the comment at the call site).
+const fsyncThresholdBytes = 8 << 20
+
 type Storage struct {
 	dataDir   string
 	writeOnce WriteOnceConfig
@@ -109,6 +113,14 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 		lockFile.Close()
 		return nil, err
 	}
+
+	// Sweep .tmp-* orphans from crashed/killed PutStreams. List skips the
+	// .tmp- prefix, so these files are invisible to listing, eviction, and the
+	// index — without this sweep they leak disk forever. The exclusive flock
+	// above guarantees no other server is writing to this data_dir, and this
+	// process has not started serving yet, so at this point EVERY .tmp- file
+	// is a dead orphan.
+	sweepTempFiles(dataDir)
 
 	s := &Storage{
 		dataDir:   dataDir,
@@ -185,6 +197,29 @@ func purgeDataDir(dataDir string) error {
 		}
 	}
 	return nil
+}
+
+// sweepTempFiles removes leftover PutStream temp files (".tmp-*"). Only call
+// while holding the data_dir's exclusive lock and before serving begins, when
+// no temp file can be legitimately in flight.
+func sweepTempFiles(dataDir string) {
+	var removed int
+	filepath.WalkDir(dataDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if strings.HasPrefix(d.Name(), ".tmp-") {
+			if rmErr := os.Remove(path); rmErr == nil {
+				removed++
+			} else {
+				log.Printf("startup: cannot remove orphaned temp file %s: %v", path, rmErr)
+			}
+		}
+		return nil
+	})
+	if removed > 0 {
+		log.Printf("startup: removed %d orphaned .tmp-* file(s) left by interrupted uploads", removed)
+	}
 }
 
 func (s *Storage) Close() error {
@@ -329,6 +364,18 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 		tmp.Close()
 		os.Remove(tmpPath)
 		return fmt.Errorf("write temp: %w", copyErr)
+	}
+	// Durability, proportionate to a cache's needs: fsync large bodies before
+	// the rename so a power loss cannot leave a big, mostly-unwritten file
+	// under the final name. Small objects skip the sync — full fsync-per-PUT
+	// would throttle CI bursts, and the client hash-verifies every download,
+	// so a rare torn small object costs one refused fetch, not correctness.
+	if n >= fsyncThresholdBytes {
+		if err := tmp.Sync(); err != nil {
+			tmp.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("sync temp: %w", err)
+		}
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpPath)

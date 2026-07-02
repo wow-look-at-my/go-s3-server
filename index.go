@@ -403,30 +403,54 @@ func (idx *Index) rebuild(storage *Storage) {
 		log.Printf("index: rebuild failed: %v", err)
 		return
 	}
+	entries, hashes := idx.applyRebuild(result.Objects)
+	log.Printf("index: built %d entries (%d hashes) in %v",
+		entries, hashes, time.Since(start).Round(time.Millisecond))
+}
 
-	idx.mu.Lock()
-	idx.entries = make([]indexEntry, 0, len(result.Objects))
-	idx.pendingEntries = nil
-	idx.hashes = idx.hashes[:0]
-	idx.pending = make([][gbciHashSize]byte, 0, len(result.Objects))
-	for _, obj := range result.Objects {
-		idx.entries = append(idx.entries, indexEntry{
+// applyRebuild replaces the index's master state with a filesystem snapshot
+// while PRESERVING the pending buffers. The snapshot walk (storage.List) runs
+// with no index lock held and takes seconds on a large cache, so PUTs complete
+// concurrently; each lives only in pending/pendingEntries until drained. The
+// old code nil'd both buffers here, silently dropping every PUT that finished
+// after the walk passed its shard — those keys then vanished from /_index (and
+// from prefetch) until the NEXT rebuild, i.e. the next eviction sweep, forcing
+// misses and duplicate re-uploads right after every sweep.
+//
+// Instead the walked hashes are prepended to the surviving pending buffer
+// (Blob() sorts + dedupes, so a PUT the walk also saw costs nothing) and
+// pendingEntries is left alone (drainEntriesLocked merges + sorts it into the
+// fresh entries on the next read; a duplicate mtime entry is the same benign
+// shape an overwrite PUT already produces). A PUT can therefore never be lost
+// to a rebuild: it either lands in pending before the lock (merged here) or
+// after (normal append path).
+//
+// Returns the entry and hash counts for logging.
+func (idx *Index) applyRebuild(objects []ListObject) (int, int) {
+	entries := make([]indexEntry, 0, len(objects))
+	walked := make([][gbciHashSize]byte, 0, len(objects))
+	for _, obj := range objects {
+		entries = append(entries, indexEntry{
 			key:       obj.Key,
 			mtimeUnix: obj.LastModified.Unix(),
 		})
 		if h, ok := extractActionHash(obj.Key); ok {
-			idx.pending = append(idx.pending, h)
+			walked = append(walked, h)
 		}
 	}
-	sort.Slice(idx.entries, func(i, j int) bool {
-		return idx.entries[i].mtimeUnix < idx.entries[j].mtimeUnix
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].mtimeUnix < entries[j].mtimeUnix
 	})
+
+	idx.mu.Lock()
+	idx.entries = entries
+	// pendingEntries intentionally survives (see doc comment above).
+	idx.hashes = idx.hashes[:0]
+	idx.pending = append(walked, idx.pending...)
 	idx.cachedBlob = nil
 	idx.cachedETag = ""
 	idx.dirty.Store(true)
 	hashCount := len(idx.pending)
 	idx.mu.Unlock()
-
-	log.Printf("index: built %d entries (%d hashes) in %v",
-		len(result.Objects), hashCount, time.Since(start).Round(time.Millisecond))
+	return len(objects), hashCount
 }

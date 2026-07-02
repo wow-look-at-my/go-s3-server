@@ -129,6 +129,15 @@ func (idx *Index) Put(key string, size int64) {
 		idx.pending = append(idx.pending, hash)
 		idx.dirty.Store(true)
 	}
+	idx.updateGaugesLocked()
+}
+
+// updateGaugesLocked refreshes the index-size gauges. Caller must hold idx.mu.
+// Three atomic stores — negligible next to the xattr writes on the PUT path.
+func (idx *Index) updateGaugesLocked() {
+	indexEntriesGauge.Set(float64(len(idx.entries) + len(idx.pendingEntries)))
+	indexHashesGauge.Set(float64(len(idx.hashes)))
+	indexPendingGauge.Set(float64(len(idx.pending)))
 }
 
 // drainEntriesLocked merges any pending mtime entries into the sorted master
@@ -170,6 +179,7 @@ func (idx *Index) Remove(key string) {
 		idx.hashes = removeHash(idx.hashes, hash)
 		idx.dirty.Store(true)
 	}
+	idx.updateGaugesLocked()
 }
 
 // RemoveKeys drops a batch of keys from the index in one pass: their mtime
@@ -213,6 +223,7 @@ func (idx *Index) RemoveKeys(keys []string) {
 		idx.pending = filterHashes(idx.pending, victimHashes)
 		idx.dirty.Store(true)
 	}
+	idx.updateGaugesLocked()
 }
 
 // filterHashes returns s with every hash present in victims filtered out,
@@ -393,6 +404,7 @@ func (idx *Index) Blob() ([]byte, string) {
 	idx.cachedBlob = blob
 	idx.cachedETag = `"` + hex.EncodeToString(digest[:]) + `"`
 	idx.dirty.Store(false)
+	idx.updateGaugesLocked()
 	return idx.cachedBlob, idx.cachedETag
 }
 
@@ -404,6 +416,7 @@ func (idx *Index) rebuild(storage *Storage) {
 		return
 	}
 	entries, hashes := idx.applyRebuild(result.Objects)
+	indexRebuildDuration.Observe(time.Since(start).Seconds())
 	log.Printf("index: built %d entries (%d hashes) in %v",
 		entries, hashes, time.Since(start).Round(time.Millisecond))
 }
@@ -451,6 +464,7 @@ func (idx *Index) applyRebuild(objects []ListObject) (int, int) {
 	idx.cachedETag = ""
 	idx.dirty.Store(true)
 	hashCount := len(idx.pending)
+	idx.updateGaugesLocked()
 	idx.mu.Unlock()
 	return len(objects), hashCount
 }

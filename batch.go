@@ -294,6 +294,12 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 		streamed++
 	}
 
+	batchRequestsTotal.Inc()
+	batchKeysTotal.WithLabelValues("requested").Add(float64(len(req.Keys)))
+	batchKeysTotal.WithLabelValues("found").Add(float64(len(entries) - nPrefetch))
+	batchKeysTotal.WithLabelValues("prefetched").Add(float64(nPrefetch))
+	batchKeysTotal.WithLabelValues("suppressed").Add(float64(nSuppressed))
+	batchKeysTotal.WithLabelValues("streamed").Add(float64(streamed))
 	log.Printf("batch get: requested=%d found=%d prefetched=%d suppressed=%d streamed=%d",
 		len(req.Keys), len(entries)-nPrefetch, nPrefetch, nSuppressed, streamed)
 }

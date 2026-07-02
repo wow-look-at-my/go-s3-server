@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -189,6 +190,15 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		return
 	}
 	if looksLikeGoModuleIndex(peek, meta["compression"]) {
+		// Count + log the refusal. This used to be completely silent, which is
+		// the exact blind spot that hid the 512-byte-peek bug: a broken guard
+		// looks identical to a quiet one. Clients build module indexes all the
+		// time, so an occasionally-nonzero counter during CI activity is the
+		// live proof the guard works; refusals are rare enough (the client-side
+		// guard blocks most uploads first) that a per-event log line is cheap
+		// and names the offending key for forensics.
+		putRefusalsTotal.WithLabelValues("module_index").Inc()
+		log.Printf("put guard: refused module-index upload for %q (200, stored nothing; client recomputes locally)", key)
 		io.Copy(io.Discard, body) // drain so the client's write completes cleanly
 		w.WriteHeader(200)
 		return

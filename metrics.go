@@ -61,6 +61,72 @@ var (
 	}, []string{"feature"})
 )
 
+// PUT-refusal metrics
+var (
+	// putRefusalsTotal counts uploads the server accepted on the wire (200)
+	// but deliberately did not store, by reason. reason="module_index" is the
+	// PutObject guard dropping a Go module-index blob. This guard was
+	// previously completely invisible — no metric, no log — which is exactly
+	// the blind spot that let the 512-byte-peek bug go unnoticed for weeks: a
+	// broken guard is indistinguishable from a quiet one. Clients build module
+	// indexes constantly, so during CI activity this counter being
+	// occasionally nonzero is PROOF the guard fires; a flat zero across busy
+	// periods means the guard is broken again.
+	putRefusalsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "s3_put_refusals_total",
+		Help: "Uploads accepted on the wire but refused storage, by reason (e.g. module_index).",
+	}, []string{"reason"})
+)
+
+// Batch metrics
+var (
+	// batchKeysTotal breaks down /_batch/get volume: requested (keys asked
+	// for), found (requested keys served), prefetched (extra entries included),
+	// suppressed (prefetch candidates skipped as recently sent), streamed
+	// (bodies actually written into the tar). A falling found/requested ratio
+	// is the earliest "cache is fickle" indicator; previously these numbers
+	// were log-only and required grepping server logs.
+	batchKeysTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "s3_batch_keys_total",
+		Help: "Batch GET key counts by kind: requested, found, prefetched, suppressed, streamed.",
+	}, []string{"kind"})
+
+	// batchRequestsTotal counts /_batch/get requests served.
+	batchRequestsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "s3_batch_requests_total",
+		Help: "Total /_batch/get requests processed.",
+	})
+)
+
+// Index metrics
+var (
+	// Index size gauges, updated wherever the index mutates under its lock.
+	// A post-sweep dip in s3_index_hashes that PUT volume does not explain is
+	// the signature of a rebuild dropping keys; pending depths show how much
+	// is buffered between /_index serializations.
+	indexEntriesGauge = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "s3_index_entries",
+		Help: "Current mtime entries in the in-memory index (including pending).",
+	})
+	indexHashesGauge = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "s3_index_hashes",
+		Help: "Current action-ID hashes in the index master list (excluding pending).",
+	})
+	indexPendingGauge = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "s3_index_pending_hashes",
+		Help: "Action-ID hashes buffered since the last /_index serialization.",
+	})
+
+	// indexRebuildDuration times full filesystem-walk rebuilds (startup and
+	// post-eviction). On a large cache these take seconds; a growing duration
+	// is early warning that sweeps are getting expensive.
+	indexRebuildDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "s3_index_rebuild_duration_seconds",
+		Help:    "Duration of full index rebuilds (filesystem walk + swap).",
+		Buckets: prometheus.ExponentialBuckets(0.01, 4, 8),
+	})
+)
+
 // Storage metrics
 var (
 	storageOpsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -116,6 +182,18 @@ var (
 	selfHealRepairsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "s3_self_heal_repairs_total",
 		Help: "Total cache objects whose missing outputid metadata was reconstructed in place on read.",
+	})
+
+	// selfHealFailuresTotal counts objects that could NOT be repaired (the
+	// body does not decompress, so no outputid can be reconstructed). Each
+	// such object is unservable; the read path de-advertises it so consumers
+	// re-upload. Previously a failure was only a log line, so the recurring
+	// forced-miss signature was invisible in metrics. A sustained nonzero
+	// RATE (the same keys failing over and over) means corrupt bodies are
+	// being re-advertised faster than they are healed — investigate.
+	selfHealFailuresTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "s3_self_heal_failures_total",
+		Help: "Self-heal attempts that could not reconstruct an outputid (unservable body; key de-advertised).",
 	})
 
 	// outputIDMismatchTotal counts repairs that found an outputid on the inode

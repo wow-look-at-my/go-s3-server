@@ -84,6 +84,7 @@ func ensureOutputID(storage *Storage, key string, meta *ObjectMeta, f *os.File) 
 		if storage.Index != nil {
 			storage.Index.Remove(key)
 		}
+		selfHealFailuresTotal.Inc()
 		log.Printf("self-heal: cannot reconstruct outputid for %q (left on disk, de-advertised from index, treated as miss): %v", key, err)
 		return false
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -139,6 +140,17 @@ var (
 		Help:    "Storage operation duration in seconds.",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"operation"})
+
+	// metadataXattrsDroppedTotal counts OPTIONAL user-metadata xattrs dropped
+	// because the filesystem ran out of extended-attribute space (E2BIG /
+	// ENOSPC / EDQUOT) while storing an object. The object still stores and
+	// serves; only the provenance field is lost. A rising rate usually means
+	// the client is sending an oversized Src list or the data_dir filesystem
+	// has a tight per-inode EA budget (ext4 without ea_inode: ~4 KiB shared).
+	metadataXattrsDroppedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "s3_metadata_xattrs_dropped_total",
+		Help: "Optional user-metadata xattrs dropped due to xattr-space exhaustion (object stored without them).",
+	})
 )
 
 // Auth metrics
@@ -271,6 +283,26 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	r.bytesWritten += int64(n)
 	return n, err
 }
+
+// ReadFrom forwards to the wrapped ResponseWriter's io.ReaderFrom when it has
+// one. net/http's response writer implements ReadFrom with a sendfile fast
+// path for *os.File sources; a wrapper that hides the interface silently
+// downgrades every GET body copy to userspace read/write loops. When the
+// wrapped writer is not a ReaderFrom (e.g. httptest recorders), fall back to
+// a plain copy through r.Write (which already counts bytes — writerOnly hides
+// this method so io.Copy cannot recurse into it).
+func (r *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
+	if rf, ok := r.ResponseWriter.(io.ReaderFrom); ok {
+		n, err := rf.ReadFrom(src)
+		r.bytesWritten += n
+		return n, err
+	}
+	return io.Copy(writerOnly{r}, src)
+}
+
+// writerOnly masks every method except Write, so the ReadFrom fallback's
+// io.Copy takes the plain-write path instead of recursing into ReadFrom.
+type writerOnly struct{ io.Writer }
 
 func statusStr(code int) string {
 	return strconv.Itoa(code)

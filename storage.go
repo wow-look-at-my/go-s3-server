@@ -54,7 +54,7 @@ type Storage struct {
 	dataDir   string
 	writeOnce WriteOnceConfig
 	lockFile  *os.File
-	Index     *Index // sqlite index for time-range queries; nil if unavailable
+	Index     *Index // in-memory key index (mtime entries + GBCI hashes); nil if unavailable
 
 	// accessShards tracks the last-access time (unix seconds) of each key so the
 	// eviction sweeper can prune entries by least-recent *use*, not merely by

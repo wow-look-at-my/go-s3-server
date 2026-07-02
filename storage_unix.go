@@ -3,8 +3,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"os"
+	"slices"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -19,12 +23,58 @@ func unlockFile(f *os.File) {
 	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 }
 
+// metadataProtectedKeys are load-bearing for the cache protocol: outputid is
+// the content address every client verifies before consuming a body, and
+// compression steers both the module-index guards and client decompression.
+// A failure persisting one of these fails the PUT — storing the object
+// without them would serve unusable (or unguardable) bytes. Every other
+// metadata key is descriptive provenance (src, pkg, go-version, ...).
+var metadataProtectedKeys = []string{"outputid", "compression"}
+
+// setMetadata persists user metadata as xattrs. Protected keys are written
+// first (so they claim xattr space) and any error on them fails the call.
+// Optional keys degrade gracefully under xattr-space pressure: on ext4
+// without the ea_inode feature ALL of a file's xattrs share one ~4 KiB EA
+// block, and the client's Src header is an uncapped list of source file
+// names, so a many-file package can overflow it. Failing the whole PUT for
+// that (the old behavior: any xattr error → 500) made exactly the biggest
+// packages permanently uncacheable. Instead the oversized optional key is
+// dropped, counted, and logged — the object stores and serves normally,
+// minus one provenance field.
 func setMetadata(path string, meta map[string]string) error {
-	for k, v := range meta {
-		attrName := "user.s3." + k
-		if err := unix.Setxattr(path, attrName, []byte(v), 0); err != nil {
-			return fmt.Errorf("set xattr %s: %w", attrName, err)
+	for _, k := range metadataProtectedKeys {
+		if v, ok := meta[k]; ok {
+			attrName := "user.s3." + k
+			if err := unix.Setxattr(path, attrName, []byte(v), 0); err != nil {
+				return fmt.Errorf("set xattr %s: %w", attrName, err)
+			}
 		}
+	}
+
+	optional := make([]string, 0, len(meta))
+	for k := range meta {
+		if !slices.Contains(metadataProtectedKeys, k) {
+			optional = append(optional, k)
+		}
+	}
+	sort.Strings(optional) // deterministic write order under space pressure
+
+	var dropped []string
+	for _, k := range optional {
+		attrName := "user.s3." + k
+		err := unix.Setxattr(path, attrName, []byte(meta[k]), 0)
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, unix.E2BIG) || errors.Is(err, unix.ENOSPC) || errors.Is(err, unix.EDQUOT) {
+			dropped = append(dropped, k)
+			continue
+		}
+		return fmt.Errorf("set xattr %s: %w", attrName, err)
+	}
+	if len(dropped) > 0 {
+		metadataXattrsDroppedTotal.Add(float64(len(dropped)))
+		log.Printf("metadata: dropped oversized xattr(s) %v for %s (xattr space exhausted; object stored without them)", dropped, path)
 	}
 	return nil
 }

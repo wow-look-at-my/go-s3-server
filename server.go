@@ -216,6 +216,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "GET" && key != "":
 		route = "GetObject"
 		handleGetObject(rec, r, s.storage, key)
+	case r.Method == "HEAD" && key != "":
+		route = "HeadObject"
+		handleHeadObject(rec, r, s.storage, key)
 	case r.Method == "PUT" && key != "":
 		route = "PutObject"
 		handlePutObject(rec, r, s.storage, key, s.config.MaxObjectBytes)

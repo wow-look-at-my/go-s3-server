@@ -163,6 +163,16 @@ func getXattr(path, name string) ([]byte, error) {
 	return buf, nil
 }
 
+// Sidecar hooks: metadata lives in xattrs on unix, so there are no companion
+// files to move, remove, or skip — these are no-ops. The Windows build (JSON
+// sidecars next to the body) supplies the real implementations.
+
+func finalizeSidecars(tmpPath, path string) error { return nil }
+
+func removeSidecars(path string) {}
+
+func isSidecarName(name string) bool { return false }
+
 const originalKeyAttr = "user.s3.originalkey"
 
 func setOriginalKey(path, key string) error {

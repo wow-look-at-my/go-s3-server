@@ -256,6 +256,7 @@ func (s *Storage) evictOne(key string, expectMtime int64) bool {
 		}
 		return false
 	}
+	removeSidecars(path)
 	s.forgetAccess(key)
 	s.forgetClean(key)
 	return true

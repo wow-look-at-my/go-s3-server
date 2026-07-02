@@ -434,6 +434,13 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 		os.Remove(tmpPath)
 		return fmt.Errorf("rename: %w", err)
 	}
+	// Move the metadata sidecars (Windows only; xattrs travel with the inode
+	// on unix) to the final path alongside the body. Failing here fails the
+	// PUT: a body without its metadata cannot serve, and the client's retry
+	// overwrites cleanly.
+	if err := finalizeSidecars(tmpPath, path); err != nil {
+		return fmt.Errorf("finalize sidecars: %w", err)
+	}
 	// The body under this key just changed: the next read must re-probe it
 	// rather than trust a stale known-clean verdict for the previous body.
 	s.forgetClean(key)
@@ -637,6 +644,7 @@ func (s *Storage) Delete(key string) (err error) {
 		}
 		return rmErr
 	}
+	removeSidecars(path)
 	if s.Index != nil {
 		s.Index.Remove(key)
 	}
@@ -666,6 +674,12 @@ func (s *Storage) List(prefix string, maxKeys int, continuationToken string) (_ 
 		}
 		name := d.Name()
 		if name == lockFileName || name == cacheVersionFile || strings.HasPrefix(name, ".tmp-") {
+			return nil
+		}
+		// Metadata sidecars (Windows) are companions of an object, not objects:
+		// listing them would advertise phantom keys in the index and let
+		// eviction delete metadata out from under live bodies.
+		if isSidecarName(name) {
 			return nil
 		}
 

@@ -227,6 +227,11 @@ func evictModuleIndexOnRead(storage *Storage, key string, f io.ReadSeeker, meta 
 // since the file is opened and closed solely for the peek. A key that vanished
 // or cannot be opened is reported as "not an index" (false): the batch loops
 // already treat a Stat/Open failure as a plain miss, so nothing regresses.
+//
+// The peek uses openRaw, not Open: it is an internal inspection, not a serve,
+// so it must not count a storage "get" op (previously every batch-served key
+// counted twice) nor stamp a last-access time onto prefetch candidates that
+// are never actually sent (which inflated their LRU-eviction lifetime).
 func evictModuleIndexOnReadByKey(storage *Storage, key string, meta *ObjectMeta) bool {
 	hash, ok := extractActionHash(key)
 	if !ok {
@@ -237,7 +242,7 @@ func evictModuleIndexOnReadByKey(storage *Storage, key string, meta *ObjectMeta)
 	if storage.keyKnownClean(hash) {
 		return false
 	}
-	f, _, err := storage.Open(key)
+	f, err := storage.openRaw(key)
 	if err != nil {
 		return false
 	}

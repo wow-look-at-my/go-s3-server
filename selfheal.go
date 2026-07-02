@@ -122,7 +122,11 @@ func ensureOutputID(storage *Storage, key string, meta *ObjectMeta, f *os.File) 
 func reconstructOutputID(storage *Storage, key string, f *os.File) (string, error) {
 	callerOwned := f != nil
 	if !callerOwned {
-		opened, _, err := storage.Open(key)
+		// openRaw, not Open: the repair read is not a client-visible serve, so
+		// it must not count a "get" op or stamp a last-access time (a healed
+		// batch candidate that IS served gets its access recorded by the
+		// phase-2 streaming Open).
+		opened, err := storage.openRaw(key)
 		if err != nil {
 			return "", err
 		}

@@ -71,32 +71,47 @@ func newPrefetchTracker() *prefetchTracker {
 	return &prefetchTracker{sent: make(map[string]map[string]time.Time)}
 }
 
-// filterAndRecord returns the subset of candidates not recently sent to user,
-// records those entries as sent, and evicts stale entries for that user.
-func (t *prefetchTracker) filterAndRecord(user string, candidates []batchEntry) []batchEntry {
+// filterKeys returns the subset of candidate keys not recently sent to user.
+// It records nothing: suppression runs BEFORE the per-key stat/guard/heal
+// work, so up to maxPrefetchEntries already-sent candidates cost a map lookup
+// each instead of a file open plus an lz4 first-block decode. record is called
+// afterwards with only the keys that actually made it into the response.
+func (t *prefetchTracker) filterKeys(user string, keys []string) []string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	now := time.Now()
 	userSent := t.sent[user]
 
-	var out []batchEntry
-	for _, e := range candidates {
+	var out []string
+	for _, k := range keys {
 		if userSent != nil {
-			if sentAt, ok := userSent[e.key]; ok && now.Sub(sentAt) < prefetchTrackerTTL {
+			if sentAt, ok := userSent[k]; ok && now.Sub(sentAt) < prefetchTrackerTTL {
 				continue
 			}
 		}
-		out = append(out, e)
+		out = append(out, k)
 	}
+	return out
+}
 
-	if len(out) > 0 {
+// record marks keys as sent to user now and amortizes eviction of that user's
+// stale entries. Only keys that were genuinely included in a response should
+// be recorded — a candidate dropped by the guard/heal checks stays eligible.
+func (t *prefetchTracker) record(user string, keys []string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	now := time.Now()
+	userSent := t.sent[user]
+
+	if len(keys) > 0 {
 		if userSent == nil {
 			userSent = make(map[string]time.Time)
 			t.sent[user] = userSent
 		}
-		for _, e := range out {
-			userSent[e.key] = now
+		for _, k := range keys {
+			userSent[k] = now
 		}
 	}
 
@@ -109,13 +124,13 @@ func (t *prefetchTracker) filterAndRecord(user string, candidates []batchEntry) 
 	if len(userSent) == 0 {
 		delete(t.sent, user)
 	}
-
-	return out
 }
 
-// handleBatchGet handles GET /_batch/get requests. The client sends a JSON
-// list of keys it needs, and the server responds with a tar stream containing
-// the data and metadata for each found entry.
+// handleBatchGet handles GET and POST /_batch/get requests. The client sends a
+// JSON list of keys it needs, and the server responds with a tar stream
+// containing the data and metadata for each found entry. POST is the
+// semantically sound method (the request carries a body; GET-with-a-body is
+// hostile to proxies and caches); GET remains accepted for existing clients.
 //
 // If prefetch is enabled, the server also includes entries whose modification
 // time falls within ±30s of the requested entries, capturing entries from the
@@ -128,7 +143,7 @@ func (t *prefetchTracker) filterAndRecord(user string, candidates []batchEntry) 
 //	manifest.json                    — index of all entries with metadata
 //	data/<key>                       — raw file content for each entry
 func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tracker *prefetchTracker) {
-	if r.Method != "GET" {
+	if r.Method != "GET" && r.Method != "POST" {
 		writeError(w, 405, "method_not_allowed", "method not allowed")
 		return
 	}
@@ -195,16 +210,29 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 		}
 	}
 
-	// Prefetch: find related entries by modification time proximity, then
-	// suppress any the server has already sent to this user recently.
+	// Prefetch: find related keys by modification time proximity, suppress the
+	// ones already sent to this user recently, and only THEN pay the per-key
+	// stat/guard/heal work for the survivors. Running the tracker first matters:
+	// the guard peek opens the file and decodes an lz4 block, so inspecting up
+	// to maxPrefetchEntries candidates that were about to be thrown away as
+	// already-sent wasted that work on every repeat request. Only the keys that
+	// actually make it into the response are recorded as sent, so a candidate
+	// dropped by the guard stays eligible for a later request.
 	var nSuppressed int
-	if req.Prefetch && len(entries) > 0 && !minMod.IsZero() {
+	if req.Prefetch && len(entries) > 0 && !minMod.IsZero() && storage.Index != nil {
 		windowStart := minMod.Add(-prefetchWindow)
 		windowEnd := maxMod.Add(prefetchWindow)
 
-		candidates := findByModTime(storage, windowStart, windowEnd, requestedSet)
-		prefetched := tracker.filterAndRecord(user, candidates)
-		nSuppressed = len(candidates) - len(prefetched)
+		candidateKeys := storage.Index.NearbyKeys(windowStart.Unix(), windowEnd.Unix(), maxPrefetchEntries, requestedSet)
+		freshKeys := tracker.filterKeys(user, candidateKeys)
+		nSuppressed = len(candidateKeys) - len(freshKeys)
+
+		prefetched := buildPrefetchEntries(storage, freshKeys)
+		sentKeys := make([]string, len(prefetched))
+		for i, e := range prefetched {
+			sentKeys[i] = e.key
+		}
+		tracker.record(user, sentKeys)
 		entries = append(entries, prefetched...)
 	}
 
@@ -280,16 +308,12 @@ func writeTarEntry(tw *tar.Writer, name string, size int64, r io.Reader) error {
 	return err
 }
 
-// findByModTime returns related entries (metadata only) whose modification time
-// falls within [start, end], excluding already-requested keys. Bodies are not
-// read here — they are streamed later alongside the explicitly requested ones.
-func findByModTime(storage *Storage, start, end time.Time, exclude map[string]bool) []batchEntry {
-	if storage.Index == nil {
-		return nil
-	}
-
-	keys := storage.Index.NearbyKeys(start.Unix(), end.Unix(), maxPrefetchEntries, exclude)
-
+// buildPrefetchEntries stats the given prefetch keys and applies the same
+// guard/heal gates the requested-key loop uses, returning servable entries
+// (metadata only). Bodies are not read here — they are streamed later
+// alongside the explicitly requested ones. The caller has already run tracker
+// suppression, so every key here is genuinely about to be offered.
+func buildPrefetchEntries(storage *Storage, keys []string) []batchEntry {
 	var out []batchEntry
 	for _, key := range keys {
 		meta, err := storage.Stat(key)

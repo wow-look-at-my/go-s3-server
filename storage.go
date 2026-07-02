@@ -548,6 +548,24 @@ func (s *Storage) Open(key string) (_ *os.File, _ *ObjectMeta, err error) {
 	return f, meta, nil
 }
 
+// openRaw opens an object's body WITHOUT the storage-op metric or the
+// last-access recording that Open performs. It exists for internal peeks —
+// the module-index guard's inspection and the self-heal's private hashing
+// handle — which are not client-visible serves: routing them through Open
+// double-counted the "get" op for every batch-served key and, worse, stamped
+// a fresh last-access time onto prefetch candidates that were never actually
+// sent, inflating their lifetime under LRU eviction.
+func (s *Storage) openRaw(key string) (*os.File, error) {
+	f, err := os.Open(s.keyToPath(key))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return f, nil
+}
+
 // Delete removes the object stored under key, returning ErrNotFound if no such
 // object exists. It is the surgical counterpart to the whole-dir cache-version
 // purge: an operator can evict a single poisoned entry -- e.g. a cross-

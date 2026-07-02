@@ -64,7 +64,20 @@ func ensureOutputID(storage *Storage, key string, meta *ObjectMeta) bool {
 	}
 	outputID, err := reconstructOutputID(storage, key)
 	if err != nil {
-		log.Printf("self-heal: cannot reconstruct outputid for %q (left in place, treated as miss): %v", key, err)
+		// The body is unusable (most often: cannot be lz4-decompressed) and the
+		// outputid cannot be reconstructed, so this key can NEVER serve a hit.
+		// Leaving it advertised in /_index would wedge it permanently: every
+		// client is told to skip re-uploading an indexed key, yet every fetch is
+		// a forced miss. Drop the key from the index (the FILE stays on disk for
+		// forensics and the normal eviction policy) so the next consumer that
+		// computes this action re-uploads a good body, overwriting the bad one.
+		// Note the startup/sweep-end index rebuild re-advertises it from disk;
+		// the next read then de-advertises it again — bounded churn, strictly
+		// better than a permanent forced miss.
+		if storage.Index != nil {
+			storage.Index.Remove(key)
+		}
+		log.Printf("self-heal: cannot reconstruct outputid for %q (left on disk, de-advertised from index, treated as miss): %v", key, err)
 		return false
 	}
 	selfHealRepairsTotal.Inc()

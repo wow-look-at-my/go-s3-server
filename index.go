@@ -172,6 +172,87 @@ func (idx *Index) Remove(key string) {
 	}
 }
 
+// RemoveKeys drops a batch of keys from the index in one pass: their mtime
+// entries and (for well-formed cacheprog keys) their action-ID hashes. The
+// eviction sweeper calls it with the full victim set BEFORE unlinking any file,
+// so the index stops advertising a key strictly before its body disappears —
+// the opposite ordering (delete files during the sweep, rebuild the index only
+// at sweep end) left every already-deleted key advertised for the remainder of
+// the sweep, a window in which a GET of that key is a 404 on an indexed key
+// (the miss_advertised_unservable signature). One filter pass over the index
+// is O(n + len(keys)); the per-key Remove would be O(n) each.
+func (idx *Index) RemoveKeys(keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+	victimKeys := make(map[string]bool, len(keys))
+	victimHashes := make(map[[gbciHashSize]byte]bool, len(keys))
+	for _, k := range keys {
+		victimKeys[k] = true
+		if h, ok := extractActionHash(k); ok {
+			victimHashes[h] = true
+		}
+	}
+
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	// Drain first so keys still sitting in pendingEntries are removable too.
+	idx.drainEntriesLocked()
+	w := 0
+	for _, e := range idx.entries {
+		if !victimKeys[e.key] {
+			idx.entries[w] = e
+			w++
+		}
+	}
+	idx.entries = idx.entries[:w]
+
+	if len(victimHashes) > 0 {
+		idx.hashes = filterHashes(idx.hashes, victimHashes)
+		idx.pending = filterHashes(idx.pending, victimHashes)
+		idx.dirty.Store(true)
+	}
+}
+
+// filterHashes returns s with every hash present in victims filtered out,
+// reusing s's backing array (the result is always a prefix of s), so a sorted
+// input stays sorted.
+func filterHashes(s [][gbciHashSize]byte, victims map[[gbciHashSize]byte]bool) [][gbciHashSize]byte {
+	out := s[:0]
+	for _, x := range s {
+		if !victims[x] {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// Contains reports whether the action hash is currently in the index (the
+// sorted master list or the pending buffer) — i.e. whether the key is, or will
+// be on the next serialization, advertised by /_index. Used to classify a GET
+// 404 as "advertised but unservable" (index/store divergence) versus a plain
+// not-found. O(log n) on the master plus O(pending); pending is bounded by the
+// PUT burst since the last Blob().
+func (idx *Index) Contains(h [gbciHashSize]byte) bool {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	// hashes is always sorted: only Blob() writes it (sort+dedupe) and the
+	// removal paths do order-preserving filtering.
+	i := sort.Search(len(idx.hashes), func(i int) bool {
+		return bytes.Compare(idx.hashes[i][:], h[:]) >= 0
+	})
+	if i < len(idx.hashes) && idx.hashes[i] == h {
+		return true
+	}
+	for _, p := range idx.pending {
+		if p == h {
+			return true
+		}
+	}
+	return false
+}
+
 // removeHash returns s with every occurrence of h filtered out, reusing s's
 // backing array (the result is always a prefix of s). The action-ID hash is a
 // 1:1 function of the key, so at most one entry matches.

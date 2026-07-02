@@ -144,6 +144,22 @@ func readIsModuleIndex(r io.Reader, compression string) (bool, error) {
 	return bytes.HasPrefix(buf[:n], []byte(goModuleIndexMagic)), nil
 }
 
+// readGuardVerdict is the outcome of the GET-path module-index guard, so the
+// caller can report the distinct miss reasons (evicted poison vs. an
+// uninspectable body) instead of collapsing both into one anonymous 404.
+type readGuardVerdict int
+
+const (
+	// guardServe: not a module index — serve the body unchanged.
+	guardServe readGuardVerdict = iota
+	// guardEvicted: a stored module-index blob was detected and evicted; the
+	// caller reports a miss and the client recomputes the index locally.
+	guardEvicted
+	// guardPeekError: the body could not be inspected (or the stream could not
+	// be rewound). Refused fail-safe as a miss; the object is left on disk.
+	guardPeekError
+)
+
 // evictModuleIndexOnRead is the read-path counterpart to the PutObject module-
 // index guard, for a GET that already holds the object's open file. The PUT
 // guard only stops a NEW index from being stored; a poisoned index already on
@@ -163,22 +179,23 @@ func readIsModuleIndex(r io.Reader, compression string) (bool, error) {
 // module index, so an arbitrary/non-cache object is never inspected or touched.
 //
 // The peek is non-destructive: f is SEEKED back to the start, so when this
-// returns false the caller serves the body from byte 0 byte-for-byte unchanged.
-// A read or seek error means we cannot guarantee an unchanged stream, so it is
-// treated as "miss" (the object is left on disk -- Delete is not called -- and
-// the caller reports a miss), which is safe because the client just re-fetches.
-func evictModuleIndexOnRead(storage *Storage, key string, f io.ReadSeeker, meta *ObjectMeta) bool {
+// returns guardServe the caller serves the body from byte 0 byte-for-byte
+// unchanged. A read or seek error means we cannot guarantee an unchanged
+// stream, so it is reported as guardPeekError (the object is left on disk --
+// Delete is not called -- and the caller reports a miss), which is safe because
+// the client just re-fetches.
+func evictModuleIndexOnRead(storage *Storage, key string, f io.ReadSeeker, meta *ObjectMeta) readGuardVerdict {
 	// Only indexed cacheprog keys can be a poisoned module index; never inspect
 	// or evict anything else.
 	hash, ok := extractActionHash(key)
 	if !ok {
-		return false
+		return guardServe
 	}
 	// Known-clean memo: this exact body already passed the probe on an earlier
 	// read (and nothing has overwritten/deleted it since, or the memo entry
 	// would have been invalidated), so skip the lz4 decode entirely.
 	if storage.keyKnownClean(hash) {
-		return false
+		return guardServe
 	}
 	isIndex, readErr := readIsModuleIndex(f, meta.Metadata["compression"])
 	// Rewind unconditionally so the non-index serve path reads from byte 0 --
@@ -186,18 +203,18 @@ func evictModuleIndexOnRead(storage *Storage, key string, f io.ReadSeeker, meta 
 	// unchanged stream, so report a miss rather than serve a consumed body.
 	if _, seekErr := f.Seek(0, io.SeekStart); seekErr != nil {
 		log.Printf("module-index guard: cannot rewind %q after peek (treated as miss, not evicted): %v", key, seekErr)
-		return true
+		return guardPeekError
 	}
 	if readErr != nil {
 		log.Printf("module-index guard: cannot inspect %q (treated as miss, not evicted): %v", key, readErr)
-		return true
+		return guardPeekError
 	}
 	if !isIndex {
 		storage.markKeyClean(hash)
-		return false
+		return guardServe
 	}
 	evictModuleIndex(storage, key)
-	return true
+	return guardEvicted
 }
 
 // evictModuleIndexOnReadByKey is the batch-path counterpart: it OPENS the object

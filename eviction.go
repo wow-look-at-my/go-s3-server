@@ -145,33 +145,61 @@ func (s *Storage) Evict(maxAge time.Duration, maxBytes int64, now time.Time) (Ev
 	nowUnix := now.Unix()
 	maxAgeSec := int64(maxAge.Seconds())
 
-	// Age pass: drop anything idle longer than maxAge; keep the rest as
-	// survivors (reusing the candidate backing array) for the size pass.
+	// Age pass: select anything idle longer than maxAge as a victim; keep the
+	// rest as survivors (reusing the candidate backing array) for the size pass.
+	// Selection only — no deletion yet, see below.
+	var ageVictims []evictionCandidate
 	survivors := cands[:0]
 	var survivorBytes int64
 	for _, c := range cands {
 		if maxAge > 0 && nowUnix-c.lastUsed > maxAgeSec {
-			if s.evictOne(c.key) {
-				stats.EvictedAge++
-				stats.BytesFreed += c.size
-			}
+			ageVictims = append(ageVictims, c)
 			continue
 		}
 		survivors = append(survivors, c)
 		survivorBytes += c.size
 	}
 
-	// Size pass: if still over budget, evict least-recently-used first.
+	// Size pass: if still over budget, select least-recently-used first.
+	var sizeVictims []evictionCandidate
 	if maxBytes > 0 && survivorBytes > maxBytes {
 		sort.Slice(survivors, func(i, j int) bool {
 			return survivors[i].lastUsed < survivors[j].lastUsed
 		})
 		for i := 0; survivorBytes > maxBytes && i < len(survivors); i++ {
-			if s.evictOne(survivors[i].key) {
-				stats.EvictedSize++
-				stats.BytesFreed += survivors[i].size
-				survivorBytes -= survivors[i].size
-			}
+			sizeVictims = append(sizeVictims, survivors[i])
+			survivorBytes -= survivors[i].size
+		}
+	}
+
+	// Stop advertising every victim BEFORE unlinking any file. The previous
+	// ordering (unlink during the passes, rebuild the index once at sweep end)
+	// left each deleted key advertised in /_index for the rest of the sweep —
+	// a window in which every GET of it was a 404 on an indexed key, the exact
+	// index/store divergence the miss_advertised_unservable counter tracks.
+	// Inverting the order makes the transient state "present but unadvertised",
+	// whose worst case is a redundant re-upload rather than a forced miss.
+	if s.Index != nil && len(ageVictims)+len(sizeVictims) > 0 {
+		keys := make([]string, 0, len(ageVictims)+len(sizeVictims))
+		for _, c := range ageVictims {
+			keys = append(keys, c.key)
+		}
+		for _, c := range sizeVictims {
+			keys = append(keys, c.key)
+		}
+		s.Index.RemoveKeys(keys)
+	}
+
+	for _, c := range ageVictims {
+		if s.evictOne(c.key) {
+			stats.EvictedAge++
+			stats.BytesFreed += c.size
+		}
+	}
+	for _, c := range sizeVictims {
+		if s.evictOne(c.key) {
+			stats.EvictedSize++
+			stats.BytesFreed += c.size
 		}
 	}
 

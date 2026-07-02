@@ -24,6 +24,20 @@ func writeError(w http.ResponseWriter, httpStatus int, code, message string) {
 	fmt.Fprintf(w, "%s: %s\n", code, message)
 }
 
+// absentKeyOutcome classifies a GET 404 for a key with no object on disk: a
+// plain miss_not_found, or — when the key's action hash is CURRENTLY advertised
+// in /_index — miss_advertised_unservable. The latter is the index/store-
+// divergence signature (an advertised key every client is told to skip
+// re-uploading, yet nobody can fetch): it should be ~0 always, and counting it
+// at serve time is what makes a recurrence of the historical "404s on indexed
+// keys" incidents visible server-side instead of only in client logs.
+func absentKeyOutcome(storage *Storage, key string) string {
+	if h, ok := extractActionHash(key); ok && storage.Index != nil && storage.Index.Contains(h) {
+		return "miss_advertised_unservable"
+	}
+	return "miss_not_found"
+}
+
 func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string) {
 	// Open + stream rather than ReadFile + Write: the body is copied straight
 	// from disk to the socket with a fixed-size buffer, so a large object never
@@ -32,6 +46,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	f, meta, err := storage.Open(key)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
+			getRequestsTotal.WithLabelValues(absentKeyOutcome(storage, key)).Inc()
 			writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
 			return
 		}
@@ -52,7 +67,13 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	// an index carries an outputid, so ensureOutputID would happily pass it -- and
 	// must run first. A miss recomputes the index locally on the client, so 404
 	// (the normal not-found path) is exactly right.
-	if evictModuleIndexOnRead(storage, key, f, meta) {
+	switch evictModuleIndexOnRead(storage, key, f, meta) {
+	case guardEvicted:
+		getRequestsTotal.WithLabelValues("miss_module_index_evicted").Inc()
+		writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
+		return
+	case guardPeekError:
+		getRequestsTotal.WithLabelValues("miss_peek_error").Inc()
 		writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
 		return
 	}
@@ -69,6 +90,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	// thus unusable by the client anyway), report a clean miss without deleting
 	// anything -- the object is left for the normal eviction policy.
 	if !ensureOutputID(storage, key, meta) {
+		getRequestsTotal.WithLabelValues("miss_selfheal_failed").Inc()
 		writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
 		return
 	}
@@ -76,6 +98,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	if a := auditFromContext(r.Context()); a != nil {
 		a.Label = objectLabel(meta.Metadata)
 	}
+	getRequestsTotal.WithLabelValues("hit").Inc()
 
 	for k, v := range meta.Metadata {
 		// Capitalize first letter of metadata key

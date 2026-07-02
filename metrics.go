@@ -118,6 +118,35 @@ var (
 		Help: "Total cache objects whose missing outputid metadata was reconstructed in place on read.",
 	})
 
+	// getRequestsTotal counts single-object GETs by outcome, so the different
+	// flavors of "404" are distinguishable in metrics instead of all collapsing
+	// into s3_http_requests_total{status="404"}:
+	//
+	//   hit                        — 200, body served
+	//   miss_not_found             — no object and the key is not advertised in
+	//                                /_index: a genuinely-absent key (normal).
+	//   miss_advertised_unservable — no object on disk YET the key's action hash
+	//                                is currently advertised in /_index. This is
+	//                                the index/store-divergence signature behind
+	//                                the "GETs 404 on keys the index lists"
+	//                                incidents: each such key is a forced miss on
+	//                                every consumer (clients skip re-uploading
+	//                                indexed keys), so this counter should be ~0
+	//                                always and any sustained nonzero rate is an
+	//                                actionable bug.
+	//   miss_module_index_evicted  — a stored module-index blob was detected and
+	//                                evicted by the read guard.
+	//   miss_peek_error            — the read guard could not inspect/rewind the
+	//                                body (I/O error); refused fail-safe, left on
+	//                                disk.
+	//   miss_selfheal_failed       — the object lacks an outputid and its body
+	//                                could not be decompressed to reconstruct
+	//                                one; unservable, left on disk for eviction.
+	getRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "s3_get_requests_total",
+		Help: "Single-object GET requests by outcome (hit, miss_not_found, miss_advertised_unservable, miss_module_index_evicted, miss_peek_error, miss_selfheal_failed).",
+	}, []string{"outcome"})
+
 	// moduleIndexEvictionsTotal counts already-stored Go module-index blobs that
 	// were detected and evicted on a read path (single GET, batch GET, or
 	// prefetch scan) -- see modindex.go's evictModuleIndexOnRead. The PUT guard

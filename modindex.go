@@ -81,7 +81,18 @@ func looksLikeGoModuleIndex(input []byte, compression string) bool {
 	data := input
 	if compression == "lz4" {
 		buf := make([]byte, indexMagicProbeBytes)
-		n, _ := io.ReadFull(lz4.NewReader(bytes.NewReader(input)), buf)
+		zr := lz4.NewReader(bytes.NewReader(input))
+		n, _ := io.ReadFull(zr, buf)
+		// Return the reader's pooled buffers. pierrec/lz4 sizes its two internal
+		// buffers from the frame header's BlockSizeIndex -- 4 MiB each for the
+		// single-block frames the client writes -- and only releases them to the
+		// pools on EOF or Reset. An abandoned 16-byte probe therefore leaked
+		// ~8.4 MiB of allocation churn PER INSPECTED OBJECT (every PUT peek and
+		// every read-path guard), keeping the pools empty so every peek malloc'd
+		// fresh: the same GC-thrash -> admission-control-saturation failure mode
+		// as the fixed 1 MiB PUT prealloc, ~8x larger. Reset(nil) puts both
+		// buffers back so steady-state peeks allocate ~nothing.
+		zr.Reset(nil)
 		data = buf[:n]
 	}
 	return bytes.HasPrefix(data, []byte(goModuleIndexMagic))
@@ -109,7 +120,13 @@ func looksLikeGoModuleIndex(input []byte, compression string) bool {
 func readIsModuleIndex(r io.Reader, compression string) (bool, error) {
 	if compression == "lz4" {
 		buf := make([]byte, indexMagicProbeBytes)
-		n, err := io.ReadFull(lz4.NewReader(r), buf)
+		zr := lz4.NewReader(r)
+		n, err := io.ReadFull(zr, buf)
+		// Return the reader's two pooled 4 MiB buffers (see the matching Reset in
+		// looksLikeGoModuleIndex): without this every read-path probe abandoned
+		// them, costing ~8.4 MiB of allocation churn per inspected object on the
+		// GET, batch, and prefetch paths.
+		zr.Reset(nil)
 		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 			// A decompression failure means the body is not a well-formed lz4
 			// frame, hence not a module index we should evict; report "not an

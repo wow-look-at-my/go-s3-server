@@ -36,6 +36,21 @@ func getMetadata(path string, meta *ObjectMeta) {
 	json.Unmarshal(data, &meta.Metadata)
 }
 
+// setMetadataFd: Windows metadata lives in a path-keyed JSON sidecar, so there
+// is no true fd-scoped write; this delegates to the path variant via the open
+// file's name. The unix build is where the fd-based race-free semantics hold.
+func setMetadataFd(f *os.File, meta map[string]string) error {
+	return setMetadata(f.Name(), meta)
+}
+
+// getMetadataValueFd reads one metadata value via the sidecar of the open
+// file's path ("" if absent).
+func getMetadataValueFd(f *os.File, key string) string {
+	meta := &ObjectMeta{Metadata: map[string]string{}}
+	getMetadata(f.Name(), meta)
+	return meta.Metadata[key]
+}
+
 const originalKeyFile = ".originalkey"
 
 func setOriginalKey(path, key string) error {

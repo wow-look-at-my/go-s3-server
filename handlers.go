@@ -89,7 +89,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	// /_index, and serves as a hit. If the body cannot be decompressed (and is
 	// thus unusable by the client anyway), report a clean miss without deleting
 	// anything -- the object is left for the normal eviction policy.
-	if !ensureOutputID(storage, key, meta) {
+	if !ensureOutputID(storage, key, meta, f) {
 		getRequestsTotal.WithLabelValues("miss_selfheal_failed").Inc()
 		writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
 		return

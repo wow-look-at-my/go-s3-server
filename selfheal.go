@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 
 	"github.com/pierrec/lz4/v4"
 )
@@ -34,6 +35,12 @@ func missingOutputID(meta *ObjectMeta) bool {
 // usable as a cache hit. On success meta is updated to carry the outputid so the
 // caller can serve it.
 //
+// f, when non-nil, is the caller's already-open serve handle (the GET path):
+// the repair hashes and stamps THAT descriptor and rewinds it to byte 0, so the
+// outputid the caller emits always describes the exact bytes it then streams.
+// Callers without an open handle (the batch paths) pass nil and a private
+// handle is used — hashed and stamped through the same fd.
+//
 // Repair, not eviction, is deliberate. The GOCACHEPROG outputID is by definition
 // sha256(decompressed body) -- the content address the client verifies on every
 // GET -- so it can be reconstructed from the body itself, with no need for the
@@ -48,7 +55,7 @@ func missingOutputID(meta *ObjectMeta) bool {
 // unusable by the client regardless), it returns false WITHOUT deleting
 // anything: the object is left on disk for the normal age/size eviction policy,
 // and the caller reports a clean miss.
-func ensureOutputID(storage *Storage, key string, meta *ObjectMeta) bool {
+func ensureOutputID(storage *Storage, key string, meta *ObjectMeta, f *os.File) bool {
 	if !missingOutputID(meta) {
 		return true
 	}
@@ -62,7 +69,7 @@ func ensureOutputID(storage *Storage, key string, meta *ObjectMeta) bool {
 	if _, ok := extractActionHash(key); !ok {
 		return true
 	}
-	outputID, err := reconstructOutputID(storage, key)
+	outputID, err := reconstructOutputID(storage, key, f)
 	if err != nil {
 		// The body is unusable (most often: cannot be lz4-decompressed) and the
 		// outputid cannot be reconstructed, so this key can NEVER serve a hit.
@@ -96,20 +103,64 @@ func ensureOutputID(storage *Storage, key string, meta *ObjectMeta) bool {
 // straight into the hash, so even this rare repair path never buffers a whole
 // object in memory. Only the outputid xattr is written; the body and every other
 // xattr (audit included) are left exactly as they were.
-func reconstructOutputID(storage *Storage, key string) (string, error) {
-	f, _, err := storage.Open(key)
-	if err != nil {
-		return "", err
+//
+// The stamp is written THROUGH THE SAME FILE DESCRIPTOR that was hashed
+// (setMetadataFd / fsetxattr), never through the path. A path-based write
+// raced with concurrent overwrite PUTs: hash old inode, PUT renames a new
+// inode onto the path (already stamped with its own fresh outputid), then the
+// path-based setxattr stamps the STALE hash onto the NEW body — leaving
+// outputid != sha256(body) permanently. The client then discards every
+// download (checksum mismatch) but never re-uploads (the key stays indexed),
+// and self-heal never re-fires (an outputid is present): an unrepairable
+// forced-miss wedge. Stamping the hashed fd is correct by construction — worst
+// case the stamp lands on a just-unlinked inode and dies with it.
+//
+// f, when non-nil, is the caller's serve handle: it is hashed from byte 0 and
+// rewound to byte 0 before returning (a failed rewind is an error, since the
+// caller would otherwise stream a consumed fd). When nil, a private handle is
+// opened and closed here.
+func reconstructOutputID(storage *Storage, key string, f *os.File) (string, error) {
+	callerOwned := f != nil
+	if !callerOwned {
+		opened, _, err := storage.Open(key)
+		if err != nil {
+			return "", err
+		}
+		defer opened.Close()
+		f = opened
 	}
-	defer f.Close()
 
 	h := sha256.New()
-	if _, err := io.Copy(h, lz4.NewReader(f)); err != nil {
-		return "", fmt.Errorf("decompress body: %w", err)
+	zr := lz4.NewReader(f)
+	_, copyErr := io.Copy(h, zr)
+	// Return the reader's pooled buffers. io.Copy-to-EOF already released them
+	// (the reader self-releases on EOF); Reset covers the error path and is a
+	// no-op after EOF.
+	zr.Reset(nil)
+	if callerOwned {
+		// Rewind the caller's handle so the serve path streams from byte 0. If
+		// the rewind fails the stream is poisoned, so the repair fails (the
+		// caller reports a miss rather than serving a consumed fd).
+		if _, seekErr := f.Seek(0, io.SeekStart); seekErr != nil {
+			return "", fmt.Errorf("rewind after hash: %w", seekErr)
+		}
+	}
+	if copyErr != nil {
+		return "", fmt.Errorf("decompress body: %w", copyErr)
 	}
 	outputID := hex.EncodeToString(h.Sum(nil))
 
-	if err := storage.SetMeta(key, map[string]string{outputIDMetaKey: outputID}); err != nil {
+	// Mismatch tripwire: this repair only runs when the metadata read reported
+	// no outputid, so finding a DIFFERENT one on the inode now means someone
+	// stamped a value that disagrees with the body hash — the historical
+	// stale-stamp corruption replaying. Count it (and repair it: the computed
+	// value is correct for this inode by construction).
+	if current := getMetadataValueFd(f, outputIDMetaKey); current != "" && current != outputID {
+		outputIDMismatchTotal.Inc()
+		log.Printf("self-heal: outputid on %q disagrees with its body hash (found %.8s..., recomputed %.8s...); repairing", key, current, outputID)
+	}
+
+	if err := setMetadataFd(f, map[string]string{outputIDMetaKey: outputID}); err != nil {
 		return "", fmt.Errorf("persist reconstructed outputid: %w", err)
 	}
 	return outputID, nil

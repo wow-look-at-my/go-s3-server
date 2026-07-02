@@ -29,6 +29,39 @@ func setMetadata(path string, meta map[string]string) error {
 	return nil
 }
 
+// setMetadataFd writes user-metadata xattrs through an open file descriptor
+// rather than a path. This is the race-free variant for repairs computed FROM
+// that descriptor: a path-based setxattr can land on a different inode than
+// the one that was hashed (a concurrent overwrite PUT renames a new file onto
+// the path in between), stamping a stale value onto a fresh body; fsetxattr
+// by construction stamps the exact inode the caller read.
+func setMetadataFd(f *os.File, meta map[string]string) error {
+	for k, v := range meta {
+		attrName := "user.s3." + k
+		if err := unix.Fsetxattr(int(f.Fd()), attrName, []byte(v), 0); err != nil {
+			return fmt.Errorf("fset xattr %s: %w", attrName, err)
+		}
+	}
+	return nil
+}
+
+// getMetadataValueFd reads one user-metadata value through an open file
+// descriptor ("" if absent or unreadable). Fd-based for the same reason as
+// setMetadataFd: it inspects the exact inode the caller holds.
+func getMetadataValueFd(f *os.File, key string) string {
+	attrName := "user.s3." + key
+	sz, err := unix.Fgetxattr(int(f.Fd()), attrName, nil)
+	if err != nil || sz == 0 {
+		return ""
+	}
+	buf := make([]byte, sz)
+	n, err := unix.Fgetxattr(int(f.Fd()), attrName, buf)
+	if err != nil {
+		return ""
+	}
+	return string(buf[:n])
+}
+
 func getMetadata(path string, meta *ObjectMeta) {
 	attrs, err := listXattrs(path)
 	if err != nil {

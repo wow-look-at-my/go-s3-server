@@ -118,6 +118,19 @@ var (
 		Help: "Total cache objects whose missing outputid metadata was reconstructed in place on read.",
 	})
 
+	// outputIDMismatchTotal counts repairs that found an outputid on the inode
+	// DISAGREEING with the just-computed hash of that inode's body. The repair
+	// only runs when the metadata read said no outputid was present, so a
+	// differing value appearing by stamp time is the stale-stamp corruption
+	// signature (the historical path-based setxattr race): an object whose
+	// outputid != sha256(body) is discarded by every client yet never
+	// re-uploaded — a permanent forced miss. Should be 0; the fd-based repair
+	// both counts and corrects it.
+	outputIDMismatchTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "s3_outputid_mismatch_total",
+		Help: "Self-heal repairs that found an existing outputid disagreeing with the body hash (stale-stamp corruption, repaired in place).",
+	})
+
 	// getRequestsTotal counts single-object GETs by outcome, so the different
 	// flavors of "404" are distinguishable in metrics instead of all collapsing
 	// into s3_http_requests_total{status="404"}:

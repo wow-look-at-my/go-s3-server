@@ -175,7 +175,10 @@ func TestIndexNonConformingKeysSkipped(t *testing.T) {
 	require.Equal(t, uint64(0), p.Count)
 }
 
-func TestIndexGenerationBumps(t *testing.T) {
+// The generation field is content-derived: it changes exactly when the
+// advertised key set changes, and only then (see Blob; the duplicate-PUT case
+// is TestIndexETagStableAcrossDuplicatePuts).
+func TestIndexGenerationTracksContent(t *testing.T) {
 	ts := testSetup(t)
 
 	_, body1, _ := getIndex(t, ts, "")
@@ -187,8 +190,49 @@ func TestIndexGenerationBumps(t *testing.T) {
 
 	_, body2, _ := getIndex(t, ts, "")
 	p2 := parseGBCI(t, body2)
-	require.Greater(t, p2.Generation, p1.Generation)
+	require.NotEqual(t, p1.Generation, p2.Generation, "a changed key set must change the generation")
 	require.Equal(t, uint64(1), p2.Count)
+}
+
+// TestIndexETagStableAcrossDuplicatePuts is the regression for the ETag-churn
+// fix: the blob (and thus the ETag) is a pure function of the sorted hash
+// content. Duplicate-only PUT traffic used to bump an in-header serialization
+// counter inside the hashed region, minting a fresh ETag with an unchanged key
+// set — every client then re-downloaded the multi-MB index for nothing.
+func TestIndexETagStableAcrossDuplicatePuts(t *testing.T) {
+	ts := testSetup(t)
+
+	var h [32]byte
+	h[0] = 0x51
+	key := keyForHash(h)
+	putKey(t, ts, key, []byte("v1"))
+
+	status, body1, etag1 := getIndex(t, ts, "")
+	require.Equal(t, 200, status)
+	require.NotEmpty(t, etag1)
+
+	// Overwrite PUTs of the same key: the hash set is unchanged, so the blob
+	// must reserialize byte-identically and the ETag must not move.
+	putKey(t, ts, key, []byte("v2"))
+	putKey(t, ts, key, []byte("v3"))
+
+	status, body2, etag2 := getIndex(t, ts, "")
+	require.Equal(t, 200, status)
+	require.Equal(t, etag1, etag2, "duplicate-only PUTs must not mint a new ETag")
+	require.Equal(t, body1, body2, "identical key sets must serialize byte-identically")
+
+	// And a conditional GET with the old ETag now answers 304.
+	status, _, _ = getIndex(t, ts, etag1)
+	require.Equal(t, 304, status)
+
+	// A genuinely new key changes both.
+	var h2 [32]byte
+	h2[0] = 0x52
+	putKey(t, ts, keyForHash(h2), []byte("x"))
+	status, body3, etag3 := getIndex(t, ts, "")
+	require.Equal(t, 200, status)
+	require.NotEqual(t, etag1, etag3)
+	require.NotEqual(t, body1, body3)
 }
 
 func TestIndexIdempotentPut(t *testing.T) {

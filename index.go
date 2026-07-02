@@ -66,10 +66,6 @@ type Index struct {
 	// cleared by Blob() after a successful serialization.
 	dirty atomic.Bool
 
-	// generation is bumped each time Blob() rebuilds the cached output.
-	// Stored in the header so clients can reason about progress.
-	generation atomic.Uint64
-
 	// cachedBlob and cachedETag hold the most recently built output. Read
 	// under mu.RLock on the fast path when dirty is false.
 	cachedBlob []byte
@@ -383,7 +379,6 @@ func (idx *Index) Blob() ([]byte, string) {
 	}
 	idx.hashes = idx.hashes[:w]
 
-	gen := idx.generation.Add(1)
 	count := uint64(len(idx.hashes))
 
 	blob := make([]byte, gbciHeaderSize+int(count)*gbciHashSize+sha256.Size)
@@ -391,13 +386,27 @@ func (idx *Index) Blob() ([]byte, string) {
 	blob[4] = gbciVersion
 	blob[5] = gbciHashSize
 	binary.LittleEndian.PutUint16(blob[6:8], 0)
-	binary.LittleEndian.PutUint64(blob[8:16], gen)
 	binary.LittleEndian.PutUint64(blob[16:24], count)
 	off := gbciHeaderSize
 	for i := range idx.hashes {
 		copy(blob[off:off+gbciHashSize], idx.hashes[i][:])
 		off += gbciHashSize
 	}
+	// The generation field is CONTENT-DERIVED (the first 8 bytes of the hash
+	// body's digest), not a serialization counter. That makes the whole blob —
+	// and therefore the ETag (the trailer hash) — a pure function of the
+	// advertised key set. The old monotonic counter sat inside the hashed
+	// region, so duplicate-only PUT traffic (hash set unchanged) produced a
+	// brand-new ETag on every reserialization and forced every client into a
+	// pointless multi-MB /_index re-download with zero informational gain.
+	// Identical key sets now serialize byte-identically, so If-None-Match
+	// keeps answering 304 across duplicate PUTs and even server restarts.
+	// (The client's parseIndexBlob validates magic/version/hashSize/length/
+	// trailer and never reads this field, so the semantic change is invisible
+	// to it; anything wanting a change-detection token still gets one, since
+	// the value changes exactly when the key set does.)
+	bodyDigest := sha256.Sum256(blob[gbciHeaderSize:off])
+	binary.LittleEndian.PutUint64(blob[8:16], binary.LittleEndian.Uint64(bodyDigest[:8]))
 	digest := sha256.Sum256(blob[:off])
 	copy(blob[off:], digest[:])
 

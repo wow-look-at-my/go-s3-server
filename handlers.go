@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -24,6 +26,20 @@ func writeError(w http.ResponseWriter, httpStatus int, code, message string) {
 	fmt.Fprintf(w, "%s: %s\n", code, message)
 }
 
+// absentKeyOutcome classifies a GET 404 for a key with no object on disk: a
+// plain miss_not_found, or — when the key's action hash is CURRENTLY advertised
+// in /_index — miss_advertised_unservable. The latter is the index/store-
+// divergence signature (an advertised key every client is told to skip
+// re-uploading, yet nobody can fetch): it should be ~0 always, and counting it
+// at serve time is what makes a recurrence of the historical "404s on indexed
+// keys" incidents visible server-side instead of only in client logs.
+func absentKeyOutcome(storage *Storage, key string) string {
+	if h, ok := extractActionHash(key); ok && storage.Index != nil && storage.Index.Contains(h) {
+		return "miss_advertised_unservable"
+	}
+	return "miss_not_found"
+}
+
 func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string) {
 	// Open + stream rather than ReadFile + Write: the body is copied straight
 	// from disk to the socket with a fixed-size buffer, so a large object never
@@ -32,6 +48,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	f, meta, err := storage.Open(key)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
+			getRequestsTotal.WithLabelValues(absentKeyOutcome(storage, key)).Inc()
 			writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
 			return
 		}
@@ -52,7 +69,13 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	// an index carries an outputid, so ensureOutputID would happily pass it -- and
 	// must run first. A miss recomputes the index locally on the client, so 404
 	// (the normal not-found path) is exactly right.
-	if evictModuleIndexOnRead(storage, key, f, meta) {
+	switch evictModuleIndexOnRead(storage, key, f, meta) {
+	case guardEvicted:
+		getRequestsTotal.WithLabelValues("miss_module_index_evicted").Inc()
+		writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
+		return
+	case guardPeekError:
+		getRequestsTotal.WithLabelValues("miss_peek_error").Inc()
 		writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
 		return
 	}
@@ -68,7 +91,8 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	// /_index, and serves as a hit. If the body cannot be decompressed (and is
 	// thus unusable by the client anyway), report a clean miss without deleting
 	// anything -- the object is left for the normal eviction policy.
-	if !ensureOutputID(storage, key, meta) {
+	if !ensureOutputID(storage, key, meta, f) {
+		getRequestsTotal.WithLabelValues("miss_selfheal_failed").Inc()
 		writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
 		return
 	}
@@ -76,7 +100,29 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	if a := auditFromContext(r.Context()); a != nil {
 		a.Label = objectLabel(meta.Metadata)
 	}
+	getRequestsTotal.WithLabelValues("hit").Inc()
 
+	emitObjectHeaders(w, meta)
+	w.WriteHeader(200)
+	// Stream the body, logging DISK-side failures. The status is already
+	// written, so an error here truncates the response; the client's hash
+	// check refuses the partial body, but without a log the server would be
+	// silently serving from a failing disk. Read errors from f surface as
+	// *fs.PathError; anything else is the peer going away mid-download, which
+	// is normal and not logged. (f stays the direct copy source so the
+	// ResponseWriter's ReadFrom/sendfile fast path remains available.)
+	if _, err := io.Copy(w, f); err != nil {
+		var pathErr *fs.PathError
+		if errors.As(err, &pathErr) {
+			log.Printf("get %q: body read failed mid-copy (truncated response; check storage health): %v", key, err)
+		}
+	}
+}
+
+// emitObjectHeaders writes an object's user metadata under both the native
+// and deprecated header prefixes, plus Last-Modified and Content-Length —
+// the shared header surface of GET and HEAD responses.
+func emitObjectHeaders(w http.ResponseWriter, meta *ObjectMeta) {
 	for k, v := range meta.Metadata {
 		// Capitalize first letter of metadata key
 		name := k
@@ -92,8 +138,26 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	}
 	w.Header().Set("Last-Modified", meta.ModTime.UTC().Format(http.TimeFormat))
 	w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
+}
+
+// handleHeadObject answers HEAD for a single object: the exact header surface
+// a GET would emit (both metadata prefixes, Last-Modified, Content-Length)
+// with no body. It is the cheap inspection endpoint — "does this key exist,
+// how big is it, what metadata does it carry" — backed by Stat only: no body
+// read, no module-index probe, no self-heal, and no last-access stamp, so
+// inspecting a key never mutates cache state or extends its LRU lifetime.
+func handleHeadObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string) {
+	meta, err := storage.Stat(key)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
+			return
+		}
+		writeError(w, 500, "internal_error", err.Error())
+		return
+	}
+	emitObjectHeaders(w, meta)
 	w.WriteHeader(200)
-	io.Copy(w, f)
 }
 
 func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string, maxObjectBytes int64) {
@@ -212,6 +276,16 @@ func storeOneObject(storage *Storage, key string, body io.Reader, meta, audit ma
 		return storeStatusError, peekErr
 	}
 	if looksLikeGoModuleIndex(peek, meta["compression"]) {
+		// Count + log the refusal. This used to be completely silent, which is
+		// the exact blind spot that hid the 512-byte-peek bug: a broken guard
+		// looks identical to a quiet one. Clients build module indexes all the
+		// time, so an occasionally-nonzero counter during CI activity is the
+		// live proof the guard works; refusals are rare enough (the client-side
+		// guard blocks most uploads first) that a per-event log line is cheap
+		// and names the offending key for forensics. Living here, the counter
+		// covers BOTH the single-PUT and the batch-put refusal paths.
+		putRefusalsTotal.WithLabelValues("module_index").Inc()
+		log.Printf("put guard: refused module-index upload for %q (accepted, stored nothing; client recomputes locally)", key)
 		// Drain any remaining bytes so a streaming writer (the single-PUT client)
 		// completes cleanly; the batch caller passes a bounded per-member reader,
 		// for which this is a cheap no-op once the member is consumed.

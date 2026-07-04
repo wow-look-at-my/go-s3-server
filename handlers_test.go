@@ -562,15 +562,19 @@ func TestSelfHealRepairsOutputIDInPlace(t *testing.T) {
 // TestSelfHealLeavesUnrepairableObjectInPlace verifies the non-destructive
 // fallback: an outputid-less object whose body is not a decodable lz4 frame
 // cannot be repaired (and the client could not consume it anyway), so the server
-// reports a clean miss but does NOT delete it -- the body and its index entry are
-// left in place for the normal age/size eviction policy, never churned away here.
+// reports a clean miss and does NOT delete the body -- the file is left in place
+// for forensics and the normal age/size eviction policy. Its INDEX entry,
+// however, is dropped: an unrepairable key that stayed advertised would be a
+// permanent forced miss (clients skip re-uploading indexed keys), so the server
+// de-advertises it and lets the next consumer re-upload a good body.
 func TestSelfHealLeavesUnrepairableObjectInPlace(t *testing.T) {
-	ts := testSetup(t)
+	ts, storage := testSetupWithStorage(t)
 
 	const actionHex = "ffeeddccbbaa00998877665544332211ffeeddccbbaa00998877665544332211"
 	hashBytes, err := hex.DecodeString(actionHex)
 	require.Nil(t, err)
-	key := "/testbucket/go-buildcache/v1" + actionHex
+	objectKey := "go-buildcache/v1" + actionHex
+	key := "/testbucket/" + objectKey
 
 	// A body that is not a valid lz4 frame and has no outputid: unrepairable.
 	resp := doRequest(t, ts, "PUT", key, []byte("not lz4 and no outputid"), nil)
@@ -585,13 +589,18 @@ func TestSelfHealLeavesUnrepairableObjectInPlace(t *testing.T) {
 	require.Equal(t, "not_found", resp.Header.Get("X-Cache-Error-Code"))
 	resp.Body.Close()
 
-	// ... but nothing was repaired (counter unchanged) and nothing was evicted:
-	// the key is still advertised in the index, i.e. the object remains on disk.
+	// ... but nothing was repaired (counter unchanged) and the BODY was not
+	// evicted: the file remains on disk for the eviction policy to own.
 	require.Equal(t, repairsBefore, testutil.ToFloat64(selfHealRepairsTotal))
+	_, err = storage.Stat(objectKey)
+	require.NoError(t, err, "an unrepairable object's body must be left on disk, not evicted")
+
+	// The key is no longer advertised, so consumers re-upload instead of
+	// taking a forced miss forever.
 	resp = doRequest(t, ts, "GET", "/testbucket/_index", nil, nil)
 	idx, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	require.True(t, bytes.Contains(idx, hashBytes), "an unrepairable object must be left in place, not evicted")
+	require.False(t, bytes.Contains(idx, hashBytes), "an unrepairable key must be de-advertised from the index")
 }
 
 func TestUnsafeKeyHashedStorage(t *testing.T) {

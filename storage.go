@@ -46,11 +46,15 @@ const currentCacheVersion = 3
 const cacheVersionFile = ".cache_version"
 const lockFileName = ".lock"
 
+// fsyncThresholdBytes: PutStream fsyncs temp files at or above this size
+// before renaming them into place (see the comment at the call site).
+const fsyncThresholdBytes = 8 << 20
+
 type Storage struct {
 	dataDir   string
 	writeOnce WriteOnceConfig
 	lockFile  *os.File
-	Index     *Index // sqlite index for time-range queries; nil if unavailable
+	Index     *Index // in-memory key index (mtime entries + GBCI hashes); nil if unavailable
 
 	// accessShards tracks the last-access time (unix seconds) of each key so the
 	// eviction sweeper can prune entries by least-recent *use*, not merely by
@@ -63,6 +67,12 @@ type Storage struct {
 	// interfere. The map holds only keys read since startup (the working set),
 	// not the whole cache. The type and methods live in eviction.go.
 	accessShards []*accessShard
+
+	// cleanKeys memoizes indexed cacheprog keys whose stored body already
+	// passed the read-path module-index probe, so warm keys skip the per-GET
+	// lz4 decode. Invalidated on overwrite PUT, DELETE, and eviction. See
+	// cleanmemo.go.
+	cleanKeys *cleanKeyMemo
 }
 
 type ObjectMeta struct {
@@ -104,10 +114,19 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 		return nil, err
 	}
 
+	// Sweep .tmp-* orphans from crashed/killed PutStreams. List skips the
+	// .tmp- prefix, so these files are invisible to listing, eviction, and the
+	// index — without this sweep they leak disk forever. The exclusive flock
+	// above guarantees no other server is writing to this data_dir, and this
+	// process has not started serving yet, so at this point EVERY .tmp- file
+	// is a dead orphan.
+	sweepTempFiles(dataDir)
+
 	s := &Storage{
 		dataDir:   dataDir,
 		writeOnce: writeOnce,
 		lockFile:  lockFile,
+		cleanKeys: newCleanKeyMemo(maxCleanMemoEntries),
 	}
 
 	s.Index = NewIndex(s)
@@ -178,6 +197,29 @@ func purgeDataDir(dataDir string) error {
 		}
 	}
 	return nil
+}
+
+// sweepTempFiles removes leftover PutStream temp files (".tmp-*"). Only call
+// while holding the data_dir's exclusive lock and before serving begins, when
+// no temp file can be legitimately in flight.
+func sweepTempFiles(dataDir string) {
+	var removed int
+	filepath.WalkDir(dataDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if strings.HasPrefix(d.Name(), ".tmp-") {
+			if rmErr := os.Remove(path); rmErr == nil {
+				removed++
+			} else {
+				log.Printf("startup: cannot remove orphaned temp file %s: %v", path, rmErr)
+			}
+		}
+		return nil
+	})
+	if removed > 0 {
+		log.Printf("startup: removed %d orphaned .tmp-* file(s) left by interrupted uploads", removed)
+	}
 }
 
 func (s *Storage) Close() error {
@@ -323,6 +365,18 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 		os.Remove(tmpPath)
 		return fmt.Errorf("write temp: %w", copyErr)
 	}
+	// Durability, proportionate to a cache's needs: fsync large bodies before
+	// the rename so a power loss cannot leave a big, mostly-unwritten file
+	// under the final name. Small objects skip the sync — full fsync-per-PUT
+	// would throttle CI bursts, and the client hash-verifies every download,
+	// so a rare torn small object costs one refused fetch, not correctness.
+	if n >= fsyncThresholdBytes {
+		if err := tmp.Sync(); err != nil {
+			tmp.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("sync temp: %w", err)
+		}
+	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("close temp: %w", err)
@@ -380,6 +434,16 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 		os.Remove(tmpPath)
 		return fmt.Errorf("rename: %w", err)
 	}
+	// Move the metadata sidecars (Windows only; xattrs travel with the inode
+	// on unix) to the final path alongside the body. Failing here fails the
+	// PUT: a body without its metadata cannot serve, and the client's retry
+	// overwrites cleanly.
+	if err := finalizeSidecars(tmpPath, path); err != nil {
+		return fmt.Errorf("finalize sidecars: %w", err)
+	}
+	// The body under this key just changed: the next read must re-probe it
+	// rather than trust a stale known-clean verdict for the previous body.
+	s.forgetClean(key)
 	if s.Index != nil {
 		s.Index.Put(key, n)
 	}
@@ -538,6 +602,24 @@ func (s *Storage) Open(key string) (_ *os.File, _ *ObjectMeta, err error) {
 	return f, meta, nil
 }
 
+// openRaw opens an object's body WITHOUT the storage-op metric or the
+// last-access recording that Open performs. It exists for internal peeks —
+// the module-index guard's inspection and the self-heal's private hashing
+// handle — which are not client-visible serves: routing them through Open
+// double-counted the "get" op for every batch-served key and, worse, stamped
+// a fresh last-access time onto prefetch candidates that were never actually
+// sent, inflating their lifetime under LRU eviction.
+func (s *Storage) openRaw(key string) (*os.File, error) {
+	f, err := os.Open(s.keyToPath(key))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return f, nil
+}
+
 // Delete removes the object stored under key, returning ErrNotFound if no such
 // object exists. It is the surgical counterpart to the whole-dir cache-version
 // purge: an operator can evict a single poisoned entry -- e.g. a cross-
@@ -562,10 +644,12 @@ func (s *Storage) Delete(key string) (err error) {
 		}
 		return rmErr
 	}
+	removeSidecars(path)
 	if s.Index != nil {
 		s.Index.Remove(key)
 	}
 	s.forgetAccess(key)
+	s.forgetClean(key)
 	return nil
 }
 
@@ -590,6 +674,12 @@ func (s *Storage) List(prefix string, maxKeys int, continuationToken string) (_ 
 		}
 		name := d.Name()
 		if name == lockFileName || name == cacheVersionFile || strings.HasPrefix(name, ".tmp-") {
+			return nil
+		}
+		// Metadata sidecars (Windows) are companions of an object, not objects:
+		// listing them would advertise phantom keys in the index and let
+		// eviction delete metadata out from under live bodies.
+		if isSidecarName(name) {
 			return nil
 		}
 

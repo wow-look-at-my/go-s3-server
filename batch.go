@@ -32,6 +32,34 @@ type batchGetManifest struct {
 	Entries []batchGetManifestEntry `json:"entries"`
 }
 
+// batchPutManifestEntry describes one object in a /_batch/put upload. metadata
+// holds the same values a single PUT carries in X-Cache-Meta-<Name> headers,
+// keyed by the lowercased meta name WITHOUT the prefix (e.g. "outputid",
+// "compression", "size"); they are stored exactly as handlePutObject stores
+// native metadata (user.s3.* xattrs).
+type batchPutManifestEntry struct {
+	Key      string            `json:"key"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+// batchPutManifest is the first member ("manifest.json") of a /_batch/put tar.
+type batchPutManifest struct {
+	Entries []batchPutManifestEntry `json:"entries"`
+}
+
+// batchPutResult is one entry in the JSON response, one per manifest key, in
+// manifest order. Status is one of storeStatus* (stored|dropped|conflict|error).
+type batchPutResult struct {
+	Key     string `json:"key"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+}
+
+// batchPutResponse is the JSON body returned by /_batch/put.
+type batchPutResponse struct {
+	Results []batchPutResult `json:"results"`
+}
+
 // batchEntry identifies a cache entry to include in a batch response. It holds
 // only metadata (key, size, mtime, user metadata) — never the body. Bodies are
 // streamed straight from disk into the tar at write time, so a batch of hundreds
@@ -302,6 +330,180 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 	batchKeysTotal.WithLabelValues("streamed").Add(float64(streamed))
 	log.Printf("batch get: requested=%d found=%d prefetched=%d suppressed=%d streamed=%d",
 		len(req.Keys), len(entries)-nPrefetch, nPrefetch, nSuppressed, streamed)
+}
+
+// handleBatchPut handles PUT /_batch/put. The go-toolchain client issues one
+// HTTP PUT per cached object; a CI build produces thousands, each consuming an
+// admission-control slot, which saturates the server and sheds uploads with 503.
+// This endpoint accepts a tar of many objects in a SINGLE request holding ONE
+// admission slot (the whole point), and stores each member through the same path
+// as a single PUT (storeOneObject: module-index refusal, write_once, audit
+// xattrs, index append), returning a per-object result manifest.
+//
+// The request tar layout mirrors /_batch/get:
+//
+//	manifest.json        — JSON {"entries":[{"key":...,"metadata":{...}}]} (FIRST member)
+//	data/<key>           — the (already lz4-compressed) body for each entry, in manifest order
+//
+// A malformed tar, a missing/late manifest, or a key mismatch between the
+// manifest and the data members is a whole-request 400 invalid_request. A
+// per-object store failure does NOT abort the batch: it is recorded as an
+// "error" result and the remaining members are still processed.
+func handleBatchPut(w http.ResponseWriter, r *http.Request, storage *Storage, maxObjectBytes int64) {
+	if r.Method != "PUT" {
+		writeError(w, 405, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	audit := auditMapFromContext(r)
+
+	// Bound the whole batch so one request cannot exhaust memory/disk. The cap is
+	// maxBatchKeys * maxObjectBytes (the most a well-formed maximal batch could
+	// legitimately carry); an over-limit body is refused as 413. Each member is
+	// additionally bounded to maxObjectBytes below via a per-member LimitReader.
+	maxBatchBytes := int64(maxBatchKeys) * maxObjectBytes
+	body := http.MaxBytesReader(w, r.Body, maxBatchBytes)
+	tr := tar.NewReader(body)
+
+	// First member MUST be manifest.json.
+	hdr, err := tr.Next()
+	if err != nil {
+		if isMaxBytesErr(err) {
+			writeError(w, 413, "too_large", fmt.Sprintf("batch exceeds max size of %d bytes", maxBatchBytes))
+			return
+		}
+		writeError(w, 400, "invalid_request", fmt.Sprintf("read tar: %v", err))
+		return
+	}
+	if hdr.Name != "manifest.json" {
+		writeError(w, 400, "invalid_request", fmt.Sprintf("first tar member must be manifest.json, got %q", hdr.Name))
+		return
+	}
+	var manifest batchPutManifest
+	if err := json.NewDecoder(io.LimitReader(tr, 1<<20)).Decode(&manifest); err != nil {
+		writeError(w, 400, "invalid_request", fmt.Sprintf("invalid manifest.json: %v", err))
+		return
+	}
+	if len(manifest.Entries) == 0 {
+		writeError(w, 400, "invalid_request", "manifest has no entries")
+		return
+	}
+	if len(manifest.Entries) > maxBatchKeys {
+		writeError(w, 413, "too_large", fmt.Sprintf("too many entries: %d (max %d)", len(manifest.Entries), maxBatchKeys))
+		return
+	}
+
+	// Index the manifest by the data member name we expect for each entry, so we
+	// can pair the data members (read in stream order) with their metadata and
+	// detect a data member that has no manifest entry (or vice versa).
+	type pending struct {
+		entry  batchPutManifestEntry
+		seen   bool
+		result *batchPutResult
+	}
+	results := make([]batchPutResult, len(manifest.Entries))
+	byDataName := make(map[string]*pending, len(manifest.Entries))
+	for i, e := range manifest.Entries {
+		if e.Key == "" {
+			writeError(w, 400, "invalid_request", fmt.Sprintf("manifest entry %d has empty key", i))
+			return
+		}
+		name := "data/" + e.Key
+		if _, dup := byDataName[name]; dup {
+			writeError(w, 400, "invalid_request", fmt.Sprintf("duplicate key in manifest: %q", e.Key))
+			return
+		}
+		results[i] = batchPutResult{Key: e.Key}
+		byDataName[name] = &pending{entry: e, result: &results[i]}
+	}
+
+	// Stream the data members. storeOneObject reads each body through a bounded
+	// per-member reader (maxObjectBytes) so one oversized member cannot blow the
+	// budget, and the tar reader bounds reads to the current member anyway.
+	var nStored, nDropped, nConflict, nError int
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			if isMaxBytesErr(err) {
+				writeError(w, 413, "too_large", fmt.Sprintf("batch exceeds max size of %d bytes", maxBatchBytes))
+				return
+			}
+			writeError(w, 400, "invalid_request", fmt.Sprintf("read tar member: %v", err))
+			return
+		}
+		p, ok := byDataName[hdr.Name]
+		if !ok {
+			writeError(w, 400, "invalid_request", fmt.Sprintf("data member %q has no manifest entry", hdr.Name))
+			return
+		}
+		if p.seen {
+			writeError(w, 400, "invalid_request", fmt.Sprintf("duplicate data member %q", hdr.Name))
+			return
+		}
+		p.seen = true
+
+		// auditMapFromContext returns a fresh map each time it is called from the
+		// single-PUT path; here the request-level audit (uploader, IP, UA,
+		// timestamp) is shared across members, so clone it per member because
+		// PutStream mutates the map (it writes content_length).
+		memberAudit := cloneAudit(audit)
+		member := io.LimitReader(tr, maxObjectBytes)
+		status, storeErr := storeOneObject(storage, p.entry.Key, member, p.entry.Metadata, memberAudit)
+		p.result.Status = status
+		switch status {
+		case storeStatusStored:
+			nStored++
+		case storeStatusDropped:
+			nDropped++
+		case storeStatusConflict:
+			nConflict++
+		case storeStatusError:
+			nError++
+			if storeErr != nil {
+				p.result.Message = storeErr.Error()
+			}
+			log.Printf("batch put: store %s: %v", p.entry.Key, storeErr)
+		}
+	}
+
+	// Every manifest entry must have had a matching data member.
+	for name, p := range byDataName {
+		if !p.seen {
+			writeError(w, 400, "invalid_request", fmt.Sprintf("manifest entry %q has no data member %q", p.entry.Key, name))
+			return
+		}
+	}
+
+	log.Printf("batch put: entries=%d stored=%d dropped=%d conflict=%d error=%d",
+		len(manifest.Entries), nStored, nDropped, nConflict, nError)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_ = json.NewEncoder(w).Encode(batchPutResponse{Results: results})
+}
+
+// cloneAudit returns a shallow copy of the per-request audit map so each batch
+// member gets its own map to carry the per-member content_length that PutStream
+// writes (PutStream mutates the map in place). A nil audit clones to nil.
+func cloneAudit(audit map[string]string) map[string]string {
+	if audit == nil {
+		return nil
+	}
+	c := make(map[string]string, len(audit)+1)
+	for k, v := range audit {
+		c[k] = v
+	}
+	return c
+}
+
+// isMaxBytesErr reports whether err is (or wraps) an http.MaxBytesError, the
+// over-limit signal from the batch body's MaxBytesReader.
+func isMaxBytesErr(err error) bool {
+	var maxErr *http.MaxBytesError
+	return errors.As(err, &maxErr)
 }
 
 // writeTarEntry writes one tar member, copying exactly size bytes from r so the

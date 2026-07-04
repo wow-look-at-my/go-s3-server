@@ -193,64 +193,14 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	// the heap; MaxBytesReader bounds a runaway/oversized upload (413).
 	body := http.MaxBytesReader(w, r.Body, maxObjectBytes)
 
-	// Refuse Go module-index blobs (see looksLikeGoModuleIndex): they cannot be
-	// verified against their key and a mis-keyed one poisons every consumer's
-	// build, so this shared cache must never hold one. Peek a bounded but
-	// block-sized prefix -- enough to cover a real index's first lz4 block, since
-	// the magic only decodes once the whole first block is present (a fixed
-	// 512-byte peek truncated the single-block bodies the client sends and missed
-	// every real index; see modindex.go). The peeked bytes are stitched back in
-	// front of the unread rest so a non-index body is still stored intact and
-	// large bodies keep streaming. A dropped index is a no-op for the client -- it
-	// recomputes the index locally on the resulting miss -- so we report success
-	// rather than an error.
-	//
-	// The read SELF-SIZES to the bytes actually present rather than
-	// pre-allocating the full indexPutPeekBytes cap on every PUT. io.ReadAll
-	// grows its buffer from the body's real size (a typical ~8 KiB object
-	// allocates ~8-16 KiB), while io.LimitReader caps the worst case (a large
-	// body) at exactly indexPutPeekBytes -- identical detection input, but
-	// without the per-PUT 1 MiB allocation. That fixed cap-sized allocation was a
-	// measured regression: ~1 MiB churned per PUT (vs ~body size) made a CI burst
-	// of ~7000 PUTs thrash GC and saturate the admission-control sem, shedding
-	// PUTs with 503 so nothing got stored/indexed and the next build saw an empty
-	// /_index (hits=0). LimitReader keeps the detection bytes identical to the old
-	// cap; the cap stays generous so a real index's first block is always covered.
-	peek, peekErr := io.ReadAll(io.LimitReader(body, int64(indexPutPeekBytes)))
-	if peekErr != nil {
-		// A MaxBytesReader overflow (or other read error) during the peek. This
-		// only fires when maxObjectBytes <= indexPutPeekBytes, since otherwise the
-		// LimitReader caps the peek below the MaxBytesReader limit.
-		var maxErr *http.MaxBytesError
-		if errors.As(peekErr, &maxErr) {
-			writeError(w, 413, "too_large", fmt.Sprintf("object exceeds max size of %d bytes", maxObjectBytes))
-			return
-		}
-		writeError(w, 500, "internal_error", peekErr.Error())
-		return
-	}
-	if looksLikeGoModuleIndex(peek, meta["compression"]) {
-		// Count + log the refusal. This used to be completely silent, which is
-		// the exact blind spot that hid the 512-byte-peek bug: a broken guard
-		// looks identical to a quiet one. Clients build module indexes all the
-		// time, so an occasionally-nonzero counter during CI activity is the
-		// live proof the guard works; refusals are rare enough (the client-side
-		// guard blocks most uploads first) that a per-event log line is cheap
-		// and names the offending key for forensics.
-		putRefusalsTotal.WithLabelValues("module_index").Inc()
-		log.Printf("put guard: refused module-index upload for %q (200, stored nothing; client recomputes locally)", key)
-		io.Copy(io.Discard, body) // drain so the client's write completes cleanly
-		w.WriteHeader(200)
-		return
-	}
-
-	// Not an index: stitch the peeked prefix back in front of the unread rest.
-	full := io.MultiReader(bytes.NewReader(peek), body)
-	if err := storage.PutStream(key, full, meta, audit); err != nil {
-		if errors.Is(err, ErrWriteOnceConflict) || errors.Is(err, ErrWriteOnceDuplicate) {
-			writeError(w, 409, "conflict", err.Error())
-			return
-		}
+	// storeOneObject does the peek-refuse + write_once + store work shared with
+	// the batch path (see its doc); map its status/error to the single-PUT HTTP
+	// contract here.
+	status, err := storeOneObject(storage, key, body, meta, audit)
+	if err != nil {
+		// A MaxBytesReader overflow surfaces as a *http.MaxBytesError from either
+		// the peek read or the streamed copy: report it as 413, the single-PUT
+		// over-limit contract.
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			writeError(w, 413, "too_large", fmt.Sprintf("object exceeds max size of %d bytes", maxObjectBytes))
@@ -259,11 +209,99 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		writeError(w, 500, "internal_error", err.Error())
 		return
 	}
-
-	if a := auditFromContext(r.Context()); a != nil {
-		a.Label = objectLabel(meta)
+	switch status {
+	case storeStatusConflict:
+		// A write_once conflict. Report it as 409 (the single-PUT contract); the
+		// batch path instead records "conflict" as an accepted per-object result.
+		writeError(w, 409, "conflict", "object already exists with different content")
+		return
+	case storeStatusStored:
+		if a := auditFromContext(r.Context()); a != nil {
+			a.Label = objectLabel(meta)
+		}
 	}
+	// stored and dropped (module index) are both 200/no-error to the client: a
+	// dropped index is a no-op (the client recomputes it locally on the miss).
 	w.WriteHeader(200)
+}
+
+// store status values reported by storeOneObject, mirrored in the batch
+// response manifest. They classify the outcome WITHOUT deciding an HTTP status
+// -- the single-PUT caller maps them to a status code, the batch caller records
+// them per object.
+const (
+	storeStatusStored   = "stored"   // written to disk + index
+	storeStatusDropped  = "dropped"  // a Go module index: accepted but not stored
+	storeStatusConflict = "conflict" // write_once conflict: accepted, not overwritten
+	storeStatusError    = "error"    // an I/O or store failure for this object
+)
+
+// storeOneObject is the shared store path used by BOTH handlePutObject (one
+// object per request) and handleBatchPut (many objects in one tar). Factoring it
+// out keeps the module-index refusal, write_once handling, and audit/index
+// bookkeeping identical across the two endpoints so they cannot drift.
+//
+// It refuses Go module-index blobs (see looksLikeGoModuleIndex): they cannot be
+// verified against their key and a mis-keyed one poisons every consumer's build,
+// so this shared cache must never hold one. It peeks a bounded but block-sized
+// prefix -- enough to cover a real index's first lz4 block, since the magic only
+// decodes once the whole first block is present (a fixed 512-byte peek truncated
+// the single-block bodies the client sends and missed every real index; see
+// modindex.go). The peeked bytes are stitched back in front of the unread rest
+// so a non-index body is still stored intact and large bodies keep streaming. A
+// dropped index is a no-op for the client (it recomputes the index locally on
+// the resulting miss), so it is reported as a clean "dropped", not an error.
+//
+// The peek read SELF-SIZES to the bytes actually present rather than
+// pre-allocating the full indexPutPeekBytes cap on every call. io.ReadAll grows
+// its buffer from the body's real size (a typical ~8 KiB object allocates ~8-16
+// KiB), while io.LimitReader caps the worst case (a large body) at exactly
+// indexPutPeekBytes -- identical detection input, but without the per-PUT 1 MiB
+// allocation. That fixed cap-sized allocation was a measured regression: ~1 MiB
+// churned per PUT (vs ~body size) made a CI burst of ~7000 PUTs thrash GC and
+// saturate the admission-control sem, shedding PUTs with 503 so nothing got
+// stored/indexed and the next build saw an empty /_index (hits=0). LimitReader
+// keeps the detection bytes identical to the old cap; the cap stays generous so
+// a real index's first block is always covered.
+//
+// Returns (status, err). On a write_once conflict it returns (conflict, nil) --
+// an accepted, non-error outcome the caller classifies. On any other store
+// failure it returns (error, err) so the caller can surface the error (single
+// PUT) or record it per object and continue (batch). A returned err may wrap a
+// *http.MaxBytesError when body is a bounded reader; the caller decides whether
+// that maps to 413.
+func storeOneObject(storage *Storage, key string, body io.Reader, meta, audit map[string]string) (string, error) {
+	peek, peekErr := io.ReadAll(io.LimitReader(body, int64(indexPutPeekBytes)))
+	if peekErr != nil {
+		return storeStatusError, peekErr
+	}
+	if looksLikeGoModuleIndex(peek, meta["compression"]) {
+		// Count + log the refusal. This used to be completely silent, which is
+		// the exact blind spot that hid the 512-byte-peek bug: a broken guard
+		// looks identical to a quiet one. Clients build module indexes all the
+		// time, so an occasionally-nonzero counter during CI activity is the
+		// live proof the guard works; refusals are rare enough (the client-side
+		// guard blocks most uploads first) that a per-event log line is cheap
+		// and names the offending key for forensics. Living here, the counter
+		// covers BOTH the single-PUT and the batch-put refusal paths.
+		putRefusalsTotal.WithLabelValues("module_index").Inc()
+		log.Printf("put guard: refused module-index upload for %q (accepted, stored nothing; client recomputes locally)", key)
+		// Drain any remaining bytes so a streaming writer (the single-PUT client)
+		// completes cleanly; the batch caller passes a bounded per-member reader,
+		// for which this is a cheap no-op once the member is consumed.
+		io.Copy(io.Discard, body)
+		return storeStatusDropped, nil
+	}
+
+	// Not an index: stitch the peeked prefix back in front of the unread rest.
+	full := io.MultiReader(bytes.NewReader(peek), body)
+	if err := storage.PutStream(key, full, meta, audit); err != nil {
+		if errors.Is(err, ErrWriteOnceConflict) || errors.Is(err, ErrWriteOnceDuplicate) {
+			return storeStatusConflict, nil
+		}
+		return storeStatusError, err
+	}
+	return storeStatusStored, nil
 }
 
 // handleDeleteObject removes a single object. It is the surgical eviction lever

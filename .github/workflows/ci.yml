@@ -8,9 +8,93 @@ permissions:
   packages: write
 
 jobs:
-  build:
-    uses: wow-look-at-my/go-toolchain/.github/workflows/build.yml@v1
-    secrets: inherit
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wow-look-at-my/go-toolchain@v1
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: build/
+
+  docker:
+    needs: [test, s3-api-test, integration-test]
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: build
+      - uses: wow-look-at-my/actions@go-packages#latest
+        with:
+          skip-build: 'true'
+
+  s3-api-test:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download go-s3-server binary
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: build
+
+      - name: Start go-s3-server (normal mode)
+        run: |
+          mkdir -p /tmp/s3-data
+          chmod +x build/go-s3-server_linux_amd64
+          nohup ./build/go-s3-server_linux_amd64 \
+            --config .github/workflows/integration-test/s3-config.json \
+            > /tmp/s3-server-normal.log 2>&1 &
+          echo $! > /tmp/s3-server-normal.pid
+          for i in $(seq 1 30); do
+            if curl -so /dev/null http://127.0.0.1:9000/ 2>/dev/null; then echo "Normal server ready"; break; fi
+            if ! kill -0 "$(cat /tmp/s3-server-normal.pid)" 2>/dev/null; then echo "Normal server died"; cat /tmp/s3-server-normal.log; exit 1; fi
+            sleep 0.5
+          done
+
+      - name: Start go-s3-server (write-once mode)
+        run: |
+          mkdir -p /tmp/s3-data-writeonce
+          nohup ./build/go-s3-server_linux_amd64 \
+            --config .github/workflows/integration-test/s3-config-writeonce.json \
+            > /tmp/s3-server-writeonce.log 2>&1 &
+          echo $! > /tmp/s3-server-writeonce.pid
+          for i in $(seq 1 30); do
+            if curl -so /dev/null http://127.0.0.1:9001/ 2>/dev/null; then echo "Write-once server ready"; break; fi
+            if ! kill -0 "$(cat /tmp/s3-server-writeonce.pid)" 2>/dev/null; then echo "Write-once server died"; cat /tmp/s3-server-writeonce.log; exit 1; fi
+            sleep 0.5
+          done
+
+      - name: Run S3 API integration tests
+        run: bash .github/workflows/integration-test/test_s3_api.sh
+
+      - name: Show server logs on failure
+        if: failure()
+        run: |
+          echo "=== Normal server ==="
+          cat /tmp/s3-server-normal.log || true
+          echo "=== Write-once server ==="
+          cat /tmp/s3-server-writeonce.log || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          kill "$(cat /tmp/s3-server-normal.pid 2>/dev/null)" 2>/dev/null || true
+          kill "$(cat /tmp/s3-server-writeonce.pid 2>/dev/null)" 2>/dev/null || true
 
   docker:
     needs: build
@@ -62,7 +146,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
   integration-test:
-    needs: build
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -84,7 +168,7 @@ jobs:
         run: |
           mkdir -p /tmp/s3-data
           chmod +x build/go-s3-server_linux_amd64
-          nohup ./build/go-s3-server_linux_amd64 --config .github/workflows/integration-test/s3-config.json > /tmp/s3-server.log 2>&1 &
+          nohup ./build/go-s3-server_linux_amd64 --config .github/workflows/integration-test/s3-config-noauth.json > /tmp/s3-server.log 2>&1 &
           echo $! > /tmp/s3-server.pid
           for i in $(seq 1 30); do
             if curl -so /dev/null http://127.0.0.1:9000/ 2>/dev/null; then echo "Server ready"; break; fi
@@ -115,15 +199,50 @@ jobs:
         working-directory: /tmp/test-project
         run: |
           rm -rf ~/.cache/go-toolchain/buildcache
-          rm -f /tmp/gocache-s3-index-*.txt
+          rm -f /tmp/gocache-s3-index-*.txt /tmp/gocache-web-index-*.bin
           export GO_BUILDCACHE_CONFIG=$(echo -n '{"endpoint":"http://127.0.0.1:9000","bucket":"test-cache","region":"us-east-1","key_id":"test-key-id","access_key":"test-secret-key"}' | base64 -w0)
           go-toolchain --no-benchmark 2>&1 | tee /tmp/build2.log
 
-      - name: Verify cache hits
-        run: |
-          echo "=== Cache stats ==="
-          grep -i "cache\|s3" /tmp/build2.log || true
-          grep "s3 index:" /tmp/build2.log | grep -qvP '0 keys' && echo "PASS: S3 cache entries found" || echo "WARN: could not verify hits from output"
+      # This step must FAIL when the warm build gets nothing from the shared
+      # cache. Its predecessor grepped the log line "s3 index:", which the
+      # client renamed to "web index:" long ago -- the step printed
+      # "WARN: could not verify hits" and exited 0 in 100% of sampled runs,
+      # so this job green-lit a dead cache for months. The check now parses
+      # the client's summary counters with rename-tolerant patterns, and a
+      # missing line is itself a failure (an unrecognized format must never
+      # silently disarm the gate again).
+      - name: Verify warm-build cache hits
+        uses: wow-look-at-my/actions@typescript#latest
+        with:
+          script: |
+            const log = fs.readFileSync('/tmp/build2.log', 'utf-8');
+
+            // The cacheprog prints, once per go-toolchain invocation:
+            //   cacheprog: web index: <N> keys
+            //   cacheprog: web summary: hits=<H> puts=<P> misses=<M> (...)
+            // Match loosely on "index: N keys" / "summary: ... hits=N" so a
+            // future tier rename (s3 -> web already happened once) keeps
+            // matching -- and treat a non-match as a hard failure.
+            const idx = log.match(/index:\s*(\d+)\s*keys/);
+            const sum = log.match(/summary:.*?\bhits=(\d+)/);
+
+            if (!idx) {
+              core.setFailed('build2.log has no "... index: N keys" line; the client output format changed -- update this check rather than letting it rot');
+            } else {
+              core.info(`warm build saw ${idx[1]} advertised keys`);
+              if (Number(idx[1]) === 0) {
+                core.setFailed('the server advertised 0 keys to the warm build, but the cold build just populated it -- /_index is broken or empty');
+              }
+            }
+
+            if (!sum) {
+              core.setFailed('build2.log has no "... summary: ... hits=N" line; the client output format changed -- update this check rather than letting it rot');
+            } else {
+              core.info(`warm build web-tier hits: ${sum[1]}`);
+              if (Number(sum[1]) === 0) {
+                core.setFailed('the warm build (local cache wiped) got 0 web-tier hits from the freshly populated server -- the shared cache is not serving');
+              }
+            }
 
       - name: Cleanup
         if: always()

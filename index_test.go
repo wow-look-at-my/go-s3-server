@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/require"
 )
 
 // parsedIndex is the test-side decoded form of a GBCI v1 blob.

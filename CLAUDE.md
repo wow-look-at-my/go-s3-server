@@ -18,6 +18,7 @@ Do NOT use `go build`, `go test`, or any bare `go` commands. Always use `go-tool
 - `auth_test.go` — Auth tests (including the "empty credential must not bypass auth" regression)
 - `server.go` — HTTP router, auth gate, client-IP resolution, audit context, bucket dispatch
 - `handlers.go` — S3 API handlers (GetObject, PutObject, handleGetIndex, handlePutIndex) for the `/_index` endpoint; PutObject writes audit xattrs
+- `batchput.go` — `PUT /_batch/put` handler: accepts a tar stream (manifest.json + data/<key> members) and stores each object via storage.Put, returning per-key results as JSON
 - `index.go` — In-memory key index. Maintains an mtime-sorted list for `_batch/get` prefetch *and* a sorted slice of action-ID hashes that serializes to the GBCI v1 binary blob served at `GET /<bucket>/_index`. PUTs append to an unsorted `pending` buffer under a microsecond-scale mutex; sort+dedupe+serialize is deferred to the next `Blob()` read. `PUT /_index` accepts a client-uploaded GBCI blob and merges its hashes into the pending queue via `Index.Merge`.
 - `storage.go` — Filesystem storage with two-level key sharding, cache version auto-purge
 - `storage_test.go` — Cache version / purge tests

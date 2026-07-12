@@ -133,6 +133,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "GET" && key == "_batch/get":
 		route = "BatchGet"
 		handleBatchGet(rec, r, s.storage, s.prefetchTracker)
+	case (r.Method == "PUT" || r.Method == "POST") && key == "_batch/put":
+		route = "BatchPut"
+		handleBatchPut(rec, r, s.storage)
 	case r.Method == "GET" && key != "":
 		route = "GetObject"
 		handleGetObject(rec, r, s.storage, key)

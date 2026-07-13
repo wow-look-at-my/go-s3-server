@@ -2,7 +2,8 @@ package main
 
 import (
 	"bytes"
-	"encoding/xml"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -88,7 +90,7 @@ func TestPutAndGetObject(t *testing.T) {
 	ts := testSetup(t)
 
 	content := []byte("hello world cache data")
-	headers := map[string]string{"X-Amz-Meta-Outputid": "abc123def456"}
+	headers := map[string]string{"X-Cache-Meta-Outputid": "abc123def456"}
 	resp := doRequest(t, ts, "PUT", "/testbucket/go-buildcache/v1aabbccdd11223344", content, headers)
 	require.Equal(t, 200, resp.StatusCode)
 
@@ -102,8 +104,10 @@ func TestPutAndGetObject(t *testing.T) {
 
 	require.Equal(t, string(content), string(body))
 
-	outputID := resp.Header.Get("X-Amz-Meta-Outputid")
-	require.Equal(t, "abc123def456", outputID)
+	// Native header carries the metadata.
+	require.Equal(t, "abc123def456", resp.Header.Get("X-Cache-Meta-Outputid"))
+	// Deprecated S3 header is still emitted for not-yet-upgraded clients.
+	require.Equal(t, "abc123def456", resp.Header.Get("X-Amz-Meta-Outputid"))
 
 	lm := resp.Header.Get("Last-Modified")
 	require.NotEqual(t, "", lm)
@@ -120,10 +124,11 @@ func TestGetObjectNotFound(t *testing.T) {
 
 	require.Equal(t, 404, resp.StatusCode)
 
-	var s3err S3Error
-	require.NoError(t, xml.NewDecoder(resp.Body).Decode(&s3err))
-
-	require.Equal(t, "NoSuchKey", s3err.Code)
+	// Native plain-text error: the machine-readable code is in a header and the
+	// body is "<code>: <message>" (no S3 XML envelope).
+	require.Equal(t, "not_found", resp.Header.Get("X-Cache-Error-Code"))
+	body, _ := io.ReadAll(resp.Body)
+	require.Contains(t, string(body), "not_found")
 }
 
 func TestWriteOnce(t *testing.T) {
@@ -394,13 +399,13 @@ func TestLoadConfig(t *testing.T) {
 	require.NotNil(t, err)
 }
 
-func TestPutObjectReadBodyError(t *testing.T) {
+func TestMetadataRoundTrip(t *testing.T) {
 	ts := testSetup(t)
 
 	content := []byte("test data with meta")
 	headers := map[string]string{
-		"X-Amz-Meta-Outputid": "out1",
-		"X-Amz-Meta-Custom":   "val2",
+		"X-Cache-Meta-Outputid": "out1",
+		"X-Cache-Meta-Custom":   "val2",
 	}
 	resp := doRequest(t, ts, "PUT", "/testbucket/meta/v1test000000000001", content, headers)
 	require.Equal(t, 200, resp.StatusCode)
@@ -408,17 +413,194 @@ func TestPutObjectReadBodyError(t *testing.T) {
 
 	resp = doRequest(t, ts, "GET", "/testbucket/meta/v1test000000000001", nil, nil)
 	require.Equal(t, 200, resp.StatusCode)
-	require.Equal(t, "out1", resp.Header.Get("X-Amz-Meta-Outputid"))
-	require.Equal(t, "val2", resp.Header.Get("X-Amz-Meta-Custom"))
+	require.Equal(t, "out1", resp.Header.Get("X-Cache-Meta-Outputid"))
+	require.Equal(t, "val2", resp.Header.Get("X-Cache-Meta-Custom"))
 	resp.Body.Close()
+}
+
+// TestLegacyAmzMetaCompat verifies the deprecated S3 metadata path still works:
+// a client uploading with X-Amz-Meta-* headers stores metadata, and a GET serves
+// it back under both the native and legacy header names. The deprecation counter
+// is bumped so the lingering S3 traffic stays observable.
+func TestLegacyAmzMetaCompat(t *testing.T) {
+	ts := testSetup(t)
+
+	before := testutil.ToFloat64(deprecatedRequestsTotal.WithLabelValues(featureAmzMeta))
+
+	content := []byte("legacy client data")
+	headers := map[string]string{"X-Amz-Meta-Outputid": "legacy123"}
+	resp := doRequest(t, ts, "PUT", "/testbucket/meta/v1legacy00000000001", content, headers)
+	require.Equal(t, 200, resp.StatusCode)
+	resp.Body.Close()
+
+	resp = doRequest(t, ts, "GET", "/testbucket/meta/v1legacy00000000001", nil, nil)
+	require.Equal(t, 200, resp.StatusCode)
+	require.Equal(t, "legacy123", resp.Header.Get("X-Cache-Meta-Outputid"))
+	require.Equal(t, "legacy123", resp.Header.Get("X-Amz-Meta-Outputid"))
+	resp.Body.Close()
+
+	after := testutil.ToFloat64(deprecatedRequestsTotal.WithLabelValues(featureAmzMeta))
+	require.Greater(t, after, before, "deprecated-request counter should increase on X-Amz-Meta use")
 }
 
 func TestMethodNotAllowed(t *testing.T) {
 	ts := testSetup(t)
 
-	resp := doRequest(t, ts, "DELETE", "/testbucket/some/key", nil, nil)
+	resp := doRequest(t, ts, "PATCH", "/testbucket/some/key", nil, nil)
 	defer resp.Body.Close()
 	require.Equal(t, 405, resp.StatusCode)
+}
+
+// TestDeleteObject covers the surgical eviction lever: a stored object can be
+// removed, a subsequent GET 404s, the key is dropped from the /_index blob, and
+// DELETE is idempotent (deleting a missing key still succeeds). This is the
+// mechanism for evicting a poisoned build-cache entry without a full purge.
+func TestDeleteObject(t *testing.T) {
+	ts := testSetup(t)
+
+	const actionHex = "10f94fc02dcc245820dd861f4c6c25dee23ceb750f6be498fe84f67dfd2f1f9b"
+	hashBytes, err := hex.DecodeString(actionHex)
+	require.Nil(t, err)
+	key := "/testbucket/go-buildcache/v1" + actionHex
+	content := []byte("cache data to evict")
+
+	resp := doRequest(t, ts, "PUT", key, content, map[string]string{"X-Cache-Meta-Outputid": "deadbeef"})
+	require.Equal(t, 200, resp.StatusCode)
+	resp.Body.Close()
+
+	// The key's action hash is advertised in the index before deletion.
+	resp = doRequest(t, ts, "GET", "/testbucket/_index", nil, nil)
+	idxBefore, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.True(t, bytes.Contains(idxBefore, hashBytes), "index should list the key before delete")
+
+	// Delete it.
+	resp = doRequest(t, ts, "DELETE", key, nil, nil)
+	require.Equal(t, 204, resp.StatusCode)
+	resp.Body.Close()
+
+	// GET now 404s.
+	resp = doRequest(t, ts, "GET", key, nil, nil)
+	require.Equal(t, 404, resp.StatusCode)
+	resp.Body.Close()
+
+	// And the key is gone from the index blob.
+	resp = doRequest(t, ts, "GET", "/testbucket/_index", nil, nil)
+	idxAfter, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.False(t, bytes.Contains(idxAfter, hashBytes), "index must not list the key after delete")
+
+	// DELETE is idempotent: removing it again still succeeds.
+	resp = doRequest(t, ts, "DELETE", key, nil, nil)
+	require.Equal(t, 204, resp.StatusCode)
+	resp.Body.Close()
+}
+
+// TestSelfHealRepairsOutputIDInPlace covers the self-healing path: an object
+// stored without outputid metadata -- a relic of an earlier cache-data
+// iteration, or one whose xattrs were stripped by a data-dir move -- is repaired
+// in place on the first read rather than evicted. The server reconstructs the
+// outputid from the body (it IS sha256 of the decompressed body), writes it back,
+// and serves the object as a hit. The body is untouched, the key stays in
+// /_index (so clients keep hitting it instead of re-uploading), and the repair is
+// one-time. No eviction, no re-upload, no churn.
+func TestSelfHealRepairsOutputIDInPlace(t *testing.T) {
+	ts := testSetup(t)
+
+	const actionHex = "a1b2c3d4e5f6071829304a5b6c7d8e9f0011223344556677889900aabbccddee"
+	hashBytes, err := hex.DecodeString(actionHex)
+	require.Nil(t, err)
+	key := "/testbucket/go-buildcache/v1" + actionHex
+
+	// The body is an lz4 frame (what the client always stores); the outputid is
+	// sha256 of the decompressed content.
+	raw := []byte("a compiled object body that lost its outputid xattr")
+	compressed := lz4Compress(t, raw)
+	sum := sha256.Sum256(raw)
+	wantOutputID := hex.EncodeToString(sum[:])
+
+	// Store the body with NO outputid metadata -- the relic shape we must heal.
+	resp := doRequest(t, ts, "PUT", key, compressed, nil)
+	require.Equal(t, 200, resp.StatusCode)
+	resp.Body.Close()
+
+	repairsBefore := testutil.ToFloat64(selfHealRepairsTotal)
+
+	// First GET repairs in place and serves a hit -- 200 with the reconstructed
+	// outputid and the body byte-for-byte, NOT a 404.
+	resp = doRequest(t, ts, "GET", key, nil, nil)
+	require.Equal(t, 200, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.Equal(t, compressed, body, "the stored body must be served untouched")
+	require.Equal(t, wantOutputID, resp.Header.Get("X-Cache-Meta-Outputid"),
+		"the reconstructed outputid must be sha256 of the decompressed body")
+	require.Equal(t, wantOutputID, resp.Header.Get("X-Amz-Meta-Outputid"))
+
+	require.Greater(t, testutil.ToFloat64(selfHealRepairsTotal), repairsBefore,
+		"self-heal repair counter should increase")
+
+	// The key stays in the index -- repaired, not evicted -- so clients keep
+	// hitting it instead of re-uploading.
+	resp = doRequest(t, ts, "GET", "/testbucket/_index", nil, nil)
+	idx, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.True(t, bytes.Contains(idx, hashBytes), "repaired key must remain in the index")
+
+	// Second GET is a normal hit with no further repair (the outputid now persists).
+	repairsAfterFirst := testutil.ToFloat64(selfHealRepairsTotal)
+	resp = doRequest(t, ts, "GET", key, nil, nil)
+	require.Equal(t, 200, resp.StatusCode)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.Equal(t, compressed, body)
+	require.Equal(t, wantOutputID, resp.Header.Get("X-Cache-Meta-Outputid"))
+	require.Equal(t, repairsAfterFirst, testutil.ToFloat64(selfHealRepairsTotal),
+		"a repaired object must not be repaired again")
+}
+
+// TestSelfHealLeavesUnrepairableObjectInPlace verifies the non-destructive
+// fallback: an outputid-less object whose body is not a decodable lz4 frame
+// cannot be repaired (and the client could not consume it anyway), so the server
+// reports a clean miss and does NOT delete the body -- the file is left in place
+// for forensics and the normal age/size eviction policy. Its INDEX entry,
+// however, is dropped: an unrepairable key that stayed advertised would be a
+// permanent forced miss (clients skip re-uploading indexed keys), so the server
+// de-advertises it and lets the next consumer re-upload a good body.
+func TestSelfHealLeavesUnrepairableObjectInPlace(t *testing.T) {
+	ts, storage := testSetupWithStorage(t)
+
+	const actionHex = "ffeeddccbbaa00998877665544332211ffeeddccbbaa00998877665544332211"
+	hashBytes, err := hex.DecodeString(actionHex)
+	require.Nil(t, err)
+	objectKey := "go-buildcache/v1" + actionHex
+	key := "/testbucket/" + objectKey
+
+	// A body that is not a valid lz4 frame and has no outputid: unrepairable.
+	resp := doRequest(t, ts, "PUT", key, []byte("not lz4 and no outputid"), nil)
+	require.Equal(t, 200, resp.StatusCode)
+	resp.Body.Close()
+
+	repairsBefore := testutil.ToFloat64(selfHealRepairsTotal)
+
+	// GET reports a clean miss (cannot repair) ...
+	resp = doRequest(t, ts, "GET", key, nil, nil)
+	require.Equal(t, 404, resp.StatusCode)
+	require.Equal(t, "not_found", resp.Header.Get("X-Cache-Error-Code"))
+	resp.Body.Close()
+
+	// ... but nothing was repaired (counter unchanged) and the BODY was not
+	// evicted: the file remains on disk for the eviction policy to own.
+	require.Equal(t, repairsBefore, testutil.ToFloat64(selfHealRepairsTotal))
+	_, err = storage.Stat(objectKey)
+	require.NoError(t, err, "an unrepairable object's body must be left on disk, not evicted")
+
+	// The key is no longer advertised, so consumers re-upload instead of
+	// taking a forced miss forever.
+	resp = doRequest(t, ts, "GET", "/testbucket/_index", nil, nil)
+	idx, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.False(t, bytes.Contains(idx, hashBytes), "an unrepairable key must be de-advertised from the index")
 }
 
 func TestUnsafeKeyHashedStorage(t *testing.T) {

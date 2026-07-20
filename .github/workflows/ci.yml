@@ -14,10 +14,6 @@ jobs:
       id-token: write
       contents: read
       actions: read
-      # checks read: the org no-all-builds-job guard (the first step inside
-      # wow-look-at-my/go-toolchain@v1) also scans the head commit's check
-      # runs since no-all-builds-job#3 (2026-07-20), and FAILS CLOSED when
-      # it cannot scan ("Resource not accessible by integration").
       checks: read
     steps:
       - uses: actions/checkout@v4
@@ -36,11 +32,6 @@ jobs:
       id-token: write
       contents: read
       packages: write
-      # actions/checks read: the org no-all-builds-job guard (runs inside
-      # wow-look-at-my/actions@go-packages#latest) scans the run's jobs and
-      # the head commit's check runs since no-all-builds-job#3 (2026-07-20),
-      # and FAILS CLOSED when it cannot scan ("Resource not accessible by
-      # integration").
       actions: read
       checks: read
     steps:

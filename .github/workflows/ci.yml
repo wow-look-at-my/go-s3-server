@@ -4,16 +4,20 @@ on:
   push:
 
 permissions:
+  id-token: write
   contents: write
   packages: write
+  actions: read
+  checks: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
-      contents: read
+      contents: write
       actions: read
+      checks: read
     steps:
       - uses: actions/checkout@v4
       - uses: wow-look-at-my/go-toolchain@v1
@@ -136,6 +140,8 @@ jobs:
 
       - name: Build with go-toolchain (cold cache)
         working-directory: /tmp/test-project
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           export GO_BUILDCACHE_CONFIG=$(echo -n '{"endpoint":"http://127.0.0.1:9000","bucket":"test-cache","region":"us-east-1","key_id":"test-key-id","access_key":"test-secret-key"}' | base64 -w0)
           go-toolchain --no-benchmark 2>&1 | tee /tmp/build1.log
@@ -148,6 +154,8 @@ jobs:
 
       - name: Build with go-toolchain (warm cache)
         working-directory: /tmp/test-project
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           rm -rf ~/.cache/go-toolchain/buildcache
           rm -f /tmp/gocache-s3-index-*.txt /tmp/gocache-web-index-*.bin

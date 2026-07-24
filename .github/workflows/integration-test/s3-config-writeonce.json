@@ -3,5 +3,5 @@
   "bucket": "test-cache",
   "data_dir": "/tmp/s3-data-writeonce",
   "write_once": {"action": "deny", "notification": "content_differs"},
-  "credentials": [{"access_key": "test-key-id", "secret_key": "test-secret-key"}]
+  "credentials": [{"username": "testuser", "password": "testpass"}]
 }

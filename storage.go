@@ -6,10 +6,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,10 +23,56 @@ var (
 	ErrWriteOnceDuplicate = errors.New("object already exists")
 )
 
+// currentCacheVersion is the on-disk data-dir format version. When this
+// server starts and finds a data_dir with a different version (or no version
+// marker, which is treated as version 1), it wipes the data_dir to avoid
+// serving content written under an older, possibly-compromised regime.
+//
+// Bump this whenever prior cache contents should not be trusted. For
+// example, version 2 forces a purge of any cache that was populated while
+// the auth-bypass bug in auth.go (pre-fix) could have been exploited to
+// upload attacker-controlled artifacts.
+//
+// Version 3 purges caches that may hold poisoned Go module-index objects. The
+// module index is stored opaquely here (the server cannot tell a good index
+// from a mis-keyed one), and a wrong one served for a std package's key breaks
+// every consumer's build at package load ("package runtime is not in std" /
+// "corrupt index"). The go-toolchain client now refuses to upload or serve
+// module-index blobs, but that only protects clients that have updated; this
+// purge removes the already-stored poison so EVERY client -- updated or not --
+// is repaired at once (a missing index key is simply recomputed locally).
+const currentCacheVersion = 3
+
+const cacheVersionFile = ".cache_version"
+const lockFileName = ".lock"
+
+// fsyncThresholdBytes: PutStream fsyncs temp files at or above this size
+// before renaming them into place (see the comment at the call site).
+const fsyncThresholdBytes = 8 << 20
+
 type Storage struct {
 	dataDir   string
 	writeOnce WriteOnceConfig
 	lockFile  *os.File
+	Index     *Index // in-memory key index (mtime entries + GBCI hashes); nil if unavailable
+
+	// accessShards tracks the last-access time (unix seconds) of each key so the
+	// eviction sweeper can prune entries by least-recent *use*, not merely by
+	// write time. It is allocated only when eviction is enabled
+	// (EnableAccessTracking); while nil, recordAccess is a no-op and the read
+	// hot path pays nothing. Sharded so the per-GET update never serializes on a
+	// single global lock — the same lock-convoy concern that shaped the index's
+	// hot path. mtime stays the authoritative write time (the prefetch system
+	// keys on it); access time is kept here, separately, so the two never
+	// interfere. The map holds only keys read since startup (the working set),
+	// not the whole cache. The type and methods live in eviction.go.
+	accessShards []*accessShard
+
+	// cleanKeys memoizes indexed cacheprog keys whose stored body already
+	// passed the read-path module-index probe, so warm keys skip the per-GET
+	// lz4 decode. Invalidated on overwrite PUT, DELETE, and eviction. See
+	// cleanmemo.go.
+	cleanKeys *cleanKeyMemo
 }
 
 type ObjectMeta struct {
@@ -49,7 +98,7 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 
-	lockPath := filepath.Join(dataDir, ".lock")
+	lockPath := filepath.Join(dataDir, lockFileName)
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("open lock file: %w", err)
@@ -59,11 +108,118 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 		return nil, fmt.Errorf("data directory is locked by another process: %w", err)
 	}
 
-	return &Storage{
+	if err := ensureCacheVersion(dataDir); err != nil {
+		unlockFile(lockFile)
+		lockFile.Close()
+		return nil, err
+	}
+
+	// Sweep .tmp-* orphans from crashed/killed PutStreams. List skips the
+	// .tmp- prefix, so these files are invisible to listing, eviction, and the
+	// index — without this sweep they leak disk forever. The exclusive flock
+	// above guarantees no other server is writing to this data_dir, and this
+	// process has not started serving yet, so at this point EVERY .tmp- file
+	// is a dead orphan.
+	sweepTempFiles(dataDir)
+
+	s := &Storage{
 		dataDir:   dataDir,
 		writeOnce: writeOnce,
 		lockFile:  lockFile,
-	}, nil
+		cleanKeys: newCleanKeyMemo(maxCleanMemoEntries),
+	}
+
+	s.Index = NewIndex(s)
+	return s, nil
+}
+
+// ensureCacheVersion reads the data_dir's version marker. If missing, it is
+// treated as version 1. If the stored version does not match
+// currentCacheVersion, every entry in the data_dir (except the lock file) is
+// removed and a new version marker is written. This forces the operator to
+// rebuild the cache from trusted inputs whenever we bump the version, e.g.
+// after fixing a vulnerability that could have let an attacker populate the
+// cache.
+func ensureCacheVersion(dataDir string) error {
+	stored, err := readCacheVersion(dataDir)
+	if err != nil {
+		return err
+	}
+	if stored == currentCacheVersion {
+		return nil
+	}
+	log.Printf("cache: stored version %d != current %d; purging data_dir=%s", stored, currentCacheVersion, dataDir)
+	if err := purgeDataDir(dataDir); err != nil {
+		return fmt.Errorf("purge data dir: %w", err)
+	}
+	if err := writeCacheVersion(dataDir, currentCacheVersion); err != nil {
+		return fmt.Errorf("write cache version: %w", err)
+	}
+	log.Printf("cache: purged and marked as version %d", currentCacheVersion)
+	return nil
+}
+
+func readCacheVersion(dataDir string) (int, error) {
+	data, err := os.ReadFile(filepath.Join(dataDir, cacheVersionFile))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// No marker: treat as version 1 (any cache predating this feature).
+			return 1, nil
+		}
+		return 0, fmt.Errorf("read cache version: %w", err)
+	}
+	s := strings.TrimSpace(string(data))
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("cache version file %s is corrupt (%q): %w", cacheVersionFile, s, err)
+	}
+	return v, nil
+}
+
+func writeCacheVersion(dataDir string, v int) error {
+	return os.WriteFile(filepath.Join(dataDir, cacheVersionFile), []byte(strconv.Itoa(v)+"\n"), 0644)
+}
+
+// purgeDataDir removes every entry in dataDir except the lock file. Used when
+// the cache version is incompatible.
+func purgeDataDir(dataDir string) error {
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.Name() == lockFileName {
+			continue
+		}
+		p := filepath.Join(dataDir, e.Name())
+		if err := os.RemoveAll(p); err != nil {
+			return fmt.Errorf("remove %s: %w", p, err)
+		}
+	}
+	return nil
+}
+
+// sweepTempFiles removes leftover PutStream temp files (".tmp-*"). Only call
+// while holding the data_dir's exclusive lock and before serving begins, when
+// no temp file can be legitimately in flight.
+func sweepTempFiles(dataDir string) {
+	var removed int
+	filepath.WalkDir(dataDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if strings.HasPrefix(d.Name(), ".tmp-") {
+			if rmErr := os.Remove(path); rmErr == nil {
+				removed++
+			} else {
+				log.Printf("startup: cannot remove orphaned temp file %s: %v", path, rmErr)
+			}
+		}
+		return nil
+	})
+	if removed > 0 {
+		log.Printf("startup: removed %d orphaned .tmp-* file(s) left by interrupted uploads", removed)
+	}
 }
 
 func (s *Storage) Close() error {
@@ -91,7 +247,7 @@ func isKeySafe(key string) bool {
 
 const hashedPrefix = "__hashed__"
 
-// keyToPath converts a key to a sharded filesystem path.
+// keyToPath converts a cache key to a sharded filesystem path.
 // Safe keys use direct sharding:
 //
 //	go-buildcache/v1aabbccdd11223344 → {dataDir}/go-buildcache/v1/aa/bbccdd11223344
@@ -122,7 +278,7 @@ func (s *Storage) shardPath(base, key string) string {
 	}
 }
 
-// pathToKey reverses the sharding to reconstruct the original key.
+// pathToKey reverses the sharding to reconstruct the original cache key.
 // For hashed keys (under __hashed__/), the original key is read from xattr.
 func (s *Storage) pathToKey(path string) string {
 	rel, _ := filepath.Rel(s.dataDir, path)
@@ -167,7 +323,19 @@ func (s *Storage) pathToKey(path string) string {
 	return rel
 }
 
-func (s *Storage) Put(key string, data []byte, meta map[string]string) (err error) {
+// Put stores data under key. It is a convenience wrapper around PutStream for
+// callers (and tests) that already hold the full body in memory.
+func (s *Storage) Put(key string, data []byte, meta map[string]string, audit map[string]string) error {
+	return s.PutStream(key, bytes.NewReader(data), meta, audit)
+}
+
+// PutStream stores the body read from r under key, streaming it straight to disk
+// so the server never buffers a whole upload in memory. This is the OOM-safety
+// property that lets many large concurrent PUTs coexist under a tight memory
+// budget: io.Copy uses a fixed 32 KiB buffer, so resident memory per upload is
+// flat regardless of object size. The actual byte count is recorded as the
+// audit content_length.
+func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, audit map[string]string) (err error) {
 	start := time.Now()
 	defer func() {
 		status := "ok"
@@ -180,22 +348,6 @@ func (s *Storage) Put(key string, data []byte, meta map[string]string) (err erro
 	path := s.keyToPath(key)
 	hashed := !isKeySafe(key)
 
-	if s.writeOnce.Action == "deny" {
-		if existing, err := os.ReadFile(path); err == nil {
-			switch s.writeOnce.Notification {
-			case "always":
-				return ErrWriteOnceDuplicate
-			case "content_differs":
-				if bytes.Equal(existing, data) {
-					return nil
-				}
-				return ErrWriteOnceConflict
-			default:
-				return nil
-			}
-		}
-	}
-
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create dirs: %w", err)
@@ -207,19 +359,68 @@ func (s *Storage) Put(key string, data []byte, meta map[string]string) (err erro
 	}
 	tmpPath := tmp.Name()
 
-	if _, err := tmp.Write(data); err != nil {
+	n, copyErr := io.Copy(tmp, r)
+	if copyErr != nil {
 		tmp.Close()
 		os.Remove(tmpPath)
-		return fmt.Errorf("write temp: %w", err)
+		return fmt.Errorf("write temp: %w", copyErr)
+	}
+	// Durability, proportionate to a cache's needs: fsync large bodies before
+	// the rename so a power loss cannot leave a big, mostly-unwritten file
+	// under the final name. Small objects skip the sync — full fsync-per-PUT
+	// would throttle CI bursts, and the client hash-verifies every download,
+	// so a rare torn small object costs one refused fetch, not correctness.
+	if n >= fsyncThresholdBytes {
+		if err := tmp.Sync(); err != nil {
+			tmp.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("sync temp: %w", err)
+		}
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("close temp: %w", err)
 	}
 
+	// write_once is applied after the body is on disk so the content comparison
+	// streams from two files instead of buffering either in memory.
+	if s.writeOnce.Action == "deny" {
+		if _, statErr := os.Stat(path); statErr == nil { // object already exists
+			switch s.writeOnce.Notification {
+			case "always":
+				os.Remove(tmpPath)
+				return ErrWriteOnceDuplicate
+			case "content_differs":
+				eq, eqErr := filesEqual(tmpPath, path)
+				os.Remove(tmpPath)
+				if eqErr != nil {
+					return fmt.Errorf("write_once compare: %w", eqErr)
+				}
+				if eq {
+					return nil
+				}
+				return ErrWriteOnceConflict
+			default:
+				os.Remove(tmpPath)
+				return nil
+			}
+		}
+	}
+
 	if err := setMetadata(tmpPath, meta); err != nil {
 		os.Remove(tmpPath)
 		return err
+	}
+
+	// Audit is best-effort: if the filesystem doesn't support extended
+	// attributes, the request log still captures the same fields, and it's
+	// better to accept the upload than to refuse it over missing forensics.
+	// Log loudly so operators notice if they're losing the on-disk trail.
+	if audit != nil {
+		audit["content_length"] = strconv.FormatInt(n, 10)
+	}
+	if err := setAudit(tmpPath, audit); err != nil {
+		log.Printf("audit: failed to persist xattrs for key %q (request log still has the data): %v", key, err)
 	}
 
 	if hashed {
@@ -233,7 +434,57 @@ func (s *Storage) Put(key string, data []byte, meta map[string]string) (err erro
 		os.Remove(tmpPath)
 		return fmt.Errorf("rename: %w", err)
 	}
+	// Move the metadata sidecars (Windows only; xattrs travel with the inode
+	// on unix) to the final path alongside the body. Failing here fails the
+	// PUT: a body without its metadata cannot serve, and the client's retry
+	// overwrites cleanly.
+	if err := finalizeSidecars(tmpPath, path); err != nil {
+		return fmt.Errorf("finalize sidecars: %w", err)
+	}
+	// The body under this key just changed: the next read must re-probe it
+	// rather than trust a stale known-clean verdict for the previous body.
+	s.forgetClean(key)
+	if s.Index != nil {
+		s.Index.Put(key, n)
+	}
 	return nil
+}
+
+// filesEqual reports whether two files have identical contents, comparing in
+// fixed-size chunks so neither file is ever loaded into memory whole.
+func filesEqual(a, b string) (bool, error) {
+	fa, err := os.Open(a)
+	if err != nil {
+		return false, err
+	}
+	defer fa.Close()
+	fb, err := os.Open(b)
+	if err != nil {
+		return false, err
+	}
+	defer fb.Close()
+
+	const chunk = 64 * 1024
+	ba := make([]byte, chunk)
+	bb := make([]byte, chunk)
+	for {
+		na, ea := io.ReadFull(fa, ba)
+		nb, eb := io.ReadFull(fb, bb)
+		if na != nb || !bytes.Equal(ba[:na], bb[:nb]) {
+			return false, nil
+		}
+		aDone := ea == io.EOF || ea == io.ErrUnexpectedEOF
+		bDone := eb == io.EOF || eb == io.ErrUnexpectedEOF
+		if ea != nil && !aDone {
+			return false, ea
+		}
+		if eb != nil && !bDone {
+			return false, eb
+		}
+		if aDone || bDone {
+			return aDone && bDone, nil
+		}
+	}
 }
 
 func (s *Storage) Get(key string) (_ []byte, _ *ObjectMeta, err error) {
@@ -268,8 +519,138 @@ func (s *Storage) Get(key string) (_ []byte, _ *ObjectMeta, err error) {
 	}
 
 	getMetadata(path, meta)
+	s.recordAccess(key)
 
 	return data, meta, nil
+}
+
+// SetMeta adds or overwrites the given user-metadata keys on the object stored
+// under key, leaving its body and every other xattr (audit included, and the
+// mtime the prefetch system keys on) untouched. It is the in-place repair lever
+// for an object missing required metadata -- specifically the outputid self-heal,
+// which reconstructs the content address from the body and persists it here
+// rather than evicting and forcing a re-upload. Returns ErrNotFound if no object
+// exists for key.
+func (s *Storage) SetMeta(key string, kv map[string]string) error {
+	path := s.keyToPath(key)
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return ErrNotFound
+		}
+		return err
+	}
+	return setMetadata(path, kv)
+}
+
+// Stat returns an object's metadata (size, mtime, user metadata) WITHOUT reading
+// its body. The batch endpoint uses it to build the response manifest, and the
+// GET path uses it where only size/metadata are needed — so a large object's
+// bytes are never pulled into memory just to learn how big it is.
+func (s *Storage) Stat(key string) (*ObjectMeta, error) {
+	path := s.keyToPath(key)
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	meta := &ObjectMeta{
+		Metadata: make(map[string]string),
+		ModTime:  info.ModTime(),
+		Size:     info.Size(),
+	}
+	getMetadata(path, meta)
+	return meta, nil
+}
+
+// Open opens an object's body for streaming and returns it with its metadata.
+// The caller MUST Close the returned file. Streaming straight from the open file
+// (instead of ReadFile + Write) is what keeps GET and batch-GET memory flat
+// under load: only an io.Copy-sized buffer is resident, never the whole object.
+// meta.Size comes from the open fd, so it matches the bytes that will be read.
+func (s *Storage) Open(key string) (_ *os.File, _ *ObjectMeta, err error) {
+	start := time.Now()
+	defer func() {
+		status := "ok"
+		if err != nil {
+			status = "error"
+		}
+		storageOpsTotal.WithLabelValues("get", status).Inc()
+		storageOpDuration.WithLabelValues("get").Observe(time.Since(start).Seconds())
+	}()
+	path := s.keyToPath(key)
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil, ErrNotFound
+		}
+		return nil, nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	meta := &ObjectMeta{
+		Metadata: make(map[string]string),
+		ModTime:  info.ModTime(),
+		Size:     info.Size(),
+	}
+	getMetadata(path, meta)
+	s.recordAccess(key)
+	return f, meta, nil
+}
+
+// openRaw opens an object's body WITHOUT the storage-op metric or the
+// last-access recording that Open performs. It exists for internal peeks —
+// the module-index guard's inspection and the self-heal's private hashing
+// handle — which are not client-visible serves: routing them through Open
+// double-counted the "get" op for every batch-served key and, worse, stamped
+// a fresh last-access time onto prefetch candidates that were never actually
+// sent, inflating their lifetime under LRU eviction.
+func (s *Storage) openRaw(key string) (*os.File, error) {
+	f, err := os.Open(s.keyToPath(key))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return f, nil
+}
+
+// Delete removes the object stored under key, returning ErrNotFound if no such
+// object exists. It is the surgical counterpart to the whole-dir cache-version
+// purge: an operator can evict a single poisoned entry -- e.g. a cross-
+// contaminated build-cache object that hashes to its own outputID yet belongs
+// under a different action key -- without rebuilding the entire cache. The
+// index entry is dropped too, so the server stops advertising a key it no
+// longer stores.
+func (s *Storage) Delete(key string) (err error) {
+	start := time.Now()
+	defer func() {
+		status := "ok"
+		if err != nil {
+			status = "error"
+		}
+		storageOpsTotal.WithLabelValues("delete", status).Inc()
+		storageOpDuration.WithLabelValues("delete").Observe(time.Since(start).Seconds())
+	}()
+	path := s.keyToPath(key)
+	if rmErr := os.Remove(path); rmErr != nil {
+		if errors.Is(rmErr, fs.ErrNotExist) {
+			return ErrNotFound
+		}
+		return rmErr
+	}
+	removeSidecars(path)
+	if s.Index != nil {
+		s.Index.Remove(key)
+	}
+	s.forgetAccess(key)
+	s.forgetClean(key)
+	return nil
 }
 
 func (s *Storage) List(prefix string, maxKeys int, continuationToken string) (_ *ListResult, err error) {
@@ -292,7 +673,13 @@ func (s *Storage) List(prefix string, maxKeys int, continuationToken string) (_ 
 			return nil
 		}
 		name := d.Name()
-		if name == ".lock" || strings.HasPrefix(name, ".tmp-") {
+		if name == lockFileName || name == cacheVersionFile || strings.HasPrefix(name, ".tmp-") {
+			return nil
+		}
+		// Metadata sidecars (Windows) are companions of an object, not objects:
+		// listing them would advertise phantom keys in the index and let
+		// eviction delete metadata out from under live bodies.
+		if isSidecarName(name) {
 			return nil
 		}
 

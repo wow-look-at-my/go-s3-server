@@ -3,12 +3,17 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,7 +22,7 @@ func putObject(t *testing.T, ts *http.Client, url, key string, data []byte, meta
 	t.Helper()
 	req, _ := http.NewRequest("PUT", url+"/testbucket/"+key, bytes.NewReader(data))
 	for k, v := range meta {
-		req.Header.Set("X-Amz-Meta-"+k, v)
+		req.Header.Set("X-Cache-Meta-"+k, v)
 	}
 	resp, err := ts.Do(req)
 	require.NoError(t, err)
@@ -91,6 +96,57 @@ func TestBatchGet_Basic(t *testing.T) {
 
 	assert.Equal(t, "data-a", string(data["cache/v1aaa"]))
 	assert.Equal(t, "data-c", string(data["cache/v1ccc"]))
+}
+
+// TestBatchGet_SelfHealRepairsMissingOutputID verifies the batch path applies the
+// same in-place repair as a single GET: an outputid-less entry has its outputid
+// reconstructed from the body and is returned in the manifest with that outputid
+// (not evicted, not skipped), while well-formed entries are unaffected.
+func TestBatchGet_SelfHealRepairsMissingOutputID(t *testing.T) {
+	ts := testSetup(t)
+	client := ts.Client()
+
+	// One good entry (has outputid) and one relic (lz4 body, no outputid
+	// metadata). Self-heal only applies to indexed cacheprog keys
+	// (go-buildcache/v1<64-hex>), so the relic must use that form.
+	goodKey := "go-buildcache/v1" + strings.Repeat("a", 64)
+	putObject(t, client, ts.URL, goodKey, []byte("good"), map[string]string{"Outputid": "g"})
+
+	raw := []byte("relic body missing its outputid")
+	compressed := lz4Compress(t, raw)
+	sum := sha256.Sum256(raw)
+	wantOutputID := hex.EncodeToString(sum[:])
+	relicKey := "go-buildcache/v1" + strings.Repeat("b", 64)
+	req, _ := http.NewRequest("PUT", ts.URL+"/testbucket/"+relicKey, bytes.NewReader(compressed))
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode)
+
+	repairsBefore := testutil.ToFloat64(selfHealRepairsTotal)
+
+	reqBody, _ := json.Marshal(batchGetRequest{Keys: []string{goodKey, relicKey}})
+	resp, err = doBatchGet(client, ts.URL+"/testbucket/_batch/get", reqBody)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode)
+
+	manifest, data := parseBatchResponse(t, resp.Body)
+
+	// Both entries come back; the relic was repaired in place, not skipped.
+	require.Len(t, manifest.Entries, 2)
+	byKey := map[string]batchGetManifestEntry{}
+	for _, e := range manifest.Entries {
+		byKey[e.Key] = e
+	}
+	require.Contains(t, byKey, relicKey)
+	assert.Equal(t, wantOutputID, byKey[relicKey].Metadata["outputid"],
+		"the relic's reconstructed outputid must appear in the manifest")
+	assert.Equal(t, compressed, data[relicKey], "the relic body must be streamed untouched")
+	assert.Equal(t, "good", string(data[goodKey]))
+
+	assert.Greater(t, testutil.ToFloat64(selfHealRepairsTotal), repairsBefore,
+		"batch self-heal should increment the repair counter")
 }
 
 func TestBatchGet_MissingKeys(t *testing.T) {
@@ -210,4 +266,70 @@ func TestBatchGet_Prefetch(t *testing.T) {
 	for _, e := range manifest.Entries[1:] {
 		assert.True(t, e.Prefetch, "extra entries should be marked prefetch")
 	}
+}
+
+// TestBatchGet_AcceptsPOST: POST is the semantically sound method for a
+// body-carrying batch lookup (GET-with-a-body is proxy-hostile), so the
+// endpoint accepts both. Same request, same response shape.
+func TestBatchGet_AcceptsPOST(t *testing.T) {
+	ts := testSetup(t)
+	client := ts.Client()
+
+	key := "go-buildcache/v1" + strings.Repeat("f", 64)
+	body := []byte("posted-body")
+	putObject(t, client, ts.URL, key, body, map[string]string{"Outputid": "p"})
+
+	reqBody, _ := json.Marshal(batchGetRequest{Keys: []string{key}})
+	req, err := http.NewRequest("POST", ts.URL+"/testbucket/_batch/get", bytes.NewReader(reqBody))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode)
+
+	manifest, data := parseBatchResponse(t, resp.Body)
+	require.Len(t, manifest.Entries, 1)
+	require.Equal(t, key, manifest.Entries[0].Key)
+	require.Equal(t, body, data[key])
+
+	// Other methods on the endpoint are still rejected.
+	req, err = http.NewRequest("PATCH", ts.URL+"/testbucket/_batch/get", bytes.NewReader(reqBody))
+	require.NoError(t, err)
+	resp, err = client.Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, 405, resp.StatusCode)
+}
+
+// TestBatchGet_SingleOpenPerServedKey pins the double-open fix: serving a batch
+// of N found keys performs exactly N storage "get" operations (the phase-2
+// streaming opens). The guard peek and the self-heal use raw opens that are
+// neither counted as ops nor recorded as access, so they no longer double
+// every key's metrics or stamp last-access onto keys that are never served.
+func TestBatchGet_SingleOpenPerServedKey(t *testing.T) {
+	ts, storage := testSetupWithStorage(t)
+	client := ts.Client()
+	storage.EnableAccessTracking()
+
+	var keys []string
+	for i := 0; i < 3; i++ {
+		key := fmt.Sprintf("go-buildcache/v1%02x%s", 0xe0+i, strings.Repeat("0", 62))
+		putObject(t, client, ts.URL, key, []byte("body"), map[string]string{"Outputid": "o"})
+		keys = append(keys, key)
+	}
+
+	opsBefore := testutil.ToFloat64(storageOpsTotal.WithLabelValues("get", "ok"))
+
+	reqBody, _ := json.Marshal(batchGetRequest{Keys: keys})
+	resp, err := doBatchGet(client, ts.URL+"/testbucket/_batch/get", reqBody)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode)
+	manifest, _ := parseBatchResponse(t, resp.Body)
+	require.Len(t, manifest.Entries, 3)
+
+	opsAfter := testutil.ToFloat64(storageOpsTotal.WithLabelValues("get", "ok"))
+	require.Equal(t, float64(3), opsAfter-opsBefore,
+		"a batch of 3 served keys must perform exactly 3 counted get ops (no peek double-count)")
 }

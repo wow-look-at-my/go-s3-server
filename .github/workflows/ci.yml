@@ -10,10 +10,23 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Every grant here is load-bearing; job-level permissions REPLACE the
+    # workflow-level block, so all of them have to be listed together.
+    # id-token: OIDC for secret-server and the buildhost publish.
+    # contents: write: the dependency-graph snapshot (403 -> failed build under read).
+    # actions + checks: read: the org all-builds guard, which fails closed when
+    #   it cannot scan the run's jobs and the head commit's check runs.
+    # deployments + artifact-metadata: write: autorelease publishes through
+    #   buildhost-publish, which registers a GitHub Deployment and posts a
+    #   storage record as part of publishing -- neither has an opt-out, and both
+    #   fail the build without their grant.
     permissions:
       id-token: write
-      contents: read
+      contents: write
       actions: read
+      checks: read
+      deployments: write
+      artifact-metadata: write
     steps:
       - uses: actions/checkout@v4
       # TEMPORARY: the shared build cache (s3.pazer.io) holds a poisoned `runtime`
@@ -151,7 +164,7 @@ jobs:
       - name: Build with go-toolchain (cold cache)
         working-directory: /tmp/test-project
         run: |
-          export GO_BUILDCACHE_CONFIG=$(echo -n '{"endpoint":"http://127.0.0.1:9000","bucket":"test-cache","region":"us-east-1","key_id":"test-key-id","access_key":"test-secret-key"}' | base64 -w0)
+          export GO_BUILDCACHE_CONFIG=$(echo -n '{"endpoint":"http://127.0.0.1:9000","bucket":"test-cache","username":"test-key-id","password":"test-secret-key"}' | base64 -w0)
           go-toolchain --no-benchmark 2>&1 | tee /tmp/build1.log
 
       - name: Verify cache was populated
@@ -165,7 +178,7 @@ jobs:
         run: |
           rm -rf ~/.cache/go-toolchain/buildcache
           rm -f /tmp/gocache-s3-index-*.txt /tmp/gocache-web-index-*.bin
-          export GO_BUILDCACHE_CONFIG=$(echo -n '{"endpoint":"http://127.0.0.1:9000","bucket":"test-cache","region":"us-east-1","key_id":"test-key-id","access_key":"test-secret-key"}' | base64 -w0)
+          export GO_BUILDCACHE_CONFIG=$(echo -n '{"endpoint":"http://127.0.0.1:9000","bucket":"test-cache","username":"test-key-id","password":"test-secret-key"}' | base64 -w0)
           go-toolchain --no-benchmark 2>&1 | tee /tmp/build2.log
 
       # This step must FAIL when the warm build gets nothing from the shared

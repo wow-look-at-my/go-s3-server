@@ -31,11 +31,11 @@ else
   fail "PutObject + GetObject roundtrip: content mismatch"
 fi
 
-# GetObject 404
+# GetObject 404 — native plain-text error ("<code>: <message>"), no S3 XML.
 HTTP_CODE=$(curl -s -o /tmp/test-404-body -w "%{http_code}" -u "$AUTH" \
   "$ENDPOINT_NORMAL/$BUCKET/nonexistent/v1xxxx000000000000")
-if [ "$HTTP_CODE" = "404" ] && grep -q "NoSuchKey" /tmp/test-404-body; then
-  pass "GetObject nonexistent returns NoSuchKey"
+if [ "$HTTP_CODE" = "404" ] && grep -q "not_found" /tmp/test-404-body; then
+  pass "GetObject nonexistent returns not_found"
 else
   fail "GetObject nonexistent: code=$HTTP_CODE body=$(cat /tmp/test-404-body)"
 fi
@@ -135,17 +135,47 @@ else
   fail "Sharded storage: expected file at $SHARD_PATH"
 fi
 
-# Metadata roundtrip
+# Metadata roundtrip (native X-Cache-Meta-* headers).
 curl -sf -u "$AUTH" -X PUT --data-binary "metabody" \
-  -H "X-Amz-Meta-Outputid: abc123" -H "X-Amz-Meta-Custom: val2" \
+  -H "X-Cache-Meta-Outputid: abc123" -H "X-Cache-Meta-Custom: val2" \
   "$ENDPOINT_NORMAL/$BUCKET/metatest/v1meta000000000001" > /dev/null
 META_OUTPUTID=$(curl -sf -u "$AUTH" -D /tmp/test-meta-headers -o /dev/null \
   "$ENDPOINT_NORMAL/$BUCKET/metatest/v1meta000000000001" \
-  && grep -i 'x-amz-meta-outputid' /tmp/test-meta-headers | tr -d '\r' | awk '{print $2}')
+  && grep -i 'x-cache-meta-outputid' /tmp/test-meta-headers | tr -d '\r' | awk '{print $2}')
 if [ "$META_OUTPUTID" = "abc123" ]; then
-  pass "Metadata roundtrip"
+  pass "Metadata roundtrip (native headers)"
 else
-  fail "Metadata roundtrip: outputid='$META_OUTPUTID'"
+  fail "Metadata roundtrip (native headers): outputid='$META_OUTPUTID'"
+fi
+
+# Deprecated S3 metadata path still works: a legacy client PUTs with
+# X-Amz-Meta-* and the value is served back under both the native and legacy
+# header names (so not-yet-upgraded clients keep getting cache hits).
+curl -sf -u "$AUTH" -X PUT --data-binary "legacymeta" \
+  -H "X-Amz-Meta-Outputid: legacy456" \
+  "$ENDPOINT_NORMAL/$BUCKET/metatest/v1meta000000000002" > /dev/null
+curl -sf -u "$AUTH" -D /tmp/test-meta-headers2 -o /dev/null \
+  "$ENDPOINT_NORMAL/$BUCKET/metatest/v1meta000000000002"
+LEGACY_NATIVE=$(grep -i 'x-cache-meta-outputid' /tmp/test-meta-headers2 | tr -d '\r' | awk '{print $2}')
+LEGACY_AMZ=$(grep -i 'x-amz-meta-outputid' /tmp/test-meta-headers2 | tr -d '\r' | awk '{print $2}')
+if [ "$LEGACY_NATIVE" = "legacy456" ] && [ "$LEGACY_AMZ" = "legacy456" ]; then
+  pass "Deprecated X-Amz-Meta path still roundtrips (served under both names)"
+else
+  fail "Deprecated X-Amz-Meta path: native='$LEGACY_NATIVE' amz='$LEGACY_AMZ'"
+fi
+
+# ── Health Endpoint Tests ───────────────────────────────────────────────────
+
+echo ""
+echo "=== Health Endpoint Tests ==="
+
+# /_health is unauthenticated (answered before the auth gate) and returns 200 "ok".
+HEALTH_BODY=$(mktemp)
+HTTP_CODE=$(curl -s -o "$HEALTH_BODY" -w "%{http_code}" "$ENDPOINT_NORMAL/_health")
+if [ "$HTTP_CODE" = "200" ] && grep -q "ok" "$HEALTH_BODY"; then
+  pass "/_health returns 200 without auth"
+else
+  fail "/_health: code=$HTTP_CODE body=$(cat "$HEALTH_BODY")"
 fi
 
 # ── Auth Tests ──────────────────────────────────────────────────────────────

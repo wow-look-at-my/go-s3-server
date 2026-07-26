@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/wow-look-at-my/testify/assert"
-	"github.com/wow-look-at-my/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestCacheVersionPurgesOnMissingMarker simulates an existing cache with no
@@ -87,6 +87,30 @@ func TestCacheVersionPurgesOnMismatch(t *testing.T) {
 	v, err := strconv.Atoi(string(data[:len(data)-1]))
 	require.NoError(t, err)
 	assert.Equal(t, currentCacheVersion, v)
+}
+
+// TestDelete covers storage.Delete: an existing object is removed (and a later
+// Get reports ErrNotFound), and deleting a missing key reports ErrNotFound.
+func TestDelete(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStorage(dir, WriteOnceConfig{Action: "allow"})
+	require.NoError(t, err)
+	t.Cleanup(func() { s.Close() })
+
+	key := "go-buildcache/v110f94fc02dcc245820dd861f4c6c25dee23ceb750f6be498fe84f67dfd2f1f9b"
+	require.NoError(t, s.Put(key, []byte("data"), map[string]string{"outputid": "x"}, nil))
+
+	_, _, err = s.Get(key)
+	require.NoError(t, err)
+
+	require.NoError(t, s.Delete(key))
+
+	_, _, err = s.Get(key)
+	assert.Equal(t, ErrNotFound, err)
+
+	// Deleting a missing key reports ErrNotFound (the handler maps this to a
+	// 204 so DELETE stays idempotent).
+	assert.Equal(t, ErrNotFound, s.Delete(key))
 }
 
 // TestCacheVersionCorruptMarker ensures a corrupt marker file is an error

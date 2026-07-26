@@ -1,12 +1,34 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
+)
+
+// HTTP server timeouts. ReadHeaderTimeout is the important slowloris guard
+// (request lines/headers must arrive promptly); Read/Write are generous
+// backstops so a stuck connection cannot pin a concurrency slot forever, while
+// still allowing CI-sized object uploads and batch streams to complete. Idle
+// reaps unused keep-alive connections from many CI runners.
+const (
+	httpReadHeaderTimeout = 15 * time.Second
+	httpReadTimeout       = 5 * time.Minute
+	httpWriteTimeout      = 5 * time.Minute
+	httpIdleTimeout       = 120 * time.Second
+
+	// shutdownTimeout bounds how long graceful shutdown waits for in-flight
+	// requests to finish after SIGINT/SIGTERM. Kept under a typical orchestrator
+	// stop grace period (docker-updater issues ContainerStop with a 300s timeout)
+	// so the process drains and exits cleanly before a SIGKILL would arrive.
+	shutdownTimeout = 280 * time.Second
 )
 
 var rootCmd = &cobra.Command{
@@ -52,6 +74,16 @@ func run(cmd *cobra.Command, args []string) error {
 
 	srv := NewServer(cfg, storage)
 
+	if cfg.Eviction.Enabled() {
+		storage.EnableAccessTracking()
+		maxAge := cfg.Eviction.AgeLimit()
+		go storage.RunEvictionLoop(maxAge, cfg.Eviction.MaxBytes, cfg.Eviction.Interval.Std())
+		log.Printf("cache eviction: enabled max_age=%s max_bytes=%d interval=%s",
+			maxAge, cfg.Eviction.MaxBytes, cfg.Eviction.Interval.Std())
+	} else {
+		log.Printf("WARNING: cache eviction is DISABLED (eviction.max_age=0 and eviction.max_bytes=0); the cache will grow without bound until the disk fills. Set eviction.max_age (e.g. \"720h\") and/or eviction.max_bytes to enable automatic pruning.")
+	}
+
 	if cfg.MetricsListen != "" {
 		go startMetricsServer(cfg.MetricsListen)
 		log.Printf("metrics server listening on %s", cfg.MetricsListen)
@@ -64,7 +96,46 @@ func run(cmd *cobra.Command, args []string) error {
 		log.Printf("WARNING: authentication is DISABLED (disable_auth=true). All requests will be accepted without credentials. Only use this behind a trusted reverse proxy.")
 	}
 
-	return http.ListenAndServe(cfg.Listen, srv)
+	log.Printf("limits: max_concurrent_requests=%d max_object_bytes=%d", cfg.MaxConcurrentRequests, cfg.MaxObjectBytes)
+
+	httpSrv := &http.Server{
+		Addr:              cfg.Listen,
+		Handler:           srv,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		ReadTimeout:       httpReadTimeout,
+		WriteTimeout:      httpWriteTimeout,
+		IdleTimeout:       httpIdleTimeout,
+	}
+
+	// Serve in a goroutine so the main goroutine can wait for a termination
+	// signal and drain in-flight requests before exiting. Without this, the
+	// SIGTERM that `docker stop` sends during a rolling update kills the process
+	// immediately and cuts off in-flight GET/PUT streams; draining lets the
+	// orchestrator's stop grace period be spent finishing those requests.
+	serveErr := make(chan error, 1)
+	go func() {
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serveErr <- err
+		}
+	}()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-serveErr:
+		return fmt.Errorf("http server: %w", err)
+	case sig := <-sigCh:
+		log.Printf("received signal %v, draining in-flight requests (up to %s)", sig, shutdownTimeout)
+		srv.BeginShutdown()
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := httpSrv.Shutdown(ctx); err != nil {
+			return fmt.Errorf("graceful shutdown: %w", err)
+		}
+		log.Printf("drain complete, exiting")
+		return nil
+	}
 }
 
 func main() {

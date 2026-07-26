@@ -10,10 +10,16 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The four grants go-toolchain@v1 documents as required, all load-bearing:
+    # id-token for OIDC (secret-server, buildhost), contents: write for the
+    # dependency-graph snapshot (403 and a failed build under read), and
+    # actions + checks: read for the org all-builds guard, which fails closed
+    # when it cannot scan the run's jobs and the head commit's check runs.
     permissions:
       id-token: write
-      contents: read
+      contents: write
       actions: read
+      checks: read
     steps:
       - uses: actions/checkout@v4
       - uses: wow-look-at-my/go-toolchain@v1

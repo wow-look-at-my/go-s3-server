@@ -10,16 +10,23 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # The four grants go-toolchain@v1 documents as required, all load-bearing:
-    # id-token for OIDC (secret-server, buildhost), contents: write for the
-    # dependency-graph snapshot (403 and a failed build under read), and
-    # actions + checks: read for the org all-builds guard, which fails closed
-    # when it cannot scan the run's jobs and the head commit's check runs.
+    # Every grant here is load-bearing; job-level permissions REPLACE the
+    # workflow-level block, so all of them have to be listed together.
+    # id-token: OIDC for secret-server and the buildhost publish.
+    # contents: write: the dependency-graph snapshot (403 -> failed build under read).
+    # actions + checks: read: the org all-builds guard, which fails closed when
+    #   it cannot scan the run's jobs and the head commit's check runs.
+    # deployments + artifact-metadata: write: autorelease publishes through
+    #   buildhost-publish, which registers a GitHub Deployment and posts a
+    #   storage record as part of publishing -- neither has an opt-out, and both
+    #   fail the build without their grant.
     permissions:
       id-token: write
       contents: write
       actions: read
       checks: read
+      deployments: write
+      artifact-metadata: write
     steps:
       - uses: actions/checkout@v4
       - uses: wow-look-at-my/go-toolchain@v1

@@ -137,7 +137,7 @@ jobs:
       - name: Build with go-toolchain (cold cache)
         working-directory: /tmp/test-project
         run: |
-          export GO_BUILDCACHE_CONFIG=$(echo -n '{"endpoint":"http://127.0.0.1:9000","bucket":"test-cache","region":"us-east-1","key_id":"test-key-id","access_key":"test-secret-key"}' | base64 -w0)
+          export GO_BUILDCACHE_CONFIG=$(echo -n '{"endpoint":"http://127.0.0.1:9000","bucket":"test-cache","username":"test-key-id","password":"test-secret-key"}' | base64 -w0)
           go-toolchain --no-benchmark 2>&1 | tee /tmp/build1.log
 
       - name: Verify cache was populated
@@ -151,7 +151,7 @@ jobs:
         run: |
           rm -rf ~/.cache/go-toolchain/buildcache
           rm -f /tmp/gocache-s3-index-*.txt /tmp/gocache-web-index-*.bin
-          export GO_BUILDCACHE_CONFIG=$(echo -n '{"endpoint":"http://127.0.0.1:9000","bucket":"test-cache","region":"us-east-1","key_id":"test-key-id","access_key":"test-secret-key"}' | base64 -w0)
+          export GO_BUILDCACHE_CONFIG=$(echo -n '{"endpoint":"http://127.0.0.1:9000","bucket":"test-cache","username":"test-key-id","password":"test-secret-key"}' | base64 -w0)
           go-toolchain --no-benchmark 2>&1 | tee /tmp/build2.log
 
       # This step must FAIL when the warm build gets nothing from the shared

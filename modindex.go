@@ -81,7 +81,18 @@ func looksLikeGoModuleIndex(input []byte, compression string) bool {
 	data := input
 	if compression == "lz4" {
 		buf := make([]byte, indexMagicProbeBytes)
-		n, _ := io.ReadFull(lz4.NewReader(bytes.NewReader(input)), buf)
+		zr := lz4.NewReader(bytes.NewReader(input))
+		n, _ := io.ReadFull(zr, buf)
+		// Return the reader's pooled buffers. pierrec/lz4 sizes its two internal
+		// buffers from the frame header's BlockSizeIndex -- 4 MiB each for the
+		// single-block frames the client writes -- and only releases them to the
+		// pools on EOF or Reset. An abandoned 16-byte probe therefore leaked
+		// ~8.4 MiB of allocation churn PER INSPECTED OBJECT (every PUT peek and
+		// every read-path guard), keeping the pools empty so every peek malloc'd
+		// fresh: the same GC-thrash -> admission-control-saturation failure mode
+		// as the fixed 1 MiB PUT prealloc, ~8x larger. Reset(nil) puts both
+		// buffers back so steady-state peeks allocate ~nothing.
+		zr.Reset(nil)
 		data = buf[:n]
 	}
 	return bytes.HasPrefix(data, []byte(goModuleIndexMagic))
@@ -106,12 +117,30 @@ func looksLikeGoModuleIndex(input []byte, compression string) bool {
 // failure means for it. The reader consumes from r, so a seekable caller that
 // needs the stream intact afterward must rewind (the GET path does); the batch
 // path opens a throwaway handle solely for this peek.
+//
+// In the lz4 branch, an error from the UNDERLYING reader (disk I/O) is
+// distinguished from an lz4 FORMAT error: a garbled-but-readable body is not
+// an index (fail-open: serve/keep it — the client hash-verifies anyway), but a
+// body that cannot even be read is a real storage failure the caller must not
+// hide. Previously both collapsed into "not an index", so a failing disk read
+// let the serve path emit a 200 header and then die mid-copy, invisibly.
 func readIsModuleIndex(r io.Reader, compression string) (bool, error) {
 	if compression == "lz4" {
 		buf := make([]byte, indexMagicProbeBytes)
-		n, err := io.ReadFull(lz4.NewReader(r), buf)
+		src := &errTrackingReader{r: r}
+		zr := lz4.NewReader(src)
+		n, err := io.ReadFull(zr, buf)
+		// Return the reader's two pooled 4 MiB buffers (see the matching Reset in
+		// looksLikeGoModuleIndex): without this every read-path probe abandoned
+		// them, costing ~8.4 MiB of allocation churn per inspected object on the
+		// GET, batch, and prefetch paths.
+		zr.Reset(nil)
+		if src.err != nil {
+			// The SOURCE failed: a genuine I/O error, not a format problem.
+			return false, src.err
+		}
 		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
-			// A decompression failure means the body is not a well-formed lz4
+			// The source read fine but the bytes are not a well-formed lz4
 			// frame, hence not a module index we should evict; report "not an
 			// index" so the caller serves/keeps the object (fail-open).
 			return false, nil
@@ -126,6 +155,38 @@ func readIsModuleIndex(r io.Reader, compression string) (bool, error) {
 	}
 	return bytes.HasPrefix(buf[:n], []byte(goModuleIndexMagic)), nil
 }
+
+// errTrackingReader records the first non-EOF error returned by the wrapped
+// reader, so a consumer that transforms errors (e.g. an lz4 decoder reporting
+// a truncated frame) cannot mask a genuine I/O failure from the source.
+type errTrackingReader struct {
+	r   io.Reader
+	err error
+}
+
+func (t *errTrackingReader) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) {
+		t.err = err
+	}
+	return n, err
+}
+
+// readGuardVerdict is the outcome of the GET-path module-index guard, so the
+// caller can report the distinct miss reasons (evicted poison vs. an
+// uninspectable body) instead of collapsing both into one anonymous 404.
+type readGuardVerdict int
+
+const (
+	// guardServe: not a module index — serve the body unchanged.
+	guardServe readGuardVerdict = iota
+	// guardEvicted: a stored module-index blob was detected and evicted; the
+	// caller reports a miss and the client recomputes the index locally.
+	guardEvicted
+	// guardPeekError: the body could not be inspected (or the stream could not
+	// be rewound). Refused fail-safe as a miss; the object is left on disk.
+	guardPeekError
+)
 
 // evictModuleIndexOnRead is the read-path counterpart to the PutObject module-
 // index guard, for a GET that already holds the object's open file. The PUT
@@ -146,15 +207,23 @@ func readIsModuleIndex(r io.Reader, compression string) (bool, error) {
 // module index, so an arbitrary/non-cache object is never inspected or touched.
 //
 // The peek is non-destructive: f is SEEKED back to the start, so when this
-// returns false the caller serves the body from byte 0 byte-for-byte unchanged.
-// A read or seek error means we cannot guarantee an unchanged stream, so it is
-// treated as "miss" (the object is left on disk -- Delete is not called -- and
-// the caller reports a miss), which is safe because the client just re-fetches.
-func evictModuleIndexOnRead(storage *Storage, key string, f io.ReadSeeker, meta *ObjectMeta) bool {
+// returns guardServe the caller serves the body from byte 0 byte-for-byte
+// unchanged. A read or seek error means we cannot guarantee an unchanged
+// stream, so it is reported as guardPeekError (the object is left on disk --
+// Delete is not called -- and the caller reports a miss), which is safe because
+// the client just re-fetches.
+func evictModuleIndexOnRead(storage *Storage, key string, f io.ReadSeeker, meta *ObjectMeta) readGuardVerdict {
 	// Only indexed cacheprog keys can be a poisoned module index; never inspect
 	// or evict anything else.
-	if _, ok := extractActionHash(key); !ok {
-		return false
+	hash, ok := extractActionHash(key)
+	if !ok {
+		return guardServe
+	}
+	// Known-clean memo: this exact body already passed the probe on an earlier
+	// read (and nothing has overwritten/deleted it since, or the memo entry
+	// would have been invalidated), so skip the lz4 decode entirely.
+	if storage.keyKnownClean(hash) {
+		return guardServe
 	}
 	isIndex, readErr := readIsModuleIndex(f, meta.Metadata["compression"])
 	// Rewind unconditionally so the non-index serve path reads from byte 0 --
@@ -162,17 +231,18 @@ func evictModuleIndexOnRead(storage *Storage, key string, f io.ReadSeeker, meta 
 	// unchanged stream, so report a miss rather than serve a consumed body.
 	if _, seekErr := f.Seek(0, io.SeekStart); seekErr != nil {
 		log.Printf("module-index guard: cannot rewind %q after peek (treated as miss, not evicted): %v", key, seekErr)
-		return true
+		return guardPeekError
 	}
 	if readErr != nil {
 		log.Printf("module-index guard: cannot inspect %q (treated as miss, not evicted): %v", key, readErr)
-		return true
+		return guardPeekError
 	}
 	if !isIndex {
-		return false
+		storage.markKeyClean(hash)
+		return guardServe
 	}
 	evictModuleIndex(storage, key)
-	return true
+	return guardEvicted
 }
 
 // evictModuleIndexOnReadByKey is the batch-path counterpart: it OPENS the object
@@ -185,11 +255,22 @@ func evictModuleIndexOnRead(storage *Storage, key string, f io.ReadSeeker, meta 
 // since the file is opened and closed solely for the peek. A key that vanished
 // or cannot be opened is reported as "not an index" (false): the batch loops
 // already treat a Stat/Open failure as a plain miss, so nothing regresses.
+//
+// The peek uses openRaw, not Open: it is an internal inspection, not a serve,
+// so it must not count a storage "get" op (previously every batch-served key
+// counted twice) nor stamp a last-access time onto prefetch candidates that
+// are never actually sent (which inflated their LRU-eviction lifetime).
 func evictModuleIndexOnReadByKey(storage *Storage, key string, meta *ObjectMeta) bool {
-	if _, ok := extractActionHash(key); !ok {
+	hash, ok := extractActionHash(key)
+	if !ok {
 		return false
 	}
-	f, _, err := storage.Open(key)
+	// Known-clean memo: skip the open+decode when this body already passed the
+	// probe on an earlier read (see evictModuleIndexOnRead).
+	if storage.keyKnownClean(hash) {
+		return false
+	}
+	f, err := storage.openRaw(key)
 	if err != nil {
 		return false
 	}
@@ -200,6 +281,7 @@ func evictModuleIndexOnReadByKey(storage *Storage, key string, meta *ObjectMeta)
 		return false
 	}
 	if !isIndex {
+		storage.markKeyClean(hash)
 		return false
 	}
 	evictModuleIndex(storage, key)

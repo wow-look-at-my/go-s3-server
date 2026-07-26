@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -260,4 +261,54 @@ func TestEvictionConfigDefaults(t *testing.T) {
 	require.NoError(t, os.WriteFile(p4, []byte(`{"bucket":"b","data_dir":"/tmp","eviction":{"max_bytes":-1},`+cred+`}`), 0644))
 	_, err = LoadConfig(p4)
 	require.Error(t, err)
+}
+
+// TestEvictOneSkipsFreshlyOverwritten is the snapshot-then-remove TOCTOU guard:
+// a victim whose on-disk mtime changed since the sweep's scan (a concurrent
+// overwrite PUT renamed fresh content onto the path) must NOT be deleted.
+func TestEvictOneSkipsFreshlyOverwritten(t *testing.T) {
+	s := newEvictStorage(t)
+	key := gbciKey(0x77)
+	require.NoError(t, s.Put(key, []byte("fresh body"), nil, nil))
+
+	info, err := os.Stat(s.keyToPath(key))
+	require.NoError(t, err)
+	current := info.ModTime().Unix()
+
+	// A stale snapshot mtime (as if the object was overwritten after the scan):
+	// the eviction must back off and keep the file.
+	require.False(t, s.evictOne(key, current-3600), "a freshly-overwritten object must not be evicted")
+	_, err = s.Stat(key)
+	require.NoError(t, err, "the object must still exist after the skipped eviction")
+
+	// With the matching mtime the eviction proceeds.
+	require.True(t, s.evictOne(key, current))
+	_, err = s.Stat(key)
+	require.ErrorIs(t, err, ErrNotFound)
+
+	// Already-gone: no-op, no error.
+	require.False(t, s.evictOne(key, current))
+}
+
+// TestEvictionStartupDelay: the first sweep is scheduled a jittered 1-5 minutes
+// after startup, never a full interval away.
+func TestEvictionStartupDelay(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		d := evictionStartupDelay()
+		require.GreaterOrEqual(t, d, evictionStartupDelayMin)
+		require.Less(t, d, evictionStartupDelayMax)
+	}
+}
+
+// TestRefreshCacheBytes: the gauge refresher sums stored object sizes only,
+// skipping the lock file, version marker, and .tmp- leftovers.
+func TestRefreshCacheBytes(t *testing.T) {
+	s := newEvictStorage(t)
+	require.NoError(t, s.Put(gbciKey(1), make([]byte, 100), nil, nil))
+	require.NoError(t, s.Put(gbciKey(2), make([]byte, 50), nil, nil))
+	// A stale temp file must not count.
+	require.NoError(t, os.WriteFile(s.dataDir+"/.tmp-stale", make([]byte, 999), 0644))
+
+	s.RefreshCacheBytes()
+	require.Equal(t, float64(150), testutil.ToFloat64(cacheBytes))
 }

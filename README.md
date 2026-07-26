@@ -6,8 +6,8 @@ This server speaks go-toolchain's native cache protocol. It began life S3-compat
 
 ## Features
 
-- **Object API** — `GET`/`PUT`/`DELETE` of cache objects by key (`DELETE` is idempotent, returns `204`; the surgical lever for evicting a single poisoned cache entry without a whole-cache version-bump purge). Errors are native plain text (`<code>: <message>`, with the code repeated in an `X-Cache-Error-Code` header) — not S3 XML.
-- **Cache-key index** — `GET /<bucket>/_index` returns a precomputed binary blob (GBCI v1) of every cacheprog action-ID hash, with strong ETag and `If-None-Match` 304 support
+- **Object API** — `GET`/`HEAD`/`PUT`/`DELETE` of cache objects by key (`DELETE` is idempotent, returns `204`; the surgical lever for evicting a single poisoned cache entry without a whole-cache version-bump purge). `HEAD` is the cheap inspection endpoint: the exact `GET` header surface (metadata, `Content-Length`, `Last-Modified`) with no body and no cache-state side effects. Errors are native plain text (`<code>: <message>`, with the code repeated in an `X-Cache-Error-Code` header) — not S3 XML.
+- **Cache-key index** — `GET /<bucket>/_index` returns a precomputed binary blob (GBCI v1) of every cacheprog action-ID hash, with strong ETag and `If-None-Match` 304 support. The blob (and thus the ETag) is a pure function of the advertised key set, so duplicate-only PUT traffic and server restarts never invalidate clients' cached copies.
 - **Self-healing reads (in-place repair)** — an indexed cacheprog object (`go-buildcache/v1<hash>`) with no `outputid` metadata can never be a cache hit (the client needs the content address to verify the body) yet pins its key in `_index`, so clients skip re-uploading it — a permanent forced miss. Such relics (from earlier cache-data iterations, or an xattr-stripping `data_dir` move) are **repaired in place** the moment they are read: the `outputid` is, by definition, `sha256` of the decompressed body, so the server recomputes it from the body and writes it back as an xattr. The object keeps its bytes and its audit trail, stays in `_index`, and serves as a hit — no eviction, no re-upload, no churn, and the repair is one-time. A body that can't be decompressed (and so is unusable by the client anyway) is reported as a clean miss and left untouched for the normal eviction policy. Counted by `s3_self_heal_repairs_total`.
 - **Module-index rejection (write *and* read)** — a Go module index blob (`go index v…`) carries no build id and does not bind to its action key, so a mis-keyed one served for a std package's key breaks every consumer's build at package load (`package runtime is not in std` / `corrupt index`), and neither the client's content-hash nor its build-id check can catch it. The server refuses to hold one. On **upload** it peeks the body and, if it is an index, accepts the request but stores nothing (the client recomputes the index locally on the resulting miss). On **read** (single GET, batch get, and prefetch — scoped to indexed cacheprog keys) it detects an index blob *already on disk*, **evicts it** (dropping the file and its `_index` entry) and returns a miss — so poison uploaded before the write guard existed is shed lazily on its first fetch, with no cache-wide purge. The non-index serve path is byte-for-byte unchanged (the peek rewinds the file). Read-path evictions are counted by `s3_module_index_evictions_total`.
 - **HTTP Basic Auth** — multiple users, or explicitly disable with `disable_auth: true`
@@ -24,7 +24,9 @@ The cache protocol is **no longer S3-compatible**. Clients (go-toolchain) talk t
 
 - **Object transfer** — `GET`/`PUT`/`DELETE /<bucket>/<key>`. Object metadata travels in native `X-Cache-Meta-*` headers (e.g. `X-Cache-Meta-Outputid`). Errors are native plain text with an `X-Cache-Error-Code` header.
 - **Key index** — `GET /<bucket>/_index` returns the GBCI v1 binary blob (the client loads it once to know which keys exist, instead of probing per key).
-- **Batched fetch** — `GET /<bucket>/_batch/get` (JSON body of keys) returns a tar of bodies + a `manifest.json`, with temporal prefetch of related entries. This is the scalable replacement for per-object S3 GETs.
+- **Batched fetch** — `POST /<bucket>/_batch/get` (JSON body of keys; `GET` with a body is also still accepted for older clients) returns a tar of bodies + a `manifest.json`, with temporal prefetch of related entries. This is the scalable replacement for per-object S3 GETs.
+- **Batched upload** — `PUT /<bucket>/_batch/put` (Content-Type `application/x-tar`) stores many objects in a single request. The tar holds a `manifest.json` first member (`{"entries":[{"key":...,"metadata":{...}}]}`, metadata keyed by the lowercased meta name without the `X-Cache-Meta-` prefix) followed by one `data/<key>` member per entry in manifest order. The response is JSON `{"results":[{"key":...,"status":"stored|dropped|conflict|error","message":...}]}`. Each member is stored through the same path as a single `PUT` (module-index refusal — counted in `s3_put_refusals_total` — write_once, audit xattrs, index append). The whole batch holds **one** admission-control slot — the scalable replacement for the thousands of per-object `PUT`s a CI build would otherwise issue, each taking a slot and saturating the server. Capped at 4096 entries (`413` over the cap); a malformed tar, missing/late `manifest.json`, or a key mismatch between the manifest and the data members is a `400 invalid_request`.
+- **Object inspection** — `HEAD /<bucket>/<key>` answers with the object's metadata headers and size, no body.
 
 ### Deprecated (still works, warns on use)
 
@@ -66,6 +68,7 @@ go-s3-server --config config.json
 | `--listen` | Override listen address |
 | `--bucket` | Override bucket name |
 | `--data-dir` | Override data directory |
+| `--metrics-listen` | Address for the Prometheus `/metrics` server (e.g. `:9090`) |
 
 All flags except `--config` override the corresponding config file value.
 
@@ -201,6 +204,17 @@ miss that the next build recomputes and re-uploads. Evicted counts and reclaimed
 bytes are exported as `s3_evictions_total`, `s3_evicted_bytes_total`, and
 `s3_cache_bytes` (see below).
 
+The sweeper runs its **first sweep a jittered 1-5 minutes after startup**, then
+every `interval`. (Waiting a full interval for the first sweep meant a
+deployment that restarts more often than the interval — rolling updates — never
+evicted at all.) Between sweeps the `s3_cache_bytes` gauge is refreshed every
+15 minutes from a size-only walk, so growth is visible without waiting for a
+sweep. Before deleting a victim the sweeper re-checks its on-disk mtime and
+skips anything overwritten since the scan, and every victim is dropped from
+`/_index` *before* its file is unlinked, so a mid-sweep fetch sees a
+re-uploadable miss instead of a 404 on an advertised key. Leftover `.tmp-*`
+files from interrupted uploads are swept once at startup.
+
 Eviction is **on by default** with a conservative 30-day idle window. To opt out
 entirely, set both limits off:
 
@@ -228,18 +242,50 @@ keys) without OOM-ing or returning `502`s:
   proxy reports as a `502`). Overload-shed requests are counted in the
   `s3_http_rejected_total` metric.
 - **Bounded requests.** A single PUT is capped at `max_object_bytes` (`413` over
-  the limit); a `_batch/get` is capped at 4096 keys (`400` over the limit).
+  the limit); a `_batch/get` is capped at 4096 keys (`400` over the limit); a
+  `_batch/put` is capped at 4096 entries and at `4096 × max_object_bytes` total
+  body bytes (`413` over either limit), with each member individually bounded to
+  `max_object_bytes`.
 - **Timeouts.** The HTTP server sets `ReadHeaderTimeout` (slowloris guard) plus
   generous `Read`/`Write`/`Idle` timeouts so a stuck connection cannot pin a
   concurrency slot indefinitely.
+- **Warm-key fast path.** The read-path module-index probe (a file open plus an
+  lz4 first-block decode) runs once per key: a sharded in-memory memo remembers
+  keys whose stored body already passed it, and is invalidated on overwrite,
+  delete, and eviction — so steady-state GETs of warm keys skip the decode
+  entirely.
 - **Observability.** When `--metrics-listen` is set, `/metrics` exposes request,
-  storage, in-flight, and rejection counters, plus eviction counters
-  (`s3_evictions_total`, `s3_evicted_bytes_total`), `s3_self_heal_repairs_total`
-  (outputid-less relics repaired in place on read), `s3_module_index_evictions_total`
-  (module-index blobs refused + evicted on a read path), and the current cache size
-  (`s3_cache_bytes`), alongside the standard Go runtime and process collectors
-  (`go_memstats_*`, `process_resident_memory_bytes`, `go_goroutines`) — enough to
-  see saturation, memory pressure, and cache growth directly.
+  storage, in-flight, and rejection counters, plus:
+  - `s3_get_requests_total{outcome}` — every single-object GET by outcome:
+    `hit`, `miss_not_found`, `miss_advertised_unservable` (a 404 on a key
+    `/_index` currently advertises — the index/store-divergence signature that
+    should stay at ~0), `miss_module_index_evicted`, `miss_peek_error`,
+    `miss_selfheal_failed`.
+  - `s3_put_refusals_total{reason}` — uploads accepted on the wire but refused
+    storage (e.g. `module_index`); this moving during CI activity is the PUT
+    guard's liveness proof.
+  - `s3_batch_requests_total` and `s3_batch_keys_total{kind}`
+    (`requested`/`found`/`prefetched`/`suppressed`/`streamed`) — batch volume; a
+    falling found/requested ratio is the earliest cache-degradation signal.
+  - index gauges `s3_index_entries`, `s3_index_hashes`,
+    `s3_index_pending_hashes` and `s3_index_rebuild_duration_seconds`.
+  - eviction counters (`s3_evictions_total`, `s3_evicted_bytes_total`) and the
+    cache size `s3_cache_bytes` (refreshed every 15 minutes, not just at sweep
+    end).
+  - self-heal counters: `s3_self_heal_repairs_total` (outputid-less relics
+    repaired in place on read), `s3_self_heal_failures_total` (unrepairable
+    bodies, de-advertised so consumers re-upload), and
+    `s3_outputid_mismatch_total` (a stored outputid found disagreeing with its
+    body hash — stale-stamp corruption, repaired in place).
+  - `s3_module_index_evictions_total` (module-index blobs refused + evicted on
+    a read path) and `s3_metadata_xattrs_dropped_total` (optional metadata
+    dropped under xattr-space pressure instead of failing the PUT).
+
+  All alongside the standard Go runtime and process collectors
+  (`go_memstats_*`, `process_resident_memory_bytes`, `go_goroutines`) — enough
+  to see saturation, memory pressure, cache growth, and cache health directly.
+  A busy metrics port no longer prevents the cache from starting; the server
+  logs the failure and runs without metrics.
 
 ## Graceful shutdown & rolling updates
 

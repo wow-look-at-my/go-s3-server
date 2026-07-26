@@ -207,12 +207,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "GET" && key == "_index":
 		route = "Index"
 		handleGetIndex(rec, r, s.storage.Index)
-	case r.Method == "GET" && key == "_batch/get":
+	case (r.Method == "GET" || r.Method == "POST") && key == "_batch/get":
+		// POST is the semantically sound method for a body-carrying batch
+		// lookup (GET-with-a-body is proxy-hostile); GET stays accepted for
+		// existing clients.
 		route = "BatchGet"
 		handleBatchGet(rec, r, s.storage, s.prefetchTracker)
 	case r.Method == "GET" && key != "":
 		route = "GetObject"
 		handleGetObject(rec, r, s.storage, key)
+	case r.Method == "HEAD" && key != "":
+		route = "HeadObject"
+		handleHeadObject(rec, r, s.storage, key)
+	case r.Method == "PUT" && key == "_batch/put":
+		route = "BatchPut"
+		handleBatchPut(rec, r, s.storage, s.config.MaxObjectBytes)
 	case r.Method == "PUT" && key != "":
 		route = "PutObject"
 		handlePutObject(rec, r, s.storage, key, s.config.MaxObjectBytes)

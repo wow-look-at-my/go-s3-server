@@ -21,6 +21,13 @@ const goModuleIndexMagic = "go index v"
 // of the body than this.
 const indexMagicProbeBytes = 16
 
+// lz4HeadPeekBytes is how many leading COMPRESSED bytes the read path pulls for
+// the no-decompression verdict: a frame header (at most 15 bytes without a
+// dictionary), the 4-byte block size, the token and any literal-length
+// extension, and then the literals the magic needs. 64 covers that with room to
+// spare, and a body too odd to settle within it falls back to a real decode.
+const lz4HeadPeekBytes = 64
+
 // indexPutPeekBytes bounds how many COMPRESSED leading bytes the PUT path reads
 // before deciding whether an upload is a module index. It must be large enough
 // to contain a real index's first lz4 block, because the lz4 reader needs the
@@ -80,6 +87,11 @@ const indexPutPeekBytes = 1 << 20
 func looksLikeGoModuleIndex(input []byte, compression string) bool {
 	data := input
 	if compression == "lz4" {
+		// Settle it from the frame header and first literal run when possible;
+		// only an unusual frame shape falls through to a real decode (lz4head.go).
+		if match, decided := lz4HasPrefix(input, goModuleIndexMagic); decided {
+			return match
+		}
 		buf := make([]byte, indexMagicProbeBytes)
 		zr := lz4.NewReader(bytes.NewReader(input))
 		n, _ := io.ReadFull(zr, buf)
@@ -126,6 +138,22 @@ func looksLikeGoModuleIndex(input []byte, compression string) bool {
 // let the serve path emit a 200 header and then die mid-copy, invisibly.
 func readIsModuleIndex(r io.Reader, compression string) (bool, error) {
 	if compression == "lz4" {
+		// Fast path: the leading decompressed bytes are readable straight out of
+		// the frame's first literal run (lz4head.go), so the common verdict costs
+		// one small read instead of decoding a whole block off disk. A short read
+		// is not an error here -- a body smaller than the peek is normal -- but a
+		// genuine source failure still surfaces, same as below.
+		var head [lz4HeadPeekBytes]byte
+		n, headErr := io.ReadFull(r, head[:])
+		if headErr != nil && !errors.Is(headErr, io.EOF) && !errors.Is(headErr, io.ErrUnexpectedEOF) {
+			return false, headErr
+		}
+		if match, decided := lz4HasPrefix(head[:n], goModuleIndexMagic); decided {
+			return match, nil
+		}
+		// Undecided: replay the consumed head in front of the rest and decode.
+		r = io.MultiReader(bytes.NewReader(head[:n]), r)
+
 		buf := make([]byte, indexMagicProbeBytes)
 		src := &errTrackingReader{r: r}
 		zr := lz4.NewReader(src)

@@ -11,7 +11,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -79,12 +78,6 @@ type ObjectMeta struct {
 	Metadata map[string]string
 	ModTime  time.Time
 	Size     int64
-}
-
-type ListResult struct {
-	Objects               []ListObject
-	IsTruncated           bool
-	NextContinuationToken string
 }
 
 type ListObject struct {
@@ -653,7 +646,24 @@ func (s *Storage) Delete(key string) (err error) {
 	return nil
 }
 
-func (s *Storage) List(prefix string, maxKeys int, continuationToken string) (_ *ListResult, err error) {
+// Snapshot enumerates every stored object with its size and mtime, reading
+// metadata only -- no bodies. It is the ground truth the in-memory Index is
+// rebuilt from and the candidate set the eviction sweeper works over, and it
+// is not on any request path.
+//
+// It used to be List(prefix, maxKeys, continuationToken): a paginated,
+// key-sorted, S3-shaped listing serving GET /{bucket}/?list-type=2. That
+// endpoint is gone -- clients populate their index from the precomputed
+// /_index blob in one request -- and what the two remaining callers want is
+// "everything, unordered". What was left was a walk that sorted 100k+ keys
+// nobody read in order, plus pagination nobody called, plus a maxKeys cap both
+// callers faked with an arbitrary huge number (1<<30 and 1000000). The cap was
+// not free: a cache with more than a million objects would rebuild its index
+// from a TRUNCATED snapshot and silently stop advertising the remainder.
+//
+// Cost is one directory walk plus one stat per file, which is inherent to
+// enumerating a directory tree, and now nothing on top of it.
+func (s *Storage) Snapshot() (_ []ListObject, err error) {
 	metricsStart := time.Now()
 	defer func() {
 		status := "ok"
@@ -663,8 +673,8 @@ func (s *Storage) List(prefix string, maxKeys int, continuationToken string) (_ 
 		storageOpsTotal.WithLabelValues("list", status).Inc()
 		storageOpDuration.WithLabelValues("list").Observe(time.Since(metricsStart).Seconds())
 	}()
-	var allKeys []ListObject
 
+	var objects []ListObject
 	err = filepath.WalkDir(s.dataDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // skip errors
@@ -684,7 +694,7 @@ func (s *Storage) List(prefix string, maxKeys int, continuationToken string) (_ 
 		}
 
 		key := s.pathToKey(path)
-		if key == "" || !strings.HasPrefix(key, prefix) {
+		if key == "" {
 			return nil
 		}
 
@@ -693,7 +703,7 @@ func (s *Storage) List(prefix string, maxKeys int, continuationToken string) (_ 
 			return nil
 		}
 
-		allKeys = append(allKeys, ListObject{
+		objects = append(objects, ListObject{
 			Key:          key,
 			Size:         info.Size(),
 			LastModified: info.ModTime(),
@@ -703,34 +713,5 @@ func (s *Storage) List(prefix string, maxKeys int, continuationToken string) (_ 
 	if err != nil {
 		return nil, err
 	}
-
-	sort.Slice(allKeys, func(i, j int) bool {
-		return allKeys[i].Key < allKeys[j].Key
-	})
-
-	start := 0
-	if continuationToken != "" {
-		for i, obj := range allKeys {
-			if obj.Key > continuationToken {
-				start = i
-				break
-			}
-			if i == len(allKeys)-1 {
-				start = len(allKeys)
-			}
-		}
-	}
-
-	remaining := allKeys[start:]
-	result := &ListResult{}
-
-	if len(remaining) > maxKeys {
-		result.Objects = remaining[:maxKeys]
-		result.IsTruncated = true
-		result.NextContinuationToken = remaining[maxKeys-1].Key
-	} else {
-		result.Objects = remaining
-	}
-
-	return result, nil
+	return objects, nil
 }

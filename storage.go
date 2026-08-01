@@ -69,15 +69,14 @@ type Storage struct {
 
 	// metaCache remembers each key's user metadata against the mtime+size it
 	// was read under, so a warm Stat/Open skips the listxattr + per-attribute
-	// getxattr syscalls. Self-validating against the stat every caller already
-	// performs; see metacache.go.
-	metaCache *metaCache
+	// getxattr syscalls. Byte-bounded with LRU eviction; see metacache.go.
+	metaCache *lruCache[string, metaEntry]
 
 	// cleanKeys memoizes indexed cacheprog keys whose stored body already
 	// passed the read-path module-index probe, so warm keys skip the per-GET
-	// lz4 decode. Invalidated on overwrite PUT, DELETE, and eviction. See
-	// cleanmemo.go.
-	cleanKeys *cleanKeyMemo
+	// probe. Invalidated on overwrite PUT, DELETE, and eviction. Byte-bounded
+	// with LRU eviction; see cleanmemo.go.
+	cleanKeys *lruCache[cleanKey, struct{}]
 }
 
 type ObjectMeta struct {
@@ -125,8 +124,8 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 		dataDir:   dataDir,
 		writeOnce: writeOnce,
 		lockFile:  lockFile,
-		cleanKeys: newCleanKeyMemo(maxCleanMemoEntries),
-		metaCache: newMetaCache(maxMetaCacheEntries),
+		cleanKeys: newCleanKeyMemo(cacheBudget(cleanMemoBudgetFraction, defaultCleanMemoBytes)),
+		metaCache: newMetaCache(cacheBudget(metaCacheBudgetFraction, defaultMetaCacheBytes)),
 	}
 
 	s.Index = NewIndex(s)
@@ -521,10 +520,7 @@ func (s *Storage) Open(key string) (_ *os.File, _ *ObjectMeta, err error) {
 // OpenBody opens an object's body for streaming and reports its size, WITHOUT
 // reading its user metadata. It is Open minus the metadata read, for the batch
 // GET's streaming phase: that phase already published every entry's metadata in
-// the manifest it built during phase 1, so re-reading the xattrs to build a
-// second ObjectMeta nobody consumes cost one listxattr plus a getxattr per
-// attribute (measured ~42us per key) for every key in every batch -- on the
-// single busiest path the server has.
+// the manifest it built during phase 1.
 //
 // It is otherwise Open exactly: same "get" storage op, same last-access record,
 // same size-from-the-open-fd guarantee (so the tar header always matches the

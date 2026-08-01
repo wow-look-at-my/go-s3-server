@@ -279,6 +279,41 @@ var (
 		Name: "s3_meta_cache_misses_total",
 		Help: "Total object-metadata reads that had to read extended attributes from disk.",
 	})
+
+	// Memory accounting (memlimit.go, lrucache.go). The server's in-memory
+	// caches are byte-bounded and evict; these say how big each one is allowed
+	// to be, how big it actually is, and how many entries it has given up.
+	// Requests are never refused for memory, so a cache shrinking is the ONLY
+	// visible effect of pressure -- which is what these expose.
+	memoryLimitBytes = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "s3_memory_limit_bytes",
+		Help: "The process memory ceiling the caches are sized against (0 = none discovered).",
+	})
+
+	memoryInUseBytes = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "s3_memory_in_use_bytes",
+		Help: "Memory the Go runtime counts against its limit (mapped, not released), sampled periodically.",
+	})
+
+	memoryShrinksTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "s3_memory_shrinks_total",
+		Help: "Times the in-memory cache budgets were cut because memory in use crossed the shrink threshold.",
+	})
+
+	cacheMemoryBytes = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "s3_cache_memory_bytes",
+		Help: "Bytes currently held by each in-memory cache.",
+	}, []string{"cache"})
+
+	cacheBudgetBytes = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "s3_cache_memory_budget_bytes",
+		Help: "Byte budget currently allowed for each in-memory cache (falls as memory gets tight).",
+	}, []string{"cache"})
+
+	cacheEvictionsTotal = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "s3_cache_memory_evictions",
+		Help: "Entries evicted from each in-memory cache to stay inside its byte budget.",
+	}, []string{"cache"})
 )
 
 // statusRecorder wraps http.ResponseWriter to capture status code and bytes written.

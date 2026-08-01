@@ -112,34 +112,64 @@ func getMetadataValueFd(f *os.File, key string) string {
 	return string(buf[:n])
 }
 
+// metaAttrPrefix is the xattr namespace user metadata lives in. Audit
+// attributes sit under auditAttrPrefix, which shares this prefix as a STRING
+// ("user.s3audit." begins with "user.s3.") -- so the namespace test has to
+// exclude them explicitly. Without that they were read back as metadata named
+// "audit.uploader", "audit.client_ip" and so on, and emitted to every client as
+// X-Cache-Meta-Audit.* headers: the uploader's identity and IP handed to anyone
+// who could fetch the object, plus a getxattr per audit attribute on every
+// metadata read.
+const metaAttrPrefix = "user.s3."
+
+func isUserMetaAttr(name string) bool {
+	return strings.HasPrefix(name, metaAttrPrefix) && !strings.HasPrefix(name, auditAttrPrefix)
+}
+
 func getMetadata(path string, meta *ObjectMeta) {
 	attrs, err := listXattrs(path)
 	if err != nil {
 		return
 	}
+	var buf [xattrValueBufSize]byte
 	for _, attr := range attrs {
-		if strings.HasPrefix(attr, "user.s3.") {
-			val, err := getXattr(path, attr)
-			if err == nil {
-				metaKey := strings.TrimPrefix(attr, "user.s3.")
-				meta.Metadata[metaKey] = string(val)
-			}
+		if !isUserMetaAttr(attr) {
+			continue
+		}
+		if val, err := getXattrBuf(path, attr, buf[:]); err == nil {
+			meta.Metadata[strings.TrimPrefix(attr, metaAttrPrefix)] = string(val)
 		}
 	}
 }
 
+// xattr reads are sized optimistically and only fall back to the two-call
+// probe-then-read dance on ERANGE. Every probe is a syscall, and a metadata
+// read issues one per attribute plus one for the listing, which is why the
+// naive version cost ~42us per key; these buffers cover every value the cache
+// actually stores (the largest is the capped src list, a few hundred bytes) and
+// the whole name list of a typical object.
+const (
+	xattrValueBufSize = 512
+	xattrNameBufSize  = 1024
+)
+
 func listXattrs(path string) ([]string, error) {
-	sz, err := unix.Listxattr(path, nil)
+	var stack [xattrNameBufSize]byte
+	buf := stack[:]
+	sz, err := unix.Listxattr(path, buf)
+	if errors.Is(err, unix.ERANGE) {
+		sz, err = unix.Listxattr(path, nil)
+		if err != nil {
+			return nil, err
+		}
+		buf = make([]byte, sz)
+		sz, err = unix.Listxattr(path, buf)
+	}
 	if err != nil {
 		return nil, err
 	}
 	if sz == 0 {
 		return nil, nil
-	}
-	buf := make([]byte, sz)
-	sz, err = unix.Listxattr(path, buf)
-	if err != nil {
-		return nil, err
 	}
 	var attrs []string
 	for _, name := range strings.Split(string(buf[:sz]), "\x00") {
@@ -150,17 +180,36 @@ func listXattrs(path string) ([]string, error) {
 	return attrs, nil
 }
 
-func getXattr(path, name string) ([]byte, error) {
+// getXattrBuf reads one attribute into buf when it fits, falling back to a
+// probe-then-read for an oversized value. The returned slice aliases buf on the
+// fast path, so callers must copy anything they keep.
+func getXattrBuf(path, name string, buf []byte) ([]byte, error) {
+	n, err := unix.Getxattr(path, name, buf)
+	if err == nil {
+		return buf[:n], nil
+	}
+	if !errors.Is(err, unix.ERANGE) {
+		return nil, err
+	}
 	sz, err := unix.Getxattr(path, name, nil)
 	if err != nil {
 		return nil, err
 	}
-	buf := make([]byte, sz)
-	_, err = unix.Getxattr(path, name, buf)
+	big := make([]byte, sz)
+	n, err = unix.Getxattr(path, name, big)
 	if err != nil {
 		return nil, err
 	}
-	return buf, nil
+	return big[:n], nil
+}
+
+func getXattr(path, name string) ([]byte, error) {
+	var buf [xattrValueBufSize]byte
+	val, err := getXattrBuf(path, name, buf[:])
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), val...), nil
 }
 
 // Sidecar hooks: metadata lives in xattrs on unix, so there are no companion

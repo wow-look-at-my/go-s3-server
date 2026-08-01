@@ -225,22 +225,6 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	w.WriteHeader(200)
 }
 
-// guardVerdictFromHead answers the module-index question from the leading bytes
-// of an upload when it can. For an lz4 body that is the frame header walk
-// (lz4head.go), which settles every well-formed frame; for an uncompressed one
-// the magic is simply the first bytes. decided=false means the head was not
-// enough and the caller must read more and decode.
-func guardVerdictFromHead(head []byte, compression string) (isIndex, decided bool) {
-	if compression == "lz4" {
-		return lz4HasPrefix(head, goModuleIndexMagic)
-	}
-	if len(head) >= len(goModuleIndexMagic) {
-		return bytes.HasPrefix(head, []byte(goModuleIndexMagic)), true
-	}
-	// A body shorter than the magic cannot start with it.
-	return false, !bytes.HasPrefix([]byte(goModuleIndexMagic), head)
-}
-
 // store status values reported by storeOneObject, mirrored in the batch
 // response manifest. They classify the outcome WITHOUT deciding an HTTP status
 // -- the single-PUT caller maps them to a status code, the batch caller records
@@ -287,29 +271,11 @@ const (
 // *http.MaxBytesError when body is a bounded reader; the caller decides whether
 // that maps to 413.
 func storeOneObject(storage *Storage, key string, body io.Reader, meta, audit map[string]string) (string, error) {
-	// Read a SMALL head first and try to settle the guard from it. The lz4
-	// header walk needs only the frame header and first literal run, so this is
-	// the answer for essentially every upload -- which matters for memory as
-	// much as for CPU: the fallback's bounded prefix is up to 1 MiB, and one of
-	// those per in-flight PUT is the server's largest per-request allocation.
-	// Under a tight memory budget that allocation, times the concurrency limit,
-	// was enough to keep the GC permanently behind.
-	peek, peekErr := io.ReadAll(io.LimitReader(body, indexHeadPeekBytes))
+	peek, peekErr := io.ReadAll(io.LimitReader(body, int64(indexPutPeekBytes)))
 	if peekErr != nil {
 		return storeStatusError, peekErr
 	}
-	isIndex, decided := guardVerdictFromHead(peek, meta["compression"])
-	if !decided {
-		// An unusual frame shape: read up to the full bounded prefix (enough for
-		// the first lz4 block) and decode for real, exactly as before.
-		more, err := io.ReadAll(io.LimitReader(body, int64(indexPutPeekBytes)-int64(len(peek))))
-		if err != nil {
-			return storeStatusError, err
-		}
-		peek = append(peek, more...)
-		isIndex = looksLikeGoModuleIndex(peek, meta["compression"])
-	}
-	if isIndex {
+	if looksLikeGoModuleIndex(peek, meta["compression"]) {
 		// Count + log the refusal. This used to be completely silent, which is
 		// the exact blind spot that hid the 512-byte-peek bug: a broken guard
 		// looks identical to a quiet one. Clients build module indexes all the

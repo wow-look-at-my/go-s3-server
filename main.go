@@ -98,20 +98,6 @@ func run(cmd *cobra.Command, args []string) error {
 
 	log.Printf("limits: max_concurrent_requests=%d max_object_bytes=%d", cfg.MaxConcurrentRequests, cfg.MaxObjectBytes)
 
-	// Memory awareness: the caches are already sized from this budget and the
-	// concurrency limit already capped by it (see memlimit.go); starting the
-	// watcher is what adds the runtime half -- trim, then shed, instead of being
-	// OOM-killed mid-request.
-	if memoryBudget > 0 {
-		log.Printf("memory: budget %d MiB (from %s); caches sized against it, trim at %d%%, shed new requests at %d%%",
-			memoryBudget>>20, memoryBudgetSource, int(memTrimFraction*100), int(memShedFraction*100))
-		stopWatcher := make(chan struct{})
-		defer close(stopWatcher)
-		go srv.mem.Run(stopWatcher)
-	} else {
-		log.Printf("WARNING: no process memory limit could be discovered (no GOMEMLIMIT, no cgroup limit), so the server cannot protect itself from an OOM kill under load: caches keep their fixed sizes and nothing is shed for memory pressure. Set GOMEMLIMIT or run with a container memory limit.")
-	}
-
 	// Bodies are already compressed when they arrive and this server never
 	// compresses anything, so a compressing dataset underneath is a second
 	// pass for no gain -- said once, here, where the other costly-config

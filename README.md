@@ -241,16 +241,9 @@ keys) without OOM-ing or returning `502`s:
   queues unbounded work until the process is OOM-killed (the failure a fronting
   proxy reports as a `502`). Overload-shed requests are counted in the
   `s3_http_rejected_total` metric.
-- **Memory-aware, not just concurrency-aware.** The server reads its own memory
-  ceiling (`GOMEMLIMIT`, or the container's cgroup limit) and sizes its caches
-  and concurrency limit against it. At 80% it drops rebuildable caches; at 92%
-  it sheds new requests with `503` until pressure passes. See
-  [docs/memory-limits.md](docs/memory-limits.md). If no limit can be found, none
-  of this engages and startup says so.
 - **Bounded requests.** A single PUT is capped at `max_object_bytes` (`413` over
-  the limit); a `_batch/get` is capped at 4096 keys (`400` over the limit, and
-  fewer on a small memory budget); a
-  `_batch/put` is capped at the same key limit and at `4096 × max_object_bytes` total
+  the limit); a `_batch/get` is capped at 4096 keys (`400` over the limit); a
+  `_batch/put` is capped at 4096 entries and at `4096 × max_object_bytes` total
   body bytes (`413` over either limit), with each member individually bounded to
   `max_object_bytes`.
 - **Timeouts.** The HTTP server sets `ReadHeaderTimeout` (slowloris guard) plus
@@ -290,11 +283,6 @@ keys) without OOM-ing or returning `502`s:
   - `s3_meta_cache_hits_total` / `s3_meta_cache_misses_total` — object metadata
     served from memory vs read back from extended attributes. On a warm cache
     this ratio is the read path's CPU story.
-  - memory: `s3_memory_limit_bytes` (the discovered ceiling — **zero means the
-    server found no limit and cannot protect itself from an OOM kill**),
-    `s3_memory_in_use_bytes`, `s3_memory_trims_total` (caches dropped under
-    pressure) and `s3_memory_shed_total` (requests refused for memory, which
-    should stay at zero in steady state).
 
   All alongside the standard Go runtime and process collectors
   (`go_memstats_*`, `process_resident_memory_bytes`, `go_goroutines`) — enough

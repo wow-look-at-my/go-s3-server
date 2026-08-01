@@ -304,14 +304,18 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 	// concurrent CI matrix load that previously OOM-killed it.
 	var streamed int
 	for _, e := range entries {
-		f, meta, err := storage.Open(e.key)
+		// OpenBody, not Open: the manifest already carries this entry's metadata
+		// from phase 1, so re-reading its xattrs here bought a second ObjectMeta
+		// nobody reads at the cost of a listxattr plus a getxattr per attribute,
+		// per key, per batch. The size still comes from the open fd.
+		f, size, err := storage.OpenBody(e.key)
 		if err != nil {
 			// Vanished between stat and stream (e.g. operator eviction). Skip it:
 			// the client matches data entries by name and treats a missing one as
 			// a cache miss, so omitting it is safe.
 			continue
 		}
-		err = writeTarEntry(tw, "data/"+e.key, meta.Size, f)
+		err = writeTarEntry(tw, "data/"+e.key, size, f)
 		f.Close()
 		if err != nil {
 			// A write error here is almost always the client going away mid-stream;
@@ -506,13 +510,32 @@ func isMaxBytesErr(err error) bool {
 	return errors.As(err, &maxErr)
 }
 
+// tarCopyBufs supplies the copy buffer each member is streamed through.
+// io.CopyN allocates a fresh 32 KiB buffer per call, and a batch response is
+// one call per member: a 128-key batch churned ~4 MiB of garbage per request
+// purely as copy scratch, which is GC time paid on the busiest path. The tar
+// writer implements neither ReaderFrom nor WriterTo, so an explicit buffer is
+// what gets used.
+var tarCopyBufs = sync.Pool{New: func() any {
+	b := make([]byte, 64<<10)
+	return &b
+}}
+
 // writeTarEntry writes one tar member, copying exactly size bytes from r so the
 // bytes written always match the declared header size (a tar invariant).
 func writeTarEntry(tw *tar.Writer, name string, size int64, r io.Reader) error {
 	if err := tw.WriteHeader(&tar.Header{Name: name, Size: size, Mode: 0644}); err != nil {
 		return err
 	}
-	_, err := io.CopyN(tw, r, size)
+	buf := tarCopyBufs.Get().(*[]byte)
+	defer tarCopyBufs.Put(buf)
+	n, err := io.CopyBuffer(tw, io.LimitReader(r, size), *buf)
+	if err == nil && n != size {
+		// Short read against a declared header size is a corrupt member, not a
+		// truncated-but-usable one: fail the response rather than emit a tar the
+		// client will mis-parse.
+		return io.ErrUnexpectedEOF
+	}
 	return err
 }
 

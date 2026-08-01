@@ -266,3 +266,158 @@ func TestLoad_OverloadShedsWith503(t *testing.T) {
 	require.Greater(t, testutil.ToFloat64(httpRejectedTotal), rejectedBefore,
 		"the overload rejection must be observable via s3_http_rejected_total")
 }
+
+// TestLoad_MemoryPressureNeverRefusesService is the requirement, stated as a
+// test: while memory pressure is continuous and the controller is shrinking the
+// caches as hard as it can, every single request is still answered correctly.
+//
+// A cache server exists to answer. If it refuses under load, every client it
+// refuses rebuilds anyway -- having first paid for the round trip -- so a cache
+// that sheds is worse than no cache at all. Memory pressure is allowed to make
+// the server slower (a cold cache means more syscalls per request); it is never
+// allowed to make it unavailable.
+func TestLoad_MemoryPressureNeverRefusesService(t *testing.T) {
+	if testing.Short() {
+		t.Skip("load test skipped in -short mode")
+	}
+	dir := t.TempDir()
+	st, err := NewStorage(dir, WriteOnceConfig{Action: "allow", Notification: "never"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+
+	cfg := &Config{Bucket: "testbucket", DataDir: dir, DisableAuth: true, MaxConcurrentRequests: 128}
+	srv := NewServer(cfg, st)
+
+	// Drive the controller from the test: "always under pressure", which is the
+	// worst case the server has to keep serving through.
+	registered := srv.mem.caches
+	srv.mem = newMemController(1000)
+	srv.mem.sample = func() int64 { return 990 }
+	srv.mem.freeOS = func() {}
+	for _, nc := range registered {
+		srv.mem.Register(nc.name, nc.full, nc.c)
+	}
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	const (
+		numObjects = 200
+		objSize    = 64 * 1024
+		clients    = 16
+		reqPerCl   = 25
+	)
+	body := bytes.Repeat([]byte{'y'}, objSize)
+	keys := make([]string, numObjects)
+	for i := 0; i < numObjects; i++ {
+		keys[i] = loadTestKey(i)
+		require.NoError(t, st.Put(keys[i], body, map[string]string{"outputid": fmt.Sprintf("o%d", i)}, nil))
+	}
+
+	// Pressure runs for the whole load, shrinking on every cooldown boundary.
+	stopPressure := make(chan struct{})
+	var pressureWG sync.WaitGroup
+	pressureWG.Add(1)
+	go func() {
+		defer pressureWG.Done()
+		fakeNow := time.Now()
+		srv.mem.now = func() time.Time { return fakeNow }
+		for {
+			select {
+			case <-stopPressure:
+				return
+			default:
+			}
+			fakeNow = fakeNow.Add(memShrinkCooldown + time.Second)
+			srv.mem.poll()
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	var served, wrong, refused atomic.Int64
+	var wg sync.WaitGroup
+	client := &http.Client{Timeout: 30 * time.Second}
+	start := make(chan struct{})
+	for c := 0; c < clients; c++ {
+		wg.Add(1)
+		go func(c int) {
+			defer wg.Done()
+			<-start
+			for i := 0; i < reqPerCl; i++ {
+				switch i % 3 {
+				case 0:
+					bk := []string{keys[(c*3+i)%numObjects], keys[(c*5+i)%numObjects]}
+					reqBody, _ := json.Marshal(batchGetRequest{Keys: bk, Prefetch: true})
+					resp, err := client.Post(ts.URL+"/testbucket/_batch/get", "application/json", bytes.NewReader(reqBody))
+					if err != nil {
+						wrong.Add(1)
+						continue
+					}
+					if resp.StatusCode != 200 {
+						refused.Add(1)
+						resp.Body.Close()
+						continue
+					}
+					n, entries, terr := consumeTar(resp.Body)
+					resp.Body.Close()
+					if terr != nil || entries == 0 || n == 0 {
+						wrong.Add(1)
+						continue
+					}
+					served.Add(1)
+				case 1:
+					pk := loadTestKey(numObjects + c*1000 + i)
+					req, _ := http.NewRequest("PUT", ts.URL+"/testbucket/"+pk, bytes.NewReader(body))
+					resp, err := client.Do(req)
+					if err != nil {
+						wrong.Add(1)
+						continue
+					}
+					io.Copy(io.Discard, resp.Body)
+					resp.Body.Close()
+					if resp.StatusCode != 200 {
+						refused.Add(1)
+						continue
+					}
+					served.Add(1)
+				default:
+					key := keys[(c+i)%numObjects]
+					resp, err := client.Get(ts.URL + "/testbucket/" + key)
+					if err != nil {
+						wrong.Add(1)
+						continue
+					}
+					got, rerr := io.ReadAll(resp.Body)
+					resp.Body.Close()
+					if resp.StatusCode != 200 {
+						refused.Add(1)
+						continue
+					}
+					// The body must be byte-for-byte right: a cache under
+					// pressure that starts serving truncated or wrong bodies
+					// would be far worse than one that refused.
+					if rerr != nil || !bytes.Equal(got, body) {
+						wrong.Add(1)
+						continue
+					}
+					served.Add(1)
+				}
+			}
+		}(c)
+	}
+	close(start)
+	wg.Wait()
+	close(stopPressure)
+	pressureWG.Wait()
+
+	t.Logf("served=%d refused=%d wrong=%d cache scale=%.3f metadata bytes=%d",
+		served.Load(), refused.Load(), wrong.Load(), srv.mem.Scale(), st.metaCache.Bytes())
+
+	require.Zero(t, refused.Load(),
+		"memory pressure must never cost a request: the server may hold less, never serve less")
+	require.Zero(t, wrong.Load(), "and what it serves must still be correct")
+	require.EqualValues(t, clients*reqPerCl, served.Load())
+
+	// The pressure was real: the controller did shrink the caches while all of
+	// that was being served.
+	require.Less(t, srv.mem.Scale(), 1.0, "the controller must actually have shrunk the caches")
+}

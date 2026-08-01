@@ -30,21 +30,7 @@ import (
 // wholesale, which costs a re-read of the warm working set once. Entries are
 // small (the kv pairs of one object) and the working set of a CI build is a few
 // thousand keys, so the bound is reached only pathologically.
-//
-// The bound is SIZED FROM THE PROCESS MEMORY BUDGET (memlimit.go) rather than
-// being a flat constant: a cache that assumes a large host is exactly how a
-// small one gets OOM-killed. metaCacheEntryBytes is the measured-ish cost of
-// one entry -- ten short kv pairs plus map overhead -- and the cache may claim
-// metaCacheBudgetFraction of the budget, never more than the old constant.
-const (
-	metaCacheEntryBytes     = 600
-	metaCacheBudgetFraction = 0.05
-	maxMetaCacheEntriesCap  = 1 << 16
-	minMetaCacheEntries     = 1 << 10
-)
-
-// maxMetaCacheEntries is the bound this process runs with.
-var maxMetaCacheEntries = budgetFraction(metaCacheBudgetFraction, metaCacheEntryBytes, minMetaCacheEntries, maxMetaCacheEntriesCap)
+const maxMetaCacheEntries = 1 << 16
 
 // kvPair is one metadata attribute. Entries hold a slice rather than a map so a
 // cached entry is immutable and shareable: callers get a fresh map built from

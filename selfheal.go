@@ -168,5 +168,9 @@ func reconstructOutputID(storage *Storage, key string, f *os.File) (string, erro
 	if err := setMetadataFd(f, map[string]string{outputIDMetaKey: outputID}); err != nil {
 		return "", fmt.Errorf("persist reconstructed outputid: %w", err)
 	}
+	// An fsetxattr leaves the inode's mtime and size alone, so the metadata
+	// cache cannot notice this write on its own -- drop the entry so the next
+	// reader sees the repaired outputid rather than the absence that got us here.
+	storage.forgetMeta(key)
 	return outputID, nil
 }

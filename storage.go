@@ -67,6 +67,12 @@ type Storage struct {
 	// not the whole cache. The type and methods live in eviction.go.
 	accessShards []*accessShard
 
+	// metaCache remembers each key's user metadata against the mtime+size it
+	// was read under, so a warm Stat/Open skips the listxattr + per-attribute
+	// getxattr syscalls. Self-validating against the stat every caller already
+	// performs; see metacache.go.
+	metaCache *metaCache
+
 	// cleanKeys memoizes indexed cacheprog keys whose stored body already
 	// passed the read-path module-index probe, so warm keys skip the per-GET
 	// lz4 decode. Invalidated on overwrite PUT, DELETE, and eviction. See
@@ -120,99 +126,11 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 		writeOnce: writeOnce,
 		lockFile:  lockFile,
 		cleanKeys: newCleanKeyMemo(maxCleanMemoEntries),
+		metaCache: newMetaCache(maxMetaCacheEntries),
 	}
 
 	s.Index = NewIndex(s)
 	return s, nil
-}
-
-// ensureCacheVersion reads the data_dir's version marker. If missing, it is
-// treated as version 1. If the stored version does not match
-// currentCacheVersion, every entry in the data_dir (except the lock file) is
-// removed and a new version marker is written. This forces the operator to
-// rebuild the cache from trusted inputs whenever we bump the version, e.g.
-// after fixing a vulnerability that could have let an attacker populate the
-// cache.
-func ensureCacheVersion(dataDir string) error {
-	stored, err := readCacheVersion(dataDir)
-	if err != nil {
-		return err
-	}
-	if stored == currentCacheVersion {
-		return nil
-	}
-	log.Printf("cache: stored version %d != current %d; purging data_dir=%s", stored, currentCacheVersion, dataDir)
-	if err := purgeDataDir(dataDir); err != nil {
-		return fmt.Errorf("purge data dir: %w", err)
-	}
-	if err := writeCacheVersion(dataDir, currentCacheVersion); err != nil {
-		return fmt.Errorf("write cache version: %w", err)
-	}
-	log.Printf("cache: purged and marked as version %d", currentCacheVersion)
-	return nil
-}
-
-func readCacheVersion(dataDir string) (int, error) {
-	data, err := os.ReadFile(filepath.Join(dataDir, cacheVersionFile))
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			// No marker: treat as version 1 (any cache predating this feature).
-			return 1, nil
-		}
-		return 0, fmt.Errorf("read cache version: %w", err)
-	}
-	s := strings.TrimSpace(string(data))
-	v, err := strconv.Atoi(s)
-	if err != nil {
-		return 0, fmt.Errorf("cache version file %s is corrupt (%q): %w", cacheVersionFile, s, err)
-	}
-	return v, nil
-}
-
-func writeCacheVersion(dataDir string, v int) error {
-	return os.WriteFile(filepath.Join(dataDir, cacheVersionFile), []byte(strconv.Itoa(v)+"\n"), 0644)
-}
-
-// purgeDataDir removes every entry in dataDir except the lock file. Used when
-// the cache version is incompatible.
-func purgeDataDir(dataDir string) error {
-	entries, err := os.ReadDir(dataDir)
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if e.Name() == lockFileName {
-			continue
-		}
-		p := filepath.Join(dataDir, e.Name())
-		if err := os.RemoveAll(p); err != nil {
-			return fmt.Errorf("remove %s: %w", p, err)
-		}
-	}
-	return nil
-}
-
-// sweepTempFiles removes leftover PutStream temp files (".tmp-*"). Only call
-// while holding the data_dir's exclusive lock and before serving begins, when
-// no temp file can be legitimately in flight.
-func sweepTempFiles(dataDir string) {
-	var removed int
-	filepath.WalkDir(dataDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if strings.HasPrefix(d.Name(), ".tmp-") {
-			if rmErr := os.Remove(path); rmErr == nil {
-				removed++
-			} else {
-				log.Printf("startup: cannot remove orphaned temp file %s: %v", path, rmErr)
-			}
-		}
-		return nil
-	})
-	if removed > 0 {
-		log.Printf("startup: removed %d orphaned .tmp-* file(s) left by interrupted uploads", removed)
-	}
 }
 
 func (s *Storage) Close() error {
@@ -435,8 +353,10 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 		return fmt.Errorf("finalize sidecars: %w", err)
 	}
 	// The body under this key just changed: the next read must re-probe it
-	// rather than trust a stale known-clean verdict for the previous body.
+	// rather than trust a stale known-clean verdict for the previous body, and
+	// must not be described by the previous body's metadata.
 	s.forgetClean(key)
+	s.forgetMeta(key)
 	if s.Index != nil {
 		s.Index.Put(key, n)
 	}
@@ -511,7 +431,7 @@ func (s *Storage) Get(key string) (_ []byte, _ *ObjectMeta, err error) {
 		Size:     info.Size(),
 	}
 
-	getMetadata(path, meta)
+	s.loadMetadata(key, path, info, meta)
 	s.recordAccess(key)
 
 	return data, meta, nil
@@ -532,6 +452,9 @@ func (s *Storage) SetMeta(key string, kv map[string]string) error {
 		}
 		return err
 	}
+	// An xattr write does not move the file's mtime, so the cached metadata
+	// cannot be invalidated by the stat comparison -- drop it explicitly.
+	s.forgetMeta(key)
 	return setMetadata(path, kv)
 }
 
@@ -553,7 +476,7 @@ func (s *Storage) Stat(key string) (*ObjectMeta, error) {
 		ModTime:  info.ModTime(),
 		Size:     info.Size(),
 	}
-	getMetadata(path, meta)
+	s.loadMetadata(key, path, info, meta)
 	return meta, nil
 }
 
@@ -590,9 +513,46 @@ func (s *Storage) Open(key string) (_ *os.File, _ *ObjectMeta, err error) {
 		ModTime:  info.ModTime(),
 		Size:     info.Size(),
 	}
-	getMetadata(path, meta)
+	s.loadMetadata(key, path, info, meta)
 	s.recordAccess(key)
 	return f, meta, nil
+}
+
+// OpenBody opens an object's body for streaming and reports its size, WITHOUT
+// reading its user metadata. It is Open minus the metadata read, for the batch
+// GET's streaming phase: that phase already published every entry's metadata in
+// the manifest it built during phase 1, so re-reading the xattrs to build a
+// second ObjectMeta nobody consumes cost one listxattr plus a getxattr per
+// attribute (measured ~42us per key) for every key in every batch -- on the
+// single busiest path the server has.
+//
+// It is otherwise Open exactly: same "get" storage op, same last-access record,
+// same size-from-the-open-fd guarantee (so the tar header always matches the
+// bytes about to be copied). Callers that need the metadata still call Open.
+func (s *Storage) OpenBody(key string) (_ *os.File, _ int64, err error) {
+	start := time.Now()
+	defer func() {
+		status := "ok"
+		if err != nil {
+			status = "error"
+		}
+		storageOpsTotal.WithLabelValues("get", status).Inc()
+		storageOpDuration.WithLabelValues("get").Observe(time.Since(start).Seconds())
+	}()
+	f, err := os.Open(s.keyToPath(key))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, 0, ErrNotFound
+		}
+		return nil, 0, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, 0, err
+	}
+	s.recordAccess(key)
+	return f, info.Size(), nil
 }
 
 // openRaw opens an object's body WITHOUT the storage-op metric or the
@@ -643,6 +603,7 @@ func (s *Storage) Delete(key string) (err error) {
 	}
 	s.forgetAccess(key)
 	s.forgetClean(key)
+	s.forgetMeta(key)
 	return nil
 }
 

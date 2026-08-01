@@ -280,6 +280,9 @@ keys) without OOM-ing or returning `502`s:
   - `s3_module_index_evictions_total` (module-index blobs refused + evicted on
     a read path) and `s3_metadata_xattrs_dropped_total` (optional metadata
     dropped under xattr-space pressure instead of failing the PUT).
+  - `s3_meta_cache_hits_total` / `s3_meta_cache_misses_total` — object metadata
+    served from memory vs read back from extended attributes. On a warm cache
+    this ratio is the read path's CPU story.
 
   All alongside the standard Go runtime and process collectors
   (`go_memstats_*`, `process_resident_memory_bytes`, `go_goroutines`) — enough

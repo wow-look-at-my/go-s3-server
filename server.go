@@ -34,6 +34,10 @@ type Server struct {
 	// than queued until memory is exhausted (the OOM a fronting proxy reports as
 	// a 502). Buffered to MaxConcurrentRequests.
 	sem chan struct{}
+	// mem watches memory in use and answers, per request, whether the server
+	// must refuse new work to stay under its ceiling. Nil (or budget-less) means
+	// no ceiling was discovered and nothing is ever shed for memory.
+	mem *memWatcher
 	// shuttingDown is set by BeginShutdown when a termination signal is received.
 	// While set, the health endpoint reports 503 so an orchestrator or reverse
 	// proxy stops routing new requests here as http.Server.Shutdown drains the
@@ -51,12 +55,26 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 	if cfg.MaxObjectBytes <= 0 {
 		cfg.MaxObjectBytes = defaultMaxObjectBytes
 	}
-	return &Server{
+	// Cap concurrency at what the memory budget can actually hold. Admitting
+	// more requests than the ceiling allows is not throughput, it is a queue of
+	// work that gets the process killed halfway through.
+	if capped := concurrencyForBudget(cfg.MaxConcurrentRequests); capped < cfg.MaxConcurrentRequests {
+		log.Printf("limits: max_concurrent_requests %d exceeds what the %d MiB memory budget allows; using %d",
+			cfg.MaxConcurrentRequests, memoryBudget>>20, capped)
+		cfg.MaxConcurrentRequests = capped
+	}
+	s := &Server{
 		config:          cfg,
 		storage:         storage,
 		prefetchTracker: newPrefetchTracker(),
 		sem:             make(chan struct{}, cfg.MaxConcurrentRequests),
+		mem:             newMemWatcher(memoryBudget),
 	}
+	// Everything registered here is an optimization the server can rebuild, so
+	// dropping it under pressure costs work, never correctness.
+	s.mem.AddTrimmer(storage.TrimCaches)
+	s.mem.AddTrimmer(s.prefetchTracker.clear)
+	return s
 }
 
 // BeginShutdown marks the server as draining, so the health endpoint starts
@@ -158,6 +176,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// with 503 + Retry-After instead of accepting unbounded concurrency and
 	// risking an OOM (which a fronting proxy would surface as a 502). The slot is
 	// held for the whole request and released on return.
+	// Memory pressure is checked BEFORE the concurrency slot: the slot bounds
+	// how many requests run at once, but the working set of even a legal number
+	// of them can still climb past the ceiling (large batches, a big index, a
+	// slow GC). The watcher has already trimmed the discardable caches by the
+	// time this fires, so shedding is what is left between here and an OOM kill
+	// -- and a client retrying after two seconds beats every in-flight request
+	// on this process dying at once.
+	if s.mem.ShouldShed() {
+		route = "Overload"
+		httpRejectedTotal.Inc()
+		memoryShedTotal.Inc()
+		rec.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
+		writeError(rec, 503, "overloaded", "server is under memory pressure, retry after a moment")
+		return
+	}
+
 	select {
 	case s.sem <- struct{}{}:
 		defer func() { <-s.sem }()

@@ -98,6 +98,12 @@ func run(cmd *cobra.Command, args []string) error {
 
 	log.Printf("limits: max_concurrent_requests=%d max_object_bytes=%d", cfg.MaxConcurrentRequests, cfg.MaxObjectBytes)
 
+	// Bodies are already compressed when they arrive and this server never
+	// compresses anything, so a compressing dataset underneath is a second
+	// pass for no gain -- said once, here, where the other costly-config
+	// warnings are.
+	logCompressionAdvisory(cfg.DataDir, log.Printf)
+
 	httpSrv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           srv,

@@ -555,6 +555,24 @@ func (s *Storage) OpenBody(key string) (_ *os.File, _ int64, err error) {
 	return f, info.Size(), nil
 }
 
+// TrimCaches drops every in-memory cache the storage layer keeps. All of them
+// are optimizations over what is on disk -- the metadata cache re-reads xattrs,
+// the known-clean memo re-probes bodies, the index blob is recomputed from the
+// hashes it still holds -- so this is always safe and costs only the work of
+// warming them again. Registered as a trimmer with the memory watcher, which
+// calls it before the server starts shedding requests.
+func (s *Storage) TrimCaches() {
+	if s.metaCache != nil {
+		s.metaCache.clear()
+	}
+	if s.cleanKeys != nil {
+		s.cleanKeys.clear()
+	}
+	if s.Index != nil {
+		s.Index.DropCachedBlob()
+	}
+}
+
 // openRaw opens an object's body WITHOUT the storage-op metric or the
 // last-access recording that Open performs. It exists for internal peeks —
 // the module-index guard's inspection and the self-heal's private hashing

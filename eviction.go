@@ -128,14 +128,14 @@ func (s *Storage) Evict(maxAge time.Duration, maxBytes int64, now time.Time) (Ev
 	var stats EvictStats
 
 	// Enumerate stored objects (metadata only; no bodies are read).
-	result, err := s.List("", 1<<30, "")
+	objects, err := s.Snapshot()
 	if err != nil {
 		return stats, err
 	}
 
-	cands := make([]evictionCandidate, 0, len(result.Objects))
-	live := make(map[string]bool, len(result.Objects))
-	for _, obj := range result.Objects {
+	cands := make([]evictionCandidate, 0, len(objects))
+	live := make(map[string]bool, len(objects))
+	for _, obj := range objects {
 		mtime := obj.LastModified.Unix()
 		lastUsed := mtime
 		if at, ok := s.lastAccess(obj.Key); ok && at > lastUsed {

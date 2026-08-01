@@ -467,12 +467,12 @@ func parseIndexHashes(blob []byte) ([][gbciHashSize]byte, error) {
 
 func (idx *Index) rebuild(storage *Storage) {
 	start := time.Now()
-	result, err := storage.List("", 1000000, "")
+	objects, err := storage.Snapshot()
 	if err != nil {
 		log.Printf("index: rebuild failed: %v", err)
 		return
 	}
-	entries, hashes := idx.applyRebuild(result.Objects)
+	entries, hashes := idx.applyRebuild(objects)
 	indexRebuildDuration.Observe(time.Since(start).Seconds())
 	log.Printf("index: built %d entries (%d hashes) in %v",
 		entries, hashes, time.Since(start).Round(time.Millisecond))

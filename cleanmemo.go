@@ -10,19 +10,7 @@ import (
 // covers the production cache's entire key population; past the bound the memo
 // is cleared wholesale (a rare, cheap event that only costs re-probing warm
 // keys once) rather than tracking any eviction order.
-//
-// 100 MB is a fine cost on a large host and a fatal one on a small container,
-// so the bound is sized from the process memory budget (memlimit.go) with the
-// old constant as its ceiling.
-const (
-	cleanMemoEntryBytes     = 100
-	cleanMemoBudgetFraction = 0.05
-	maxCleanMemoEntriesCap  = 1 << 20
-	minCleanMemoEntries     = 1 << 12
-)
-
-// maxCleanMemoEntries is the bound this process runs with.
-var maxCleanMemoEntries = budgetFraction(cleanMemoBudgetFraction, cleanMemoEntryBytes, minCleanMemoEntries, maxCleanMemoEntriesCap)
+const maxCleanMemoEntries = 1 << 20
 
 // cleanKeyMemo remembers indexed cacheprog keys whose stored body has already
 // passed the read-path module-index probe, so repeat GET/batch/prefetch reads

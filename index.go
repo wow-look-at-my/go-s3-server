@@ -337,21 +337,6 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, exclude 
 	return keys
 }
 
-// DropCachedBlob discards the serialized /_index body, keeping the hashes it
-// was built from. At a million keys that blob is ~32 MB of the process's
-// memory, held purely so repeat index fetches are free; the next fetch after a
-// drop pays a re-serialization instead. That is the right trade when the
-// alternative is an OOM kill, so the memory watcher's trim calls this.
-func (idx *Index) DropCachedBlob() {
-	idx.mu.Lock()
-	idx.cachedBlob = nil
-	idx.cachedETag = ""
-	idx.mu.Unlock()
-	// The hashes themselves are untouched, so the next Blob() rebuilds the same
-	// bytes; marking dirty just keeps the fast path from trusting a nil blob.
-	idx.dirty.Store(true)
-}
-
 // Blob returns the precomputed GBCI v1 binary index and its strong ETag
 // (hex-encoded SHA-256 of the blob, surrounded by quotes per RFC 7232).
 //

@@ -279,40 +279,6 @@ var (
 		Name: "s3_meta_cache_misses_total",
 		Help: "Total object-metadata reads that had to read extended attributes from disk.",
 	})
-
-	// Memory awareness (memlimit.go). limit_bytes is 0 when no ceiling could be
-	// discovered, which is also when nothing in that file engages -- so a zero
-	// here means "this server will not protect itself from an OOM", and is worth
-	// alerting on in a container that is supposed to have a limit.
-	memoryLimitBytes = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "s3_memory_limit_bytes",
-		Help: "The process memory ceiling the server sizes itself against (0 = none discovered).",
-	})
-
-	memoryInUseBytes = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "s3_memory_in_use_bytes",
-		Help: "Memory the Go runtime counts against its limit (mapped, not released), sampled periodically.",
-	})
-
-	// memoryGCCPUFraction is the share of process CPU the garbage collector took
-	// over the last sample interval. This is the signal a memory gauge cannot
-	// give: under a budget too small for the working set the Go runtime does not
-	// OOM, it collects continuously -- memory looks fine while throughput goes to
-	// zero. Sustained high values mean the container needs more memory.
-	memoryGCCPUFraction = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "s3_memory_gc_cpu_fraction",
-		Help: "Share of process CPU spent in garbage collection over the last sample interval.",
-	})
-
-	memoryTrimsTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "s3_memory_trims_total",
-		Help: "Times in-memory caches were dropped because memory in use crossed the trim threshold.",
-	})
-
-	memoryShedTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "s3_memory_shed_total",
-		Help: "Requests refused with 503 because memory in use was above the shed threshold.",
-	})
 )
 
 // statusRecorder wraps http.ResponseWriter to capture status code and bytes written.

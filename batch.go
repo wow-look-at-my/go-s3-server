@@ -73,21 +73,7 @@ type batchEntry struct {
 // maxBatchKeys caps how many keys one batch request may ask for. The cacheprog
 // client batches in chunks of 128, so this is generous headroom; it bounds the
 // per-request manifest/stat work and rejects a pathological request with 400.
-//
-// It is also the largest per-request allocation the server can be asked to
-// make: every key in a batch contributes a manifest entry with its metadata
-// map, and that times the concurrency limit is real memory. So the cap is
-// sized from the process memory budget (memlimit.go) with 4096 as its ceiling
-// -- unchanged on a large host or when no budget is known, lower on a small
-// container, and never below what the client actually sends.
-const (
-	batchKeyBytes          = 700
-	batchKeyBudgetFraction = 0.01
-	maxBatchKeysCap        = 4096
-	minBatchKeys           = 256
-)
-
-var maxBatchKeys = int(budgetFraction(batchKeyBudgetFraction, batchKeyBytes, minBatchKeys, maxBatchKeysCap))
+const maxBatchKeys = 4096
 
 // prefetchWindow is the time window around requested entries within which
 // other entries are considered related and included as prefetch.
@@ -135,16 +121,6 @@ func (t *prefetchTracker) filterKeys(user string, keys []string) []string {
 		out = append(out, k)
 	}
 	return out
-}
-
-// clear forgets every recorded send. Suppression is an optimization -- the
-// worst case after a clear is that one round of prefetch is re-sent -- so this
-// is registered as a memory trimmer, where dropping it is strictly better than
-// shedding a request.
-func (t *prefetchTracker) clear() {
-	t.mu.Lock()
-	t.sent = make(map[string]map[string]time.Time)
-	t.mu.Unlock()
 }
 
 // record marks keys as sent to user now and amortizes eviction of that user's

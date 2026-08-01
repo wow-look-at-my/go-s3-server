@@ -28,6 +28,14 @@ const indexMagicProbeBytes = 16
 // spare, and a body too odd to settle within it falls back to a real decode.
 const lz4HeadPeekBytes = 64
 
+// indexHeadPeekBytes is how many leading bytes the PUT path reads before trying
+// to settle the guard without decoding. It is generous next to what the header
+// walk needs (lz4HeadPeekBytes) so that a frame with a long literal-length
+// extension, or an uncompressed body, is still covered in one read -- and it is
+// three orders of magnitude smaller than the decode fallback's bound, which is
+// the point: this is the allocation every PUT makes.
+const indexHeadPeekBytes = 8 << 10
+
 // indexPutPeekBytes bounds how many COMPRESSED leading bytes the PUT path reads
 // before deciding whether an upload is a module index. It must be large enough
 // to contain a real index's first lz4 block, because the lz4 reader needs the

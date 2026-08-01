@@ -98,6 +98,20 @@ func run(cmd *cobra.Command, args []string) error {
 
 	log.Printf("limits: max_concurrent_requests=%d max_object_bytes=%d", cfg.MaxConcurrentRequests, cfg.MaxObjectBytes)
 
+	// Memory: the in-memory caches are already sized from this budget; starting
+	// the controller adds the feedback half, shrinking them when memory gets
+	// tight and letting them grow back when it does not. It never touches
+	// request handling -- a cache that stops answering is not a cache.
+	if memoryBudget > 0 {
+		log.Printf("memory: budget %d MiB (from %s); in-memory caches sized against it and shrunk above %d%% in use",
+			memoryBudget>>20, memoryBudgetSource, int(memShrinkFraction*100))
+		stopController := make(chan struct{})
+		defer close(stopController)
+		go srv.mem.Run(stopController)
+	} else {
+		log.Printf("memory: no process limit discovered (no GOMEMLIMIT, no cgroup limit); in-memory caches use fixed default budgets. Set GOMEMLIMIT or a container memory limit to have them sized and adjusted automatically.")
+	}
+
 	// Bodies are already compressed when they arrive and this server never
 	// compresses anything, so a compressing dataset underneath is a second
 	// pass for no gain -- said once, here, where the other costly-config

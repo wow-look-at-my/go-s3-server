@@ -241,6 +241,11 @@ keys) without OOM-ing or returning `502`s:
   queues unbounded work until the process is OOM-killed (the failure a fronting
   proxy reports as a `502`). Overload-shed requests are counted in the
   `s3_http_rejected_total` metric.
+- **Memory-bounded caches, never refused requests.** The server reads its own
+  memory ceiling (`GOMEMLIMIT`, or the container's cgroup limit) and sizes its
+  in-memory caches against it; as memory fills, those caches shrink and evict.
+  Requests are never shed for memory — a cache that refuses to serve is worse
+  than no cache. See [docs/memory-limits.md](docs/memory-limits.md).
 - **Bounded requests.** A single PUT is capped at `max_object_bytes` (`413` over
   the limit); a `_batch/get` is capped at 4096 keys (`400` over the limit); a
   `_batch/put` is capped at 4096 entries and at `4096 × max_object_bytes` total
@@ -283,6 +288,11 @@ keys) without OOM-ing or returning `502`s:
   - `s3_meta_cache_hits_total` / `s3_meta_cache_misses_total` — object metadata
     served from memory vs read back from extended attributes. On a warm cache
     this ratio is the read path's CPU story.
+  - memory: `s3_memory_limit_bytes` (the discovered ceiling, 0 = none found),
+    `s3_memory_in_use_bytes`, `s3_memory_shrinks_total` (times cache budgets
+    were cut under pressure) and `s3_cache_memory_bytes{cache}` /
+    `s3_cache_memory_budget_bytes{cache}` (what each cache holds and is allowed
+    to hold). There is no "refused for memory" metric because nothing is.
 
   All alongside the standard Go runtime and process collectors
   (`go_memstats_*`, `process_resident_memory_bytes`, `go_goroutines`) — enough

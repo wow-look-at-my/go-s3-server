@@ -264,6 +264,21 @@ var (
 		Name: "s3_module_index_evictions_total",
 		Help: "Total Go module-index blobs detected and evicted on a read path (GET, batch get, or prefetch).",
 	})
+
+	// metaCacheHitsTotal / metaCacheMissesTotal track the per-key metadata cache
+	// (metacache.go). A miss costs a listxattr plus a getxattr per attribute --
+	// roughly a dozen syscalls -- so on a warm cache this ratio IS the read
+	// path's CPU story: a ratio that collapses means keys are being rewritten
+	// (mtime moves, entries invalidate) or the cache is thrashing its bound.
+	metaCacheHitsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "s3_meta_cache_hits_total",
+		Help: "Total object-metadata reads served from the in-memory metadata cache.",
+	})
+
+	metaCacheMissesTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "s3_meta_cache_misses_total",
+		Help: "Total object-metadata reads that had to read extended attributes from disk.",
+	})
 )
 
 // statusRecorder wraps http.ResponseWriter to capture status code and bytes written.

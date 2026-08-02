@@ -32,9 +32,9 @@ func TestMetricsServer(t *testing.T) {
 
 	body, err := io.ReadAll(resp.Body)
 	require.Nil(t, err)
-	assert.Contains(t, string(body), "s3_http_requests_total")
-	assert.Contains(t, string(body), "s3_storage_operations_total")
-	assert.Contains(t, string(body), "s3_auth_failures_total")
+	assert.Contains(t, string(body), "cache_http_requests_total")
+	assert.Contains(t, string(body), "cache_storage_operations_total")
+	assert.Contains(t, string(body), "cache_auth_failures_total")
 }
 
 // TestPutRefusalCounted: the module-index PUT guard is no longer silent — a

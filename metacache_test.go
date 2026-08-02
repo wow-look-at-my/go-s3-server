@@ -124,7 +124,7 @@ func TestMetaCache_DeleteAndEvictionForget(t *testing.T) {
 // than growing without limit, and it keeps working afterwards.
 func TestMetaCache_Bound(t *testing.T) {
 	_, storage := testSetupWithStorage(t)
-	storage.metaCache = newMetaCache(3)
+	storage.metaCache = newMetaCache(3 * maxMetaEntryBytes)
 
 	keys := make([]string, 5)
 	for i := range keys {
@@ -133,7 +133,8 @@ func TestMetaCache_Bound(t *testing.T) {
 		_, err := storage.Stat(keys[i])
 		require.NoError(t, err)
 	}
-	require.LessOrEqual(t, storage.metaCache.size(), int64(3), "the cache must stay within its bound")
+	require.LessOrEqual(t, storage.metaCache.Bytes(), storage.metaCache.Budget()+maxMetaEntryBytes,
+		"the cache must stay within its byte budget")
 
 	// Still correct after a clear.
 	meta, err := storage.Stat(keys[4])
@@ -237,11 +238,17 @@ func batchGetDirect(t *testing.T, storage *Storage, tracker *prefetchTracker, ke
 	return parseBatchResponse(t, bytes.NewReader(rec.Body.Bytes()))
 }
 
+// maxMetaEntryBytes bounds the single-entry overshoot the cache allows: an
+// insert never evicts the entry it just made, so a shard can exceed its budget
+// by at most one entry.
+const maxMetaEntryBytes = 4096
+
 // cacheEntryFor reports how many cached metadata attributes the cache holds for
 // key, regardless of whether the entry still validates.
 func cacheEntryFor(storage *Storage, key string) int {
-	sh := storage.metaCache.shardFor(key)
-	sh.mu.Lock()
-	defer sh.mu.Unlock()
-	return len(sh.m[key].kv)
+	e, ok := storage.metaCache.Get(key)
+	if !ok {
+		return 0
+	}
+	return len(e.kv)
 }

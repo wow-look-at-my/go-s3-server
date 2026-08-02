@@ -2,8 +2,6 @@ package main
 
 import (
 	"os"
-	"sync"
-	"sync/atomic"
 )
 
 // An object's user metadata lives in extended attributes, and reading it costs
@@ -26,11 +24,11 @@ import (
 // -- the outputid self-heal's fsetxattr. Those call sites drop the entry
 // explicitly (forgetMeta), the same way they already drop the known-clean memo.
 //
-// Bounded like the known-clean memo: past the limit the cache is cleared
-// wholesale, which costs a re-read of the warm working set once. Entries are
-// small (the kv pairs of one object) and the working set of a CI build is a few
-// thousand keys, so the bound is reached only pathologically.
-const maxMetaCacheEntries = 1 << 16
+// It is bounded in BYTES and evicts its least-recently-used entries
+// (lrucache.go), with the bound sized from the process's memory ceiling and
+// shrunk further when memory gets tight (memlimit.go). Evicting one costs the
+// syscalls back on the next read of that key -- nothing else, and nothing the
+// client can observe.
 
 // kvPair is one metadata attribute. Entries hold a slice rather than a map so a
 // cached entry is immutable and shareable: callers get a fresh map built from
@@ -44,95 +42,27 @@ type metaEntry struct {
 	kv      []kvPair
 }
 
-// metaCache maps a storage key to the metadata last read for it, tagged with
-// the stat it was read under. Sharded 256 ways so concurrent batch handlers do
-// not convoy on one lock, the same shape as cleanKeyMemo and accessShards.
-type metaCache struct {
-	limit  int64
-	count  atomic.Int64
-	shards [256]metaShard
-}
+// metaEntryOverhead approximates what one entry costs beyond its strings: the
+// map bucket, the list element, the entry header, the slice header. An estimate
+// is the right precision here -- it feeds a budget that is itself a
+// hand-chosen fraction, so being somewhat off changes how many entries fit, not
+// whether the bound holds.
+const metaEntryOverhead = 160
 
-type metaShard struct {
-	mu sync.Mutex
-	m  map[string]metaEntry
-}
-
-func newMetaCache(limit int64) *metaCache {
-	c := &metaCache{limit: limit}
-	for i := range c.shards {
-		c.shards[i].m = make(map[string]metaEntry)
+func metaEntrySize(key string, e metaEntry) int64 {
+	n := int64(len(key) + metaEntryOverhead)
+	for _, p := range e.kv {
+		n += int64(len(p.k) + len(p.v) + 32)
 	}
-	return c
+	return n
 }
 
-// shardFor picks a shard from an FNV-1a byte of the key. Storage keys share a
-// long constant prefix (go-buildcache/v1...), so hashing the whole key rather
-// than sampling a byte of it is what keeps the shards even.
-func (c *metaCache) shardFor(key string) *metaShard {
-	var h uint32 = 2166136261
-	for i := 0; i < len(key); i++ {
-		h ^= uint32(key[i])
-		h *= 16777619
-	}
-	return &c.shards[byte(h^(h>>16))]
-}
+// metaCacheKind is the label this cache reports its size under.
+const metaCacheKind = "metadata"
 
-// get returns the metadata recorded for key IF it was recorded under the same
-// mtime and size the caller just stat'ed. Any mismatch is a miss.
-func (c *metaCache) get(key string, info os.FileInfo) ([]kvPair, bool) {
-	sh := c.shardFor(key)
-	sh.mu.Lock()
-	e, ok := sh.m[key]
-	sh.mu.Unlock()
-	if !ok || e.modNano != info.ModTime().UnixNano() || e.size != info.Size() {
-		return nil, false
-	}
-	return e.kv, true
+func newMetaCache(budget int64) *lruCache[string, metaEntry] {
+	return newLRUCache(budget, fnv1a, metaEntrySize)
 }
-
-// put records key's metadata against the stat it was read under.
-func (c *metaCache) put(key string, info os.FileInfo, kv []kvPair) {
-	sh := c.shardFor(key)
-	sh.mu.Lock()
-	_, existed := sh.m[key]
-	sh.m[key] = metaEntry{modNano: info.ModTime().UnixNano(), size: info.Size(), kv: kv}
-	sh.mu.Unlock()
-	if existed {
-		return
-	}
-	if c.count.Add(1) > c.limit {
-		c.clear()
-	}
-}
-
-// forget drops key's entry. Required only for a mutation that leaves mtime and
-// size untouched (an xattr stamped onto a live inode); every other change is
-// caught by the stat comparison.
-func (c *metaCache) forget(key string) {
-	sh := c.shardFor(key)
-	sh.mu.Lock()
-	if _, existed := sh.m[key]; existed {
-		delete(sh.m, key)
-		c.count.Add(-1)
-	}
-	sh.mu.Unlock()
-}
-
-func (c *metaCache) clear() {
-	for i := range c.shards {
-		sh := &c.shards[i]
-		sh.mu.Lock()
-		n := len(sh.m)
-		if n > 0 {
-			sh.m = make(map[string]metaEntry)
-		}
-		sh.mu.Unlock()
-		c.count.Add(int64(-n))
-	}
-}
-
-func (c *metaCache) size() int64 { return c.count.Load() }
 
 // loadMetadata fills meta.Metadata for the object at path, from the cache when
 // the entry matches info, otherwise by reading the xattrs and recording them.
@@ -143,9 +73,9 @@ func (s *Storage) loadMetadata(key, path string, info os.FileInfo, meta *ObjectM
 		getMetadata(path, meta)
 		return
 	}
-	if kv, ok := s.metaCache.get(key, info); ok {
+	if e, ok := s.metaCache.Get(key); ok && e.modNano == info.ModTime().UnixNano() && e.size == info.Size() {
 		metaCacheHitsTotal.Inc()
-		for _, p := range kv {
+		for _, p := range e.kv {
 			meta.Metadata[p.k] = p.v
 		}
 		return
@@ -156,7 +86,7 @@ func (s *Storage) loadMetadata(key, path string, info os.FileInfo, meta *ObjectM
 	for k, v := range meta.Metadata {
 		kv = append(kv, kvPair{k, v})
 	}
-	s.metaCache.put(key, info, kv)
+	s.metaCache.Put(key, metaEntry{modNano: info.ModTime().UnixNano(), size: info.Size(), kv: kv})
 }
 
 // forgetMeta drops key's cached metadata. Called wherever an object's xattrs
@@ -164,6 +94,6 @@ func (s *Storage) loadMetadata(key, path string, info os.FileInfo, meta *ObjectM
 // the other per-key invalidations on delete and eviction.
 func (s *Storage) forgetMeta(key string) {
 	if s.metaCache != nil {
-		s.metaCache.forget(key)
+		s.metaCache.Forget(key)
 	}
 }

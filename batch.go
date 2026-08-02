@@ -87,17 +87,36 @@ const maxPrefetchEntries = 200
 // given user. Prefetch entries are suppressed for this duration.
 const prefetchTrackerTTL = 5 * time.Minute
 
+// prefetchSentEntryBytes is what one remembered send costs: the user+key
+// strings, the timestamp, the map bucket and the list element.
+const prefetchSentEntryBytes = 160
+
+// prefetchTrackerKind is the label this cache reports its size under.
+const prefetchTrackerKind = "prefetch-sent"
+
 // prefetchTracker remembers which keys were recently sent as prefetch to each
 // user so that subsequent batch requests from the same user do not receive the
 // same bulk data over and over (e.g. the same 200-entry pool on every request).
+//
+// Bounded in bytes with LRU eviction like the other in-memory caches: an
+// evicted record means one pool of prefetch entries may be offered to that user
+// a second time, which is a little wasted bandwidth and nothing else. Records
+// also expire on their own after prefetchTrackerTTL.
 type prefetchTracker struct {
-	mu   sync.Mutex
-	sent map[string]map[string]time.Time // user → key → sent_at
+	sent *lruCache[string, time.Time] // "user\x00key" → sent_at
 }
 
 func newPrefetchTracker() *prefetchTracker {
-	return &prefetchTracker{sent: make(map[string]map[string]time.Time)}
+	return &prefetchTracker{sent: newLRUCache(
+		cacheBudget(prefetchBudgetFraction, defaultPrefetchBytes),
+		fnv1a,
+		func(k string, _ time.Time) int64 { return int64(len(k)) + prefetchSentEntryBytes },
+	)}
 }
+
+// sentKey is the tracker's composite key. NUL cannot appear in a username or a
+// storage key, so the join is unambiguous.
+func sentKey(user, key string) string { return user + "\x00" + key }
 
 // filterKeys returns the subset of candidate keys not recently sent to user.
 // It records nothing: suppression runs BEFORE the per-key stat/guard/heal
@@ -105,18 +124,11 @@ func newPrefetchTracker() *prefetchTracker {
 // each instead of a file open plus an lz4 first-block decode. record is called
 // afterwards with only the keys that actually made it into the response.
 func (t *prefetchTracker) filterKeys(user string, keys []string) []string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	now := time.Now()
-	userSent := t.sent[user]
-
 	var out []string
 	for _, k := range keys {
-		if userSent != nil {
-			if sentAt, ok := userSent[k]; ok && now.Sub(sentAt) < prefetchTrackerTTL {
-				continue
-			}
+		if sentAt, ok := t.sent.Get(sentKey(user, k)); ok && now.Sub(sentAt) < prefetchTrackerTTL {
+			continue
 		}
 		out = append(out, k)
 	}
@@ -127,31 +139,13 @@ func (t *prefetchTracker) filterKeys(user string, keys []string) []string {
 // stale entries. Only keys that were genuinely included in a response should
 // be recorded — a candidate dropped by the guard/heal checks stays eligible.
 func (t *prefetchTracker) record(user string, keys []string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	now := time.Now()
-	userSent := t.sent[user]
-
-	if len(keys) > 0 {
-		if userSent == nil {
-			userSent = make(map[string]time.Time)
-			t.sent[user] = userSent
-		}
-		for _, k := range keys {
-			userSent[k] = now
-		}
+	for _, k := range keys {
+		t.sent.Put(sentKey(user, k), now)
 	}
-
-	// Amortised eviction: clean stale keys for this user on every call.
-	for k, sentAt := range userSent {
-		if now.Sub(sentAt) >= prefetchTrackerTTL {
-			delete(userSent, k)
-		}
-	}
-	if len(userSent) == 0 {
-		delete(t.sent, user)
-	}
+	// Expiry needs no sweep: filterKeys treats a record older than the TTL as
+	// absent, and the byte bound evicts the least-recently-used records, which
+	// are exactly the ones nobody has looked up.
 }
 
 // handleBatchGet handles GET and POST /_batch/get requests. The client sends a

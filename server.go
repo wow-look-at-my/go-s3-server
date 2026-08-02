@@ -34,6 +34,10 @@ type Server struct {
 	// than queued until memory is exhausted (the OOM a fronting proxy reports as
 	// a 502). Buffered to MaxConcurrentRequests.
 	sem chan struct{}
+	// mem scales the in-memory caches to fit the process's memory budget. It is
+	// deliberately NOT consulted on the request path: memory pressure changes
+	// how much the server remembers, never whether it answers.
+	mem *memController
 	// shuttingDown is set by BeginShutdown when a termination signal is received.
 	// While set, the health endpoint reports 503 so an orchestrator or reverse
 	// proxy stops routing new requests here as http.Server.Shutdown drains the
@@ -51,12 +55,26 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 	if cfg.MaxObjectBytes <= 0 {
 		cfg.MaxObjectBytes = defaultMaxObjectBytes
 	}
-	return &Server{
+	s := &Server{
 		config:          cfg,
 		storage:         storage,
 		prefetchTracker: newPrefetchTracker(),
 		sem:             make(chan struct{}, cfg.MaxConcurrentRequests),
+		mem:             newMemController(memoryBudget),
 	}
+	// Everything registered here is rebuildable from disk, so the controller's
+	// only power is to make the server remember less. (Storage is nil in the
+	// health-endpoint tests, which construct a server with no backing store.)
+	if storage != nil {
+		if storage.metaCache != nil {
+			s.mem.Register(metaCacheKind, storage.metaCache.Budget(), storage.metaCache)
+		}
+		if storage.cleanKeys != nil {
+			s.mem.Register(cleanMemoKind, storage.cleanKeys.Budget(), storage.cleanKeys)
+		}
+	}
+	s.mem.Register(prefetchTrackerKind, s.prefetchTracker.sent.Budget(), s.prefetchTracker.sent)
+	return s
 }
 
 // BeginShutdown marks the server as draining, so the health endpoint starts

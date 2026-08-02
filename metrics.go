@@ -14,30 +14,30 @@ import (
 // HTTP metrics
 var (
 	httpRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "s3_http_requests_total",
+		Name: "cache_http_requests_total",
 		Help: "Total number of HTTP requests.",
 	}, []string{"method", "route", "status"})
 
 	httpRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "s3_http_request_duration_seconds",
+		Name:    "cache_http_request_duration_seconds",
 		Help:    "HTTP request duration in seconds.",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"method", "route"})
 
 	httpRequestSize = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "s3_http_request_size_bytes",
+		Name:    "cache_http_request_size_bytes",
 		Help:    "HTTP request body size in bytes.",
 		Buckets: prometheus.ExponentialBuckets(256, 4, 8),
 	}, []string{"method", "route"})
 
 	httpResponseSize = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "s3_http_response_size_bytes",
+		Name:    "cache_http_response_size_bytes",
 		Help:    "HTTP response body size in bytes.",
 		Buckets: prometheus.ExponentialBuckets(256, 4, 8),
 	}, []string{"method", "route"})
 
 	httpInFlightRequests = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "s3_http_in_flight_requests",
+		Name: "cache_http_in_flight_requests",
 		Help: "Number of HTTP requests currently being served.",
 	})
 
@@ -131,12 +131,12 @@ var (
 // Storage metrics
 var (
 	storageOpsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "s3_storage_operations_total",
+		Name: "cache_storage_operations_total",
 		Help: "Total number of storage operations.",
 	}, []string{"operation", "status"})
 
 	storageOpDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "s3_storage_operation_duration_seconds",
+		Name:    "cache_storage_operation_duration_seconds",
 		Help:    "Storage operation duration in seconds.",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"operation"})
@@ -156,7 +156,7 @@ var (
 // Auth metrics
 var (
 	authFailuresTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "s3_auth_failures_total",
+		Name: "cache_auth_failures_total",
 		Help: "Total number of authentication failures.",
 	})
 )
@@ -279,6 +279,41 @@ var (
 		Name: "s3_meta_cache_misses_total",
 		Help: "Total object-metadata reads that had to read extended attributes from disk.",
 	})
+
+	// Memory accounting (memlimit.go, lrucache.go). The server's in-memory
+	// caches are byte-bounded and evict; these say how big each one is allowed
+	// to be, how big it actually is, and how many entries it has given up.
+	// Requests are never refused for memory, so a cache shrinking is the ONLY
+	// visible effect of pressure -- which is what these expose.
+	memoryLimitBytes = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "s3_memory_limit_bytes",
+		Help: "The process memory ceiling the caches are sized against (0 = none discovered).",
+	})
+
+	memoryInUseBytes = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "s3_memory_in_use_bytes",
+		Help: "Memory the Go runtime counts against its limit (mapped, not released), sampled periodically.",
+	})
+
+	memoryShrinksTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "s3_memory_shrinks_total",
+		Help: "Times the in-memory cache budgets were cut because memory in use crossed the shrink threshold.",
+	})
+
+	cacheMemoryBytes = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "s3_cache_memory_bytes",
+		Help: "Bytes currently held by each in-memory cache.",
+	}, []string{"cache"})
+
+	cacheBudgetBytes = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "s3_cache_memory_budget_bytes",
+		Help: "Byte budget currently allowed for each in-memory cache (falls as memory gets tight).",
+	}, []string{"cache"})
+
+	cacheEvictionsTotal = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "s3_cache_memory_evictions",
+		Help: "Entries evicted from each in-memory cache to stay inside its byte budget.",
+	}, []string{"cache"})
 )
 
 // statusRecorder wraps http.ResponseWriter to capture status code and bytes written.

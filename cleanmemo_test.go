@@ -153,7 +153,8 @@ func BenchmarkGetObjectWarmLz4(b *testing.B) {
 // TestCleanMemo_Bound: exceeding the limit clears the memo wholesale instead of
 // growing without bound; subsequent adds start repopulating it.
 func TestCleanMemo_Bound(t *testing.T) {
-	memo := newCleanKeyMemo(4)
+	// A budget of four entries' worth of bytes.
+	memo := newCleanKeyMemo(4 * cleanEntryBytes * lruShardCount)
 
 	var hashes [6][gbciHashSize]byte
 	for i := range hashes {
@@ -161,27 +162,48 @@ func TestCleanMemo_Bound(t *testing.T) {
 		hashes[i][31] = 0xee
 	}
 
-	for i := 0; i < 4; i++ {
-		memo.add(hashes[i])
+	for i := range hashes {
+		memo.Put(hashes[i], struct{}{})
 	}
-	require.EqualValues(t, 4, memo.size())
-	require.True(t, memo.has(hashes[0]))
+	// Every entry here lands in a different shard, so all of them fit; what the
+	// bound guarantees is that the memo never exceeds its budget.
+	require.LessOrEqual(t, memo.Bytes(), memo.Budget()+cleanEntryBytes)
+	_, ok := memo.Get(hashes[5])
+	require.True(t, ok)
 
-	// The 5th add exceeds the limit and triggers a wholesale clear.
-	memo.add(hashes[4])
-	require.EqualValues(t, 0, memo.size(), "exceeding the bound must clear the memo")
-	require.False(t, memo.has(hashes[0]))
-	require.False(t, memo.has(hashes[4]))
+	// Shrinking the budget evicts rather than clearing: the most recently used
+	// entries survive, which is the whole point of holding less instead of
+	// holding nothing.
+	memo.SetBudget(cleanEntryBytes) // one entry per shard, still one shard each
+	require.LessOrEqual(t, memo.Bytes(), int64(len(hashes))*cleanEntryBytes)
 
-	// The memo keeps working after a clear.
-	memo.add(hashes[5])
-	require.True(t, memo.has(hashes[5]))
-	require.EqualValues(t, 1, memo.size())
+	// Forget removes exactly one.
+	before := memo.Len()
+	memo.Forget(hashes[5])
+	_, ok = memo.Get(hashes[5])
+	require.False(t, ok)
+	require.Equal(t, before-1, memo.Len())
+}
 
-	// Duplicate adds do not inflate the count; forget removes exactly one.
-	memo.add(hashes[5])
-	require.EqualValues(t, 1, memo.size())
-	memo.forgetKey(gbciKeyPrefix + hex.EncodeToString(hashes[5][:]))
-	require.False(t, memo.has(hashes[5]))
-	require.EqualValues(t, 0, memo.size())
+// TestCleanMemo_EvictsLeastRecentlyUsed: within one shard the memo must give up
+// the entry nobody has looked at, not the one being used every build.
+func TestCleanMemo_EvictsLeastRecentlyUsed(t *testing.T) {
+	memo := newCleanKeyMemo(2 * cleanEntryBytes * lruShardCount)
+
+	// Same first four bytes => same shard, so these three compete directly.
+	var a, b, c [gbciHashSize]byte
+	a[4], b[4], c[4] = 1, 2, 3
+
+	memo.Put(a, struct{}{})
+	memo.Put(b, struct{}{})
+	_, ok := memo.Get(a) // a is now the most recently used
+	require.True(t, ok)
+
+	memo.Put(c, struct{}{}) // evicts the least recently used, which is b
+	_, okA := memo.Get(a)
+	_, okB := memo.Get(b)
+	_, okC := memo.Get(c)
+	require.True(t, okA, "the recently used entry must survive")
+	require.False(t, okB, "the least recently used entry is the one to drop")
+	require.True(t, okC)
 }

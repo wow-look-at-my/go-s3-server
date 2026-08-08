@@ -343,14 +343,21 @@ services:
     labels:
       docker-updater.enable: "true"
       docker-updater.rolling: "true"
-      docker-updater.health-check.url: ":9000/_health"  # ":port" → container IP
+      docker-updater.well-known.port: "9000"   # which port serves the endpoints
 ```
 
-docker-updater resolves the `:`-prefixed URL to the new container's IP and polls
-it until it returns `2xx`. In recreate mode (omit `docker-updater.rolling`) the
-same `/_health` works as the post-update health check; the optional
-`docker-updater.pre-check.url` gate is consulted only in recreate mode, not
-rolling. For a shared build cache, prefer **rolling** mode — it keeps the cache
+The server answers `GET /.well-known/docker-updater/health` and
+`/.well-known/docker-updater/pre-update` — the contract docker-updater
+discovers by itself, no check labels required. Both are aliases of the `/_health`
+logic: `200` normally, `503` while draining. Discovery still needs to know which
+port to probe, and this image declares none, so `docker-updater.well-known.port`
+names it; everything else is automatic.
+
+The older `docker-updater.health-check.url: ":9000/_health"` form still works and
+still wins where it is set (the `:`-prefixed URL resolves to the container's own
+IP), but it marks the container "nonstandard" on the dashboard. In recreate mode
+(omit `docker-updater.rolling`) the pre-update gate is consulted; rolling mode
+skips it. For a shared build cache, prefer **rolling** mode — it keeps the cache
 reachable throughout the deploy while the old instance drains.
 
 ## Docker

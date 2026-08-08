@@ -25,6 +25,15 @@ const retryAfterSeconds = 2
 // itself does not depend on the probe being watched.
 const healthPath = "/_health"
 
+// The same contract at the paths docker-updater discovers by itself, with no
+// label to configure -- RFC 8615 reserves /.well-known/ for exactly that. Only
+// the status code is read, so health is an alias of /_health rather than a
+// second implementation of "is it up" that could disagree with the first.
+const (
+	wellKnownHealthPath    = "/.well-known/docker-updater/health"
+	wellKnownPreUpdatePath = "/.well-known/docker-updater/pre-update"
+)
+
 type Server struct {
 	config          *Config
 	storage         *Storage
@@ -135,7 +144,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// slot. While draining it returns 503 so a health-checking proxy/LB in front
 	// (if any) stops routing here; in-flight requests finish either way because
 	// Shutdown closes the listener.
-	if r.URL.Path == healthPath {
+	if r.URL.Path == healthPath || r.URL.Path == wellKnownHealthPath {
 		if s.shuttingDown.Load() {
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
 			http.Error(w, "draining", http.StatusServiceUnavailable)
@@ -143,6 +152,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("ok\n"))
+		return
+	}
+
+	// "May I be replaced right now?" -- answered here for the same reasons as
+	// the probe above, and 200 unless already draining. A cache miss costs a
+	// rebuild, never data: nothing this server holds is unrecoverable, and an
+	// upload interrupted mid-flight is retried by the client. Holding updates
+	// back for in-flight requests would be pure downside, so it does not.
+	if r.URL.Path == wellKnownPreUpdatePath {
+		if s.shuttingDown.Load() {
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
+			http.Error(w, "draining", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 

@@ -47,12 +47,9 @@ func init() {
 }
 
 func run(cmd *cobra.Command, args []string) error {
-	// Before anything allocates: tell the GC about the container's ceiling, so
-	// it collects on the way to the limit instead of being killed at it.
-	if limit := applyRuntimeMemoryLimit(); limit > 0 {
-		log.Printf("memory: GOMEMLIMIT set to %d MiB (%.0f%% of the %d MiB container limit); the GC now collects against that ceiling instead of only against heap growth",
-			limit>>20, gomemlimitHeadroom*100, memoryBudget>>20)
-	}
+	// Every init() has run by now, including the GOMEMLIMIT guard go-toolchain
+	// injects, so this reads the ceiling the GC is actually enforcing.
+	resolveMemoryBudget()
 
 	configPath, _ := cmd.Flags().GetString("config")
 	cfg, err := LoadConfig(configPath)

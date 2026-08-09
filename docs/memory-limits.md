@@ -75,27 +75,35 @@ had left a full-size backing array alive for the life of the process.
 value go-toolchain's injected cgroup guard installed at startup (it reads the
 cgroup v2/v1 limit and applies a 0.9 ratio). Reading the runtime's own number
 means the server and the GC agree on one ceiling instead of computing two.
-Failing that it reads `/sys/fs/cgroup/memory.max` and the v1 equivalent.
+Failing that it reads `/sys/fs/cgroup/memory.max` and the v1 equivalent — which
+is a fallback for a binary built without the guard, not the normal path.
 
 Each cache gets a fraction of that as its fully-grown budget (metadata 10%,
 known-clean 3%, prefetch 2%). **An undiscoverable budget is 0**, and then the
 caches use fixed defaults and the controller does not run at all — an unknown
 limit must not become an invented one.
 
-### Telling the GC about it
+### Resolve it after init(), not before
 
-Sizing the caches against the ceiling is not the same as the *runtime* knowing
-there is one. With no `GOMEMLIMIT`, the GC only targets a multiple of the live
-heap: at `GOGC=100` a 430 MB live heap gives a ~560 MB heap goal inside a 1 GiB
-container, and a burst of concurrent batch responses on top of that is an OOM
-kill rather than a collection. So when the ceiling came from the cgroup —
-meaning nothing else has set one — `applyRuntimeMemoryLimit` installs 90% of it
-as the runtime's soft limit before anything allocates. The remaining 10% covers
-what the Go heap accounting does not see.
+The GC's own ceiling is set for us: go-toolchain injects a `gomemlimit_gen.go`
+into every main package it builds, whose `init()` reads the cgroup limit and
+calls `debug.SetMemoryLimit(0.9 × limit)` unless `GOMEMLIMIT` is already set.
+This server must not install a second one — it would be dead code re-deriving
+the same number.
 
-An operator's own `GOMEMLIMIT` (or the one go-toolchain's guard installed) is
-left exactly as set: re-deriving a limit from itself would shrink it a little
-on every restart.
+What it must do is *read* the right number, and that is a matter of ordering.
+`detectMemoryBudget` used to run from a package-level variable initializer, and
+Go runs every package-level initializer **before** any `init()`. So it ran
+before the guard, found no runtime limit, fell back to `/sys/fs/cgroup/memory.max`
+and reported the raw container limit — 1 GiB where the GC was enforcing 966 MB.
+The caches were sized against a ceiling nothing enforced, and
+`s3_memory_limit_bytes` published it. That gauge reading exactly the container
+limit is what "GOMEMLIMIT is not set" looks like from the outside, and it sent
+two separate investigations down that path.
+
+`resolveMemoryBudget` is therefore called from `run()`, by which point every
+`init()` has finished, and `debug.SetMemoryLimit(-1)` returns the ceiling the GC
+is actually using.
 
 ## The controller
 

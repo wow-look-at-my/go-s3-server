@@ -278,13 +278,26 @@ func TestMemController_ShrinkEvictsRealCaches(t *testing.T) {
 	}
 }
 
-// TestRuntimeMemoryLimit: the container's limit is handed to the GC with
-// headroom, and an operator's own GOMEMLIMIT is never re-derived from itself.
-func TestRuntimeMemoryLimit(t *testing.T) {
-	oneGiB := int64(1) << 30
-	require.Equal(t, int64(float64(oneGiB)*gomemlimitHeadroom), runtimeMemoryLimitFor(oneGiB, "cgroup"))
-	require.Less(t, runtimeMemoryLimitFor(oneGiB, "cgroup"), int64(oneGiB),
-		"the GC's limit must sit below the limit the kernel kills at")
-	require.Zero(t, runtimeMemoryLimitFor(oneGiB, "GOMEMLIMIT"), "an explicit GOMEMLIMIT is left alone")
-	require.Zero(t, runtimeMemoryLimitFor(0, "unknown"), "no discoverable ceiling means none is invented")
+// TestMemoryBudgetIsTheEnforcedCeiling: the budget must be the limit the GC is
+// actually enforcing, not the container limit somebody could have derived it
+// from. go-toolchain's injected init() installs GOMEMLIMIT at a fraction of the
+// cgroup limit, and resolving the budget before that init ran reported the raw
+// cgroup number -- a ceiling nothing enforced, which reads as "GOMEMLIMIT is
+// not set" to anyone diagnosing an OOM from the metric.
+func TestMemoryBudgetIsTheEnforcedCeiling(t *testing.T) {
+	prev := debug.SetMemoryLimit(-1)
+	t.Cleanup(func() { debug.SetMemoryLimit(prev) })
+
+	installed := int64(512) << 20
+	debug.SetMemoryLimit(installed)
+
+	budget, source := detectMemoryBudget()
+	require.Equal(t, installed, budget, "the runtime's own limit wins over the cgroup file")
+	require.Equal(t, "GOMEMLIMIT", source)
+
+	prevBudget, prevSource := memoryBudget, memoryBudgetSource
+	t.Cleanup(func() { memoryBudget, memoryBudgetSource = prevBudget, prevSource })
+	resolveMemoryBudget()
+	require.Equal(t, installed, memoryBudget, "resolveMemoryBudget is what publishes it")
+	require.Equal(t, "GOMEMLIMIT", memoryBudgetSource)
 }

@@ -91,7 +91,7 @@ All flags except `--config` override the corresponding config file value.
 | Variable | Description |
 |----------|-------------|
 | `CACHE_MAX_BYTES` | Cache size budget when `eviction.max_bytes` is not set in the config: a byte count or a size like `100GB`. A malformed value fails startup rather than falling back. |
-| `GOMEMLIMIT` | Standard Go setting. Left alone if set; otherwise the server installs 90% of the container's memory limit so the GC collects against that ceiling. |
+| `GOMEMLIMIT` | Standard Go setting. Left alone if set; otherwise go-toolchain's injected startup guard installs 90% of the container's memory limit. The server reads whichever ceiling is in effect and sizes its in-memory caches against it. |
 
 ### `write_once` options
 

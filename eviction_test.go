@@ -388,6 +388,10 @@ func TestSweepScheduleSurvivesRestart(t *testing.T) {
 	assert.Greater(t, delay, 22*time.Hour, "a recent sweep must not be repeated at startup")
 	assert.Less(t, delay, 24*time.Hour)
 
+	// A marker stamped in the future cannot delay eviction past one interval.
+	s.recordSweepTime(time.Now().Add(30 * 24 * time.Hour))
+	assert.LessOrEqual(t, s.firstSweepDelay(interval), interval+evictionStartupDelayMax)
+
 	// A corrupt marker is treated as never swept rather than trusted.
 	require.NoError(t, os.WriteFile(s.dataDir+"/"+sweepMarkerFile, []byte("tomorrow"), 0644))
 	_, ok = s.lastSweepTime()

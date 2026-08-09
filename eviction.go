@@ -429,7 +429,9 @@ func (s *Storage) firstSweepDelay(interval time.Duration) time.Duration {
 	if remaining <= 0 {
 		return jitter
 	}
-	return remaining + jitter
+	// A marker stamped in the future (a clock that jumped) must not push the
+	// first sweep past one interval, which would stop eviction indefinitely.
+	return min(remaining, interval) + jitter
 }
 
 // runSweep executes one eviction sweep, records when it finished, and logs it

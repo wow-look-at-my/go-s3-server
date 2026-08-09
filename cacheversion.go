@@ -91,7 +91,7 @@ func sweepTempFiles(dataDir string) {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		if strings.HasPrefix(d.Name(), ".tmp-") {
+		if strings.HasPrefix(d.Name(), tempFilePrefix) {
 			if rmErr := os.Remove(path); rmErr == nil {
 				removed++
 			} else {

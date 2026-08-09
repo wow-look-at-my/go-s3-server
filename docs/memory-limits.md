@@ -18,6 +18,7 @@ memory state.
 | known-clean memo (`cleanmemo.go`) | keys recently read | **yes** — a re-probe costs one open |
 | prefetch suppression (`batch.go`) | recent prefetch traffic | **yes** — worst case one pool is re-sent |
 | the key index (`index.go`) | keys stored | **no** — it *is* what `/_index` serves |
+| last-access records (`eviction.go`) | keys read since startup | **no** — but only exists on a `noatime` data_dir; see `docs/eviction.md` |
 | in-flight requests | concurrency | **no** — but bodies stream, so each is small |
 
 The first three are byte-bounded LRU caches (`lrucache.go`): each holds a
@@ -26,9 +27,46 @@ there. Everything they hold is reconstructible from disk, which is precisely
 why they are the right thing to give up.
 
 The index is not droppable, and that sets the floor: a container has to be big
-enough to hold the index for the cache it serves (roughly 130 bytes per key —
-about 130 MB at a million keys). Below that no amount of eviction helps, and
-the server says so in the log rather than pretending otherwise.
+enough to hold the index for the cache it serves. Below that no amount of
+eviction helps, and the server says so in the log rather than pretending
+otherwise.
+
+## The index is the floor, so it is stored in bytes, not strings
+
+A production instance holding 1.11M keys sat at 645 MB in use against a 1 GiB
+container, with 432 MB of live heap and 1.29M heap objects — about one
+allocation and ~388 bytes per indexed key. The three shrinkable caches held
+19 MB between them, 3% of the total, so the controller shrinking them to their
+floor released ~20 MB while the process stayed at 645 MB. It was defending the
+wrong 3%.
+
+The size was in the key strings. Every cacheprog key is the constant
+`go-buildcache/v1` plus a 64-character hex action ID: 80 bytes of string, on
+its own heap object, carrying 32 bytes of entropy — held once per index entry,
+once per eviction candidate and once per access record. `compactKey`
+(`compactkey.go`) stores the 32 bytes inline instead and rebuilds the string
+only for the keys a caller actually receives. What the index costs per key is
+now the sum of three fixed structures, and nothing else:
+
+| structure | bytes per key |
+|---|---|
+| `indexEntry` (mtime-ordered, for prefetch) | 56 |
+| the sorted action-ID master list | 32 |
+| the serialized `/_index` blob it publishes | 32 |
+
+That is ~120 bytes per key, or ~130 MB at a million keys, with no per-key
+allocation for the GC to trace. `TestCompactKeyCostsNothingPerKey` pins both
+properties.
+
+The other half was periodic rather than resident: rebuilding the index and
+sweeping for eviction both materialized the whole cache as a `[]ListObject`
+with a key string apiece (~140 MB at a million keys), and the sweep then built
+a candidate list and a live-key set on top of that. `Storage.Walk` now hands
+each object to a callback as the directory walk finds it, and both callers
+consume it into compact structures — the sweep into a bounded histogram and
+bounded victim batches, so its peak is a batch rather than the cache. The
+rebuild also stopped routing walked hashes through the pending buffer, which
+had left a full-size backing array alive for the life of the process.
 
 ## The budget
 
@@ -37,12 +75,35 @@ the server says so in the log rather than pretending otherwise.
 value go-toolchain's injected cgroup guard installed at startup (it reads the
 cgroup v2/v1 limit and applies a 0.9 ratio). Reading the runtime's own number
 means the server and the GC agree on one ceiling instead of computing two.
-Failing that it reads `/sys/fs/cgroup/memory.max` and the v1 equivalent.
+Failing that it reads `/sys/fs/cgroup/memory.max` and the v1 equivalent — which
+is a fallback for a binary built without the guard, not the normal path.
 
 Each cache gets a fraction of that as its fully-grown budget (metadata 10%,
 known-clean 3%, prefetch 2%). **An undiscoverable budget is 0**, and then the
 caches use fixed defaults and the controller does not run at all — an unknown
 limit must not become an invented one.
+
+### Resolve it after init(), not before
+
+The GC's own ceiling is set for us: go-toolchain injects a `gomemlimit_gen.go`
+into every main package it builds, whose `init()` reads the cgroup limit and
+calls `debug.SetMemoryLimit(0.9 × limit)` unless `GOMEMLIMIT` is already set.
+This server must not install a second one — it would be dead code re-deriving
+the same number.
+
+What it must do is *read* the right number, and that is a matter of ordering.
+`detectMemoryBudget` used to run from a package-level variable initializer, and
+Go runs every package-level initializer **before** any `init()`. So it ran
+before the guard, found no runtime limit, fell back to `/sys/fs/cgroup/memory.max`
+and reported the raw container limit — 1 GiB where the GC was enforcing 966 MB.
+The caches were sized against a ceiling nothing enforced, and
+`s3_memory_limit_bytes` published it. That gauge reading exactly the container
+limit is what "GOMEMLIMIT is not set" looks like from the outside, and it sent
+two separate investigations down that path.
+
+`resolveMemoryBudget` is therefore called from `run()`, by which point every
+`init()` has finished, and `debug.SetMemoryLimit(-1)` returns the ceiling the GC
+is actually using.
 
 ## The controller
 

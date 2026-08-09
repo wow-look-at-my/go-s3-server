@@ -426,6 +426,18 @@ func TestIndexHTTPMatchesInProcess(t *testing.T) {
 // snapshot instead. The interleaving is reproduced deterministically: the
 // "walk" snapshot is taken first, the concurrent Put lands after it, then the
 // snapshot is applied.
+
+// buildFrom is what Storage.Walk feeds applyRebuild in production, assembled
+// here from a fixed object list so a rebuild can be tested without a data_dir.
+func buildFrom(objects []ListObject) *indexBuild {
+	b := newIndexBuild(len(objects))
+	for _, o := range objects {
+		b.add(o)
+	}
+	b.finish()
+	return b
+}
+
 func TestRebuildPreservesConcurrentPuts(t *testing.T) {
 	idx := &Index{}
 
@@ -439,7 +451,7 @@ func TestRebuildPreservesConcurrentPuts(t *testing.T) {
 	// rebuild takes the lock.
 	idx.Put(keyB, 1)
 
-	idx.applyRebuild(snapshot)
+	idx.applyRebuild(buildFrom(snapshot))
 
 	require.True(t, idx.Contains(hA), "the walked key must be indexed")
 	require.True(t, idx.Contains(hB), "a PUT concurrent with the walk must survive the rebuild")
@@ -456,7 +468,7 @@ func TestRebuildPreservesConcurrentPuts(t *testing.T) {
 	// is deduped, not double-counted.
 	idx2 := &Index{}
 	idx2.Put(keyA, 1)
-	idx2.applyRebuild(snapshot)
+	idx2.applyRebuild(buildFrom(snapshot))
 	blob2, _ := idx2.Blob()
 	p := parseGBCI(t, blob2)
 	require.Equal(t, uint64(1), p.Count, "a key in both the snapshot and pending must dedupe")
@@ -482,7 +494,7 @@ func TestRebuildConcurrentPutStress(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 20; i++ {
-			idx.applyRebuild(nil) // empty disk snapshot: worst case for clobbering
+			idx.applyRebuild(buildFrom(nil)) // empty disk snapshot: worst case for clobbering
 		}
 	}()
 	wg.Wait()

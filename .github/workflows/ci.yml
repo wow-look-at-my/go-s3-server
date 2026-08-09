@@ -188,7 +188,7 @@ jobs:
           script: |
             const log = fs.readFileSync('/tmp/build2.log', 'utf-8');
 
-            // Deliberately rename-tolerant: the counter prefix already changed once (s3 -> web), and a non-match must fail rather than warn.
+            // Match loosely on "index: N keys" / "summary: ... hits=N" so a tier rename survives (s3 -> web already happened once); a non-match is a hard failure.
             const idx = log.match(/index:\s*(\d+)\s*keys/);
             const sum = log.match(/summary:.*?\bhits=(\d+)/);
 

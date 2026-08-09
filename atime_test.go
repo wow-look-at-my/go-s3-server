@@ -64,33 +64,55 @@ func TestAtimeProbeDetectsRecording(t *testing.T) {
 // and the old sweep evicted exactly those entries as idle.
 func TestEvictionHonorsFilesystemAccessTime(t *testing.T) {
 	s := newEvictStorage(t)
-	if recorded, err := atimeIsRecorded(s.dataDir); err != nil || !recorded {
-		t.Skip("this filesystem does not record access times; last use is tracked in memory here")
-	}
 	require.Nil(t, s.accessShards, "this test must not rely on in-memory access records")
 
 	hot, cold := gbciKey(1), gbciKey(2)
 	require.NoError(t, s.Put(hot, []byte("hot"), nil, nil))
 	require.NoError(t, s.Put(cold, []byte("cold"), nil, nil))
 
+	// Both written long ago; the hot one was READ an hour ago. The access time
+	// is set explicitly rather than by reading the file, so this asserts what
+	// eviction does with the timestamp on every filesystem -- a read-driven
+	// version would quietly skip wherever the mount does not advance atime, and
+	// a test that skips is a test that proves nothing.
 	now := time.Now()
 	old := now.Add(-48 * time.Hour)
-	for _, k := range []string{hot, cold} {
-		require.NoError(t, os.Chtimes(s.keyToPath(k), old, old))
-	}
-
-	// Read the hot object's body the way a GET does. That, and only that, is
-	// what the kernel records.
-	body, _, err := s.Get(hot)
-	require.NoError(t, err)
-	require.Equal(t, "hot", string(body))
+	require.NoError(t, os.Chtimes(s.keyToPath(hot), now.Add(-time.Hour), old))
+	require.NoError(t, os.Chtimes(s.keyToPath(cold), old, old))
 
 	stats, err := s.Evict(24*time.Hour, 0, now)
 	require.NoError(t, err)
 	assert.Equal(t, 1, stats.EvictedAge)
 
 	_, err = s.Stat(hot)
-	assert.NoError(t, err, "an entry read since it was written must survive a restart-less-than-write-age sweep")
+	assert.NoError(t, err, "an entry read since it was written must survive a sweep, with no in-memory record of the read")
 	_, err = s.Stat(cold)
 	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestReadAdvancesAccessTime closes the loop the test above deliberately does
+// not depend on: that an ordinary GET is what moves the access time in the
+// first place. It asserts against this filesystem's real behavior, which the
+// startup probe reports -- so it checks the two agree instead of skipping.
+func TestReadAdvancesAccessTime(t *testing.T) {
+	s := newEvictStorage(t)
+	key := gbciKey(3)
+	require.NoError(t, s.Put(key, []byte("body"), nil, nil))
+
+	path := s.keyToPath(key)
+	backdated := time.Now().Add(-atimeProbeAge)
+	require.NoError(t, os.Chtimes(path, backdated, backdated))
+
+	body, _, err := s.Get(key)
+	require.NoError(t, err)
+	require.Equal(t, "body", string(body))
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	advanced := fileAccessTime(info).After(backdated.Add(time.Hour))
+
+	recorded, err := atimeIsRecorded(s.dataDir)
+	require.NoError(t, err)
+	assert.Equal(t, recorded, advanced,
+		"the startup probe decides whether reads are tracked in memory; it must match what a GET actually does here")
 }

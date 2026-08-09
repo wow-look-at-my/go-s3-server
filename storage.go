@@ -45,6 +45,14 @@ const currentCacheVersion = 3
 const cacheVersionFile = ".cache_version"
 const lockFileName = ".lock"
 
+// sweepMarkerFile records when the last eviction sweep finished, so a restart
+// does not reset the sweep schedule. See eviction.go.
+const sweepMarkerFile = ".last_sweep"
+
+// tempFilePrefix names PutStream's in-progress uploads. Files carrying it are
+// invisible to every walk of the data_dir and are swept at startup.
+const tempFilePrefix = ".tmp-"
+
 // fsyncThresholdBytes: PutStream fsyncs temp files at or above this size
 // before renaming them into place (see the comment at the call site).
 const fsyncThresholdBytes = 8 << 20
@@ -85,10 +93,15 @@ type ObjectMeta struct {
 	Size     int64
 }
 
+// ListObject is one stored object as reported by Walk: metadata only, never a
+// body. LastAccess is the filesystem's access time, which the kernel advances
+// when a body is read (see atime.go); it is the zero time when the platform or
+// the mount does not record one.
 type ListObject struct {
 	Key          string
 	Size         int64
 	LastModified time.Time
+	LastAccess   time.Time
 }
 
 func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
@@ -263,7 +276,7 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 		return fmt.Errorf("create dirs: %w", err)
 	}
 
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	tmp, err := os.CreateTemp(dir, tempFilePrefix+"*")
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}
@@ -603,10 +616,29 @@ func (s *Storage) Delete(key string) (err error) {
 	return nil
 }
 
-// Snapshot enumerates every stored object with its size and mtime, reading
-// metadata only -- no bodies. It is the ground truth the in-memory Index is
-// rebuilt from and the candidate set the eviction sweeper works over, and it
-// is not on any request path.
+// isReservedFile reports whether a name in the data_dir is server bookkeeping
+// rather than a stored object. Every walk of the data_dir must skip these:
+// listing one would advertise a phantom key in the index and let eviction
+// delete the server's own state.
+func isReservedFile(name string) bool {
+	return name == lockFileName ||
+		name == cacheVersionFile ||
+		name == sweepMarkerFile ||
+		strings.HasPrefix(name, tempFilePrefix) ||
+		// Metadata sidecars (Windows) are companions of an object, not objects.
+		isSidecarName(name)
+}
+
+// Walk enumerates every stored object with its size, mtime and access time,
+// reading metadata only -- no bodies. It is the ground truth the in-memory
+// Index is rebuilt from and the candidate set the eviction sweeper works over,
+// and it is not on any request path.
+//
+// It hands each object to fn as the directory walk finds it, rather than
+// returning a slice: at a million objects, materializing the listing cost more
+// (a heap-allocated key string apiece, plus the slice) than either caller's
+// own compact representation of the same data, and it was allocated afresh on
+// every index rebuild and every eviction sweep.
 //
 // It used to be List(prefix, maxKeys, continuationToken): a paginated,
 // key-sorted, S3-shaped listing serving GET /{bucket}/?list-type=2. That
@@ -620,7 +652,7 @@ func (s *Storage) Delete(key string) (err error) {
 //
 // Cost is one directory walk plus one stat per file, which is inherent to
 // enumerating a directory tree, and now nothing on top of it.
-func (s *Storage) Snapshot() (_ []ListObject, err error) {
+func (s *Storage) Walk(fn func(ListObject)) (err error) {
 	metricsStart := time.Now()
 	defer func() {
 		status := "ok"
@@ -631,22 +663,14 @@ func (s *Storage) Snapshot() (_ []ListObject, err error) {
 		storageOpDuration.WithLabelValues("list").Observe(time.Since(metricsStart).Seconds())
 	}()
 
-	var objects []ListObject
-	err = filepath.WalkDir(s.dataDir, func(path string, d fs.DirEntry, err error) error {
+	return filepath.WalkDir(s.dataDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // skip errors
 		}
 		if d.IsDir() {
 			return nil
 		}
-		name := d.Name()
-		if name == lockFileName || name == cacheVersionFile || strings.HasPrefix(name, ".tmp-") {
-			return nil
-		}
-		// Metadata sidecars (Windows) are companions of an object, not objects:
-		// listing them would advertise phantom keys in the index and let
-		// eviction delete metadata out from under live bodies.
-		if isSidecarName(name) {
+		if isReservedFile(d.Name()) {
 			return nil
 		}
 
@@ -660,15 +684,12 @@ func (s *Storage) Snapshot() (_ []ListObject, err error) {
 			return nil
 		}
 
-		objects = append(objects, ListObject{
+		fn(ListObject{
 			Key:          key,
 			Size:         info.Size(),
 			LastModified: info.ModTime(),
+			LastAccess:   fileAccessTime(info),
 		})
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return objects, nil
 }

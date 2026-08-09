@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -66,6 +68,12 @@ type WriteOnceConfig struct {
 type Duration time.Duration
 
 func (d *Duration) UnmarshalJSON(data []byte) error {
+	// JSON null means "not set", which for a duration is zero. Erroring on it
+	// would reject a config that spells an absent field out explicitly.
+	if string(data) == "null" {
+		*d = 0
+		return nil
+	}
 	var s string
 	if err := json.Unmarshal(data, &s); err == nil {
 		if s == "" {
@@ -95,39 +103,49 @@ func (d Duration) MarshalJSON() ([]byte, error) {
 func (d Duration) Std() time.Duration { return time.Duration(d) }
 
 // EvictionConfig controls automatic pruning of cache entries so the data_dir
-// does not grow without bound. Both limits are independent and may be combined.
+// does not grow without bound.
 //
-// Eviction is driven by an entry's "last used" time, defined as the later of
-// its on-disk mtime (when it was written) and its last-access time (tracked
-// in memory while the server runs). This keeps frequently-read but rarely-
-// rewritten entries alive, which is exactly what "not accessed in a while"
-// means for a write-once content-addressed cache. mtime itself is never
-// rewritten on read, so the prefetch system's "same build" grouping (which
-// keys on mtime) is unaffected.
+// The cache is an LRU: by default it is bounded by SIZE (max_bytes), and when
+// it is over budget the least recently used entries go first. Age eviction
+// (max_age) is a separate, off-by-default TTL -- a build cache entry that is
+// still being read is still useful however old it is, so nothing is dropped
+// for age alone unless an operator asks for it.
+//
+// "Last used" is the latest of an entry's on-disk mtime (when it was written),
+// its filesystem access time (advanced by the kernel whenever its body is
+// read, and durable across restarts), and any read this process recorded in
+// memory. mtime itself is never rewritten on read, so the prefetch system's
+// "same build" grouping (which keys on mtime) is unaffected.
 type EvictionConfig struct {
-	// MaxAge removes entries not used within this window. A pointer so an
-	// absent field can take the built-in default while an explicit 0 / "0"
-	// disables age-based eviction. Negative is a config error.
-	MaxAge *Duration `json:"max_age"`
-	// MaxBytes is a total-size budget for the data_dir. When exceeded, the
-	// least-recently-used entries are evicted until the total is back under
-	// budget. 0 disables size-based eviction.
-	MaxBytes int64 `json:"max_bytes"`
+	// MaxAge removes entries not used within this window. Absent or 0 leaves
+	// age eviction off; negative is a config error.
+	MaxAge Duration `json:"max_age"`
+	// MaxBytes is the total-size budget for the data_dir: over budget, the
+	// least-recently-used entries are evicted until the total is back under it.
+	// A pointer so an absent field can take the built-in default (or the
+	// CACHE_MAX_BYTES env var) while an explicit 0 disables size eviction.
+	MaxBytes *int64 `json:"max_bytes"`
 	// Interval is how often the background sweeper runs. 0 → default.
 	Interval Duration `json:"interval"`
 }
 
 // AgeLimit returns the configured max-age as a time.Duration (0 if disabled).
 func (e EvictionConfig) AgeLimit() time.Duration {
-	if e.MaxAge == nil {
+	return e.MaxAge.Std()
+}
+
+// SizeLimit returns the configured size budget in bytes (0 if disabled). It is
+// only meaningful after LoadConfig has applied the default.
+func (e EvictionConfig) SizeLimit() int64 {
+	if e.MaxBytes == nil {
 		return 0
 	}
-	return e.MaxAge.Std()
+	return *e.MaxBytes
 }
 
 // Enabled reports whether any eviction policy is active.
 func (e EvictionConfig) Enabled() bool {
-	return e.AgeLimit() > 0 || e.MaxBytes > 0
+	return e.AgeLimit() > 0 || e.SizeLimit() > 0
 }
 
 type Config struct {
@@ -148,8 +166,8 @@ type Config struct {
 	MaxObjectBytes int64 `json:"max_object_bytes"`
 
 	// Eviction bounds the on-disk cache so it does not grow until the disk
-	// fills. See EvictionConfig. Enabled by default with a conservative
-	// max_age; set eviction.max_age to 0 to opt out.
+	// fills. See EvictionConfig. Enabled by default with a size budget; set
+	// eviction.max_bytes to 0 to opt out.
 	Eviction EvictionConfig `json:"eviction"`
 }
 
@@ -159,17 +177,21 @@ type Config struct {
 const (
 	defaultMaxConcurrentRequests = 128
 	defaultMaxObjectBytes        = 1 << 30 // 1 GiB
-	// defaultEvictionMaxAge is the idle window after which an unused cache
-	// entry is pruned by default. 30 days is generous: anything not touched in
-	// a month is almost certainly a stale action ID from code that has since
-	// changed, and re-fetching a wrongly-evicted entry only costs one rebuild.
-	defaultEvictionMaxAge = 30 * 24 * time.Hour
+	// defaultEvictionMaxBytes is the cache's size budget when neither the
+	// config nor CACHE_MAX_BYTES sets one. A bound has to exist by default:
+	// unbounded, the cache grows until the disk fills, and every stored object
+	// also costs index memory in this process.
+	defaultEvictionMaxBytes = 50 << 30 // 50 GiB
+	// maxBytesEnvVar overrides defaultEvictionMaxBytes without a config edit,
+	// which is how the deployment sizes the cache to the volume it mounted.
+	// An explicit eviction.max_bytes in the config still wins.
+	maxBytesEnvVar = "CACHE_MAX_BYTES"
 	// defaultEvictionInterval is how often the sweeper runs when eviction is on.
-	// Deliberately infrequent: with a 30-day age window there is nothing to gain
-	// from sweeping more often, and each sweep walks the whole data_dir. If you
-	// set a tight max_bytes, consider a shorter interval so the cache overshoots
-	// the budget less between sweeps.
-	defaultEvictionInterval = 72 * time.Hour
+	// Daily: each sweep walks the whole data_dir, and a day bounds how far the
+	// cache can overshoot its size budget between sweeps. The sweeper also runs
+	// at startup when the recorded last sweep is at least this old, so a
+	// frequently-restarted deployment still sweeps.
+	defaultEvictionInterval = 24 * time.Hour
 )
 
 func LoadConfig(path string) (*Config, error) {
@@ -212,15 +234,20 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.MaxObjectBytes <= 0 {
 		cfg.MaxObjectBytes = defaultMaxObjectBytes
 	}
-	// Eviction: an absent max_age takes the default; an explicit 0 disables it.
-	if cfg.Eviction.MaxAge == nil {
-		d := Duration(defaultEvictionMaxAge)
-		cfg.Eviction.MaxAge = &d
-	}
+	// Eviction: an absent max_bytes takes CACHE_MAX_BYTES or the built-in
+	// default; an explicit 0 disables the size budget. max_age is off unless
+	// asked for -- the cache is an LRU, not a TTL.
 	if cfg.Eviction.AgeLimit() < 0 {
 		return nil, fmt.Errorf("config: eviction.max_age must not be negative")
 	}
-	if cfg.Eviction.MaxBytes < 0 {
+	if cfg.Eviction.MaxBytes == nil {
+		n, err := envMaxBytes()
+		if err != nil {
+			return nil, err
+		}
+		cfg.Eviction.MaxBytes = &n
+	}
+	if *cfg.Eviction.MaxBytes < 0 {
 		return nil, fmt.Errorf("config: eviction.max_bytes must not be negative")
 	}
 	if cfg.Eviction.Interval <= 0 {
@@ -241,4 +268,59 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 	return &cfg, nil
+}
+
+// envMaxBytes resolves the cache size budget from CACHE_MAX_BYTES, falling back
+// to the built-in default when it is unset or empty. A value that is SET but
+// unparseable is a typo the operator needs to hear about, so it fails the load
+// rather than silently reverting to the default.
+func envMaxBytes() (int64, error) {
+	raw := strings.TrimSpace(os.Getenv(maxBytesEnvVar))
+	if raw == "" {
+		return defaultEvictionMaxBytes, nil
+	}
+	n, err := parseByteSize(raw)
+	if err != nil {
+		return 0, fmt.Errorf("config: %s=%q: %w", maxBytesEnvVar, raw, err)
+	}
+	return n, nil
+}
+
+// byteSizeUnits are the suffixes parseByteSize accepts, longest first so "KiB"
+// is matched before "K". Both the binary (KiB) and the decimal-looking (KB, K)
+// spellings mean powers of 1024: a cache budget is disk space, and nobody
+// writing "50GB" for one means 50,000,000,000 bytes exactly.
+var byteSizeUnits = []struct {
+	suffix string
+	mult   int64
+}{
+	{"KIB", 1 << 10}, {"MIB", 1 << 20}, {"GIB", 1 << 30}, {"TIB", 1 << 40},
+	{"KB", 1 << 10}, {"MB", 1 << 20}, {"GB", 1 << 30}, {"TB", 1 << 40},
+	{"K", 1 << 10}, {"M", 1 << 20}, {"G", 1 << 30}, {"T", 1 << 40},
+	{"B", 1},
+}
+
+// parseByteSize parses a byte count, with or without a size suffix: "50GB",
+// "50 GiB", "512M", "1073741824".
+func parseByteSize(s string) (int64, error) {
+	up := strings.ToUpper(strings.TrimSpace(s))
+	mult := int64(1)
+	for _, u := range byteSizeUnits {
+		if rest, ok := strings.CutSuffix(up, u.suffix); ok {
+			up, mult = rest, u.mult
+			break
+		}
+	}
+	up = strings.TrimSpace(up)
+	n, err := strconv.ParseInt(up, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("not a byte size (want e.g. \"50GB\" or a plain byte count)")
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("must not be negative")
+	}
+	if mult > 1 && n > (1<<62)/mult {
+		return 0, fmt.Errorf("byte size overflows int64")
+	}
+	return n * mult, nil
 }

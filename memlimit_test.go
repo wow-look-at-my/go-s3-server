@@ -277,3 +277,14 @@ func TestMemController_ShrinkEvictsRealCaches(t *testing.T) {
 		require.Equal(t, "abc", meta.Metadata["outputid"])
 	}
 }
+
+// TestRuntimeMemoryLimit: the container's limit is handed to the GC with
+// headroom, and an operator's own GOMEMLIMIT is never re-derived from itself.
+func TestRuntimeMemoryLimit(t *testing.T) {
+	oneGiB := int64(1) << 30
+	require.Equal(t, int64(float64(oneGiB)*gomemlimitHeadroom), runtimeMemoryLimitFor(oneGiB, "cgroup"))
+	require.Less(t, runtimeMemoryLimitFor(oneGiB, "cgroup"), int64(oneGiB),
+		"the GC's limit must sit below the limit the kernel kills at")
+	require.Zero(t, runtimeMemoryLimitFor(oneGiB, "GOMEMLIMIT"), "an explicit GOMEMLIMIT is left alone")
+	require.Zero(t, runtimeMemoryLimitFor(0, "unknown"), "no discoverable ceiling means none is invented")
+}

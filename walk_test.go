@@ -12,10 +12,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Snapshot is the ground truth both the index rebuild and the eviction sweeper
-// are built on, and until it replaced the old paginated List it had no test at
-// all -- the pagination it carried was dead code nobody called and nobody
-// checked.
+// Walk is the ground truth both the index rebuild and the eviction sweeper are
+// built on, and until it replaced the old paginated List it had no test at all
+// -- the pagination it carried was dead code nobody called and nobody checked.
+
+// collectWalk gathers everything Walk reports. The tests below assert on the
+// whole set; production callers consume objects as the walk finds them, which
+// is the point of Walk taking a callback.
+func collectWalk(s *Storage) ([]ListObject, error) {
+	var objects []ListObject
+	err := s.Walk(func(o ListObject) { objects = append(objects, o) })
+	return objects, err
+}
 
 func newTestStorage(t *testing.T) *Storage {
 	t.Helper()
@@ -24,12 +32,12 @@ func newTestStorage(t *testing.T) *Storage {
 	return s
 }
 
-func TestSnapshotReturnsEveryObjectWithMetadata(t *testing.T) {
+func TestWalkReturnsEveryObjectWithMetadata(t *testing.T) {
 	s := newTestStorage(t)
 	require.NoError(t, s.Put("go-buildcache/v1"+hex64('a'), []byte("hello"), nil, nil))
 	require.NoError(t, s.Put("plain-key", []byte("worldly"), nil, nil))
 
-	objects, err := s.Snapshot()
+	objects, err := collectWalk(s)
 	require.NoError(t, err)
 
 	bySize := map[string]int64{}
@@ -42,7 +50,7 @@ func TestSnapshotReturnsEveryObjectWithMetadata(t *testing.T) {
 	assert.Len(t, objects, 2)
 }
 
-func TestSnapshotHasNoCap(t *testing.T) {
+func TestWalkHasNoCap(t *testing.T) {
 	// The old List took a maxKeys, and both callers faked "everything" with an
 	// arbitrary huge number -- one of them 1000000, which would have silently
 	// truncated the index rebuild of a larger cache. There is no cap to get
@@ -53,7 +61,7 @@ func TestSnapshotHasNoCap(t *testing.T) {
 		require.NoError(t, s.Put(fmt.Sprintf("key-%05d", i), []byte("x"), nil, nil))
 	}
 
-	objects, err := s.Snapshot()
+	objects, err := collectWalk(s)
 	require.NoError(t, err)
 	assert.Len(t, objects, count)
 
@@ -64,7 +72,7 @@ func TestSnapshotHasNoCap(t *testing.T) {
 	assert.Len(t, seen, count, "every key distinct and present")
 }
 
-func TestSnapshotSkipsNonObjects(t *testing.T) {
+func TestWalkSkipsNonObjects(t *testing.T) {
 	// The lock file, the cache-version stamp, in-flight temp files and Windows
 	// metadata sidecars all live in the data dir but are not objects. Listing
 	// one would advertise a phantom key in /_index and hand the eviction
@@ -78,14 +86,14 @@ func TestSnapshotSkipsNonObjects(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, tmp.Close())
 
-	objects, err := s.Snapshot()
+	objects, err := collectWalk(s)
 	require.NoError(t, err)
 	require.Len(t, objects, 1)
 	assert.Equal(t, "real-object", objects[0].Key)
 }
 
-func TestSnapshotEmptyStore(t *testing.T) {
-	objects, err := newTestStorage(t).Snapshot()
+func TestWalkEmptyStore(t *testing.T) {
+	objects, err := collectWalk(newTestStorage(t))
 	require.NoError(t, err)
 	assert.Empty(t, objects)
 }

@@ -78,6 +78,43 @@ const (
 // be discovered. Resolved once at startup; see detectMemoryBudget.
 var memoryBudget, memoryBudgetSource = detectMemoryBudget()
 
+// gomemlimitHeadroom is the share of the container's limit handed to the GC as
+// its own soft limit. The remainder covers what the Go heap accounting does not
+// see (thread stacks the runtime has not mapped, the allocator's own
+// fragmentation, anything else in the container) so the GC works harder before
+// the kernel's limit, rather than after it.
+const gomemlimitHeadroom = 0.9
+
+// applyRuntimeMemoryLimit hands the discovered container limit to the GC.
+//
+// Without it the GC only targets a multiple of the live heap (GOGC=100 means
+// roughly double it) and has no idea a ceiling exists: a 400 MiB live heap
+// happily grows toward 800 MiB of heap goal inside a 1 GiB container, and a
+// burst of concurrent requests on top of that is an OOM kill, not a GC. Setting
+// the limit makes the GC run harder as the total approaches the ceiling.
+//
+// It returns the limit it installed, or 0 when it installed none: an operator's
+// own GOMEMLIMIT is left exactly as set, and with no discoverable ceiling there
+// is nothing honest to install.
+func applyRuntimeMemoryLimit() int64 {
+	limit := runtimeMemoryLimitFor(memoryBudget, memoryBudgetSource)
+	if limit > 0 {
+		debug.SetMemoryLimit(limit)
+	}
+	return limit
+}
+
+// runtimeMemoryLimitFor is applyRuntimeMemoryLimit's decision, without the
+// process-wide side effect. A budget that came from GOMEMLIMIT is already the
+// runtime's limit -- re-deriving one from it would quietly shrink the operator's
+// setting on every start.
+func runtimeMemoryLimitFor(budget int64, source string) int64 {
+	if budget <= 0 || source != "cgroup" {
+		return 0
+	}
+	return int64(float64(budget) * gomemlimitHeadroom)
+}
+
 // detectMemoryBudget returns the process's memory ceiling and where it came
 // from.
 //

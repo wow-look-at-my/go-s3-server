@@ -18,6 +18,7 @@ memory state.
 | known-clean memo (`cleanmemo.go`) | keys recently read | **yes** — a re-probe costs one open |
 | prefetch suppression (`batch.go`) | recent prefetch traffic | **yes** — worst case one pool is re-sent |
 | the key index (`index.go`) | keys stored | **no** — it *is* what `/_index` serves |
+| last-access records (`eviction.go`) | keys read since startup | **no** — but only exists on a `noatime` data_dir; see `docs/eviction.md` |
 | in-flight requests | concurrency | **no** — but bodies stream, so each is small |
 
 The first three are byte-bounded LRU caches (`lrucache.go`): each holds a
@@ -26,9 +27,46 @@ there. Everything they hold is reconstructible from disk, which is precisely
 why they are the right thing to give up.
 
 The index is not droppable, and that sets the floor: a container has to be big
-enough to hold the index for the cache it serves (roughly 130 bytes per key —
-about 130 MB at a million keys). Below that no amount of eviction helps, and
-the server says so in the log rather than pretending otherwise.
+enough to hold the index for the cache it serves. Below that no amount of
+eviction helps, and the server says so in the log rather than pretending
+otherwise.
+
+## The index is the floor, so it is stored in bytes, not strings
+
+A production instance holding 1.11M keys sat at 645 MB in use against a 1 GiB
+container, with 432 MB of live heap and 1.29M heap objects — about one
+allocation and ~388 bytes per indexed key. The three shrinkable caches held
+19 MB between them, 3% of the total, so the controller shrinking them to their
+floor released ~20 MB while the process stayed at 645 MB. It was defending the
+wrong 3%.
+
+The size was in the key strings. Every cacheprog key is the constant
+`go-buildcache/v1` plus a 64-character hex action ID: 80 bytes of string, on
+its own heap object, carrying 32 bytes of entropy — held once per index entry,
+once per eviction candidate and once per access record. `compactKey`
+(`compactkey.go`) stores the 32 bytes inline instead and rebuilds the string
+only for the keys a caller actually receives. What the index costs per key is
+now the sum of three fixed structures, and nothing else:
+
+| structure | bytes per key |
+|---|---|
+| `indexEntry` (mtime-ordered, for prefetch) | 56 |
+| the sorted action-ID master list | 32 |
+| the serialized `/_index` blob it publishes | 32 |
+
+That is ~120 bytes per key, or ~130 MB at a million keys, with no per-key
+allocation for the GC to trace. `TestCompactKeyCostsNothingPerKey` pins both
+properties.
+
+The other half was periodic rather than resident: rebuilding the index and
+sweeping for eviction both materialized the whole cache as a `[]ListObject`
+with a key string apiece (~140 MB at a million keys), and the sweep then built
+a candidate list and a live-key set on top of that. `Storage.Walk` now hands
+each object to a callback as the directory walk finds it, and both callers
+consume it into compact structures — the sweep into a bounded histogram and
+bounded victim batches, so its peak is a batch rather than the cache. The
+rebuild also stopped routing walked hashes through the pending buffer, which
+had left a full-size backing array alive for the life of the process.
 
 ## The budget
 
@@ -43,6 +81,21 @@ Each cache gets a fraction of that as its fully-grown budget (metadata 10%,
 known-clean 3%, prefetch 2%). **An undiscoverable budget is 0**, and then the
 caches use fixed defaults and the controller does not run at all — an unknown
 limit must not become an invented one.
+
+### Telling the GC about it
+
+Sizing the caches against the ceiling is not the same as the *runtime* knowing
+there is one. With no `GOMEMLIMIT`, the GC only targets a multiple of the live
+heap: at `GOGC=100` a 430 MB live heap gives a ~560 MB heap goal inside a 1 GiB
+container, and a burst of concurrent batch responses on top of that is an OOM
+kill rather than a collection. So when the ceiling came from the cgroup —
+meaning nothing else has set one — `applyRuntimeMemoryLimit` installs 90% of it
+as the runtime's soft limit before anything allocates. The remaining 10% covers
+what the Go heap accounting does not see.
+
+An operator's own `GOMEMLIMIT` (or the one go-toolchain's guard installed) is
+left exactly as set: re-deriving a limit from itself would shrink it a little
+on every restart.
 
 ## The controller
 

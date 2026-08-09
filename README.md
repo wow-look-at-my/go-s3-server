@@ -46,7 +46,7 @@ Create a JSON config file:
   "bucket": "my-cache",
   "data_dir": "/var/data/s3",
   "write_once": {"action": "deny", "notification": "content_differs"},
-  "eviction": {"max_age": "720h", "max_bytes": 53687091200, "interval": "72h"},
+  "eviction": {"max_bytes": 53687091200, "interval": "24h"},
   "credentials": [
     {"username": "alice", "password": "secret1"},
     {"username": "bob", "password": "secret2"}
@@ -84,7 +84,14 @@ All flags except `--config` override the corresponding config file value.
 | `credentials` | array | — | yes (unless `disable_auth: true`) | One or more `username`/`password` pairs. Both fields must be non-empty. |
 | `max_concurrent_requests` | int | `128` | no | Max in-flight requests; excess is shed with `503 + Retry-After`. `0` → default. |
 | `max_object_bytes` | int | `1073741824` (1 GiB) | no | Max single PUT body; larger uploads get `413`. The body is streamed to disk, so this guards disk, not memory. `0` → default. |
-| `eviction` | object | `{"max_age":"720h"}` | no | Automatic pruning of the cache (see below). |
+| `eviction` | object | `{"max_bytes":53687091200,"interval":"24h"}` | no | Automatic pruning of the cache (see below). |
+
+### Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `CACHE_MAX_BYTES` | Cache size budget when `eviction.max_bytes` is not set in the config: a byte count or a size like `100GB`. A malformed value fails startup rather than falling back. |
+| `GOMEMLIMIT` | Standard Go setting. Left alone if set; otherwise the server installs 90% of the container's memory limit so the GC collects against that ceiling. |
 
 ### `write_once` options
 
@@ -99,13 +106,17 @@ All flags except `--config` override the corresponding config file value.
 
 ### `eviction` options
 
+The cache is an **LRU**: it is bounded by size, and over budget the least recently used entries go first. Age eviction is a separate opt-in TTL.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `max_age` | duration | `"720h"` (30 days) | Remove entries not *used* within this window. A Go duration string (`"720h"`, `"30m"`) or a number of seconds. `"0"` disables age-based eviction. |
-| `max_bytes` | int | `0` (disabled) | Total-size budget for `data_dir` in bytes. When exceeded, least-recently-used entries are evicted until the total is back under budget. `0` disables size-based eviction. |
-| `interval` | duration | `"72h"` (3 days) | How often the background sweeper runs. With a 30-day `max_age` there is little point sweeping more often; shorten it only if you set a tight `max_bytes` and want to bound how far the cache overshoots the budget between sweeps. |
+| `max_bytes` | int | `53687091200` (50 GiB), or `CACHE_MAX_BYTES` | Total-size budget for `data_dir` in bytes. Over budget, least-recently-used entries are evicted until the total is back under it. `0` disables size-based eviction. |
+| `max_age` | duration | `"0"` (off) | Also remove entries not *used* within this window, however small the cache is. A Go duration string (`"720h"`, `"30m"`) or seconds. |
+| `interval` | duration | `"24h"` | How often the background sweeper runs. The last sweep is recorded in `data_dir`, so a restart does not reset the schedule: the server sweeps at startup when the last one is at least an interval old, and otherwise waits out the remainder. |
 
-Setting both `max_age: "0"` and `max_bytes: 0` disables eviction entirely (the server logs a warning that the cache will grow without bound).
+Setting both `max_bytes: 0` and `max_age: "0"` disables eviction entirely (the server logs a warning that the cache will grow without bound).
+
+"Last used" is the latest of an entry's write time, its filesystem access time, and any read this process saw. Access times survive restarts, so a long-lived entry that is still being read is not mistaken for an idle one — on a `noatime` mount that signal does not exist, and the server says so at startup and tracks reads in memory instead.
 
 ## Authentication
 

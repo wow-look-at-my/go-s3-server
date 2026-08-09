@@ -224,43 +224,104 @@ func TestDurationUnmarshal(t *testing.T) {
 	require.Error(t, json.Unmarshal([]byte(`"not-a-duration"`), &d))
 }
 
-// TestEvictionConfigDefaults: absent eviction config gets the default max_age
-// (enabled), while an explicit max_age of 0 disables age eviction.
+// TestEvictionConfigDefaults: the cache is an LRU by default -- an absent
+// eviction block gets the default SIZE budget and no age limit, so nothing is
+// dropped for being old, only for being least-recently-used past the budget.
 func TestEvictionConfigDefaults(t *testing.T) {
 	dir := t.TempDir()
 	cred := `"credentials": [{"username": "u", "password": "p"}]`
 
-	// No eviction block → default max_age applied, eviction enabled.
+	// No eviction block → default size budget, age eviction off, enabled.
 	p1 := dir + "/default.json"
 	require.NoError(t, os.WriteFile(p1, []byte(`{"bucket":"b","data_dir":"/tmp",`+cred+`}`), 0644))
 	cfg, err := LoadConfig(p1)
 	require.NoError(t, err)
-	require.NotNil(t, cfg.Eviction.MaxAge)
-	assert.Equal(t, defaultEvictionMaxAge, cfg.Eviction.AgeLimit())
+	assert.Equal(t, int64(defaultEvictionMaxBytes), cfg.Eviction.SizeLimit())
+	assert.Equal(t, time.Duration(0), cfg.Eviction.AgeLimit(), "age eviction is opt-in")
 	assert.True(t, cfg.Eviction.Enabled())
 	assert.Equal(t, defaultEvictionInterval, cfg.Eviction.Interval.Std())
 
-	// Explicit max_age 0 with no size budget → eviction disabled.
+	// Explicit max_bytes 0 with no age limit → eviction disabled.
 	p2 := dir + "/off.json"
-	require.NoError(t, os.WriteFile(p2, []byte(`{"bucket":"b","data_dir":"/tmp","eviction":{"max_age":"0"},`+cred+`}`), 0644))
+	require.NoError(t, os.WriteFile(p2, []byte(`{"bucket":"b","data_dir":"/tmp","eviction":{"max_bytes":0},`+cred+`}`), 0644))
 	cfg, err = LoadConfig(p2)
 	require.NoError(t, err)
-	assert.Equal(t, time.Duration(0), cfg.Eviction.AgeLimit())
+	assert.Equal(t, int64(0), cfg.Eviction.SizeLimit())
 	assert.False(t, cfg.Eviction.Enabled())
 
-	// Size budget only → enabled even with age off.
-	p3 := dir + "/size.json"
-	require.NoError(t, os.WriteFile(p3, []byte(`{"bucket":"b","data_dir":"/tmp","eviction":{"max_age":"0","max_bytes":1048576},`+cred+`}`), 0644))
+	// Age limit only → enabled even with the size budget off.
+	p3 := dir + "/age.json"
+	require.NoError(t, os.WriteFile(p3, []byte(`{"bucket":"b","data_dir":"/tmp","eviction":{"max_bytes":0,"max_age":"720h"},`+cred+`}`), 0644))
 	cfg, err = LoadConfig(p3)
 	require.NoError(t, err)
 	assert.True(t, cfg.Eviction.Enabled())
-	assert.Equal(t, int64(1048576), cfg.Eviction.MaxBytes)
+	assert.Equal(t, 720*time.Hour, cfg.Eviction.AgeLimit())
+
+	// An explicit budget wins over the default.
+	p5 := dir + "/size.json"
+	require.NoError(t, os.WriteFile(p5, []byte(`{"bucket":"b","data_dir":"/tmp","eviction":{"max_bytes":1048576},`+cred+`}`), 0644))
+	cfg, err = LoadConfig(p5)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1048576), cfg.Eviction.SizeLimit())
 
 	// Negative max_bytes is rejected.
 	p4 := dir + "/neg.json"
 	require.NoError(t, os.WriteFile(p4, []byte(`{"bucket":"b","data_dir":"/tmp","eviction":{"max_bytes":-1},`+cred+`}`), 0644))
 	_, err = LoadConfig(p4)
 	require.Error(t, err)
+}
+
+// TestMaxBytesEnvVar: the size budget can be set without touching the config
+// file, an explicit config value still wins, and a malformed env value fails
+// the load instead of silently reverting to the default.
+func TestMaxBytesEnvVar(t *testing.T) {
+	dir := t.TempDir()
+	cred := `"credentials": [{"username": "u", "password": "p"}]`
+	plain := dir + "/plain.json"
+	require.NoError(t, os.WriteFile(plain, []byte(`{"bucket":"b","data_dir":"/tmp",`+cred+`}`), 0644))
+	explicit := dir + "/explicit.json"
+	require.NoError(t, os.WriteFile(explicit, []byte(`{"bucket":"b","data_dir":"/tmp","eviction":{"max_bytes":123},`+cred+`}`), 0644))
+
+	t.Setenv(maxBytesEnvVar, "100GB")
+	cfg, err := LoadConfig(plain)
+	require.NoError(t, err)
+	assert.Equal(t, int64(100)<<30, cfg.Eviction.SizeLimit())
+
+	cfg, err = LoadConfig(explicit)
+	require.NoError(t, err)
+	assert.Equal(t, int64(123), cfg.Eviction.SizeLimit(), "config max_bytes wins over the env var")
+
+	t.Setenv(maxBytesEnvVar, "plenty")
+	_, err = LoadConfig(plain)
+	require.Error(t, err, "a set-but-unparseable budget must fail loudly")
+
+	t.Setenv(maxBytesEnvVar, "")
+	cfg, err = LoadConfig(plain)
+	require.NoError(t, err)
+	assert.Equal(t, int64(defaultEvictionMaxBytes), cfg.Eviction.SizeLimit())
+}
+
+func TestParseByteSize(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int64
+	}{
+		{"0", 0},
+		{"1073741824", 1 << 30},
+		{"50GB", 50 << 30},
+		{"50 GiB", 50 << 30},
+		{"512m", 512 << 20},
+		{"2T", 2 << 40},
+		{"4096B", 4096},
+	} {
+		got, err := parseByteSize(tc.in)
+		require.NoError(t, err, tc.in)
+		assert.Equal(t, tc.want, got, tc.in)
+	}
+	for _, bad := range []string{"", "plenty", "-5", "5GX", "1.5GB", "GB"} {
+		_, err := parseByteSize(bad)
+		assert.Error(t, err, bad)
+	}
 }
 
 // TestEvictOneSkipsFreshlyOverwritten is the snapshot-then-remove TOCTOU guard:
@@ -297,6 +358,89 @@ func TestEvictionStartupDelay(t *testing.T) {
 		d := evictionStartupDelay()
 		require.GreaterOrEqual(t, d, evictionStartupDelayMin)
 		require.Less(t, d, evictionStartupDelayMax)
+	}
+}
+
+// TestSweepScheduleSurvivesRestart: the sweep schedule lives in the data_dir,
+// so a deployment that restarts more often than the interval still sweeps, and
+// one that restarts constantly does not re-walk the whole disk every boot.
+func TestSweepScheduleSurvivesRestart(t *testing.T) {
+	s := newEvictStorage(t)
+	const interval = 24 * time.Hour
+
+	// Never swept: due now (after the startup jitter).
+	_, ok := s.lastSweepTime()
+	require.False(t, ok)
+	assert.Less(t, s.firstSweepDelay(interval), evictionStartupDelayMax,
+		"a cache with no recorded sweep must sweep at startup")
+
+	// Swept an interval ago: due now.
+	s.recordSweepTime(time.Now().Add(-25 * time.Hour))
+	last, ok := s.lastSweepTime()
+	require.True(t, ok)
+	assert.WithinDuration(t, time.Now().Add(-25*time.Hour), last, time.Minute)
+	assert.Less(t, s.firstSweepDelay(interval), evictionStartupDelayMax,
+		"a sweep older than the interval is overdue and must run at startup")
+
+	// Swept an hour ago: not due for another 23.
+	s.recordSweepTime(time.Now().Add(-time.Hour))
+	delay := s.firstSweepDelay(interval)
+	assert.Greater(t, delay, 22*time.Hour, "a recent sweep must not be repeated at startup")
+	assert.Less(t, delay, 24*time.Hour)
+
+	// A corrupt marker is treated as never swept rather than trusted.
+	require.NoError(t, os.WriteFile(s.dataDir+"/"+sweepMarkerFile, []byte("tomorrow"), 0644))
+	_, ok = s.lastSweepTime()
+	assert.False(t, ok)
+}
+
+// TestRunSweepRecordsMarker: a completed sweep stamps the marker, and the
+// marker is not itself mistaken for a cache object.
+func TestRunSweepRecordsMarker(t *testing.T) {
+	s := newEvictStorage(t)
+	require.NoError(t, s.Put(gbciKey(1), make([]byte, 10), nil, nil))
+
+	s.runSweep(0, 0)
+
+	last, ok := s.lastSweepTime()
+	require.True(t, ok, "a completed sweep must record when it ran")
+	assert.WithinDuration(t, time.Now(), last, time.Minute)
+
+	objects, err := collectWalk(s)
+	require.NoError(t, err)
+	require.Len(t, objects, 1, "the sweep marker must not be walked as an object")
+	assert.Equal(t, gbciKey(1), objects[0].Key)
+}
+
+// TestEvictBySizeIsLeastRecentlyUsedFirst: over budget, the sweep evicts from
+// the least-recently-used end and keeps the rest -- the cache is an LRU.
+func TestEvictBySizeIsLeastRecentlyUsedFirst(t *testing.T) {
+	s := newEvictStorage(t)
+
+	const count = 6
+	keys := make([]string, count)
+	now := time.Now()
+	for i := range keys {
+		keys[i] = gbciKey(i + 1)
+		require.NoError(t, s.Put(keys[i], make([]byte, 100), nil, nil))
+		// keys[0] is the oldest use, keys[5] the newest.
+		used := now.Add(-time.Duration(count-i) * time.Hour)
+		require.NoError(t, os.Chtimes(s.keyToPath(keys[i]), used, used))
+	}
+
+	// 600 bytes stored, 350 allowed: the three oldest must go, no more.
+	stats, err := s.Evict(0, 350, now)
+	require.NoError(t, err)
+	assert.Equal(t, 3, stats.EvictedSize)
+	assert.Equal(t, 0, stats.EvictedAge, "nothing may be dropped for age when max_age is off")
+
+	for i, k := range keys {
+		_, err := s.Stat(k)
+		if i < 3 {
+			assert.ErrorIs(t, err, ErrNotFound, "key %d is least-recently-used and must go", i)
+		} else {
+			assert.NoError(t, err, "key %d is recently used and must stay", i)
+		}
 	}
 }
 

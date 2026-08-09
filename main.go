@@ -47,6 +47,10 @@ func init() {
 }
 
 func run(cmd *cobra.Command, args []string) error {
+	// Every init() has run by now, including the GOMEMLIMIT guard go-toolchain
+	// injects, so this reads the ceiling the GC is actually enforcing.
+	resolveMemoryBudget()
+
 	configPath, _ := cmd.Flags().GetString("config")
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
@@ -75,13 +79,14 @@ func run(cmd *cobra.Command, args []string) error {
 	srv := NewServer(cfg, storage)
 
 	if cfg.Eviction.Enabled() {
-		storage.EnableAccessTracking()
+		configureLastUseTracking(storage, cfg.DataDir)
 		maxAge := cfg.Eviction.AgeLimit()
-		go storage.RunEvictionLoop(maxAge, cfg.Eviction.MaxBytes, cfg.Eviction.Interval.Std())
-		log.Printf("cache eviction: enabled max_age=%s max_bytes=%d interval=%s",
-			maxAge, cfg.Eviction.MaxBytes, cfg.Eviction.Interval.Std())
+		maxBytes := cfg.Eviction.SizeLimit()
+		go storage.RunEvictionLoop(maxAge, maxBytes, cfg.Eviction.Interval.Std())
+		log.Printf("cache eviction: enabled max_bytes=%d (%d MiB) max_age=%s interval=%s; over budget, the least recently used entries are evicted first",
+			maxBytes, maxBytes>>20, maxAge, cfg.Eviction.Interval.Std())
 	} else {
-		log.Printf("WARNING: cache eviction is DISABLED (eviction.max_age=0 and eviction.max_bytes=0); the cache will grow without bound until the disk fills. Set eviction.max_age (e.g. \"720h\") and/or eviction.max_bytes to enable automatic pruning.")
+		log.Printf("WARNING: cache eviction is DISABLED (eviction.max_bytes=0 and eviction.max_age=0); the cache will grow without bound until the disk fills. Set eviction.max_bytes (or the %s env var) to enable automatic pruning.", maxBytesEnvVar)
 	}
 
 	if cfg.MetricsListen != "" {
@@ -156,6 +161,26 @@ func run(cmd *cobra.Command, args []string) error {
 		log.Printf("drain complete, exiting")
 		return nil
 	}
+}
+
+// configureLastUseTracking decides where eviction's last-use times come from.
+// The filesystem's own access times are preferred: the kernel maintains them
+// for free on every body read, and they survive restarts. Only when the
+// data_dir turns out not to record them does the server keep its own in-memory
+// map -- accurate while it runs, empty again after every restart, and one entry
+// per key read, which is the memory this avoids paying at a million keys.
+func configureLastUseTracking(storage *Storage, dataDir string) {
+	recorded, err := atimeIsRecorded(dataDir)
+	switch {
+	case err != nil:
+		log.Printf("eviction: could not test whether %s records file access times (%v); tracking reads in memory instead", dataDir, err)
+	case recorded:
+		log.Printf("eviction: last use comes from the filesystem's access times, so reads counted against eviction survive restarts")
+		return
+	default:
+		log.Printf("WARNING: %s does not record file access times (mounted noatime, or a platform without them), so reads are tracked in memory and forgotten on restart: an entry written long ago but read constantly can be evicted by the first sweep after a restart. Mount the data_dir with relatime (the Linux default) to avoid that.", dataDir)
+	}
+	storage.EnableAccessTracking()
 }
 
 func main() {

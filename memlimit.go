@@ -75,8 +75,23 @@ const (
 )
 
 // memoryBudget is the process's memory ceiling in bytes, or 0 when none could
-// be discovered. Resolved once at startup; see detectMemoryBudget.
-var memoryBudget, memoryBudgetSource = detectMemoryBudget()
+// be discovered, with the source it came from. Both are zero until
+// resolveMemoryBudget runs.
+var memoryBudget int64
+var memoryBudgetSource string
+
+// resolveMemoryBudget discovers the ceiling. Call it once at startup.
+//
+// It is deliberately NOT a package-level initializer. go-toolchain injects an
+// init() into this package that installs GOMEMLIMIT from the cgroup limit, and
+// Go runs every package-level variable initializer BEFORE any init(), so
+// detecting at variable-init time read the raw cgroup limit and never saw the
+// smaller ceiling the GC was actually enforcing. The caches were then sized
+// against a number nothing enforced, and s3_memory_limit_bytes reported it --
+// which reads exactly like "no GOMEMLIMIT is set" to anyone diagnosing an OOM.
+func resolveMemoryBudget() {
+	memoryBudget, memoryBudgetSource = detectMemoryBudget()
+}
 
 // detectMemoryBudget returns the process's memory ceiling and where it came
 // from.

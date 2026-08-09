@@ -237,12 +237,7 @@ jobs:
           script: |
             const log = fs.readFileSync('/tmp/build2.log', 'utf-8');
 
-            // The cacheprog prints, once per go-toolchain invocation:
-            //   cacheprog: web index: <N> keys
-            //   cacheprog: web summary: hits=<H> puts=<P> misses=<M> (...)
-            // Match loosely on "index: N keys" / "summary: ... hits=N" so a
-            // future tier rename (s3 -> web already happened once) keeps
-            // matching -- and treat a non-match as a hard failure.
+            // Match loosely on "index: N keys" / "summary: ... hits=N" so a tier rename survives (s3 -> web already happened once); a non-match is a hard failure.
             const idx = log.match(/index:\s*(\d+)\s*keys/);
             const sum = log.match(/summary:.*?\bhits=(\d+)/);
 

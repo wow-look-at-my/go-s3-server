@@ -47,6 +47,8 @@ jobs:
       id-token: write
       contents: read
       packages: write
+      actions: read
+      checks: read
     steps:
       - uses: actions/download-artifact@v4
         with:

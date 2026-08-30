@@ -199,13 +199,11 @@ func TestEnvVarCredentials(t *testing.T) {
 	t.Setenv("TEST_S3_PASS", "envpass")
 
 	dir := t.TempDir()
-	cfgJSON := `{
-		"bucket": "testbucket",
-		"data_dir": "` + dir + `",
-		"credentials": [{"username": {"type": "envvar", "name": "TEST_S3_USER"}, "password": {"type": "envvar", "name": "TEST_S3_PASS"}}]
-	}`
-	cfgPath := dir + "/config.json"
-	os.WriteFile(cfgPath, []byte(cfgJSON), 0644)
+	cfgPath := writeConfigFile(t, dir, "config.json", map[string]any{
+		"bucket":      "testbucket",
+		"data_dir":    dir,
+		"credentials": testCredentials(envVarRef("TEST_S3_USER"), envVarRef("TEST_S3_PASS")),
+	})
 
 	cfg, err := LoadConfig(cfgPath)
 	require.Nil(t, err)
@@ -303,13 +301,11 @@ func TestAuthNotBypassedByEmptyCredential(t *testing.T) {
 
 func TestLoadConfigRejectsEmptyCredential(t *testing.T) {
 	dir := t.TempDir()
-	cfgJSON := `{
-		"bucket": "b",
-		"data_dir": "` + dir + `",
-		"credentials": [{"username": "", "password": ""}]
-	}`
-	path := dir + "/cfg.json"
-	os.WriteFile(path, []byte(cfgJSON), 0644)
+	path := writeConfigFile(t, dir, "cfg.json", map[string]any{
+		"bucket":      "b",
+		"data_dir":    dir,
+		"credentials": testCredentials("", ""),
+	})
 	_, err := LoadConfig(path)
 	require.NotNil(t, err)
 	require.Contains(t, err.Error(), "must both be non-empty")
@@ -317,16 +313,14 @@ func TestLoadConfigRejectsEmptyCredential(t *testing.T) {
 
 func TestLoadConfigRejectsEmptyCredentialAmongRealOnes(t *testing.T) {
 	dir := t.TempDir()
-	cfgJSON := `{
-		"bucket": "b",
-		"data_dir": "` + dir + `",
-		"credentials": [
-			{"username": "alice", "password": "password1"},
-			{"username": "", "password": ""}
-		]
-	}`
-	path := dir + "/cfg.json"
-	os.WriteFile(path, []byte(cfgJSON), 0644)
+	path := writeConfigFile(t, dir, "cfg.json", map[string]any{
+		"bucket":   "b",
+		"data_dir": dir,
+		"credentials": []any{
+			map[string]any{"username": "alice", "password": "password1"},
+			map[string]any{"username": "", "password": ""},
+		},
+	})
 	_, err := LoadConfig(path)
 	require.NotNil(t, err)
 	require.Contains(t, err.Error(), "must both be non-empty")
@@ -334,14 +328,12 @@ func TestLoadConfigRejectsEmptyCredentialAmongRealOnes(t *testing.T) {
 
 func TestLoadConfigRejectsDisableAuthWithCredentials(t *testing.T) {
 	dir := t.TempDir()
-	cfgJSON := `{
-		"bucket": "b",
-		"data_dir": "` + dir + `",
+	path := writeConfigFile(t, dir, "cfg.json", map[string]any{
+		"bucket":       "b",
+		"data_dir":     dir,
 		"disable_auth": true,
-		"credentials": [{"username": "alice", "password": "password1"}]
-	}`
-	path := dir + "/cfg.json"
-	os.WriteFile(path, []byte(cfgJSON), 0644)
+		"credentials":  testCredentials("alice", "password1"),
+	})
 	_, err := LoadConfig(path)
 	require.NotNil(t, err)
 	require.Contains(t, err.Error(), "disable_auth is true")
@@ -353,16 +345,11 @@ func TestLoadConfigRejectsUnsetEnvVarCredential(t *testing.T) {
 	// validation, an empty resolved credential is an error.
 	os.Unsetenv("GOSTEST_UNSET_CRED")
 	dir := t.TempDir()
-	cfgJSON := `{
-		"bucket": "b",
-		"data_dir": "` + dir + `",
-		"credentials": [{
-			"username": {"type": "envvar", "name": "GOSTEST_UNSET_CRED"},
-			"password": {"type": "envvar", "name": "GOSTEST_UNSET_CRED"}
-		}]
-	}`
-	path := dir + "/cfg.json"
-	os.WriteFile(path, []byte(cfgJSON), 0644)
+	path := writeConfigFile(t, dir, "cfg.json", map[string]any{
+		"bucket":      "b",
+		"data_dir":    dir,
+		"credentials": testCredentials(envVarRef("GOSTEST_UNSET_CRED"), envVarRef("GOSTEST_UNSET_CRED")),
+	})
 	_, err := LoadConfig(path)
 	require.NotNil(t, err)
 	require.Contains(t, err.Error(), "must both be non-empty")

@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"slices"
 	"sort"
 	"strings"
 	"syscall"
 
+	"github.com/wow-look-at-my/go-containers/set"
 	"golang.org/x/sys/unix"
 )
 
@@ -29,7 +29,7 @@ func unlockFile(f *os.File) {
 // A failure persisting one of these fails the PUT — storing the object
 // without them would serve unusable (or unguardable) bytes. Every other
 // metadata key is descriptive provenance (src, pkg, go-version, ...).
-var metadataProtectedKeys = []string{"outputid", "compression"}
+var metadataProtectedKeys = set.Of("outputid", "compression")
 
 // setMetadata persists user metadata as xattrs. Protected keys are written
 // first (so they claim xattr space) and any error on them fails the call.
@@ -42,7 +42,7 @@ var metadataProtectedKeys = []string{"outputid", "compression"}
 // dropped, counted, and logged — the object stores and serves normally,
 // minus one provenance field.
 func setMetadata(path string, meta map[string]string) error {
-	for _, k := range metadataProtectedKeys {
+	for k := range metadataProtectedKeys.All() {
 		if v, ok := meta[k]; ok {
 			attrName := "user.s3." + k
 			if err := unix.Setxattr(path, attrName, []byte(v), 0); err != nil {
@@ -53,7 +53,7 @@ func setMetadata(path string, meta map[string]string) error {
 
 	optional := make([]string, 0, len(meta))
 	for k := range meta {
-		if !slices.Contains(metadataProtectedKeys, k) {
+		if !metadataProtectedKeys.Contains(k) {
 			optional = append(optional, k)
 		}
 	}

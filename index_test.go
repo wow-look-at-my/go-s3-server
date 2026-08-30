@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // parsedIndex is the test-side decoded form of a GBCI v1 blob.
@@ -126,12 +127,12 @@ func TestIndexAfterPuts(t *testing.T) {
 	}
 
 	// Every PUT hash must appear exactly once.
-	seen := make(map[[32]byte]bool, len(hashes))
+	seen := set.New[[32]byte](len(hashes))
 	for _, h := range p.Hashes {
-		seen[h] = true
+		seen.Add(h)
 	}
 	for _, h := range hashes {
-		require.True(t, seen[h], "missing hash %x", h)
+		require.True(t, seen.Contains(h), "missing hash %x", h)
 	}
 }
 

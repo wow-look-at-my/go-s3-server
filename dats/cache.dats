@@ -90,32 +90,50 @@ tests:
 					(cd "$1" && go build -o /dev/null ./...)
 				}
 
-				# One marker per stage, each one asserted. The suite runs without -v inside
-				# a build, where a failing command's output is not printed, so the first
-				# marker the assertions report missing is the whole diagnosis.
-				command -v go > /dev/null && echo "found-go yes"
-				command -v go-toolchain > /dev/null && echo "found-cacheprog yes"
+				# The cache objects the server holds, which is not every file under the
+				# data directory: the server writes its own version stamp there before a
+				# client ever connects, and counting that reports success on an empty
+				# cache.
+				stored() {
+					find "$DATA_DIR/go-buildcache" -type f 2> /dev/null | wc -l
+				}
 
-				build "$root/first" && echo "cold-build-ran yes"
-				stored=$(find "$DATA_DIR" -type f ! -name '.lock' | wc -l)
-				test "$stored" -gt 0 && echo "cold-build-populated-the-server yes"
+				# Each step ends in its own exit code, and dats prints the code it got even
+				# when it prints nothing else -- which is how this suite runs inside a
+				# build. Never `step && echo`: bash exempts everything left of && from
+				# `set -e`, so a failed step would carry on and report a later stage.
+				command -v go > /dev/null || exit 21
+				command -v go-toolchain > /dev/null || exit 22
+				echo "found-tools yes"
+
+				go version > /dev/null || exit 23
+				go env GOROOT > /dev/null || exit 24
+				echo "go-runs yes"
+
+				build "$root/first" || exit 25
+				echo "cold-build-ran yes"
+
+				test "$(stored)" -gt 0 || exit 26
+				echo "cold-build-populated-the-server yes"
 				before=$(served)
 
 				# The second build is the one under test, and it is a second MACHINE, not a
 				# rerun: the same sources in a directory that has never been built, with no
 				# local cache left. Anything it does not recompile came over the wire.
 				rm -rf "$XDG_CACHE_HOME/go-toolchain/buildcache" "$GOCACHE"
-				build "$root/second" && echo "warm-build-ran yes"
+				build "$root/second" || exit 27
+				echo "warm-build-ran yes"
 				after=$(served)
 
 				echo "served-before $before"
 				echo "served-after $after"
-				test "$after" -gt "$before" && echo "server-served-the-warm-build yes"
+				test "$after" -gt "$before" || exit 28
+				echo "server-served-the-warm-build yes"
 	  cmd: bash {shared.serve.sh} {inputs.config.json} 19040 {inputs.check.sh}
 	  outputs:
 		stdout:
-			- "found-go yes"
-			- "found-cacheprog yes"
+			- "found-tools yes"
+			- "go-runs yes"
 			- "cold-build-ran yes"
 			- "cold-build-populated-the-server yes"
 			- "warm-build-ran yes"

@@ -309,11 +309,6 @@ var (
 		Name: "s3_cache_memory_budget_bytes",
 		Help: "Byte budget currently allowed for each in-memory cache (falls as memory gets tight).",
 	}, []string{"cache"})
-
-	cacheEvictionsTotal = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "s3_cache_memory_evictions",
-		Help: "Entries evicted from each in-memory cache to stay inside its byte budget.",
-	}, []string{"cache"})
 )
 
 // statusRecorder wraps http.ResponseWriter to capture status code and bytes written.

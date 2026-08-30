@@ -330,17 +330,19 @@ func TestLoadConfig(t *testing.T) {
 	_, err = LoadConfig(badPath)
 	require.NotNil(t, err)
 
-	cred := `"credentials": [{"username": "admin", "password": "secret"}]`
+	cred := testCredentials("admin", "secret")
 
 	// Missing bucket
-	noBucketPath := dir + "/nobucket.json"
-	os.WriteFile(noBucketPath, []byte(`{"data_dir": "/tmp", `+cred+`}`), 0644)
+	noBucketPath := writeConfigFile(t, dir, "nobucket.json", map[string]any{
+		"data_dir": "/tmp", "credentials": cred,
+	})
 	_, err = LoadConfig(noBucketPath)
 	require.NotNil(t, err)
 
 	// Missing data_dir
-	noDirPath := dir + "/nodir.json"
-	os.WriteFile(noDirPath, []byte(`{"bucket": "b", `+cred+`}`), 0644)
+	noDirPath := writeConfigFile(t, dir, "nodir.json", map[string]any{
+		"bucket": "b", "credentials": cred,
+	})
 	_, err = LoadConfig(noDirPath)
 	require.NotNil(t, err)
 
@@ -357,22 +359,27 @@ func TestLoadConfig(t *testing.T) {
 	require.NotNil(t, err)
 
 	// write_once defaults
-	woDefaultPath := dir + "/wo_default.json"
-	os.WriteFile(woDefaultPath, []byte(`{"bucket": "b", "data_dir": "/tmp", `+cred+`}`), 0644)
+	woDefaultPath := writeConfigFile(t, dir, "wo_default.json", map[string]any{
+		"bucket": "b", "data_dir": "/tmp", "credentials": cred,
+	})
 	cfg, err = LoadConfig(woDefaultPath)
 	require.Nil(t, err)
 	require.Equal(t, "allow", cfg.WriteOnce.Action)
 	require.Equal(t, "never", cfg.WriteOnce.Notification)
 
 	// Invalid write_once.action
-	woInvalidAction := dir + "/wo_bad_action.json"
-	os.WriteFile(woInvalidAction, []byte(`{"bucket": "b", "data_dir": "/tmp", "write_once": {"action": "invalid"}, `+cred+`}`), 0644)
+	woInvalidAction := writeConfigFile(t, dir, "wo_bad_action.json", map[string]any{
+		"bucket": "b", "data_dir": "/tmp", "credentials": cred,
+		"write_once": map[string]any{"action": "invalid"},
+	})
 	_, err = LoadConfig(woInvalidAction)
 	require.NotNil(t, err)
 
 	// Invalid write_once.notification
-	woInvalidNotif := dir + "/wo_bad_notif.json"
-	os.WriteFile(woInvalidNotif, []byte(`{"bucket": "b", "data_dir": "/tmp", "write_once": {"action": "deny", "notification": "invalid"}, `+cred+`}`), 0644)
+	woInvalidNotif := writeConfigFile(t, dir, "wo_bad_notif.json", map[string]any{
+		"bucket": "b", "data_dir": "/tmp", "credentials": cred,
+		"write_once": map[string]any{"action": "deny", "notification": "invalid"},
+	})
 	_, err = LoadConfig(woInvalidNotif)
 	require.NotNil(t, err)
 

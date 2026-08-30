@@ -22,6 +22,7 @@ Do NOT use `go build`, `go test`, or any bare `go` commands. Always use `go-tool
 
 ## Project layout
 
+- `cacheclient/` — **the client side of this server's wire protocol, as its own Go module** (`github.com/wow-look-at-my/go-s3-server/cacheclient`): single GET/PUT, `/_index`, `/_batch/get`, `/_batch/put`, lz4 framing, and the three read guards (outputid hash, build-id action, module index). Protocol and server change together in one repo, so a header or endpoint cannot drift between them. Its own `go.mod` keeps the dependency list to lz4 and `go-containers/set` — the server's cobra/prometheus tree stays out — because a consumer vendors this into a tree that will not take them. Diagnostics go to a `Logger` the consumer installs (silence by default: a caller whose stdout is a protocol channel must not have stderr written for it). It carries NO tracing: OpenTelemetry cannot be reimplemented by hand here, and instrumentation waits on gosmopolitan compiler integration. Consumers: go-toolchain's cacheprog, and gosmopolitan's `cmd/go` calling the cache in-process instead of spawning a `GOCACHEPROG` subprocess.
 - `main.go` — CLI entry point (cobra). Serves in a goroutine and waits for `SIGINT`/`SIGTERM`, then calls `srv.BeginShutdown()` (flips `/_health` to 503) and `httpSrv.Shutdown(ctx)` with a `shutdownTimeout` (280s, kept under a typical container stop grace) so in-flight requests drain before exit instead of being cut off by a rolling-update `docker stop`
 - `config.go` — JSON config loading and validation
 - `auth.go` — HTTP Basic Auth; returns the authenticated username
@@ -54,8 +55,8 @@ Do NOT use `go build`, `go test`, or any bare `go` commands. Always use `go-tool
 - `lock_windows.go` — Windows file locking via syscall
 - `handlers_test.go` — Unit tests for handlers
 - `modindex_test.go` — Tests for module-index detection and the PutObject refusal
-- `.github/workflows/ci.yml` — CI pipeline (build, docker, s3-api-test, integration test). The integration test's "Verify warm-build cache hits" step is a typescript-action check that parses the client's `... index: N keys` / `... summary: hits=N` counters from build2.log with rename-tolerant patterns and FAILS on zero advertised keys, zero web-tier hits, or an unrecognized output format (its predecessor grepped the long-renamed `s3 index:` line and WARN-exited 0 in every run — it verified nothing)
-- `.github/workflows/integration-test/` — Integration test harness (configs, test Go project)
+- `dats/` — the executable spec for the HTTP surface and the cache round trip. `api.dats` (roundtrip, not_found, overwrite, sharding, native/legacy metadata, `/_index` and its ETag, the unauthenticated health probe, three refusals), `writeonce.dats` (store, idempotent resend, 409 on different bytes, sharding), and `cache.dats` (a `go build` under `GOCACHEPROG='go-toolchain cacheprog'` fills the server; a second build in a fresh directory with the local cache wiped must then be served over the wire, counted from this server's own `/metrics` rather than the client's renameable log lines). Every test starts its own server on its own port through the shared `serve.sh`, so no two tests share a resource. `go-toolchain` runs the suites after the build; `dats dats/*.dats` runs them alone against `./build/go-s3-server` (`SERVER=` picks another binary).
+- `.github/workflows/ci.yml` — CI: `test` (checkout, bubblewrap for the dats sandbox, `wow-look-at-my/go-toolchain@v1`, upload `build/`) plus `docker` on the default branch. It carries no assertions of its own — every one lives in `dats/` or a Go test, so a contributor runs exactly what CI runs.
 
 ## Conventions
 

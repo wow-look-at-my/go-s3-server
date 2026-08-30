@@ -1,7 +1,0 @@
-{
-  "listen": "127.0.0.1:9001",
-  "bucket": "test-cache",
-  "data_dir": "/tmp/s3-data-writeonce",
-  "write_once": {"action": "deny", "notification": "content_differs"},
-  "credentials": [{"username": "testuser", "password": "testpass"}]
-}

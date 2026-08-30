@@ -118,7 +118,7 @@ func TestWebBackend_GetRejectsCorruptBody(t *testing.T) {
 		}
 		w.Header().Set("X-Cache-Meta-Outputid", outputID)
 		w.WriteHeader(200)
-		c, _ := compressData([]byte(corrupt))
+		c, _ := Compress([]byte(corrupt))
 		w.Write(c)
 	}))
 	defer srv.Close()
@@ -162,7 +162,7 @@ func TestWebBackend_GetServesCorrectBody(t *testing.T) {
 		}
 		w.Header().Set("X-Cache-Meta-Outputid", outputID)
 		w.WriteHeader(200)
-		c, _ := compressData([]byte(good))
+		c, _ := Compress([]byte(good))
 		w.Write(c)
 	}))
 	defer srv.Close()
@@ -203,7 +203,7 @@ func TestWebBackend_GetLegacyAmzMetaFallback(t *testing.T) {
 		// Only the deprecated header — simulates a not-yet-upgraded server.
 		w.Header().Set("X-Amz-Meta-Outputid", outputID)
 		w.WriteHeader(200)
-		c, _ := compressData([]byte(good))
+		c, _ := Compress([]byte(good))
 		w.Write(c)
 	}))
 	defer srv.Close()

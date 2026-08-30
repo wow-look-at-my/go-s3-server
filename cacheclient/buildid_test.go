@@ -127,7 +127,7 @@ func TestWebBackend_GetRejectsBuildIDMismatch(t *testing.T) {
 		}
 		w.Header().Set("X-Cache-Meta-Outputid", outputID)
 		w.WriteHeader(200)
-		c, _ := compressData([]byte(poison))
+		c, _ := Compress([]byte(poison))
 		w.Write(c)
 	}))
 	defer srv.Close()
@@ -176,7 +176,7 @@ func TestWebBackend_GetRejectsStrippedBuildID(t *testing.T) {
 		}
 		w.Header().Set("X-Amz-Meta-Outputid", outputID)
 		w.WriteHeader(200)
-		c, _ := compressData([]byte(poison))
+		c, _ := Compress([]byte(poison))
 		w.Write(c)
 	}))
 	defer srv.Close()
@@ -217,7 +217,7 @@ func TestWebBackend_GetServesMatchingBuildID(t *testing.T) {
 		}
 		w.Header().Set("X-Cache-Meta-Outputid", outputID)
 		w.WriteHeader(200)
-		c, _ := compressData([]byte(good))
+		c, _ := Compress([]byte(good))
 		w.Write(c)
 	}))
 	defer srv.Close()
@@ -260,7 +260,7 @@ func TestGetBatch_RejectsBuildIDMismatch(t *testing.T) {
 	otherAction := strings.Repeat("cd", 32)
 	poison := string(archiveWithBuildID(ExpectedBuildIDAction(otherAction)))
 	key := "go-buildcache/v1" + actionID
-	compressed, _ := compressData([]byte(poison))
+	compressed, _ := Compress([]byte(poison))
 	store[key] = compressed
 	meta[key] = map[string]string{"outputid": testOutputID(poison)} // self-consistent hash
 

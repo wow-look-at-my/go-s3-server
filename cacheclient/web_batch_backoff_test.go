@@ -120,7 +120,7 @@ func TestWebBackend_BackoffResetsOnNonEmptyBatch(t *testing.T) {
 	hotID := "00000000000000ff"
 	hotKey := "go-buildcache/v1" + hotID
 	hotBody := []byte("served object that resets the streak")
-	hotComp, err := compressData(hotBody)
+	hotComp, err := Compress(hotBody)
 	require.NoError(t, err)
 	store[hotKey] = hotComp
 	meta[hotKey] = map[string]string{"outputid": testOutputID(string(hotBody))}

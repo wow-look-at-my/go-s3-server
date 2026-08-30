@@ -9,7 +9,8 @@ import (
 	"github.com/pierrec/lz4/v4"
 )
 
-func compressData(data []byte) ([]byte, error) {
+// Compress frames data as lz4, the wire form every stored body takes.
+func Compress(data []byte) ([]byte, error) {
 	var buf bytes.Buffer
 	w := lz4.NewWriter(&buf)
 	if _, err := w.Write(data); err != nil {

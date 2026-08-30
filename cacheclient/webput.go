@@ -78,7 +78,7 @@ func (b *WebBackend) Put(actionID, outputID string, body io.Reader, bodySize int
 	}
 
 	compressStart := time.Now()
-	compressed, err := compressData(raw)
+	compressed, err := Compress(raw)
 	if b.Latency != nil {
 		b.Latency.Compress.Record(time.Since(compressStart))
 	}

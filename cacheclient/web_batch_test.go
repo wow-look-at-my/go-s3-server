@@ -126,7 +126,7 @@ func TestGetBatch_ReturnsRequestedEntry(t *testing.T) {
 	require.NoError(t, err)
 
 	// Manually store a compressed entry.
-	compressed, _ := compressData([]byte("hello world"))
+	compressed, _ := Compress([]byte("hello world"))
 	store["go-buildcache/v1aabbccdd11223344"] = compressed
 	meta["go-buildcache/v1aabbccdd11223344"] = map[string]string{"outputid": testOutputID("hello world")}
 
@@ -157,7 +157,7 @@ func TestGetBatch_RejectsCorruptEntry(t *testing.T) {
 	defer b.Close()
 
 	// Advertise the hash of a body but store different content under it.
-	compressed, _ := compressData([]byte("a totally different body"))
+	compressed, _ := Compress([]byte("a totally different body"))
 	store["go-buildcache/v1aabbccdd11223344"] = compressed
 	meta["go-buildcache/v1aabbccdd11223344"] = map[string]string{"outputid": testOutputID("the correct body")}
 
@@ -184,7 +184,7 @@ func TestGetBatch_MissingOutputIDNotCorrupt(t *testing.T) {
 	require.NoError(t, err)
 	defer b.Close()
 
-	compressed, _ := compressData([]byte("body with no advertised outputid"))
+	compressed, _ := Compress([]byte("body with no advertised outputid"))
 	store["go-buildcache/v1aabbccdd11223344"] = compressed
 	meta["go-buildcache/v1aabbccdd11223344"] = map[string]string{} // no outputid
 
@@ -209,8 +209,8 @@ func TestGetBatch_PrefetchCallsOnBatchEntries(t *testing.T) {
 	require.NoError(t, err)
 
 	// Store the requested entry and an extra entry (will be prefetched).
-	compressed1, _ := compressData([]byte("entry one"))
-	compressed2, _ := compressData([]byte("entry two"))
+	compressed1, _ := Compress([]byte("entry one"))
+	compressed2, _ := Compress([]byte("entry two"))
 	store["go-buildcache/v1aaaa000000000001"] = compressed1
 	meta["go-buildcache/v1aaaa000000000001"] = map[string]string{"outputid": testOutputID("entry one")}
 	store["go-buildcache/v1aaaa000000000002"] = compressed2
@@ -294,7 +294,7 @@ func TestGetBatch_FallbackToIndividual(t *testing.T) {
 	require.NoError(t, err)
 
 	// Store a compressed entry and add its key to the index for getIndividual.
-	compressed, _ := compressData([]byte("fallback data"))
+	compressed, _ := Compress([]byte("fallback data"))
 	store["go-buildcache/v1aabbccdd11223344"] = compressed
 	meta["go-buildcache/v1aabbccdd11223344"] = map[string]string{"outputid": testOutputID("fallback data")}
 
@@ -345,7 +345,7 @@ func TestGet_UsesBatchForUnknownKeys(t *testing.T) {
 	require.False(t, b.indexAuthoritative)
 
 	// Key is NOT in b.keys index (simulating a fresh cache).
-	compressed, _ := compressData([]byte("batch hit"))
+	compressed, _ := Compress([]byte("batch hit"))
 	store["go-buildcache/v1aabbccdd11223344"] = compressed
 	meta["go-buildcache/v1aabbccdd11223344"] = map[string]string{"outputid": testOutputID("batch hit")}
 

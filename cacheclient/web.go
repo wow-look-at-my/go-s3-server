@@ -244,6 +244,13 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	return b, nil
 }
 
+// KeyPrefix returns what a cache key carries ahead of its action ID. The
+// client owns the key grammar, so a consumer recovering an action ID from a
+// BatchEntry asks for the prefix rather than rebuilding it.
+func (b *WebBackend) KeyPrefix() string {
+	return b.prefix + "v1"
+}
+
 func (b *WebBackend) key(actionID string) string {
 	return b.prefix + "v1" + actionID
 }

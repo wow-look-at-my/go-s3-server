@@ -164,7 +164,7 @@ func TestGet_IndexedKeyUsesBatch(t *testing.T) {
 	require.NoError(t, err)
 	defer b.Close()
 
-	compressed, _ := compressData([]byte("indexed hit"))
+	compressed, _ := Compress([]byte("indexed hit"))
 	store["go-buildcache/v1aabbccdd11223344"] = compressed
 	meta["go-buildcache/v1aabbccdd11223344"] = map[string]string{"outputid": testOutputID("indexed hit")}
 	primeIndex(b, "aabbccdd11223344")
@@ -256,7 +256,7 @@ func TestSendBatch_TransientFailureDoesNotMarkKnownMiss(t *testing.T) {
 			return
 		}
 		// Healthy again: serve the requested entry.
-		compressed, _ := compressData([]byte(body))
+		compressed, _ := Compress([]byte(body))
 		manifest := batchGetManifest{Entries: []batchGetManifestEntry{{
 			Key: key, Size: int64(len(compressed)),
 			Metadata: map[string]string{"outputid": testOutputID(body)},

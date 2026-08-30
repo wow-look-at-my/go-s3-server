@@ -15,7 +15,7 @@ import (
 func TestCompressDecompress_RoundTrip(t *testing.T) {
 	data := []byte("hello world, this is test data for compression")
 
-	compressed, err := compressData(data)
+	compressed, err := Compress(data)
 	require.NoError(t, err)
 	require.NotEmpty(t, compressed)
 
@@ -25,7 +25,7 @@ func TestCompressDecompress_RoundTrip(t *testing.T) {
 }
 
 func TestCompressDecompress_Empty(t *testing.T) {
-	compressed, err := compressData([]byte{})
+	compressed, err := Compress([]byte{})
 	require.NoError(t, err)
 
 	decompressed, err := Decompress(compressed)
@@ -39,7 +39,7 @@ func TestCompressDecompress_Large(t *testing.T) {
 		data[i] = byte(i % 256)
 	}
 
-	compressed, err := compressData(data)
+	compressed, err := Compress(data)
 	require.NoError(t, err)
 
 	decompressed, err := Decompress(compressed)

@@ -90,7 +90,13 @@ tests:
 					(cd "$1" && go build -o /dev/null ./...)
 				}
 
-				build "$root/first"
+				# One marker per stage, each one asserted. The suite runs without -v inside
+				# a build, where a failing command's output is not printed, so the first
+				# marker the assertions report missing is the whole diagnosis.
+				command -v go > /dev/null && echo "found-go yes"
+				command -v go-toolchain > /dev/null && echo "found-cacheprog yes"
+
+				build "$root/first" && echo "cold-build-ran yes"
 				stored=$(find "$DATA_DIR" -type f ! -name '.lock' | wc -l)
 				test "$stored" -gt 0 && echo "cold-build-populated-the-server yes"
 				before=$(served)
@@ -99,7 +105,7 @@ tests:
 				# rerun: the same sources in a directory that has never been built, with no
 				# local cache left. Anything it does not recompile came over the wire.
 				rm -rf "$XDG_CACHE_HOME/go-toolchain/buildcache" "$GOCACHE"
-				build "$root/second"
+				build "$root/second" && echo "warm-build-ran yes"
 				after=$(served)
 
 				echo "served-before $before"
@@ -108,5 +114,9 @@ tests:
 	  cmd: bash {shared.serve.sh} {inputs.config.json} 19040 {inputs.check.sh}
 	  outputs:
 		stdout:
+			- "found-go yes"
+			- "found-cacheprog yes"
+			- "cold-build-ran yes"
 			- "cold-build-populated-the-server yes"
+			- "warm-build-ran yes"
 			- "server-served-the-warm-build yes"

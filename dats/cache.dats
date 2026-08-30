@@ -74,7 +74,13 @@ tests:
 				# The cache protocol is the whole subject, so the build speaks it directly:
 				# cmd/go hands every action to the client, which talks to the server started
 				# above. Nothing else about the build matters here.
-				export GOCACHEPROG="go-toolchain cacheprog"
+				#
+				# Through a shell, never as the bare command: go-toolchain ships as an APE,
+				# whose header only a shell can bootstrap. cmd/go starts the cacheprog with
+				# execve, which answers that header with an exec format error.
+				printf '#!/bin/sh\ngo-toolchain cacheprog\n' > "$root/cacheprog.sh"
+				chmod +x "$root/cacheprog.sh"
+				export GOCACHEPROG="/bin/sh $root/cacheprog.sh"
 
 				# What the server says it handed out. Counting here rather than reading the
 				# client's log keeps the verdict on this repository's own contract: the
@@ -110,10 +116,17 @@ tests:
 				go env GOROOT > /dev/null || exit 24
 				echo "go-runs yes"
 
-				build "$root/first" || exit 25
+				# Once without the cache, so a build that cannot compile at all is told
+				# apart from a build the cache protocol broke.
+				mkdir -p "$root/plain"
+				cp "$(dirname "$PROJECT_GO_MOD")"/* "$root/plain"/
+				(cd "$root/plain" && env -u GOCACHEPROG go build -o /dev/null ./...) || exit 25
+				echo "plain-build-ran yes"
+
+				build "$root/first" || exit 26
 				echo "cold-build-ran yes"
 
-				test "$(stored)" -gt 0 || exit 26
+				test "$(stored)" -gt 0 || exit 27
 				echo "cold-build-populated-the-server yes"
 				before=$(served)
 
@@ -121,19 +134,20 @@ tests:
 				# rerun: the same sources in a directory that has never been built, with no
 				# local cache left. Anything it does not recompile came over the wire.
 				rm -rf "$XDG_CACHE_HOME/go-toolchain/buildcache" "$GOCACHE"
-				build "$root/second" || exit 27
+				build "$root/second" || exit 28
 				echo "warm-build-ran yes"
 				after=$(served)
 
 				echo "served-before $before"
 				echo "served-after $after"
-				test "$after" -gt "$before" || exit 28
+				test "$after" -gt "$before" || exit 29
 				echo "server-served-the-warm-build yes"
 	  cmd: bash {shared.serve.sh} {inputs.config.json} 19040 {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "found-tools yes"
 			- "go-runs yes"
+			- "plain-build-ran yes"
 			- "cold-build-ran yes"
 			- "cold-build-populated-the-server yes"
 			- "warm-build-ran yes"

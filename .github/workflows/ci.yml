@@ -64,8 +64,8 @@ jobs:
       - name: Start go-s3-server (normal mode)
         run: |
           mkdir -p /tmp/s3-data
-          chmod +x build/go-s3-server_linux_amd64
-          nohup ./build/go-s3-server_linux_amd64 \
+          chmod +x build/go-s3-server
+          nohup ./build/go-s3-server \
             --config .github/workflows/integration-test/s3-config.json \
             > /tmp/s3-server-normal.log 2>&1 &
           echo $! > /tmp/s3-server-normal.pid
@@ -78,7 +78,7 @@ jobs:
       - name: Start go-s3-server (write-once mode)
         run: |
           mkdir -p /tmp/s3-data-writeonce
-          nohup ./build/go-s3-server_linux_amd64 \
+          nohup ./build/go-s3-server \
             --config .github/workflows/integration-test/s3-config-writeonce.json \
             > /tmp/s3-server-writeonce.log 2>&1 &
           echo $! > /tmp/s3-server-writeonce.pid
@@ -127,8 +127,8 @@ jobs:
       - name: Start go-s3-server
         run: |
           mkdir -p /tmp/s3-data
-          chmod +x build/go-s3-server_linux_amd64
-          nohup ./build/go-s3-server_linux_amd64 --config .github/workflows/integration-test/s3-config-noauth.json > /tmp/s3-server.log 2>&1 &
+          chmod +x build/go-s3-server
+          nohup ./build/go-s3-server --config .github/workflows/integration-test/s3-config-noauth.json > /tmp/s3-server.log 2>&1 &
           echo $! > /tmp/s3-server.pid
           for i in $(seq 1 30); do
             if curl -so /dev/null http://127.0.0.1:9000/ 2>/dev/null; then echo "Server ready"; break; fi

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // gbciKeyPrefix is the constant leading portion of every cacheprog cache key.
@@ -214,11 +216,11 @@ func (idx *Index) RemoveKeys(keys []string) {
 	if len(keys) == 0 {
 		return
 	}
-	victimKeys := make(map[compactKey]bool, len(keys))
+	victimKeys := set.New[compactKey](len(keys))
 	victimHashes := make(map[[gbciHashSize]byte]bool, len(keys))
 	for _, k := range keys {
 		ck := newCompactKey(k)
-		victimKeys[ck] = true
+		victimKeys.Add(ck)
 		if h, ok := ck.actionHash(); ok {
 			victimHashes[h] = true
 		}
@@ -231,7 +233,7 @@ func (idx *Index) RemoveKeys(keys []string) {
 	idx.drainEntriesLocked()
 	w := 0
 	for _, e := range idx.entries {
-		if !victimKeys[e.compactKey] {
+		if !victimKeys.Contains(e.compactKey) {
 			idx.entries[w] = e
 			w++
 		}

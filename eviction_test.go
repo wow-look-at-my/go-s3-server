@@ -229,11 +229,20 @@ func TestDurationUnmarshal(t *testing.T) {
 // dropped for being old, only for being least-recently-used past the budget.
 func TestEvictionConfigDefaults(t *testing.T) {
 	dir := t.TempDir()
-	cred := `"credentials": [{"username": "u", "password": "p"}]`
+	evictionConfig := func(name string, eviction map[string]any) string {
+		cfg := map[string]any{
+			"bucket":      "b",
+			"data_dir":    "/tmp",
+			"credentials": testCredentials("u", "p"),
+		}
+		if eviction != nil {
+			cfg["eviction"] = eviction
+		}
+		return writeConfigFile(t, dir, name, cfg)
+	}
 
 	// No eviction block → default size budget, age eviction off, enabled.
-	p1 := dir + "/default.json"
-	require.NoError(t, os.WriteFile(p1, []byte(`{"bucket":"b","data_dir":"/tmp",`+cred+`}`), 0644))
+	p1 := evictionConfig("default.json", nil)
 	cfg, err := LoadConfig(p1)
 	require.NoError(t, err)
 	assert.Equal(t, int64(defaultEvictionMaxBytes), cfg.Eviction.SizeLimit())
@@ -242,31 +251,27 @@ func TestEvictionConfigDefaults(t *testing.T) {
 	assert.Equal(t, defaultEvictionInterval, cfg.Eviction.Interval.Std())
 
 	// Explicit max_bytes 0 with no age limit → eviction disabled.
-	p2 := dir + "/off.json"
-	require.NoError(t, os.WriteFile(p2, []byte(`{"bucket":"b","data_dir":"/tmp","eviction":{"max_bytes":0},`+cred+`}`), 0644))
+	p2 := evictionConfig("off.json", map[string]any{"max_bytes": 0})
 	cfg, err = LoadConfig(p2)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), cfg.Eviction.SizeLimit())
 	assert.False(t, cfg.Eviction.Enabled())
 
 	// Age limit only → enabled even with the size budget off.
-	p3 := dir + "/age.json"
-	require.NoError(t, os.WriteFile(p3, []byte(`{"bucket":"b","data_dir":"/tmp","eviction":{"max_bytes":0,"max_age":"720h"},`+cred+`}`), 0644))
+	p3 := evictionConfig("age.json", map[string]any{"max_bytes": 0, "max_age": "720h"})
 	cfg, err = LoadConfig(p3)
 	require.NoError(t, err)
 	assert.True(t, cfg.Eviction.Enabled())
 	assert.Equal(t, 720*time.Hour, cfg.Eviction.AgeLimit())
 
 	// An explicit budget wins over the default.
-	p5 := dir + "/size.json"
-	require.NoError(t, os.WriteFile(p5, []byte(`{"bucket":"b","data_dir":"/tmp","eviction":{"max_bytes":1048576},`+cred+`}`), 0644))
+	p5 := evictionConfig("size.json", map[string]any{"max_bytes": 1048576})
 	cfg, err = LoadConfig(p5)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1048576), cfg.Eviction.SizeLimit())
 
 	// Negative max_bytes is rejected.
-	p4 := dir + "/neg.json"
-	require.NoError(t, os.WriteFile(p4, []byte(`{"bucket":"b","data_dir":"/tmp","eviction":{"max_bytes":-1},`+cred+`}`), 0644))
+	p4 := evictionConfig("neg.json", map[string]any{"max_bytes": -1})
 	_, err = LoadConfig(p4)
 	require.Error(t, err)
 }
@@ -276,11 +281,18 @@ func TestEvictionConfigDefaults(t *testing.T) {
 // the load instead of silently reverting to the default.
 func TestMaxBytesEnvVar(t *testing.T) {
 	dir := t.TempDir()
-	cred := `"credentials": [{"username": "u", "password": "p"}]`
-	plain := dir + "/plain.json"
-	require.NoError(t, os.WriteFile(plain, []byte(`{"bucket":"b","data_dir":"/tmp",`+cred+`}`), 0644))
-	explicit := dir + "/explicit.json"
-	require.NoError(t, os.WriteFile(explicit, []byte(`{"bucket":"b","data_dir":"/tmp","eviction":{"max_bytes":123},`+cred+`}`), 0644))
+	base := map[string]any{
+		"bucket":      "b",
+		"data_dir":    "/tmp",
+		"credentials": testCredentials("u", "p"),
+	}
+	plain := writeConfigFile(t, dir, "plain.json", base)
+	explicit := writeConfigFile(t, dir, "explicit.json", map[string]any{
+		"bucket":      "b",
+		"data_dir":    "/tmp",
+		"credentials": testCredentials("u", "p"),
+		"eviction":    map[string]any{"max_bytes": 123},
+	})
 
 	t.Setenv(maxBytesEnvVar, "100GB")
 	cfg, err := LoadConfig(plain)

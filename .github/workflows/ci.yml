@@ -13,16 +13,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Every grant here is load-bearing; job-level permissions REPLACE the
-    # workflow-level block, so all of them have to be listed together.
-    # id-token: OIDC for secret-server and the buildhost publish.
-    # contents: write: the dependency-graph snapshot (403 -> failed build under read).
-    # actions + checks: read: the org all-builds guard, which fails closed when
-    #   it cannot scan the run's jobs and the head commit's check runs.
-    # deployments + artifact-metadata: write: autorelease publishes through
-    #   buildhost-publish, which registers a GitHub Deployment and posts a
-    #   storage record as part of publishing -- neither has an opt-out, and both
-    #   fail the build without their grant.
+    # A job-level block REPLACES the workflow-level one, so every grant the build needs is listed here.
     permissions:
       id-token: write
       contents: write
@@ -176,14 +167,7 @@ jobs:
           export GO_BUILDCACHE_CONFIG=$(echo -n '{"endpoint":"http://127.0.0.1:9000","bucket":"test-cache","username":"test-key-id","password":"test-secret-key"}' | base64 -w0)
           go-toolchain --no-benchmark 2>&1 | tee /tmp/build2.log
 
-      # This step must FAIL when the warm build gets nothing from the shared
-      # cache. Its predecessor grepped the log line "s3 index:", which the
-      # client renamed to "web index:" long ago -- the step printed
-      # "WARN: could not verify hits" and exited 0 in 100% of sampled runs,
-      # so this job green-lit a dead cache for months. The check now parses
-      # the client's summary counters with rename-tolerant patterns, and a
-      # missing line is itself a failure (an unrecognized format must never
-      # silently disarm the gate again).
+      # A warm build that gets nothing from the shared cache fails here, and so does output this cannot parse.
       - name: Verify warm-build cache hits
         uses: wow-look-at-my/actions@typescript#latest
         with:

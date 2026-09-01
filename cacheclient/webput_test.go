@@ -86,7 +86,7 @@ func TestWebBackend_PutAndGet(t *testing.T) {
 	require.Empty(t, h.Get("X-Cache-Meta-Target"))
 
 	// Get.
-	gotOutputID, body, size, _, miss, err := b.Get("aabbccdd11223344")
+	gotOutputID, body, size, _, miss, _, err := b.Get("aabbccdd11223344")
 	require.NoError(t, err)
 	require.False(t, miss)
 	require.Equal(t, outputID, gotOutputID)
@@ -265,4 +265,76 @@ func TestWebBackend_PutPreservesMethodOnRedirect(t *testing.T) {
 			require.Equal(t, uint32(1), b.Stats.Puts.Load())
 		})
 	}
+}
+
+// TestWebBackend_PutExecutableRoundTrip pins the wire contract for the
+// executable bit: PutExecutable is the ONLY thing that sets the metadata,
+// Put never does, and Get reports back exactly what was stored — never a
+// guess, never a default of true.
+func TestWebBackend_PutExecutableRoundTrip(t *testing.T) {
+	store := map[string][]byte{}
+	headers := map[string]http.Header{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/testbucket/_batch/get" {
+			w.WriteHeader(404) // force the individual-GET fallback this test exercises
+			return
+		}
+		switch r.Method {
+		case "PUT":
+			body, _ := io.ReadAll(r.Body)
+			store[r.URL.Path] = body
+			headers[r.URL.Path] = r.Header.Clone()
+			w.WriteHeader(200)
+		case "GET":
+			data, ok := store[r.URL.Path]
+			if !ok {
+				w.WriteHeader(404)
+				return
+			}
+			h := headers[r.URL.Path]
+			for name, vals := range h {
+				if strings.HasPrefix(strings.ToLower(name), "x-cache-meta-") {
+					w.Header().Set(name, vals[0])
+				}
+			}
+			w.WriteHeader(200)
+			w.Write(data)
+		}
+	}))
+	defer srv.Close()
+
+	b, err := NewWebBackend(WebConfig{
+		Bucket: "testbucket", Endpoint: srv.URL,
+		AccessKey: "testkey", SecretKey: "testsecret",
+	})
+	require.NoError(t, err)
+	b.batchPutUnsupported.Store(true) // synchronous single-PUT path
+
+	exePayload := largePayload(1024)
+	exeOutputID := testOutputID(exePayload)
+	require.NoError(t, b.PutExecutable("aabbccdd11223344", exeOutputID, nopReader(exePayload), int64(len(exePayload))))
+
+	plainPayload := largePayload(1024) + "x" // distinct body
+	plainOutputID := testOutputID(plainPayload)
+	require.NoError(t, b.Put("eeff00112233ffff", plainOutputID, nopReader(plainPayload), int64(len(plainPayload))))
+
+	exeHeader := headers["/testbucket/go-buildcache/v1aabbccdd11223344"]
+	require.Equal(t, "1", exeHeader.Get("X-Cache-Meta-Executable"), "PutExecutable must mark the object executable")
+	plainHeader := headers["/testbucket/go-buildcache/v1eeff00112233ffff"]
+	require.Empty(t, plainHeader.Get("X-Cache-Meta-Executable"), "an ordinary Put must never mark the object executable")
+
+	gotOutputID, body, _, _, miss, executable, err := b.Get("aabbccdd11223344")
+	require.NoError(t, err)
+	require.False(t, miss)
+	require.Equal(t, exeOutputID, gotOutputID)
+	require.True(t, executable, "a PutExecutable object must round-trip as executable")
+	body.Close()
+
+	gotOutputID, body, _, _, miss, executable, err = b.Get("eeff00112233ffff")
+	require.NoError(t, err)
+	require.False(t, miss)
+	require.Equal(t, plainOutputID, gotOutputID)
+	require.False(t, executable, "an ordinary Put object must never round-trip as executable")
+	body.Close()
 }

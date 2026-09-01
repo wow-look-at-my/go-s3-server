@@ -125,11 +125,12 @@ type batchReq struct {
 }
 
 type batchResp struct {
-	outputID string
-	body     io.ReadCloser
-	size     int64
-	t        time.Time
-	miss     bool
+	outputID   string
+	body       io.ReadCloser
+	size       int64
+	t          time.Time
+	miss       bool
+	executable bool
 }
 
 const (
@@ -272,7 +273,7 @@ func (b *WebBackend) url(key string) string {
 //
 //   - Key absent but the index fetch FAILED: batch-probe the key (the recovery
 //     path), bounded by the consecutive-empty-batch backoff.
-func (b *WebBackend) Get(actionID string) (outputID string, body io.ReadCloser, size int64, t time.Time, miss bool, err error) {
+func (b *WebBackend) Get(actionID string) (outputID string, body io.ReadCloser, size int64, t time.Time, miss bool, executable bool, err error) {
 	key := b.key(actionID)
 	if b.keyKnown(key) {
 		return b.getBatch(actionID, key)
@@ -284,7 +285,7 @@ func (b *WebBackend) Get(actionID string) (outputID string, body io.ReadCloser, 
 	b.missesMu.RUnlock()
 	if alreadyMissed {
 		b.MissNotInIndex.Increment()
-		return "", nil, 0, time.Time{}, true, nil
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 
 	b.MissNotInIndex.Increment()
@@ -295,12 +296,12 @@ func (b *WebBackend) Get(actionID string) (outputID string, body io.ReadCloser, 
 		} else {
 			b.SkippedNotInIndex.Increment()
 		}
-		return "", nil, 0, time.Time{}, true, nil
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 	if b.batchProbingOff() {
 		// Backoff tripped: the remote has proven empty for this run. Miss without probing.
 		b.SkippedBatchBackoff.Increment()
-		return "", nil, 0, time.Time{}, true, nil
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 	return b.getBatch(actionID, key)
 }

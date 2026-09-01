@@ -64,14 +64,14 @@ func TestWebBackend_RemoteNeverDisabledAfterFailureBurst(t *testing.T) {
 	// A long burst of failing GETs — far more than a handful.
 	const burst = 40
 	for i := 0; i < burst; i++ {
-		_, _, _, _, miss, err := b.Get(actionID)
+		_, _, _, _, miss, _, err := b.Get(actionID)
 		require.NoError(t, err)
 		require.True(t, miss, "a failing remote GET degrades to a clean miss")
 	}
 
 	// The backend recovers; the next GET must still attempt the remote and hit, proving the burst never disabled the tier.
 	failing.Store(false)
-	gotOutputID, body, size, _, miss, err := b.Get(actionID)
+	gotOutputID, body, size, _, miss, _, err := b.Get(actionID)
 	require.NoError(t, err)
 	require.False(t, miss, "after a failure burst the remote must still be attempted and hit, not permanently disabled")
 	require.Equal(t, outputID, gotOutputID)
@@ -117,7 +117,7 @@ func TestWebBackend_RetriesTransientThenRecovers(t *testing.T) {
 	defer b.Close()
 	primeIndex(b, actionID)
 
-	gotOutputID, body, size, _, miss, err := b.Get(actionID)
+	gotOutputID, body, size, _, miss, _, err := b.Get(actionID)
 	require.NoError(t, err)
 	require.False(t, miss, "a backend that recovers within the retry budget must yield a hit, not a miss")
 	require.Equal(t, outputID, gotOutputID)

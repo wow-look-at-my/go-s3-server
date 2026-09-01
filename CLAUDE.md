@@ -60,7 +60,7 @@ Do NOT use `go build`, `go test`, or any bare `go` commands. Always use `go-tool
 - `handlers_test.go` — Unit tests for handlers
 - `modindex_test.go` — Tests for module-index detection and the PutObject refusal
 - `dats/` — the executable spec for the HTTP surface and the cache round trip. `api.dats` (roundtrip, not_found, overwrite, sharding, native/legacy metadata, `/_index` and its ETag, the unauthenticated health probe, three refusals), `writeonce.dats` (store, idempotent resend, 409 on different bytes, sharding), and `cache.dats` (a `go build` under `GOCACHEPROG='go-toolchain cacheprog'` fills the server; a second build in a fresh directory with the local cache wiped must then be served over the wire, counted from this server's own `/metrics` rather than the client's renameable log lines). Every test starts its own server on its own port through the shared `serve.sh`, so no two tests share a resource. `go-toolchain` runs the suites after the build; `dats dats/*.dats` runs them alone against `./build/go-s3-server` (`SERVER=` picks another binary).
-- `.github/workflows/ci.yml` — CI: `test` (checkout, bubblewrap for the dats sandbox, `wow-look-at-my/go-toolchain@v1`, upload `build/`) plus `docker` on the default branch. It carries no assertions of its own — every one lives in `dats/` or a Go test, so a contributor runs exactly what CI runs.
+- `.github/workflows/ci.yml` — CI: one `test` job (checkout, bubblewrap for the dats sandbox, `wow-look-at-my/go-toolchain@v1`). It carries no assertions of its own — every one lives in `dats/` or a Go test, so a contributor runs exactly what CI runs.
 
 ## Conventions
 

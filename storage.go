@@ -40,7 +40,17 @@ var (
 // module-index blobs, but that only protects clients that have updated; this
 // purge removes the already-stored poison so EVERY client -- updated or not --
 // is repaired at once (a missing index key is simply recomputed locally).
-const currentCacheVersion = 3
+//
+// Version 4 purges caches populated while linked executables were uploaded
+// without their names. The server stores metadata opaquely and cannot tell an
+// executable body from ordinary data (a cosmo APE starts with a '#!' shell
+// header, so there is nothing to sniff), so the nameless entries this tier
+// accumulated are unrepairable in place: a client that fetches one
+// materializes a 0666 regular file, and the build dies at fork/exec with
+// permission denied. Clients now stamp exe-name metadata on every executable
+// upload; this purge removes every nameless entry at once, and each one is
+// simply rebuilt and re-uploaded with its name.
+const currentCacheVersion = 4
 
 const cacheVersionFile = ".cache_version"
 const lockFileName = ".lock"

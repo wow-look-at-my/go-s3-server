@@ -35,6 +35,18 @@ type putReq struct {
 // Put falls back to the per-object doRetryPUT path — the single-PUT retry
 // is the floor.
 func (b *WebBackend) Put(actionID, outputID string, body io.Reader, bodySize int64) error {
+	return b.put(actionID, outputID, body, bodySize, false)
+}
+
+// PutExecutable mirrors Put for an object the build will later run directly
+// (go run, a shebang script). The stored metadata records this so a later Get
+// can restore the executable bit on the file it writes, instead of every
+// cache object defaulting to executable regardless of what it holds.
+func (b *WebBackend) PutExecutable(actionID, outputID string, body io.Reader, bodySize int64) error {
+	return b.put(actionID, outputID, body, bodySize, true)
+}
+
+func (b *WebBackend) put(actionID, outputID string, body io.Reader, bodySize int64, executable bool) error {
 	key := b.key(actionID)
 
 	// Atomically check-and-claim: skip if the key is already known or being uploaded.
@@ -110,6 +122,9 @@ func (b *WebBackend) Put(actionID, outputID string, body io.Reader, bodySize int
 	}
 	if files := parseSourceFiles(raw); len(files) > 0 {
 		meta["src"] = capSrcList(files)
+	}
+	if executable {
+		meta["executable"] = "1"
 	}
 
 	pr := putReq{

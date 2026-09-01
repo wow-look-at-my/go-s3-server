@@ -9,11 +9,11 @@ import (
 
 // getIndividual fetches a single object stored under an individual cache key.
 // It is the fallback sendBatch uses against a server with no batch endpoint.
-func (b *WebBackend) getIndividual(actionID, key string) (string, io.ReadCloser, int64, time.Time, bool, error) {
+func (b *WebBackend) getIndividual(actionID, key string) (string, io.ReadCloser, int64, time.Time, bool, bool, error) {
 
 	req, err := http.NewRequest("GET", b.url(key), nil)
 	if err != nil {
-		return "", nil, 0, time.Time{}, true, nil
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 	b.signRequest(req)
 
@@ -24,7 +24,7 @@ func (b *WebBackend) getIndividual(actionID, key string) (string, io.ReadCloser,
 		b.Pool.Release()
 		b.MissNetwork.Increment()
 		logging.Warnf("cacheprog: web get %s: %v", ShortID(actionID), err)
-		return "", nil, 0, time.Time{}, true, nil
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 
 	if resp.StatusCode == 404 {
@@ -33,7 +33,7 @@ func (b *WebBackend) getIndividual(actionID, key string) (string, io.ReadCloser,
 		b.MissHTTP404.Increment()
 		// Drop the stale index claim so the PUT path re-uploads; otherwise the key 404s forever.
 		b.reclaimAbsent(key)
-		return "", nil, 0, time.Time{}, true, nil
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 	if resp.StatusCode != 200 {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -41,7 +41,7 @@ func (b *WebBackend) getIndividual(actionID, key string) (string, io.ReadCloser,
 		b.Pool.Release()
 		b.MissHTTPError.Increment()
 		b.errLog.Record("web get", resp.StatusCode, actionID, string(respBody))
-		return "", nil, 0, time.Time{}, true, nil
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 
 	// Fall back to the deprecated S3-style header for a cache server that predates X-Cache-Meta-Outputid.
@@ -54,8 +54,13 @@ func (b *WebBackend) getIndividual(actionID, key string) (string, io.ReadCloser,
 		b.Pool.Release()
 		b.MissNoOutputID.Increment()
 		logging.Warnf("cacheprog: web get %s: missing outputid metadata", ShortID(actionID))
-		return "", nil, 0, time.Time{}, true, nil
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
+	// The object's OWN build step decided executable-ness (a link output vs a
+	// compiled package); this is the one bit of that decision the wire
+	// protocol carries, so a network hit restores the same mode a local hit
+	// would have had instead of guessing from content or defaulting to +x.
+	executable := resp.Header.Get("X-Cache-Meta-Executable") != ""
 
 	compressed, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -66,7 +71,7 @@ func (b *WebBackend) getIndividual(actionID, key string) (string, io.ReadCloser,
 	if err != nil {
 		b.MissReadBody.Increment()
 		logging.Warnf("cacheprog: web get %s: read body: %v", ShortID(actionID), err)
-		return "", nil, 0, time.Time{}, true, nil
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 
 	decompressStart := time.Now()
@@ -77,7 +82,7 @@ func (b *WebBackend) getIndividual(actionID, key string) (string, io.ReadCloser,
 	if err != nil {
 		b.MissDecompress.Increment()
 		logging.Warnf("cacheprog: web get %s: decompress: %v", ShortID(actionID), err)
-		return "", nil, 0, time.Time{}, true, nil
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 
 	// Integrity check: the body must hash to its advertised outputID. A mismatch means the remote object is
@@ -89,7 +94,7 @@ func (b *WebBackend) getIndividual(actionID, key string) (string, io.ReadCloser,
 		b.removeClaimed(key)
 		logging.Warnf("cacheprog: web get %s: body checksum mismatch (want outputid=%s, got sha256=%s, len=%d); evicting and treating as miss",
 			ShortID(actionID), ShortID(outputID), ShortID(got), len(decompressed))
-		return "", nil, 0, time.Time{}, true, nil
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 
 	// Cross-contamination guard: a compiled package self-certifies its action key in its build id. A body
@@ -101,7 +106,7 @@ func (b *WebBackend) getIndividual(actionID, key string) (string, io.ReadCloser,
 		b.removeClaimed(key)
 		logging.Warnf("cacheprog: web get %s: build-id action mismatch (want action=%s, got action=%s, len=%d); evicting and treating as miss",
 			ShortID(actionID), ExpectedBuildIDAction(actionID), act, len(decompressed))
-		return "", nil, 0, time.Time{}, true, nil
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 
 	// Module-index guard: a Go module index blob self-certifies neither its outputID nor its build id, so a
@@ -112,7 +117,7 @@ func (b *WebBackend) getIndividual(actionID, key string) (string, io.ReadCloser,
 		b.removeClaimed(key)
 		logging.Warnf("cacheprog: web get %s: refusing module-index blob (unverifiable under this key, len=%d); treating as miss",
 			ShortID(actionID), len(decompressed))
-		return "", nil, 0, time.Time{}, true, nil
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 
 	t := time.Now()
@@ -123,30 +128,30 @@ func (b *WebBackend) getIndividual(actionID, key string) (string, io.ReadCloser,
 	}
 
 	b.Stats.Hits.Increment()
-	return outputID, io.NopCloser(bytes.NewReader(decompressed)), int64(len(decompressed)), t, false, nil
+	return outputID, io.NopCloser(bytes.NewReader(decompressed)), int64(len(decompressed)), t, false, executable, nil
 }
 
 // getBatch enqueues this key on the coalescer and waits for the result.
 // Multiple concurrent callers funnel into the same outgoing HTTP request
 // instead of each making their own — see batchCoalescer / sendBatch.
-func (b *WebBackend) getBatch(actionID, key string) (string, io.ReadCloser, int64, time.Time, bool, error) {
+func (b *WebBackend) getBatch(actionID, key string) (string, io.ReadCloser, int64, time.Time, bool, bool, error) {
 	respCh := make(chan batchResp, 1)
 	select {
 	case b.batchReqCh <- batchReq{actionID: actionID, key: key, resp: respCh}:
 	case <-b.batchStop:
 		// Backend is closing — return miss so the caller can fall back.
-		return "", nil, 0, time.Time{}, true, nil
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 	select {
 	case r := <-respCh:
-		return r.outputID, r.body, r.size, r.t, r.miss, nil
+		return r.outputID, r.body, r.size, r.t, r.miss, r.executable, nil
 	case <-b.batchDone:
 		// Shutdown raced the enqueue: use the buffered reply if sendBatch already produced it, else degrade to a miss.
 		select {
 		case r := <-respCh:
-			return r.outputID, r.body, r.size, r.t, r.miss, nil
+			return r.outputID, r.body, r.size, r.t, r.miss, r.executable, nil
 		default:
-			return "", nil, 0, time.Time{}, true, nil
+			return "", nil, 0, time.Time{}, true, false, nil
 		}
 	}
 }

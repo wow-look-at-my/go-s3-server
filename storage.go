@@ -41,15 +41,17 @@ var (
 // purge removes the already-stored poison so EVERY client -- updated or not --
 // is repaired at once (a missing index key is simply recomputed locally).
 //
-// Version 4 purges caches populated while linked executables were uploaded
-// without their names. The server stores metadata opaquely and cannot tell an
-// executable body from ordinary data (a cosmo APE starts with a '#!' shell
-// header, so there is nothing to sniff), so the nameless entries this tier
-// accumulated are unrepairable in place: a client that fetches one
-// materializes a 0666 regular file, and the build dies at fork/exec with
-// permission denied. Clients now stamp exe-name metadata on every executable
-// upload; this purge removes every nameless entry at once, and each one is
-// simply rebuilt and re-uploaded with its name.
+// Version 4 purges entries stored before PutExecutable existed. Such an entry
+// carries no executable metadata, so a network hit restores it as a regular
+// file even when the client asks for PutExecutable's behavior -- a permanent,
+// silent loss of the executable bit for every object cached before this
+// change. A missing key is simply rebuilt and re-uploaded with the flag.
+//
+// The server stores metadata opaquely and cannot tell an executable body from
+// ordinary data (a cosmo APE starts with a '#!' shell header, so there is
+// nothing to sniff), so these nameless entries are unrepairable in place;
+// clients now stamp executable metadata on every executable upload, and each
+// purged entry is simply rebuilt and re-uploaded.
 const currentCacheVersion = 4
 
 const cacheVersionFile = ".cache_version"

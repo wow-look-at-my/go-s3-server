@@ -46,7 +46,7 @@ func TestWebBackend_EmptyIndexSkipsBatch(t *testing.T) {
 	// Several distinct cold keys must all miss without any batch round-trip.
 	for i := 0; i < 5; i++ {
 		id := fmt.Sprintf("%016x", 0xc01d0000+i)
-		_, _, _, _, miss, err := b.Get(id)
+		_, _, _, _, miss, _, err := b.Get(id)
 		require.NoError(t, err)
 		require.True(t, miss, "a cold key against an empty remote must be a clean miss")
 	}
@@ -84,7 +84,7 @@ func TestWebBackend_AuthoritativeIndexSkipsAbsentKeys(t *testing.T) {
 	require.True(t, b.indexAuthoritative)
 
 	// A cold key NOT in the authoritative index misses cleanly, no round-trip.
-	_, _, _, _, miss, err := b.Get("bbbbbbbbbbbbbbbb")
+	_, _, _, _, miss, _, err := b.Get("bbbbbbbbbbbbbbbb")
 	require.NoError(t, err)
 	require.True(t, miss)
 	require.Equal(t, int64(0), batchGets.Load(),
@@ -112,7 +112,7 @@ func TestWebBackend_IndexFetchFailureStillProbes(t *testing.T) {
 	defer b.Close()
 	require.False(t, b.indexAuthoritative, "a 404 /_index is a fetch failure, not an empty index")
 
-	_, _, _, _, miss, err := b.Get("bbbbbbbbbbbbbbbb")
+	_, _, _, _, miss, _, err := b.Get("bbbbbbbbbbbbbbbb")
 	require.NoError(t, err)
 	require.True(t, miss)
 	require.Equal(t, int64(1), batchGets.Load(),
@@ -169,7 +169,7 @@ func TestGet_IndexedKeyUsesBatch(t *testing.T) {
 	meta["go-buildcache/v1aabbccdd11223344"] = map[string]string{"outputid": testOutputID("indexed hit")}
 	primeIndex(b, "aabbccdd11223344")
 
-	outputID, body, _, _, miss, err := b.Get("aabbccdd11223344")
+	outputID, body, _, _, miss, _, err := b.Get("aabbccdd11223344")
 	require.NoError(t, err)
 	require.False(t, miss, "an indexed key served by the batch endpoint must hit")
 	require.Equal(t, testOutputID("indexed hit"), outputID)
@@ -216,7 +216,7 @@ func TestWebBackend_Reclaims404IndexedKey(t *testing.T) {
 	key := b.key(actionID)
 
 	// GET routes via batch, batch 404s, the fallback individual GET 404s too: authoritative absence.
-	_, _, _, _, miss, err := b.Get(actionID)
+	_, _, _, _, miss, _, err := b.Get(actionID)
 	require.NoError(t, err)
 	require.True(t, miss)
 	require.Equal(t, uint32(1), b.Reclaimed404.Load(), "the stale index claim must be counted as reclaimed")
@@ -281,7 +281,7 @@ func TestSendBatch_TransientFailureDoesNotMarkKnownMiss(t *testing.T) {
 	defer b.Close()
 
 	// The opening Get: the batch fails → miss, but the key must NOT become knownMiss.
-	_, _, _, _, miss, err := b.Get(actionID)
+	_, _, _, _, miss, _, err := b.Get(actionID)
 	require.NoError(t, err)
 	require.True(t, miss)
 	b.missesMu.RLock()
@@ -291,7 +291,7 @@ func TestSendBatch_TransientFailureDoesNotMarkKnownMiss(t *testing.T) {
 
 	// Backend recovers: the SAME key must be re-probed and now hit.
 	failing.Store(false)
-	outputID, rc, _, _, miss, err := b.Get(actionID)
+	outputID, rc, _, _, miss, _, err := b.Get(actionID)
 	require.NoError(t, err)
 	require.False(t, miss, "after recovery the key must be re-probed, not frozen as a known miss")
 	require.Equal(t, testOutputID(body), outputID)

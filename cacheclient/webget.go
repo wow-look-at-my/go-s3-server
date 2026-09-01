@@ -12,39 +12,9 @@ import (
 
 // getIndividual fetches a single object stored under an individual cache key.
 // It is the fallback sendBatch uses against a server with no batch endpoint.
-func (b *WebBackend) getIndividual(actionID, key string) (string, io.ReadCloser, int64, time.Time, bool, error) {
-	r := b.getIndividualEntry(actionID, key)
-	if r.miss {
-		return "", nil, 0, time.Time{}, true, nil
-	}
-	return r.outputID, r.body, r.size, r.t, false, r.err
-}
-
-// getObjectResult is one object fetched from the remote: the verified body
-// plus the metadata the server stored with it, or miss=true with the rest
-// zeroed. An error that made the object unusable is reported as a miss with
-// err set (the caller treats a miss as a local recompute either way).
-type getObjectResult struct {
-	outputID string
-	body     io.ReadCloser
-	size     int64
-	t        time.Time
-	meta     map[string]string
-	miss     bool
-	err      error
-}
-
-// getIndividualEntry is getIndividual returning the object's metadata map as
-// well, for the caller that has to know whether the body is an executable
-// (see GetExecutable, exeNameFromMeta).
-func (b *WebBackend) getIndividualEntry(actionID, key string) getObjectResult {
-
-	miss := func() getObjectResult { return getObjectResult{miss: true} }
+func (b *WebBackend) getIndividual(actionID, key string) (string, io.ReadCloser, int64, time.Time, bool, bool, error) {
 
 	req, err := http.NewRequest("GET", b.url(key), nil)
-	if err != nil {
-		return miss()
-	}
 	b.signRequest(req)
 
 	b.Pool.Acquire()
@@ -54,7 +24,7 @@ func (b *WebBackend) getIndividualEntry(actionID, key string) getObjectResult {
 		b.Pool.Release()
 		b.MissNetwork.Increment()
 		logging.Warnf("cacheprog: web get %s: %v", ShortID(actionID), err)
-		return miss()
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 
 	if resp.StatusCode == 404 {
@@ -63,7 +33,7 @@ func (b *WebBackend) getIndividualEntry(actionID, key string) getObjectResult {
 		b.MissHTTP404.Increment()
 		// Drop the stale index claim so the PUT path re-uploads; otherwise the key 404s forever.
 		b.reclaimAbsent(key)
-		return miss()
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 	if resp.StatusCode != 200 {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -71,7 +41,7 @@ func (b *WebBackend) getIndividualEntry(actionID, key string) getObjectResult {
 		b.Pool.Release()
 		b.MissHTTPError.Increment()
 		b.errLog.Record("web get", resp.StatusCode, actionID, string(respBody))
-		return miss()
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 
 	// Fall back to the deprecated S3-style header for a cache server that predates X-Cache-Meta-Outputid.
@@ -84,8 +54,13 @@ func (b *WebBackend) getIndividualEntry(actionID, key string) getObjectResult {
 		b.Pool.Release()
 		b.MissNoOutputID.Increment()
 		logging.Warnf("cacheprog: web get %s: missing outputid metadata", ShortID(actionID))
-		return miss()
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
+	// The object's OWN build step decided executable-ness (a link output vs a
+	// compiled package); this is the one bit of that decision the wire
+	// protocol carries, so a network hit restores the same mode a local hit
+	// would have had instead of guessing from content or defaulting to +x.
+	executable := resp.Header.Get("X-Cache-Meta-Executable") != ""
 
 	compressed, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -96,7 +71,7 @@ func (b *WebBackend) getIndividualEntry(actionID, key string) getObjectResult {
 	if err != nil {
 		b.MissReadBody.Increment()
 		logging.Warnf("cacheprog: web get %s: read body: %v", ShortID(actionID), err)
-		return miss()
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 
 	decompressStart := time.Now()
@@ -107,7 +82,7 @@ func (b *WebBackend) getIndividualEntry(actionID, key string) getObjectResult {
 	if err != nil {
 		b.MissDecompress.Increment()
 		logging.Warnf("cacheprog: web get %s: decompress: %v", ShortID(actionID), err)
-		return miss()
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 
 	// Integrity check: the body must hash to its advertised outputID. A mismatch means the remote object is
@@ -119,7 +94,7 @@ func (b *WebBackend) getIndividualEntry(actionID, key string) getObjectResult {
 		b.removeClaimed(key)
 		logging.Warnf("cacheprog: web get %s: body checksum mismatch (want outputid=%s, got sha256=%s, len=%d); evicting and treating as miss",
 			ShortID(actionID), ShortID(outputID), ShortID(got), len(decompressed))
-		return miss()
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 
 	// Cross-contamination guard: a compiled package self-certifies its action key in its build id. A body
@@ -131,7 +106,7 @@ func (b *WebBackend) getIndividualEntry(actionID, key string) getObjectResult {
 		b.removeClaimed(key)
 		logging.Warnf("cacheprog: web get %s: build-id action mismatch (want action=%s, got action=%s, len=%d); evicting and treating as miss",
 			ShortID(actionID), ExpectedBuildIDAction(actionID), act, len(decompressed))
-		return miss()
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 
 	// Module-index guard: a Go module index blob self-certifies neither its outputID nor its build id, so a
@@ -142,7 +117,7 @@ func (b *WebBackend) getIndividualEntry(actionID, key string) getObjectResult {
 		b.removeClaimed(key)
 		logging.Warnf("cacheprog: web get %s: refusing module-index blob (unverifiable under this key, len=%d); treating as miss",
 			ShortID(actionID), len(decompressed))
-		return miss()
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 
 	t := time.Now()
@@ -164,13 +139,7 @@ func (b *WebBackend) getIndividualEntry(actionID, key string) getObjectResult {
 	}
 
 	b.Stats.Hits.Increment()
-	return getObjectResult{
-		outputID: outputID,
-		body:     io.NopCloser(bytes.NewReader(decompressed)),
-		size:     int64(len(decompressed)),
-		t:        t,
-		meta:     meta,
-	}
+	return outputID, io.NopCloser(bytes.NewReader(decompressed)), int64(len(decompressed)), t, false, executable, nil
 }
 
 // exeNameFromMeta reads the exe-name metadata an uploader stamped via
@@ -191,29 +160,27 @@ func exeNameFromMeta(meta map[string]string) string {
 	return name
 }
 
-// getBatchWithMeta enqueues this key on the coalescer and waits for the result.
+// getBatch enqueues this key on the coalescer and waits for the result.
 // Multiple concurrent callers funnel into the same outgoing HTTP request
-// instead of each making their own — see batchCoalescer / sendBatch. The
-// reply carries the object's metadata so the caller can tell an executable
-// from ordinary data (GetExecutable).
-func (b *WebBackend) getBatchWithMeta(actionID, key string) (string, io.ReadCloser, int64, time.Time, map[string]string, bool, error) {
+// instead of each making their own — see batchCoalescer / sendBatch.
+func (b *WebBackend) getBatch(actionID, key string) (string, io.ReadCloser, int64, time.Time, bool, bool, error) {
 	respCh := make(chan batchResp, 1)
 	select {
 	case b.batchReqCh <- batchReq{actionID: actionID, key: key, resp: respCh}:
 	case <-b.batchStop:
 		// Backend is closing — return miss so the caller can fall back.
-		return "", nil, 0, time.Time{}, nil, true, nil
+		return "", nil, 0, time.Time{}, true, false, nil
 	}
 	select {
 	case r := <-respCh:
-		return r.outputID, r.body, r.size, r.t, r.meta, r.miss, nil
+		return r.outputID, r.body, r.size, r.t, r.miss, r.executable, nil
 	case <-b.batchDone:
 		// Shutdown raced the enqueue: use the buffered reply if sendBatch already produced it, else degrade to a miss.
 		select {
 		case r := <-respCh:
-			return r.outputID, r.body, r.size, r.t, r.meta, r.miss, nil
+			return r.outputID, r.body, r.size, r.t, r.miss, r.executable, nil
 		default:
-			return "", nil, 0, time.Time{}, nil, true, nil
+			return "", nil, 0, time.Time{}, true, false, nil
 		}
 	}
 }

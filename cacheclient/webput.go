@@ -35,25 +35,18 @@ type putReq struct {
 // Put falls back to the per-object doRetryPUT path — the single-PUT retry
 // is the floor.
 func (b *WebBackend) Put(actionID, outputID string, body io.Reader, bodySize int64) error {
-	return b.put(actionID, outputID, body, bodySize, nil)
+	return b.put(actionID, outputID, body, bodySize, false)
 }
 
-// PutExecutable stores a cached object the consumer will execute, under
-// exeName. Executability cannot be derived from the bytes: the one build
-// output that matters here starts with a '#!' shell header (a cosmo APE),
-// so there is no magic byte to sniff -- the uploader is the only party
-// that knows, and it knows because it was asked for a name. The name rides
-// the object's metadata (exe-name), the server round-trips user metadata
-// verbatim, and GetExecutable returns it to the consumer so it can store
-// the body in a shape its fork/exec can run.
-func (b *WebBackend) PutExecutable(actionID, outputID, exeName string, body io.Reader, bodySize int64) error {
-	if exeName == "" {
-		exeName = "a.out"
-	}
-	return b.put(actionID, outputID, body, bodySize, map[string]string{"exe-name": exeName})
+// PutExecutable mirrors Put for an object the build will later run directly
+// (go run, a shebang script). The stored metadata records this so a later Get
+// can restore the executable bit on the file it writes, instead of every
+// cache object defaulting to executable regardless of what it holds.
+func (b *WebBackend) PutExecutable(actionID, outputID string, body io.Reader, bodySize int64) error {
+	return b.put(actionID, outputID, body, bodySize, true)
 }
 
-func (b *WebBackend) put(actionID, outputID string, body io.Reader, bodySize int64, extraMeta map[string]string) error {
+func (b *WebBackend) put(actionID, outputID string, body io.Reader, bodySize int64, executable bool) error {
 	key := b.key(actionID)
 
 	// Atomically check-and-claim: skip if the key is already known or being uploaded.
@@ -114,9 +107,6 @@ func (b *WebBackend) put(actionID, outputID string, body io.Reader, bodySize int
 		"compression": "lz4",
 		"created":     time.Now().UTC().Format(time.RFC3339),
 	}
-	for k, v := range extraMeta {
-		meta[k] = v
-	}
 	if b.version != "" {
 		meta["toolchain-version"] = b.version
 	}
@@ -132,6 +122,9 @@ func (b *WebBackend) put(actionID, outputID string, body io.Reader, bodySize int
 	}
 	if files := parseSourceFiles(raw); len(files) > 0 {
 		meta["src"] = capSrcList(files)
+	}
+	if executable {
+		meta["executable"] = "1"
 	}
 
 	pr := putReq{

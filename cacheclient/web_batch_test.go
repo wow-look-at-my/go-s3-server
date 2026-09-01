@@ -131,7 +131,7 @@ func TestGetBatch_ReturnsRequestedEntry(t *testing.T) {
 	meta["go-buildcache/v1aabbccdd11223344"] = map[string]string{"outputid": testOutputID("hello world")}
 
 	// getBatch should find it via the batch endpoint.
-	outputID, body, size, _, _, miss, err := b.getBatchWithMeta("aabbccdd11223344", "go-buildcache/v1aabbccdd11223344")
+	outputID, body, size, _, miss, _, err := b.getBatch("aabbccdd11223344", "go-buildcache/v1aabbccdd11223344")
 	require.NoError(t, err)
 	require.False(t, miss)
 	require.Equal(t, testOutputID("hello world"), outputID)
@@ -161,7 +161,7 @@ func TestGetBatch_RejectsCorruptEntry(t *testing.T) {
 	store["go-buildcache/v1aabbccdd11223344"] = compressed
 	meta["go-buildcache/v1aabbccdd11223344"] = map[string]string{"outputid": testOutputID("the correct body")}
 
-	_, _, _, _, _, miss, err := b.getBatchWithMeta("aabbccdd11223344", "go-buildcache/v1aabbccdd11223344")
+	_, _, _, _, miss, _, err := b.getBatch("aabbccdd11223344", "go-buildcache/v1aabbccdd11223344")
 	require.NoError(t, err)
 	require.True(t, miss, "a batched entry failing the checksum must be a miss")
 	require.Equal(t, uint32(1), b.MissChecksum.Load())
@@ -188,7 +188,7 @@ func TestGetBatch_MissingOutputIDNotCorrupt(t *testing.T) {
 	store["go-buildcache/v1aabbccdd11223344"] = compressed
 	meta["go-buildcache/v1aabbccdd11223344"] = map[string]string{} // no outputid
 
-	_, _, _, _, _, miss, err := b.getBatchWithMeta("aabbccdd11223344", "go-buildcache/v1aabbccdd11223344")
+	_, _, _, _, miss, _, err := b.getBatch("aabbccdd11223344", "go-buildcache/v1aabbccdd11223344")
 	require.NoError(t, err)
 	require.True(t, miss)
 	require.Equal(t, uint32(1), b.MissNoOutputID.Load())
@@ -222,7 +222,7 @@ func TestGetBatch_PrefetchCallsOnBatchEntries(t *testing.T) {
 	}
 
 	// Request a single entry — server should also return the other as prefetch.
-	outputID, body, _, _, _, miss, err := b.getBatchWithMeta("aaaa000000000001", "go-buildcache/v1aaaa000000000001")
+	outputID, body, _, _, miss, _, err := b.getBatch("aaaa000000000001", "go-buildcache/v1aaaa000000000001")
 	require.NoError(t, err)
 	require.False(t, miss)
 	require.Equal(t, testOutputID("entry one"), outputID)
@@ -304,7 +304,7 @@ func TestGetBatch_FallbackToIndividual(t *testing.T) {
 	b.keysMu.Unlock()
 
 	// getBatch should fall back to getIndividual when batch is not found.
-	outputID, body, _, _, _, miss, err := b.getBatchWithMeta("aabbccdd11223344", "go-buildcache/v1aabbccdd11223344")
+	outputID, body, _, _, miss, _, err := b.getBatch("aabbccdd11223344", "go-buildcache/v1aabbccdd11223344")
 	require.NoError(t, err)
 	require.False(t, miss)
 	require.Equal(t, testOutputID("fallback data"), outputID)
@@ -323,7 +323,7 @@ func TestGetBatch_Miss(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, _, _, _, _, miss, _ := b.getBatchWithMeta("deadbeef00000000", "go-buildcache/v1deadbeef00000000")
+	_, _, _, _, miss, _, _ := b.getBatch("deadbeef00000000", "go-buildcache/v1deadbeef00000000")
 	require.True(t, miss)
 }
 
@@ -349,7 +349,7 @@ func TestGet_UsesBatchForUnknownKeys(t *testing.T) {
 	store["go-buildcache/v1aabbccdd11223344"] = compressed
 	meta["go-buildcache/v1aabbccdd11223344"] = map[string]string{"outputid": testOutputID("batch hit")}
 
-	outputID, body, _, _, miss, err := b.Get("aabbccdd11223344")
+	outputID, body, _, _, miss, _, err := b.Get("aabbccdd11223344")
 	require.NoError(t, err)
 	require.False(t, miss)
 	require.Equal(t, testOutputID("batch hit"), outputID)
@@ -427,7 +427,7 @@ func TestGet_CoalescesConcurrentRequestsIntoOneHTTPRequest(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			id := fmt.Sprintf("%016x", i)
-			_, _, _, _, _, _ = b.Get(id)
+			_, _, _, _, _, _, _ = b.Get(id)
 		}(i)
 	}
 	wg.Wait()

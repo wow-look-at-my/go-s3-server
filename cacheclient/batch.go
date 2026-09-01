@@ -32,15 +32,11 @@ type batchGetManifestEntry struct {
 
 // BatchEntry holds a single cache entry from a batch GET response.
 type BatchEntry struct {
-	Key      string
-	OutputID string
-	Data     []byte
-	Prefetch bool
-	// Metadata is the object's server-stored metadata map (lowercased names,
-	// sans the X-Cache-Meta- prefix), carried from the batch manifest. An
-	// entry whose exe-name key is set is a linked binary the consumer must
-	// store in an executable shape (see GetExecutable).
-	Metadata map[string]string
+	Key        string
+	OutputID   string
+	Data       []byte
+	Prefetch   bool
+	Executable bool
 }
 
 // parseBatchResponse reads a tar stream from the server's /_batch/get
@@ -84,11 +80,11 @@ func parseBatchResponse(r io.Reader) ([]BatchEntry, error) {
 			continue
 		}
 		entries = append(entries, BatchEntry{
-			Key:      me.Key,
-			OutputID: me.Metadata["outputid"],
-			Data:     data,
-			Prefetch: me.Prefetch,
-			Metadata: me.Metadata,
+			Key:        me.Key,
+			OutputID:   me.Metadata["outputid"],
+			Data:       data,
+			Prefetch:   me.Prefetch,
+			Executable: me.Metadata["executable"] != "",
 		})
 	}
 	return entries, nil
@@ -198,8 +194,8 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 		// GETs for every caller in this batch.
 		if resp.StatusCode == 404 || resp.StatusCode == 405 {
 			for _, r := range reqs {
-				e := b.getIndividualEntry(r.actionID, r.key)
-				r.resp <- batchResp{outputID: e.outputID, body: e.body, size: e.size, t: e.t, meta: e.meta, miss: e.miss}
+				outputID, body, size, t, miss, executable, _ := b.getIndividual(r.actionID, r.key)
+				r.resp <- batchResp{outputID: outputID, body: body, size: size, t: t, miss: miss, executable: executable}
 			}
 			return
 		}
@@ -304,11 +300,11 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 		}
 		b.Stats.Hits.Increment()
 		r.resp <- batchResp{
-			outputID: e.OutputID,
-			body:     io.NopCloser(bytes.NewReader(decompressed)),
-			size:     int64(len(decompressed)),
-			t:        time.Now(),
-			meta:     e.Metadata,
+			outputID:   e.OutputID,
+			body:       io.NopCloser(bytes.NewReader(decompressed)),
+			size:       int64(len(decompressed)),
+			t:          time.Now(),
+			executable: e.Executable,
 		}
 	}
 

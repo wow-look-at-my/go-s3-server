@@ -25,7 +25,7 @@ func TestGetBatch_ShutdownDoesNotHangQueuedWaiters(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		_, _, _, _, _, miss, err := b.getBatchWithMeta("aabbccdd", "go-buildcache/v1aabbccdd")
+		_, _, _, _, miss, _, err := b.getBatch("aabbccdd", "go-buildcache/v1aabbccdd")
 		done <- result{miss: miss, err: err}
 	}()
 

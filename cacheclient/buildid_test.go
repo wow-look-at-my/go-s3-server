@@ -147,7 +147,7 @@ func TestWebBackend_GetRejectsBuildIDMismatch(t *testing.T) {
 	}
 	require.True(t, contains(), "precondition: key is in the index")
 
-	_, _, _, _, miss, err := b.Get(actionID)
+	_, _, _, _, miss, _, err := b.Get(actionID)
 	require.NoError(t, err)
 	require.True(t, miss, "a build-id-mismatched object must be a miss, never served")
 	require.Equal(t, uint32(1), b.MissBuildID.Load())
@@ -189,7 +189,7 @@ func TestWebBackend_GetRejectsStrippedBuildID(t *testing.T) {
 	defer b.Close()
 	primeIndex(b, actionID)
 
-	_, _, _, _, miss, err := b.Get(actionID)
+	_, _, _, _, miss, _, err := b.Get(actionID)
 	require.NoError(t, err)
 	require.True(t, miss, "a package archive with no build id must be a miss, never served")
 	require.Equal(t, uint32(1), b.MissBuildID.Load())
@@ -230,7 +230,7 @@ func TestWebBackend_GetServesMatchingBuildID(t *testing.T) {
 	defer b.Close()
 	primeIndex(b, actionID)
 
-	gotOutputID, body, _, _, miss, err := b.Get(actionID)
+	gotOutputID, body, _, _, miss, _, err := b.Get(actionID)
 	require.NoError(t, err)
 	require.False(t, miss)
 	require.Equal(t, outputID, gotOutputID)
@@ -264,7 +264,7 @@ func TestGetBatch_RejectsBuildIDMismatch(t *testing.T) {
 	store[key] = compressed
 	meta[key] = map[string]string{"outputid": testOutputID(poison)} // self-consistent hash
 
-	_, _, _, _, _, miss, err := b.getBatchWithMeta(actionID, key)
+	_, _, _, _, miss, _, err := b.getBatch(actionID, key)
 	require.NoError(t, err)
 	require.True(t, miss, "a batched build-id-mismatched entry must be a miss")
 	require.Equal(t, uint32(1), b.MissBuildID.Load())

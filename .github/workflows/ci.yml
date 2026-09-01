@@ -6,7 +6,6 @@ on:
 permissions:
   id-token: write
   contents: write
-  packages: write
   actions: read
   checks: read
 
@@ -31,30 +30,5 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       # Builds, tests, and runs dats/*.dats -- the HTTP surface and the cache round trip both live there.
-      - uses: wow-look-at-my/go-toolchain@v1
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-output
-          path: build/
-
-  docker:
-    needs: test
-    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-      packages: write
-      actions: read
-      checks: read
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: build-output
-          path: build
-      - uses: wow-look-at-my/actions@go-packages#latest
-        with:
-          skip-build: 'true'
+      - uses: wow-look-at-my/go-toolchain@master
 

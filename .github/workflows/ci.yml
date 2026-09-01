@@ -30,12 +30,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
-      # Builds, tests, and runs dats/*.dats -- the HTTP surface and the cache round trip both live there.
-      # Pinned to a commit, not @master: the floating ref was observed resolving to a stale cached
-      # snapshot of action.yml (missing inputs current master actually declares) and, independently,
-      # to whatever commit master happened to be on -- including a red one -- at request time. A
-      # pinned SHA is deterministic on both counts. Bump this by hand when a newer go-toolchain
-      # feature is needed.
+      # Pinned to a commit, not @master: the floating ref resolved to a stale cached action.yml.
       - uses: wow-look-at-my/go-toolchain@ca698ebc5e9d5af0f24d858d730458e5ff626edf
 
       - name: Upload build artifacts

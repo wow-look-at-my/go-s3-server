@@ -40,7 +40,13 @@ var (
 // module-index blobs, but that only protects clients that have updated; this
 // purge removes the already-stored poison so EVERY client -- updated or not --
 // is repaired at once (a missing index key is simply recomputed locally).
-const currentCacheVersion = 3
+//
+// Version 4 purges entries stored before PutExecutable existed. Such an entry
+// carries no executable metadata, so a network hit restores it as a regular
+// file even when the client asks for PutExecutable's behavior -- a permanent,
+// silent loss of the executable bit for every object cached before this
+// change. A missing key is simply rebuilt and re-uploaded with the flag.
+const currentCacheVersion = 4
 
 const cacheVersionFile = ".cache_version"
 const lockFileName = ".lock"

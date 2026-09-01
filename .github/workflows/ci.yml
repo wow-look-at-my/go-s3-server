@@ -31,7 +31,12 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       # Builds, tests, and runs dats/*.dats -- the HTTP surface and the cache round trip both live there.
+      # wait-ci explicit: the floating @master ref can resolve to a different go-toolchain commit
+      # than the one that set its own default, so this repo's CI must never depend on go-toolchain's
+      # own CI status to build itself.
       - uses: wow-look-at-my/go-toolchain@master
+        with:
+          wait-ci: 'false'
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

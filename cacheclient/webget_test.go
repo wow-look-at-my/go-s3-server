@@ -21,7 +21,7 @@ func TestWebBackend_GetMiss(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, _, _, _, miss, err := b.Get("deadbeef00000000")
+	_, _, _, _, miss, _, err := b.Get("deadbeef00000000")
 	require.NoError(t, err)
 	require.True(t, miss)
 }
@@ -40,7 +40,7 @@ func TestWebBackend_GetMissingMetadata(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, _, _, _, miss, _ := b.Get("deadbeef00000000")
+	_, _, _, _, miss, _, _ := b.Get("deadbeef00000000")
 	require.True(t, miss)
 }
 
@@ -89,7 +89,7 @@ func TestWebBackend_GetIndividualMissPaths(t *testing.T) {
 			require.NoError(t, err)
 			primeIndex(b, "deadbeef00000000")
 
-			_, _, _, _, miss, _ := b.Get("deadbeef00000000")
+			_, _, _, _, miss, _, _ := b.Get("deadbeef00000000")
 			require.True(t, miss, "expected miss for %s path", tc.name)
 		})
 	}
@@ -138,7 +138,7 @@ func TestWebBackend_GetRejectsCorruptBody(t *testing.T) {
 	}
 	require.True(t, contains(), "precondition: key is in the index")
 
-	_, _, _, _, miss, err := b.Get(actionID)
+	_, _, _, _, miss, _, err := b.Get(actionID)
 	require.NoError(t, err)
 	require.True(t, miss, "a corrupt body must be treated as a miss, never served")
 	require.Equal(t, uint32(1), b.MissChecksum.Load())
@@ -175,7 +175,7 @@ func TestWebBackend_GetServesCorrectBody(t *testing.T) {
 	defer b.Close()
 	primeIndex(b, actionID)
 
-	gotOutputID, body, size, _, miss, err := b.Get(actionID)
+	gotOutputID, body, size, _, miss, _, err := b.Get(actionID)
 	require.NoError(t, err)
 	require.False(t, miss)
 	require.Equal(t, outputID, gotOutputID)
@@ -216,7 +216,7 @@ func TestWebBackend_GetLegacyAmzMetaFallback(t *testing.T) {
 	defer b.Close()
 	primeIndex(b, actionID)
 
-	gotOutputID, body, _, _, miss, err := b.Get(actionID)
+	gotOutputID, body, _, _, miss, _, err := b.Get(actionID)
 	require.NoError(t, err)
 	require.False(t, miss, "client must fall back to X-Amz-Meta-Outputid when the native header is absent")
 	require.Equal(t, outputID, gotOutputID)

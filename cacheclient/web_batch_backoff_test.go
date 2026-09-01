@@ -86,7 +86,7 @@ func TestWebBackend_EmptyBatchBackoffStopsProbing(t *testing.T) {
 	const nKeys = 40
 	for i := 0; i < nKeys; i++ {
 		id := fmt.Sprintf("%016x", 0xb0110000+i)
-		_, _, _, _, miss, err := b.Get(id)
+		_, _, _, _, miss, _, err := b.Get(id)
 		require.NoError(t, err)
 		require.True(t, miss, "a cold key the remote does not have must be a clean miss")
 	}
@@ -142,12 +142,12 @@ func TestWebBackend_BackoffResetsOnNonEmptyBatch(t *testing.T) {
 	for round := 0; round < 6; round++ {
 		for j := 0; j < 3; j++ {
 			cold := fmt.Sprintf("%016x", 0xc01d0000+round*10+j)
-			_, _, _, _, miss, err := b.Get(cold)
+			_, _, _, _, miss, _, err := b.Get(cold)
 			require.NoError(t, err)
 			require.True(t, miss)
 		}
 		// Hot key: served, non-empty batch → resets the empty streak.
-		_, body, _, _, miss, err := b.Get(hotID)
+		_, body, _, _, miss, _, err := b.Get(hotID)
 		require.NoError(t, err)
 		require.False(t, miss, "the seeded hot key must hit")
 		if body != nil {

@@ -129,6 +129,7 @@ type batchResp struct {
 	body     io.ReadCloser
 	size     int64
 	t        time.Time
+	meta     map[string]string
 	miss     bool
 }
 
@@ -273,9 +274,30 @@ func (b *WebBackend) url(key string) string {
 //   - Key absent but the index fetch FAILED: batch-probe the key (the recovery
 //     path), bounded by the consecutive-empty-batch backoff.
 func (b *WebBackend) Get(actionID string) (outputID string, body io.ReadCloser, size int64, t time.Time, miss bool, err error) {
+	outputID, body, size, t, _, miss, err = b.getWithMeta(actionID)
+	return
+}
+
+// GetExecutable is Get returning the executable name the uploader stamped
+// (PutExecutable). A nonzero name means the body is a linked binary the
+// consumer must store in a shape its fork/exec can run (on cmd/go's DiskCache:
+// a directory entry with a 0777 file of that name inside, not a 0666 regular
+// file). An empty name means the object is ordinary data, and the caller
+// treats the hit exactly as Get would have.
+func (b *WebBackend) GetExecutable(actionID string) (outputID string, exeName string, body io.ReadCloser, size int64, t time.Time, miss bool, err error) {
+	outputID, body, size, t, meta, miss, err := b.getWithMeta(actionID)
+	if !miss {
+		exeName = exeNameFromMeta(meta)
+	}
+	return
+}
+
+// getWithMeta is the shared body of Get and GetExecutable: every fetch path,
+// with the object's metadata map handed back alongside the verified body.
+func (b *WebBackend) getWithMeta(actionID string) (outputID string, body io.ReadCloser, size int64, t time.Time, meta map[string]string, miss bool, err error) {
 	key := b.key(actionID)
 	if b.keyKnown(key) {
-		return b.getBatch(actionID, key)
+		return b.getBatchWithMeta(actionID, key)
 	}
 
 	// Key not in index — check if we already know it's absent.
@@ -284,7 +306,7 @@ func (b *WebBackend) Get(actionID string) (outputID string, body io.ReadCloser, 
 	b.missesMu.RUnlock()
 	if alreadyMissed {
 		b.MissNotInIndex.Increment()
-		return "", nil, 0, time.Time{}, true, nil
+		return "", nil, 0, time.Time{}, nil, true, nil
 	}
 
 	b.MissNotInIndex.Increment()
@@ -295,14 +317,14 @@ func (b *WebBackend) Get(actionID string) (outputID string, body io.ReadCloser, 
 		} else {
 			b.SkippedNotInIndex.Increment()
 		}
-		return "", nil, 0, time.Time{}, true, nil
+		return "", nil, 0, time.Time{}, nil, true, nil
 	}
 	if b.batchProbingOff() {
 		// Backoff tripped: the remote has proven empty for this run. Miss without probing.
 		b.SkippedBatchBackoff.Increment()
-		return "", nil, 0, time.Time{}, true, nil
+		return "", nil, 0, time.Time{}, nil, true, nil
 	}
-	return b.getBatch(actionID, key)
+	return b.getBatchWithMeta(actionID, key)
 }
 
 // keyKnown reports whether key is in the known-keys set (the startup index

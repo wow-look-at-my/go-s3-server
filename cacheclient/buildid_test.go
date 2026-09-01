@@ -264,7 +264,7 @@ func TestGetBatch_RejectsBuildIDMismatch(t *testing.T) {
 	store[key] = compressed
 	meta[key] = map[string]string{"outputid": testOutputID(poison)} // self-consistent hash
 
-	_, _, _, _, miss, err := b.getBatch(actionID, key)
+	_, _, _, _, _, miss, err := b.getBatchWithMeta(actionID, key)
 	require.NoError(t, err)
 	require.True(t, miss, "a batched build-id-mismatched entry must be a miss")
 	require.Equal(t, uint32(1), b.MissBuildID.Load())

@@ -35,6 +35,25 @@ type putReq struct {
 // Put falls back to the per-object doRetryPUT path — the single-PUT retry
 // is the floor.
 func (b *WebBackend) Put(actionID, outputID string, body io.Reader, bodySize int64) error {
+	return b.put(actionID, outputID, body, bodySize, nil)
+}
+
+// PutExecutable stores a cached object the consumer will execute, under
+// exeName. Executability cannot be derived from the bytes: the one build
+// output that matters here starts with a '#!' shell header (a cosmo APE),
+// so there is no magic byte to sniff -- the uploader is the only party
+// that knows, and it knows because it was asked for a name. The name rides
+// the object's metadata (exe-name), the server round-trips user metadata
+// verbatim, and GetExecutable returns it to the consumer so it can store
+// the body in a shape its fork/exec can run.
+func (b *WebBackend) PutExecutable(actionID, outputID, exeName string, body io.Reader, bodySize int64) error {
+	if exeName == "" {
+		exeName = "a.out"
+	}
+	return b.put(actionID, outputID, body, bodySize, map[string]string{"exe-name": exeName})
+}
+
+func (b *WebBackend) put(actionID, outputID string, body io.Reader, bodySize int64, extraMeta map[string]string) error {
 	key := b.key(actionID)
 
 	// Atomically check-and-claim: skip if the key is already known or being uploaded.
@@ -94,6 +113,9 @@ func (b *WebBackend) Put(actionID, outputID string, body io.Reader, bodySize int
 		"body-size":   strconv.FormatInt(bodySize, 10),
 		"compression": "lz4",
 		"created":     time.Now().UTC().Format(time.RFC3339),
+	}
+	for k, v := range extraMeta {
+		meta[k] = v
 	}
 	if b.version != "" {
 		meta["toolchain-version"] = b.version

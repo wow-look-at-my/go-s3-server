@@ -224,7 +224,7 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 		module:    cfg.Module,
 	}
 
-	b.errLog = newHTTPErrLogger(os.Stderr, httpErrFlushInterval)
+	b.errLog = newHTTPErrLogger(loggerWriter{}, httpErrFlushInterval)
 	b.batchReqCh = make(chan batchReq, batchReqChBuf)
 	b.batchStop = make(chan struct{})
 	b.batchDone = make(chan struct{})

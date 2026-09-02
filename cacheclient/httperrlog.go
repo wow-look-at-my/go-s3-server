@@ -57,7 +57,18 @@ type batchHTTPGroup struct {
 	sumDur     time.Duration // sum of HTTP durations
 }
 
-// newHTTPErrLogger returns a logger that writes aggregated stderr
+// loggerWriter sends each summary line to the installed Logger. It exists so
+// the aggregation below keeps its io.Writer shape while obeying the package
+// contract: the client writes to no stream of its own, and a consumer that
+// installs no Logger gets silence.
+type loggerWriter struct{}
+
+func (loggerWriter) Write(p []byte) (int, error) {
+	logging.Warnf("%s", strings.TrimRight(string(p), "\n"))
+	return len(p), nil
+}
+
+// newHTTPErrLogger returns a logger that writes aggregated
 // summaries to w on every interval tick (and again on Close).
 
 func newHTTPErrLogger(w io.Writer, interval time.Duration) *httpErrLogger {

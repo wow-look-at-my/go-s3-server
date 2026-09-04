@@ -17,27 +17,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// forkEnv names the test whose body the child process is meant to run.
-const forkEnv = "GO_S3_SERVER_FORKED_TEST"
+// ownProcessEnv names the test whose body the child process is meant to run.
+const ownProcessEnv = "GO_S3_SERVER_ISOLATED_TEST"
 
-// forkMetrics runs the calling test in a child process and reports whether this
-// call is that child. Every metric in this package is a process-global
-// collector, so a before/after pair here also counts what a concurrent test
-// does. The child holds counters nobody else writes, which keeps these tests
-// parallel with the rest of the suite. The parent reports the child's failure
-// as its own.
+// inOwnProcess reports whether the caller is the child process that runs this
+// test alone. In the parent it re-executes the test binary for this one test,
+// waits, and reports false; the caller must then return without running the
+// body. A failure in the child becomes a failure here.
 //
-// The caller returns when this is false: the parent must not run the body.
-func forkMetrics(t *testing.T) bool {
+// Every metric in this package is a process-global collector, so a before/after
+// pair counts what a concurrent test does as well. A separate process starts
+// with those counters at zero and nothing else writing them, which buys the
+// isolation without making the rest of the suite wait.
+//
+// The isolation comes from the exec, not from a fork: a fork(2) child would
+// inherit a copy of the counters as they stood, contamination included, and Go
+// cannot safely fork without exec anyway (the child gets only the calling
+// thread, and any lock the runtime's other threads held stays held).
+func inOwnProcess(t *testing.T) bool {
 	t.Helper()
-	if os.Getenv(forkEnv) == t.Name() {
+	if os.Getenv(ownProcessEnv) == t.Name() {
 		return true
 	}
 
 	cmd := exec.Command(os.Args[0], "-test.run=^"+regexp.QuoteMeta(t.Name())+"$", "-test.v")
-	cmd.Env = append(os.Environ(), forkEnv+"="+t.Name())
+	cmd.Env = append(os.Environ(), ownProcessEnv+"="+t.Name())
 	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, "the forked run of %s failed:\n%s", t.Name(), out)
+	require.NoError(t, err, "the isolated run of %s failed:\n%s", t.Name(), out)
 	return false
 }
 
@@ -69,7 +75,7 @@ func TestMetricsServer(t *testing.T) {
 // This counter existing (and moving during CI activity) is the liveness proof
 // for the guard; its historical silence is what hid the 512-byte-peek bug.
 func TestPutRefusalCounted(t *testing.T) {
-	if !forkMetrics(t) {
+	if !inOwnProcess(t) {
 		return
 	}
 
@@ -89,7 +95,7 @@ func TestPutRefusalCounted(t *testing.T) {
 // TestBatchCountersRecorded: batch volume lands in s3_batch_keys_total by kind
 // instead of being log-only.
 func TestBatchCountersRecorded(t *testing.T) {
-	if !forkMetrics(t) {
+	if !inOwnProcess(t) {
 		return
 	}
 
@@ -119,7 +125,7 @@ func TestBatchCountersRecorded(t *testing.T) {
 
 // TestIndexGauges: the index size gauges track puts and serializations.
 func TestIndexGauges(t *testing.T) {
-	if !forkMetrics(t) {
+	if !inOwnProcess(t) {
 		return
 	}
 

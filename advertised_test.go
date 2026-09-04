@@ -25,7 +25,7 @@ func getOutcome(outcome string) float64 {
 // by PutStream after a successful rename, which the refusal path never reaches;
 // this test keeps it that way.
 func TestPutObject_RefusedIndexNotAdvertised(t *testing.T) {
-	if !forkMetrics(t) {
+	if !inOwnProcess(t) {
 		return
 	}
 
@@ -72,7 +72,7 @@ func TestPutObject_RefusedIndexNotAdvertised(t *testing.T) {
 // GET 404 is counted as miss_advertised_unservable — distinguishable from a
 // plain miss.
 func TestGetOutcome_AdvertisedUnservable(t *testing.T) {
-	if !forkMetrics(t) {
+	if !inOwnProcess(t) {
 		return
 	}
 

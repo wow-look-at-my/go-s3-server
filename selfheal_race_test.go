@@ -61,7 +61,7 @@ func TestSelfHealStampsHashedInodeNotPath(t *testing.T) {
 // disagreeing with the freshly-computed body hash (stale-stamp corruption
 // already on disk) counts it and corrects it in place.
 func TestSelfHealCountsOutputIDMismatch(t *testing.T) {
-	if !forkMetrics(t) {
+	if !inOwnProcess(t) {
 		return
 	}
 

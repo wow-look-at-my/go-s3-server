@@ -50,7 +50,7 @@ func makeWireObjects(n int) []wireObject {
 // The second backend is the point. It is a separate client with its own state,
 // so it holds nothing locally and every byte it returns came from the server.
 func TestCacheClientColdGetIsServedOverTheWire(t *testing.T) {
-	if !forkMetrics(t) {
+	if !inOwnProcess(t) {
 		return
 	}
 

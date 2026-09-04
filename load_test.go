@@ -226,7 +226,7 @@ func TestLoad_ConcurrentMatrixStreamsWithBoundedMemory(t *testing.T) {
 // (the signal clients back off on) instead of being queued until the process
 // OOMs — the failure a fronting proxy would otherwise surface as a 502.
 func TestLoad_OverloadShedsWith503(t *testing.T) {
-	if !forkMetrics(t) {
+	if !inOwnProcess(t) {
 		return
 	}
 

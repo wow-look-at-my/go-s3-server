@@ -463,7 +463,7 @@ func TestEvictBySizeIsLeastRecentlyUsedFirst(t *testing.T) {
 // TestRefreshCacheBytes: the gauge refresher sums stored object sizes only,
 // skipping the lock file, version marker, and .tmp- leftovers.
 func TestRefreshCacheBytes(t *testing.T) {
-	if !forkMetrics(t) {
+	if !inOwnProcess(t) {
 		return
 	}
 

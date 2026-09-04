@@ -61,7 +61,14 @@ func TestCacheClientColdGetIsServedOverTheWire(t *testing.T) {
 	t.Setenv("GO_TOOLCHAIN_CACHE_PUT_WINDOW_MS", "30000")
 
 	ts, storage := testSetupWithStorage(t)
-	cfg := cacheclient.WebConfig{Bucket: "testbucket", Endpoint: ts.URL}
+	// The client requires credentials whatever the server does with them; this
+	// server runs with disable_auth, so any pair gets through the gate.
+	cfg := cacheclient.WebConfig{
+		Bucket:    "testbucket",
+		Endpoint:  ts.URL,
+		AccessKey: "anyone",
+		SecretKey: "unchecked",
+	}
 	objs := makeWireObjects(8)
 
 	writer, err := cacheclient.NewWebBackend(cfg)

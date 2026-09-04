@@ -430,7 +430,9 @@ func TestMetadataRoundTrip(t *testing.T) {
 // it back under both the native and legacy header names. The deprecation counter
 // is bumped so the lingering S3 traffic stays observable.
 func TestLegacyAmzMetaCompat(t *testing.T) {
-	serialMetrics(t)
+	if !forkMetrics(t) {
+		return
+	}
 
 	ts := testSetup(t)
 
@@ -514,7 +516,9 @@ func TestDeleteObject(t *testing.T) {
 // /_index (so clients keep hitting it instead of re-uploading), and the repair is
 // one-time. No eviction, no re-upload, no churn.
 func TestSelfHealRepairsOutputIDInPlace(t *testing.T) {
-	serialMetrics(t)
+	if !forkMetrics(t) {
+		return
+	}
 
 	ts := testSetup(t)
 
@@ -579,7 +583,9 @@ func TestSelfHealRepairsOutputIDInPlace(t *testing.T) {
 // permanent forced miss (clients skip re-uploading indexed keys), so the server
 // de-advertises it and lets the next consumer re-upload a good body.
 func TestSelfHealLeavesUnrepairableObjectInPlace(t *testing.T) {
-	serialMetrics(t)
+	if !forkMetrics(t) {
+		return
+	}
 
 	ts, storage := testSetupWithStorage(t)
 

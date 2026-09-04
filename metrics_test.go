@@ -14,13 +14,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// serialMetrics gives the caller the process to itself. Every metric in this
-// package is a process-global collector, and tests are parallel by default, so
-// a concurrent test's own request lands in the same counter between a
-// before/after pair and the delta reads one too high.
-func serialMetrics(t *testing.T) {
+// forkEnv names the test whose body the child process is meant to run.
+const forkEnv = "GO_S3_SERVER_FORKED_TEST"
+
+// forkMetrics runs the calling test in a child process and reports whether this
+// call is that child. Every metric in this package is a process-global
+// collector, so a before/after pair here also counts what a concurrent test
+// does. The child holds counters nobody else writes, which keeps these tests
+// parallel with the rest of the suite. The parent reports the child's failure
+// as its own.
+//
+// The caller returns when this is false: the parent must not run the body.
+func forkMetrics(t *testing.T) bool {
 	t.Helper()
-	t.Serial()
+	if os.Getenv(forkEnv) == t.Name() {
+		return true
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^"+regexp.QuoteMeta(t.Name())+"$", "-test.v")
+	cmd.Env = append(os.Environ(), forkEnv+"="+t.Name())
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "the forked run of %s failed:\n%s", t.Name(), out)
+	return false
 }
 
 func TestMetricsServer(t *testing.T) {
@@ -51,7 +66,9 @@ func TestMetricsServer(t *testing.T) {
 // This counter existing (and moving during CI activity) is the liveness proof
 // for the guard; its historical silence is what hid the 512-byte-peek bug.
 func TestPutRefusalCounted(t *testing.T) {
-	serialMetrics(t)
+	if !forkMetrics(t) {
+		return
+	}
 
 	ts := testSetup(t)
 
@@ -69,7 +86,9 @@ func TestPutRefusalCounted(t *testing.T) {
 // TestBatchCountersRecorded: batch volume lands in s3_batch_keys_total by kind
 // instead of being log-only.
 func TestBatchCountersRecorded(t *testing.T) {
-	serialMetrics(t)
+	if !forkMetrics(t) {
+		return
+	}
 
 	ts := testSetup(t)
 	client := ts.Client()
@@ -97,7 +116,9 @@ func TestBatchCountersRecorded(t *testing.T) {
 
 // TestIndexGauges: the index size gauges track puts and serializations.
 func TestIndexGauges(t *testing.T) {
-	serialMetrics(t)
+	if !forkMetrics(t) {
+		return
+	}
 
 	idx := &Index{}
 	var h1, h2 [gbciHashSize]byte

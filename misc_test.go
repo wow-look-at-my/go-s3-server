@@ -100,7 +100,9 @@ func (c *countingReaderFrom) ReadFrom(src io.Reader) (int64, error) {
 // protected keys store and serve normally. A protected key hitting the same
 // limit still fails the PUT.
 func TestMetadataOverflowDropsOptionalKey(t *testing.T) {
-	serialMetrics(t)
+	if !forkMetrics(t) {
+		return
+	}
 
 	_, storage := testSetupWithStorage(t)
 

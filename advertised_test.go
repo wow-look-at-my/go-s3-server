@@ -25,6 +25,8 @@ func getOutcome(outcome string) float64 {
 // by PutStream after a successful rename, which the refusal path never reaches;
 // this test keeps it that way.
 func TestPutObject_RefusedIndexNotAdvertised(t *testing.T) {
+	serialMetrics(t)
+
 	ts, storage := testSetupWithStorage(t)
 
 	const actionHex = "5555000000000000000000000000000000000000000000000000000000005555"
@@ -68,6 +70,8 @@ func TestPutObject_RefusedIndexNotAdvertised(t *testing.T) {
 // GET 404 is counted as miss_advertised_unservable — distinguishable from a
 // plain miss.
 func TestGetOutcome_AdvertisedUnservable(t *testing.T) {
+	serialMetrics(t)
+
 	ts, storage := testSetupWithStorage(t)
 
 	key := "go-buildcache/v1" + strings.Repeat("6", 64)

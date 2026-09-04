@@ -463,6 +463,8 @@ func TestEvictBySizeIsLeastRecentlyUsedFirst(t *testing.T) {
 // TestRefreshCacheBytes: the gauge refresher sums stored object sizes only,
 // skipping the lock file, version marker, and .tmp- leftovers.
 func TestRefreshCacheBytes(t *testing.T) {
+	serialMetrics(t)
+
 	s := newEvictStorage(t)
 	require.NoError(t, s.Put(gbciKey(1), make([]byte, 100), nil, nil))
 	require.NoError(t, s.Put(gbciKey(2), make([]byte, 50), nil, nil))

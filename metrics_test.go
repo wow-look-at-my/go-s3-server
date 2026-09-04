@@ -14,6 +14,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// serialMetrics gives the caller the process to itself. Every metric in this
+// package is a process-global collector, and tests are parallel by default, so
+// a concurrent test's own request lands in the same counter between a
+// before/after pair and the delta reads one too high.
+func serialMetrics(t *testing.T) {
+	t.Helper()
+	t.Serial()
+}
+
 func TestMetricsServer(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.Nil(t, err)
@@ -42,6 +51,8 @@ func TestMetricsServer(t *testing.T) {
 // This counter existing (and moving during CI activity) is the liveness proof
 // for the guard; its historical silence is what hid the 512-byte-peek bug.
 func TestPutRefusalCounted(t *testing.T) {
+	serialMetrics(t)
+
 	ts := testSetup(t)
 
 	before := testutil.ToFloat64(putRefusalsTotal.WithLabelValues("module_index"))
@@ -58,6 +69,8 @@ func TestPutRefusalCounted(t *testing.T) {
 // TestBatchCountersRecorded: batch volume lands in s3_batch_keys_total by kind
 // instead of being log-only.
 func TestBatchCountersRecorded(t *testing.T) {
+	serialMetrics(t)
+
 	ts := testSetup(t)
 	client := ts.Client()
 
@@ -84,6 +97,8 @@ func TestBatchCountersRecorded(t *testing.T) {
 
 // TestIndexGauges: the index size gauges track puts and serializations.
 func TestIndexGauges(t *testing.T) {
+	serialMetrics(t)
+
 	idx := &Index{}
 	var h1, h2 [gbciHashSize]byte
 	h1[0], h2[0] = 1, 2

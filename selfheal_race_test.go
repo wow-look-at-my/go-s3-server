@@ -61,6 +61,8 @@ func TestSelfHealStampsHashedInodeNotPath(t *testing.T) {
 // disagreeing with the freshly-computed body hash (stale-stamp corruption
 // already on disk) counts it and corrects it in place.
 func TestSelfHealCountsOutputIDMismatch(t *testing.T) {
+	serialMetrics(t)
+
 	_, storage := testSetupWithStorage(t)
 
 	key := "go-buildcache/v1" + strings.Repeat("d", 64)

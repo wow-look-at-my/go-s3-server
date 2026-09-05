@@ -42,6 +42,10 @@ func TestCompactKeyDistinguishesKinds(t *testing.T) {
 // both allocation-free to build and small enough that a million of them is tens
 // of megabytes, not hundreds.
 func TestCompactKeyCostsNothingPerKey(t *testing.T) {
+	// AllocsPerRun measures process-wide counters and drops GOMAXPROCS to 1, so
+	// it panics unless this test has the process to itself.
+	t.Serial()
+
 	key := gbciKeyPrefix + hex64('a')
 	var sink compactKey
 	allocs := testing.AllocsPerRun(100, func() { sink = newCompactKey(key) })

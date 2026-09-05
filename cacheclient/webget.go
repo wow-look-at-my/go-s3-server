@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"path"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -12,9 +15,6 @@ import (
 func (b *WebBackend) getIndividual(actionID, key string) (string, io.ReadCloser, int64, time.Time, bool, bool, error) {
 
 	req, err := http.NewRequest("GET", b.url(key), nil)
-	if err != nil {
-		return "", nil, 0, time.Time{}, true, false, nil
-	}
 	b.signRequest(req)
 
 	b.Pool.Acquire()
@@ -127,8 +127,37 @@ func (b *WebBackend) getIndividual(actionID, key string) (string, io.ReadCloser,
 		}
 	}
 
+	// The server round-trips user metadata on the single-object path as
+	// X-Cache-Meta-* headers (see metadataHeaders, the inverse mapping).
+	meta := map[string]string{}
+	for name, vals := range resp.Header {
+		const prefix = "X-Cache-Meta-"
+		if len(vals) == 0 || len(name) < len(prefix) || !strings.EqualFold(name[:len(prefix)], prefix) {
+			continue
+		}
+		meta[strings.ToLower(name[len(prefix):])] = vals[0]
+	}
+
 	b.Stats.Hits.Increment()
 	return outputID, io.NopCloser(bytes.NewReader(decompressed)), int64(len(decompressed)), t, false, executable, nil
+}
+
+// exeNameFromMeta reads the exe-name metadata an uploader stamped via
+// PutExecutable, sanitizing it for use as a file name: the cache server is a
+// trust boundary, and cmd/go turns this into the final path component of a
+// file it will fork/exec. The name is absent for ordinary objects -- "" is the
+// answer then, and the caller stores the body as plain data.
+func exeNameFromMeta(meta map[string]string) string {
+	name := meta["exe-name"]
+	if name == "" {
+		return ""
+	}
+	// Base() also strips Windows separators, which filepath.Base alone does not.
+	name = path.Base(filepath.FromSlash(name))
+	if name == "." || name == ".." || name == "/" || name == `\` {
+		return ""
+	}
+	return name
 }
 
 // getBatch enqueues this key on the coalescer and waits for the result.

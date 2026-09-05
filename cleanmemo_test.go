@@ -24,6 +24,10 @@ import (
 //  3. an overwrite through PutStream invalidates the memo, so the next GET
 //     re-probes the new body and the guard fires again.
 func TestCleanMemo_SkipsReprobeUntilInvalidated(t *testing.T) {
+	if !inOwnProcess(t) {
+		return
+	}
+
 	ts, storage := testSetupWithStorage(t)
 
 	const actionHex = "1111000000000000000000000000000000000000000000000000000000001111"

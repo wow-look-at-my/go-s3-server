@@ -74,6 +74,10 @@ func plantModuleIndexBlob(t *testing.T, storage *Storage, key string) {
 // locally. The PUT guard alone could never remove it; this is what sheds the
 // already-stored poison, lazily, on first fetch.
 func TestGetObject_EvictsModuleIndexOnRead(t *testing.T) {
+	if !inOwnProcess(t) {
+		return
+	}
+
 	ts, storage := testSetupWithStorage(t)
 
 	const actionHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -164,6 +168,10 @@ func TestGetObject_NonIndexBodyServedUnchanged(t *testing.T) {
 // guard would refuse such a body on any key), which is exactly what makes this a
 // real test of the read guard's scope rather than the PUT guard's.
 func TestGetObject_NonCacheprogKeyNotInspected(t *testing.T) {
+	if !inOwnProcess(t) {
+		return
+	}
+
 	ts, storage := testSetupWithStorage(t)
 
 	key := "misc/some-arbitrary-object"
@@ -190,6 +198,10 @@ func TestGetObject_NonCacheprogKeyNotInspected(t *testing.T) {
 // from the manifest and tar (the client treats the missing entry as a miss),
 // while a normal sibling key in the same batch is still served untouched.
 func TestBatchGet_EvictsModuleIndex(t *testing.T) {
+	if !inOwnProcess(t) {
+		return
+	}
+
 	ts, storage := testSetupWithStorage(t)
 	client := ts.Client()
 

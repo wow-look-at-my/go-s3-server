@@ -103,6 +103,10 @@ func TestBatchGet_Basic(t *testing.T) {
 // reconstructed from the body and is returned in the manifest with that outputid
 // (not evicted, not skipped), while well-formed entries are unaffected.
 func TestBatchGet_SelfHealRepairsMissingOutputID(t *testing.T) {
+	if !inOwnProcess(t) {
+		return
+	}
+
 	ts := testSetup(t)
 	client := ts.Client()
 
@@ -308,6 +312,10 @@ func TestBatchGet_AcceptsPOST(t *testing.T) {
 // neither counted as ops nor recorded as access, so they no longer double
 // every key's metrics or stamp last-access onto keys that are never served.
 func TestBatchGet_SingleOpenPerServedKey(t *testing.T) {
+	if !inOwnProcess(t) {
+		return
+	}
+
 	ts, storage := testSetupWithStorage(t)
 	client := ts.Client()
 	storage.EnableAccessTracking()

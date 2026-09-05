@@ -305,16 +305,58 @@ func hashCompare(a, b [32]byte) int {
 	return 0
 }
 
-// Sanity check: a request with the wrong method against /_index returns 405,
-// not a panic, even when the index is empty.
-func TestIndexMethodNotAllowed(t *testing.T) {
+// PUT to /_index with an invalid body returns 400 (bad request).
+func TestPutIndex_InvalidBody(t *testing.T) {
 	ts := testSetup(t)
 	resp := doRequest(t, ts, "PUT", "/testbucket/_index", []byte("x"), nil)
 	defer resp.Body.Close()
-	// _index isn't a valid PUT key (the routing dispatches to PutObject
-	// which writes it as a regular key); we accept either a 200 (treated
-	// as a normal write) or a 405. The point is no panic.
-	require.True(t, resp.StatusCode == 200 || resp.StatusCode == 405)
+	require.Equal(t, 400, resp.StatusCode)
+}
+
+// PUT to /_index with a valid GBCI blob merges keys into the server index.
+func TestPutIndex_MergesKeys(t *testing.T) {
+	ts := testSetup(t)
+
+	// Build a GBCI blob with 3 keys.
+	hashes := make([][gbciHashSize]byte, 3)
+	for i := range hashes {
+		hashes[i][0] = byte(i + 0xA0)
+	}
+	blob := buildGBCI(hashes)
+
+	resp := doRequest(t, ts, "PUT", "/testbucket/_index", blob, nil)
+	defer resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode)
+
+	// Fetch the index and verify the keys are present.
+	resp2 := doRequest(t, ts, "GET", "/testbucket/_index", nil, nil)
+	defer resp2.Body.Close()
+	require.Equal(t, 200, resp2.StatusCode)
+	body, _ := io.ReadAll(resp2.Body)
+	parsed := parseGBCI(t, body)
+	for _, h := range hashes {
+		require.Contains(t, parsed.Hashes, h)
+	}
+}
+
+// buildGBCI encodes a slice of hashes into a valid GBCI v1 blob.
+func buildGBCI(hashes [][gbciHashSize]byte) []byte {
+	count := uint64(len(hashes))
+	blob := make([]byte, gbciHeaderSize+int(count)*gbciHashSize+sha256.Size)
+	copy(blob[0:4], gbciMagic[:])
+	blob[4] = gbciVersion
+	blob[5] = gbciHashSize
+	binary.LittleEndian.PutUint16(blob[6:8], 0)
+	binary.LittleEndian.PutUint64(blob[8:16], 0)
+	binary.LittleEndian.PutUint64(blob[16:24], count)
+	off := gbciHeaderSize
+	for i := range hashes {
+		copy(blob[off:off+gbciHashSize], hashes[i][:])
+		off += gbciHashSize
+	}
+	digest := sha256.Sum256(blob[:off])
+	copy(blob[off:], digest[:])
+	return blob
 }
 
 // Direct unit test for the in-memory Index.Blob path, bypassing HTTP.
@@ -363,6 +405,7 @@ func TestIndexHTTPMatchesInProcess(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, 200, resp.StatusCode)
 	require.Equal(t, "application/octet-stream", resp.Header.Get("Content-Type"))
+	require.Equal(t, "no-cache", resp.Header.Get("Cache-Control"))
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)

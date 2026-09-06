@@ -37,6 +37,11 @@ type WebSummary struct {
 	// Startup index state: advertised key count, and whether it came from a fresh fetch this run.
 	IndexKeys          int  `json:"index_keys"`
 	IndexAuthoritative bool `json:"index_authoritative"`
+
+	// What a batch GET cost, split into coalescing wait and round trip. See
+	// batchtiming.go: the window is only worth its latency while the round
+	// trips it saves cost more than the wait it adds.
+	Batch BatchTimings `json:"batch"`
 }
 
 // MissTotal sums the GET miss reasons. The skipped_* counters are breakdowns
@@ -74,5 +79,6 @@ func (b *WebBackend) SummarySnapshot() WebSummary {
 		PutRefusedBuildID:   b.PutRefusedBuildID.Load(),
 		IndexKeys:           b.indexKeysAtStart,
 		IndexAuthoritative:  b.indexAuthoritative,
+		Batch:               b.batchTiming.snapshot(),
 	}
 }

@@ -31,7 +31,12 @@ tests:
 	- desc: a container from it starts and serves the health probe
 	  cmd: |
 		set -eu
-		cid=$(docker run -d -p 18099:8080 -e CACHE_USERNAME=smoke -e CACHE_PASSWORD=smoke go-s3-server:smoke)
+		# 2>&1 inside the capture so a daemon refusal lands in $cid and gets
+		# printed. Without it a failing run reports only its exit status.
+		if ! cid=$(docker run -d -p 18099:8080 -e CACHE_USERNAME=smoke -e CACHE_PASSWORD=smoke go-s3-server:smoke 2>&1); then
+		echo "docker run failed: $cid" >&2
+		exit 1
+		fi
 		trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
 		for _ in $(seq 1 30); do
 		if curl -fsS -o /dev/null http://127.0.0.1:18099/_health; then echo "SERVING"; exit 0; fi
@@ -47,7 +52,10 @@ tests:
 	- desc: the update-check probes answer, so docker-updater can roll it
 	  cmd: |
 		set -eu
-		cid=$(docker run -d -p 18100:8080 -e CACHE_USERNAME=smoke -e CACHE_PASSWORD=smoke go-s3-server:smoke)
+		if ! cid=$(docker run -d -p 18100:8080 -e CACHE_USERNAME=smoke -e CACHE_PASSWORD=smoke go-s3-server:smoke 2>&1); then
+		echo "docker run failed: $cid" >&2
+		exit 1
+		fi
 		trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
 		for _ in $(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:18100/_health && break; sleep 1; done
 		curl -fsS -o /dev/null http://127.0.0.1:18100/.well-known/docker-updater/health
@@ -60,7 +68,10 @@ tests:
 	- desc: the auth gate refuses an unauthenticated bucket read
 	  cmd: |
 		set -eu
-		cid=$(docker run -d -p 18101:8080 -e CACHE_USERNAME=smoke -e CACHE_PASSWORD=smoke go-s3-server:smoke)
+		if ! cid=$(docker run -d -p 18101:8080 -e CACHE_USERNAME=smoke -e CACHE_PASSWORD=smoke go-s3-server:smoke 2>&1); then
+		echo "docker run failed: $cid" >&2
+		exit 1
+		fi
 		trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
 		for _ in $(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:18101/_health && break; sleep 1; done
 		anon=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18101/gobuildcache/_index)
@@ -77,7 +88,10 @@ tests:
 	  cmd: |
 		set -eu
 		printf 'FROM go-s3-server:smoke\nENTRYPOINT ["/usr/local/bin/go-s3-server"]\n' > Dockerfile.execform
-		docker build -f Dockerfile.execform -t go-s3-server:execform . >/dev/null
+		if ! out=$(docker build -f Dockerfile.execform -t go-s3-server:execform . 2>&1); then
+		echo "building the exec-form variant failed: $out" >&2
+		exit 1
+		fi
 		if docker run --rm go-s3-server:execform --help >/dev/null 2>&1; then
 		echo "an exec-form entrypoint started the APE, so this suite cannot detect a broken one" >&2
 		exit 1

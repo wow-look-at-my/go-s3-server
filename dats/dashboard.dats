@@ -60,9 +60,12 @@ tests:
 				set -euo pipefail
 				base=http://127.0.0.1:19031/test-cache
 				auth=testuser:testpass
-				key="go-buildcache/v1$(printf 'a%.0s' $(seq 64))"
-				curl -sf -u "$auth" -X PUT --data-binary 'dashboard body' "$base/$key" > /dev/null
-				curl -sf -u "$auth" "$base/$key" > /dev/null
+				# A cacheprog-keyed body goes through the read guards, which
+				# reject this plain text. Store one to fill the index, and read
+				# a plain key back for the hit.
+				curl -sf -u "$auth" -X PUT --data-binary 'x' "$base/go-buildcache/v1$(printf 'a%.0s' $(seq 64))" > /dev/null
+				curl -sf -u "$auth" -X PUT --data-binary 'dashboard body' "$base/plain/v1test000000000001" > /dev/null
+				curl -sf -u "$auth" "$base/plain/v1test000000000001" > /dev/null
 				stats="$(mktemp)"
 				curl -sf http://127.0.0.1:19131/api/stats -o "$stats"
 				grep -o '"bucket": "test-cache"' "$stats"

@@ -112,6 +112,17 @@ function rows(table, entries) {
 
 // --- panels -----------------------------------------------------------------
 
+// The server measures cache size during an eviction sweep, so before the first
+// sweep the gauge is 0. A server holding keys must not report "0 B": say the
+// number is not measured yet instead of drawing a confident zero.
+function cacheSizeTile(cacheBytes, budget, indexed) {
+	if (cacheBytes === 0 && indexed > 0) {
+		return tile("cache size", "not measured", "measured at the first eviction sweep");
+	}
+	const sub = budget ? `${percent(cacheBytes, budget)} of ${bytes(budget)}` : "no size budget";
+	return tile("cache size", bytes(cacheBytes), sub, budget && cacheBytes > budget * 0.9 ? "warn" : "");
+}
+
 function drawTiles(stats) {
 	const outcomes = series(stats, "s3_get_requests_total");
 	const reads = sum(outcomes);
@@ -125,7 +136,7 @@ function drawTiles(stats) {
 
 	fill($("tiles"), [
 		tile("hit rate", reads ? percent(hits, reads) : "--", `${count(hits)} of ${count(reads)} single GETs`),
-		tile("cache size", bytes(cacheBytes), budget ? `${percent(cacheBytes, budget)} of ${bytes(budget)}` : "no size budget", budget && cacheBytes > budget * 0.9 ? "warn" : ""),
+		cacheSizeTile(cacheBytes, budget, indexed),
 		tile("keys advertised", count(indexed), "action hashes in /_index"),
 		tile("in flight", `${count(inFlight)} / ${count(limit)}`, rejected ? `${count(rejected)} shed with 503` : "nothing shed", rejected ? "warn" : ""),
 		tile("batch requests", count(value(stats, "s3_batch_requests_total")), `${count(series(stats, "s3_batch_keys_total").streamed || 0)} bodies streamed`),
@@ -190,9 +201,14 @@ function drawRate(stats) {
 	}
 	state.previous = { total, generated_at: stats.generated_at };
 
+	if (!state.rates.length) return;
+	const peak = Math.max(...state.rates, 0.001);
+	const now = state.rates[state.rates.length - 1];
+	$("rate-label").textContent = `${now.toFixed(1)} req/s now, peak ${peak.toFixed(1)} over the last ${Math.round((state.rates.length * POLL_MS) / 1000)}s`;
+
+	// One rate is a number, not a line. The chart starts at two.
 	const svg = $("rate-chart");
 	if (state.rates.length < 2) return;
-	const peak = Math.max(...state.rates, 0.001);
 	const step = 320 / (HISTORY - 1);
 	const d = state.rates
 		.map((r, i) => {
@@ -203,8 +219,6 @@ function drawRate(stats) {
 		.join(" ");
 	const path = svg.querySelector("path") || svg.appendChild(document.createElementNS("http://www.w3.org/2000/svg", "path"));
 	path.setAttribute("d", d);
-	const now = state.rates[state.rates.length - 1];
-	$("rate-label").textContent = `${now.toFixed(1)} req/s now, peak ${peak.toFixed(1)} over the last ${Math.round((state.rates.length * POLL_MS) / 1000)}s`;
 }
 
 // Every entry here is a number that should be zero, or should be falling. The

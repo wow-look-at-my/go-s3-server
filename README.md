@@ -14,15 +14,9 @@ This server speaks go-toolchain's native cache protocol. It began life S3-compat
 - **Write-once mode** — deny overwriting existing keys with configurable conflict notification (ideal for content-addressable caches)
 - **Bounded cache (automatic eviction)** — a background sweeper prunes by idle age (`max_age`) and total size (`max_bytes`). The `data_dir` therefore cannot fill the disk. Eviction goes by *last use*, not write time. See [Cache eviction](#cache-eviction).
 - **Sharded storage** — keys are automatically split into a two-level directory tree to avoid huge flat directories
-<<<<<<< HEAD
-- **Streaming, OOM-safe under load** — bodies stream straight to and from disk, so no whole object is ever buffered. A concurrency limit sheds excess load with `503 + Retry-After` rather than queueing until it OOMs. See [Behavior under load](#behavior-under-load).
-- **Graceful drain on shutdown** — on `SIGTERM`/`SIGINT` the server stops taking new requests and lets in-flight ones finish. A rolling update therefore cuts off no CI transfer. An unauthenticated `GET /_health` returns `200` when ready and `503` while draining. See [Graceful shutdown & rolling updates](#graceful-shutdown--rolling-updates).
-- **Multi-arch Docker image** — `linux/amd64` and `linux/arm64` published to `ghcr.io/wow-look-at-my/go-s3-server`
-=======
 - **Streaming, OOM-safe under load** — object bodies are streamed straight to/from disk on GET, PUT, and batch GET, so the server never buffers whole objects in memory. A concurrency limit sheds excess load with `503 + Retry-After` instead of queueing until it OOMs (which a fronting proxy would surface as a `502`). See [Behavior under load](#behavior-under-load).
 - **Graceful drain on shutdown** — on `SIGTERM`/`SIGINT` the server stops accepting new requests and lets in-flight ones finish (up to a drain timeout) before exiting, so a rolling update never cuts off an in-progress CI upload or download. An unauthenticated `GET /_health` probe returns `200` when ready and `503` while draining. See [Graceful shutdown & rolling updates](#graceful-shutdown--rolling-updates).
 - **Container image, synthesized by buildhost** — `oci.pazer.build/go-s3-server`, built from the published binary. This repo carries no Dockerfile. See [Docker](#docker).
->>>>>>> origin/master
 
 ## Cache protocol & deprecations
 

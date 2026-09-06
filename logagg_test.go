@@ -57,12 +57,12 @@ func TestLogAggregatorReportsOneLinePerActiveSecond(t *testing.T) {
 	assert.Contains(t, line, "get=3")
 	// Four of the five objects moved through a batch endpoint.
 	assert.Contains(t, line, "batched=80%")
-	assert.Contains(t, line, "wire=3.9KiB/s")
-	assert.Contains(t, line, "raw=16KiB/s")
-	// 4000 wire against 16000 raw.
+	assert.Contains(t, line, "compressed=3.9KiB/s")
+	assert.Contains(t, line, "uncompressed=16KiB/s")
+	// 4000 compressed against 16000 uncompressed.
 	assert.Contains(t, line, "ratio=25%")
 	assert.Contains(t, line, "projects=example.com/alpha, example.com/beta")
-	assert.NotContains(t, line, "unsized")
+	assert.NotContains(t, line, "sized=", "every object declared a size, so there is no coverage caveat to print")
 }
 
 func TestLogAggregatorSaysNothingForASilentSecond(t *testing.T) {
@@ -89,8 +89,9 @@ func TestLogAggregatorReportsUnsizedObjectsSeparately(t *testing.T) {
 	got := lines()
 	require.Len(t, got, 1)
 	assert.Contains(t, got[0], "ratio=25%", "the ratio must cover only the object that declared a raw size")
-	assert.Contains(t, got[0], "unsized=1")
-	assert.Contains(t, got[0], "wire=8.8KiB/s", "an unsized object still crossed the wire")
+	assert.Contains(t, got[0], "uncompressed=3.9KiB/s", "the uncompressed rate covers the same object the ratio does")
+	assert.Contains(t, got[0], "sized=1/2", "the line must say the rates cover different object sets")
+	assert.Contains(t, got[0], "compressed=8.8KiB/s", "an object with no declared size still crossed the wire")
 }
 
 func TestLogAggregatorFlushesTheOpenSecondOnStop(t *testing.T) {

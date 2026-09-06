@@ -183,18 +183,18 @@ func (b *secondBucket) line() string {
 	objects := b.puts + b.gets
 	fmt.Fprintf(&sb, " batched=%s", percent(b.batchedObjects, objects))
 
-	fmt.Fprintf(&sb, " wire=%s/s", byteSize(b.wireBytes))
-	if b.rawBytes > 0 || b.unsized == 0 {
-		fmt.Fprintf(&sb, " raw=%s/s", byteSize(b.rawBytes))
-	}
-	// The ratio is wire over raw: smaller is better compression. It is
-	// computed only over the objects whose raw size the client declared, so
-	// unsized objects cannot flatter it.
-	if b.rawBytes > 0 {
-		fmt.Fprintf(&sb, " ratio=%s", percentInt64(b.wireSized, b.rawBytes))
+	// compressed is every byte that crossed the wire. uncompressed and the
+	// ratio cover only the objects whose client declared a body-size, because
+	// nothing else can be compared. When those sets differ, sized=N/total says
+	// so: without it the line reads as uncompressed being SMALLER than
+	// compressed, which no compressor does.
+	fmt.Fprintf(&sb, " compressed=%s/s", byteSize(b.wireBytes))
+	sized := objects - b.unsized
+	if sized > 0 {
+		fmt.Fprintf(&sb, " uncompressed=%s/s ratio=%s", byteSize(b.rawBytes), percentInt64(b.wireSized, b.rawBytes))
 	}
 	if b.unsized > 0 {
-		fmt.Fprintf(&sb, " unsized=%d", b.unsized)
+		fmt.Fprintf(&sb, " sized=%d/%d", sized, objects)
 	}
 
 	if !b.projects.IsEmpty() {

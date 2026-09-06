@@ -16,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 func putObject(t *testing.T, ts *http.Client, url, key string, data []byte, meta map[string]string) {
@@ -233,6 +234,56 @@ func TestBatchGet_PrefetchSuppression(t *testing.T) {
 				"key %q was already prefetched in first response; should be suppressed", e.Key)
 		}
 	}
+}
+
+// Suppression must not stop prefetch. Selection skips already-sent keys as it
+// walks the window, so a client keeps being handed NEW neighbours. Filtering
+// the result afterwards instead re-proposed the same nearest pool on every
+// request: a real deployment showed prefetched=0 and suppressed=200 on every
+// batch after a client's first one, for the rest of its build.
+func TestBatchGet_PrefetchKeepsAdvancingPastSuppressedKeys(t *testing.T) {
+	ts := testSetup(t)
+	client := ts.Client()
+
+	// The window has to hold enough unsent keys for every round to have
+	// something to advance to. Each round can carry maxPrefetchEntries.
+	const rounds = 3
+	const total = rounds*maxPrefetchEntries + 10
+	for i := range total {
+		key := fmt.Sprintf("cache/v1adv%05d", i)
+		putObject(t, client, ts.URL, key, []byte(key), map[string]string{"Outputid": fmt.Sprintf("o%d", i)})
+	}
+
+	batchURL := ts.URL + "/testbucket/_batch/get"
+	seen := set.New[string]()
+	fresh := make([]int, 0, rounds)
+
+	for round := range rounds {
+		body, err := json.Marshal(batchGetRequest{
+			Keys:     []string{fmt.Sprintf("cache/v1adv%05d", round)},
+			Prefetch: true,
+		})
+		require.NoError(t, err)
+		resp, err := doBatchGet(client, batchURL, body)
+		require.NoError(t, err)
+		manifest, _ := parseBatchResponse(t, resp.Body)
+		resp.Body.Close()
+
+		n := 0
+		for _, e := range manifest.Entries {
+			if !e.Prefetch {
+				continue
+			}
+			assert.False(t, seen.Contains(e.Key), "round %d re-sent %q, which suppression should have skipped", round, e.Key)
+			seen.Add(e.Key)
+			n++
+		}
+		fresh = append(fresh, n)
+	}
+
+	assert.Positive(t, fresh[0], "the first request must prefetch")
+	assert.Positive(t, fresh[1], "the second request must still prefetch: selection has to walk past the suppressed keys, not stop at them")
+	assert.Positive(t, fresh[2], "prefetch must keep advancing while the window holds unsent keys")
 }
 
 func TestBatchGet_Prefetch(t *testing.T) {

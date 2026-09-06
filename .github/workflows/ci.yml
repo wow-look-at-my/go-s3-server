@@ -35,25 +35,20 @@ jobs:
       # Builds, tests, and runs dats/*.dats -- the HTTP surface and the cache round trip both live there.
       - uses: wow-look-at-my/go-toolchain@master
 
-  # Starts the image and requires it to serve. Publishing is gated on this: the
-  # sibling service shipped an image whose entrypoint could not start, and
-  # production was the first thing that ran it. The assertions are in
-  # test/dats/image.dats, which needs docker and so runs unsandboxed.
+  # Starts the image and requires it to serve; publishing is gated on it. Why, and every assertion: test/dats/image.dats.
   image-smoke:
     needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # The path must match what publish-ghcr passes, or the image is built
-      # around a binary from somewhere else.
+      # Must match what publish-ghcr passes, or the image wraps a binary from somewhere else.
       - uses: wow-look-at-my/actions@cache-download#latest
         with:
           name: go-build
           path: build
 
-      # buildhost serves every project as its own signed APT repository, which
-      # lands dats on a standard path.
+      # buildhost serves every project as its own signed APT repo, which lands dats on a standard path.
       - name: Install dats
         run: |
           curl -fsSL https://apt.pazer.build/dats/install.sh | sudo sh

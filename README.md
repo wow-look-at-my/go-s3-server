@@ -70,6 +70,7 @@ go-s3-server --config config.json
 | `--data-dir` | Override data directory |
 | `--metrics-listen` | Address for the Prometheus `/metrics` server (e.g. `:9090`) |
 | `--dashboard-listen` | Address for the operator dashboard (default `:9002`). `off` disables it. |
+| `--log-mode` | Access log shape: `normal` (default) or `verbose` |
 
 All flags except `--config` override the corresponding config file value.
 
@@ -86,6 +87,7 @@ All flags except `--config` override the corresponding config file value.
 | `max_concurrent_requests` | int | `128` | no | Max in-flight requests; excess is shed with `503 + Retry-After`. `0` → default. |
 | `max_object_bytes` | int | `1073741824` (1 GiB) | no | Max single PUT body; larger uploads get `413`. The body is streamed to disk, so this guards disk, not memory. `0` → default. |
 | `eviction` | object | `{"max_bytes":53687091200,"interval":"24h"}` | no | Automatic pruning of the cache (see below). |
+| `log_mode` | string | `normal` | no | Access log shape. `normal` prints one aggregated line per active second; `verbose` prints one line per request. See [Logging](#logging). |
 | `dashboard_listen` | string | `:9002` | no | Operator dashboard, on its own port. `""` disables it. It answers without credentials, so front it with an access proxy — see [Dashboard](#dashboard). |
 
 ### Environment variables
@@ -119,6 +121,18 @@ The cache is an **LRU**: it is bounded by size, and over budget the least recent
 Setting both `max_bytes: 0` and `max_age: "0"` disables eviction entirely (the server logs a warning that the cache will grow without bound).
 
 "Last used" is the latest of an entry's write time, its filesystem access time, and any read this process saw. Access times survive restarts, so a long-lived entry that is still being read is not mistaken for an idle one — on a `noatime` mount that signal does not exist, and the server says so at startup and tracks reads in memory instead.
+
+## Logging
+
+`log_mode` (or `--log-mode`) picks the access log's shape. The default, `normal`, prints one line per second in which the cache moved an object, and nothing for a silent second:
+
+```
+cache 1s: put=0 get=58 batched=72% compressed=3.4KiB/s uncompressed=13KiB/s ratio=26% projects=github.com/wow-look-at-my/go-s3-server
+```
+
+Those fields are objects stored, objects served, and the share of them that went through the batch endpoints. Then the byte rates on and off the wire, the resulting compression ratio, and the modules the traffic belonged to.
+
+`verbose` prints one line per request instead, with any handler detail (a batch's key counts, for example) on that same line. It is for following one client. Under CI load the per-request lines bury what you are looking for. Depth: [docs/logging.md](docs/logging.md).
 
 ## Dashboard
 

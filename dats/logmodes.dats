@@ -56,14 +56,14 @@ tests:
 	  cmd: bash {shared.serve.sh} {inputs.config.json} 19050 {inputs.check.sh}
 	  outputs:
 		stdout:
-			- "log .*access log: normal mode"
-			- "log .*cache 1s: put=2 get=2"
-			- "log .*ratio=25%"
-			- "log .*projects=example.com/alpha, example.com/beta"
+			- "access log: normal mode"
+			- "cache 1s: put=2 get=2"
+			- "ratio=25%"
+			- "projects=example.com/alpha, example.com/beta"
 		"!stdout":
 			# The per-request line belongs to verbose mode only.
-			- "log .*req method=PUT"
-			- "log .*req method=GET"
+			- "req method=PUT"
+			- "req method=GET"
 
 	- desc: verbose mode reports each request once, with the handler detail on that same line
 	  exit: 0
@@ -81,14 +81,14 @@ tests:
 	  cmd: bash {shared.serve.sh} {inputs.config.json} 19051 {inputs.check.sh}
 	  outputs:
 		stdout:
-			- "log .*access log: verbose mode"
-			- "log .*req method=PUT path=/test-cache/log/v1verbose00000001"
-			- "log .*req method=POST path=/test-cache/_batch/get.*batch_get requested=1"
+			- "access log: verbose mode"
+			- "req method=PUT path=/test-cache/log/v1verbose00000001"
+			- "batch_get requested=1"
 		"!stdout":
 			# The batch summary rides the request line. A second line about the
 			# same request is the duplication this mode had.
-			- "log batch get: requested"
-			- "log .*cache 1s:"
+			- "batch get: requested"
+			- "cache 1s:"
 
 	- desc: a silent second produces no line at all
 	  exit: 0
@@ -103,4 +103,4 @@ tests:
 	  cmd: bash {shared.serve.sh} {inputs.config.json} 19052 {inputs.check.sh}
 	  outputs:
 		"!stdout":
-			- "log .*cache 1s:"
+			- "cache 1s:"

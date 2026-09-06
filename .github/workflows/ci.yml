@@ -9,8 +9,6 @@ permissions:
   contents: write
   actions: read
   checks: read
-  # publish-ghcr pushes the image under this repository's own package.
-  packages: write
 
 jobs:
   test:
@@ -32,32 +30,6 @@ jobs:
           sudo apt-get update && sudo apt-get install -y bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
-      # Builds, tests, and runs dats/*.dats -- the HTTP surface and the cache round trip both live there.
+      # Builds, tests, runs dats/*.dats, and autoreleases the binary buildhost serves as an image.
       - uses: wow-look-at-my/go-toolchain@master
-
-  # Starts the image and requires it to serve; publishing is gated on it. Why, and every assertion: test/dats/image.dats.
-  image-smoke:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # Must match what publish-ghcr passes, or the image wraps a binary from somewhere else.
-      - uses: wow-look-at-my/actions@cache-download#latest
-        with:
-          name: go-build
-          path: build
-
-      # buildhost serves every project as its own signed APT repo, which lands dats on a standard path.
-      - name: Install dats
-        run: |
-          curl -fsSL https://apt.pazer.build/dats/install.sh | sudo sh
-          sudo apt-get install -y dats
-
-      - run: dats --no-sandbox test/dats/image.dats
-
-  # Pushes ghcr.io/wow-look-at-my/go-s3-server:latest from the master branch.
-  publish-ghcr:
-    needs: [test, image-smoke]
-    uses: wow-look-at-my/actions/.github/workflows/publish-ghcr.yml@master
 

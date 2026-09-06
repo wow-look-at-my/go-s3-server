@@ -48,6 +48,15 @@ func inOwnProcess(t *testing.T) bool {
 }
 
 func TestMetricsServer(t *testing.T) {
+	// A CounterVec exports nothing until it has a child, so a scrape can only
+	// name these once somebody has recorded one. Waiting for another test to do
+	// it makes the assertion depend on which tests ran first, and top-level
+	// tests here run in parallel: this failed with the http vec still empty.
+	// Touching them is what makes the series exist. Values go unasserted, and
+	// every test that measures a delta already runs in its own process.
+	httpRequestsTotal.WithLabelValues("GET", "metrics-endpoint-probe", "200").Add(0)
+	storageOpsTotal.WithLabelValues("metrics-endpoint-probe", "ok").Add(0)
+
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.Nil(t, err)
 

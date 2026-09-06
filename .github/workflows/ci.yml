@@ -30,7 +30,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
-      # Builds, tests, and runs dats/*.dats -- the HTTP surface and the cache round trip both live there.
+      # Builds, tests, runs dats/*.dats, and autoreleases the binary buildhost serves as an image.
       - uses: wow-look-at-my/go-toolchain@master
 
   # Publishes oci.pazer.build/go-s3-server via GHA OIDC (no stored registry secret) -- the image the deployment pulls and docker-updater tracks; :latest moves only on the default branch. Restores the job #65 removed, which had neither a working action nor a Dockerfile.

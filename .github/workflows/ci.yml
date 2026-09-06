@@ -33,25 +33,12 @@ jobs:
       # Builds, tests, and runs dats/*.dats -- the HTTP surface and the cache round trip both live there.
       - uses: wow-look-at-my/go-toolchain@master
 
-  # Publishes oci.pazer.build/go-s3-server, which is what the deployment pulls
-  # and what docker-updater tracks. Authentication is a GHA OIDC token, so there
-  # is no registry secret stored anywhere; the project auto-provisions on first
-  # push. :latest moves only on the default branch -- a feature-branch push
-  # publishes under its own tag and leaves stable consumers alone.
-  #
-  # This replaces the job removed in #65, which referenced a nonexistent action
-  # and had no Dockerfile to build. Both of those now exist.
+  # Publishes oci.pazer.build/go-s3-server via GHA OIDC (no stored registry secret) -- the image the deployment pulls and docker-updater tracks; :latest moves only on the default branch. Restores the job #65 removed, which had neither a working action nor a Dockerfile.
   docker:
     needs: test
-    # ubuntu-latest ON PURPOSE, not the self-hosted runner: this host carries a
-    # registered APE binfmt handler (/proc/sys/fs/binfmt_misc/APE), which makes
-    # the kernel run an APE through a shell and masks the exact defect the
-    # Dockerfile exists to prevent. A hosted runner has no such handler, so a
-    # regression back to a bare-APE entrypoint fails the build instead of
-    # shipping an image that cannot start.
+    # ubuntu-latest ON PURPOSE: the self-hosted runner has a registered APE binfmt handler (/proc/sys/fs/binfmt_misc/APE) that runs an APE through a shell, masking the exact defect this Dockerfile prevents -- a hosted runner has none, so a regression to a bare-APE entrypoint fails the build instead of shipping an image that cannot start.
     runs-on: ubuntu-latest
-    # A job-level block REPLACES the workflow-level one, so every grant the
-    # publish needs is listed here. id-token: write is what the OIDC login uses.
+    # A job-level block REPLACES the workflow-level one, so every grant the publish needs is listed here -- id-token: write is what the OIDC login uses.
     permissions:
       id-token: write
       contents: read
@@ -61,12 +48,10 @@ jobs:
       artifact-metadata: write
     steps:
       - uses: actions/checkout@v4
-      # go-toolchain hands build/ over through the org cache rather than
-      # upload-artifact, so restore it before the image copies the binary out.
+      # go-toolchain hands build/ over through the org cache rather than upload-artifact, so restore it before the image copies the binary out.
       - uses: wow-look-at-my/actions@cache-download#latest
         with:
           name: go-build-test.broot
           path: build/
       - run: chmod +x build/go-s3-server
       - uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-docker@master
-

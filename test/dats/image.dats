@@ -8,16 +8,23 @@
 # image with an exec-form entrypoint must NOT start, or these checks would pass
 # for an image that merely happens to work.
 
+# The build is SETUP, not a test. dats runs tests concurrently, so a build
+# written as test 1 races every test that needs the image, and they fail with
+# "no such image" rather than on anything they assert. A setup failure fails
+# the whole run, so the build is still gated.
+setup: |
+	set -eu
+	test -f build/go-s3-server || { echo "build/go-s3-server is missing; the build job produces it" >&2; exit 1; }
+	docker build -t go-s3-server:smoke . >/dev/null
+
 tests:
-	- desc: the image builds from the binary CI already produced
+	- desc: the setup produced an image
 	  cmd: |
 		set -eu
-		test -f build/go-s3-server || { echo "build/go-s3-server is missing; the build job produces it" >&2; exit 1; }
-		docker build -t go-s3-server:smoke . >/dev/null
-		echo "BUILT"
+		docker image inspect -f 'PRESENT' go-s3-server:smoke
 	  outputs:
 		stdout:
-			- "BUILT"
+			- "PRESENT"
 
 	- desc: the image declares no VOLUME, so a missing bind mount fails visibly
 	  cmd: |

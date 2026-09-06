@@ -35,9 +35,16 @@ COPY docker/config.json /etc/go-s3-server/config.json
 COPY --from=shell --chown=65532:65532 /out/data /var/lib/go-s3-server
 COPY --from=shell --chown=65532:65532 /out/tmp /tmp
 
-# The cache bodies. Disposable, but a restart that loses them costs every
-# client a full rebuild, so the deploy is expected to mount this.
-VOLUME /var/lib/go-s3-server
+# The cache bodies live at /var/lib/go-s3-server. The deploy BIND-MOUNTS a host
+# directory there:
+#
+#   docker run -v /srv/go-s3-server:/var/lib/go-s3-server ...
+#
+# There is deliberately no VOLUME instruction. It buys nothing when the deploy
+# mounts the path, and when the deploy forgets, it hides the mistake behind an
+# anonymous volume that a container recreate orphans -- which is the cache loss
+# it looks like it is preventing. Without a mount the cache is gone on restart,
+# and every client pays a full rebuild. That must fail visibly.
 
 # 8080 serves the cache protocol; 9090 serves Prometheus metrics. Declaring the
 # serving port is also what lets docker-updater find the /.well-known probes

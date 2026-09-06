@@ -19,6 +19,15 @@ tests:
 		stdout:
 			- "BUILT"
 
+	- desc: the image declares no VOLUME, so a missing bind mount fails visibly
+	  cmd: |
+		set -eu
+		vols=$(docker image inspect -f '{{ len .Config.Volumes }}' go-s3-server:smoke)
+		echo "volumes=$vols"
+	  outputs:
+		stdout:
+			- "volumes=0"
+
 	- desc: a container from it starts and serves the health probe
 	  cmd: |
 		set -eu

@@ -97,6 +97,9 @@ func (b *WebBackend) batchCoalescer() {
 	defer close(b.batchDone)
 
 	var pending []batchReq
+	// When the batch's first key arrived. Every caller in the batch has been
+	// blocked since at least this instant, so it is what the window costs.
+	var firstQueued time.Time
 	timer := time.NewTimer(time.Hour)
 	if !timer.Stop() {
 		<-timer.C
@@ -108,6 +111,7 @@ func (b *WebBackend) batchCoalescer() {
 		}
 		batch := pending
 		pending = nil
+		b.batchTiming.recordWait(len(batch), time.Since(firstQueued))
 		if !timer.Stop() {
 			select {
 			case <-timer.C:
@@ -130,6 +134,7 @@ func (b *WebBackend) batchCoalescer() {
 				return
 			}
 			if len(pending) == 0 {
+				firstQueued = time.Now()
 				timer.Reset(batchCoalesceWait)
 			}
 			pending = append(pending, req)
@@ -225,7 +230,9 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 			nPrefetch++
 		}
 	}
-	b.errLog.RecordBatchHTTP(len(reqs), len(entries), nPrefetch, time.Since(start))
+	trip := time.Since(start)
+	b.batchTiming.recordTrip(trip)
+	b.errLog.RecordBatchHTTP(len(reqs), len(entries), nPrefetch, trip)
 
 	// Index returned entries by key for constant-time lookup.
 	entryByKey := make(map[string]*BatchEntry, len(entries))

@@ -108,6 +108,7 @@ type WebBackend struct {
 	batchReqCh  chan batchReq
 	batchStop   chan struct{}
 	batchDone   chan struct{}
+	batchTiming batchTiming
 	batchHTTPWG sync.WaitGroup
 
 	// putBatchReqCh funnels prepped Put objects to a worker that ships them as a single /_batch/put tar.

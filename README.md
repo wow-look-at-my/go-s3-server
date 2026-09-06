@@ -16,7 +16,7 @@ This server speaks go-toolchain's native cache protocol. It began life S3-compat
 - **Sharded storage** — keys are automatically split into a two-level directory tree to avoid huge flat directories
 - **Streaming, OOM-safe under load** — object bodies are streamed straight to/from disk on GET, PUT, and batch GET, so the server never buffers whole objects in memory. A concurrency limit sheds excess load with `503 + Retry-After` instead of queueing until it OOMs (which a fronting proxy would surface as a `502`). See [Behavior under load](#behavior-under-load).
 - **Graceful drain on shutdown** — on `SIGTERM`/`SIGINT` the server stops accepting new requests and lets in-flight ones finish (up to a drain timeout) before exiting, so a rolling update never cuts off an in-progress CI upload or download. An unauthenticated `GET /_health` probe returns `200` when ready and `503` while draining. See [Graceful shutdown & rolling updates](#graceful-shutdown--rolling-updates).
-- **Multi-arch Docker image** — `linux/amd64` and `linux/arm64` published to `ghcr.io/wow-look-at-my/go-s3-server`
+- **Container image, synthesized by buildhost** — `oci.pazer.build/go-s3-server`, built from the published binary. This repo carries no Dockerfile. See [Docker](#docker).
 
 ## Cache protocol & deprecations
 
@@ -347,7 +347,7 @@ period long enough for it to drain. Label the container:
 ```yaml
 services:
   s3:
-    image: ghcr.io/wow-look-at-my/go-s3-server
+    image: oci.pazer.build/go-s3-server
     command: ["--config", "/data/config.json"]
     volumes: ["/data:/data"]
     stop_grace_period: 300s   # let the drain finish before Docker sends SIGKILL
@@ -373,9 +373,13 @@ reachable throughout the deploy while the old instance drains.
 
 ## Docker
 
+buildhost synthesizes the image from the published binary. This repo has no Dockerfile.
+
 ```
-docker run -v /data:/data ghcr.io/wow-look-at-my/go-s3-server --config /data/config.json
+docker run -v /data:/data oci.pazer.build/go-s3-server --config /data/config.json
 ```
+
+The layers are zstd, so pull with an OCI-aware client: Docker's containerd image store, containerd, or podman. Docker's classic store cannot read them.
 
 ## Building
 

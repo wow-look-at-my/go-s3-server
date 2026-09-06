@@ -45,6 +45,7 @@ func init() {
 	rootCmd.Flags().String("data-dir", "", "override data directory")
 	rootCmd.Flags().String("metrics-listen", "", "address for Prometheus metrics server (e.g. :9090)")
 	rootCmd.Flags().String("dashboard-listen", "", "address for the operator dashboard (e.g. :9002); \"off\" disables it")
+	rootCmd.Flags().String("log-mode", "", "access log shape: \"normal\" (one aggregated line per active second) or \"verbose\" (one line per request)")
 }
 
 func run(cmd *cobra.Command, args []string) error {
@@ -80,6 +81,15 @@ func run(cmd *cobra.Command, args []string) error {
 		cfg.DashboardListen = &v
 	}
 
+	if v, _ := cmd.Flags().GetString("log-mode"); v != "" {
+		switch v {
+		case logModeNormal, logModeVerbose:
+			cfg.LogMode = v
+		default:
+			return fmt.Errorf("--log-mode must be %q or %q, got %q", logModeNormal, logModeVerbose, v)
+		}
+	}
+
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
 	if err != nil {
 		return fmt.Errorf("init storage: %w", err)
@@ -87,6 +97,17 @@ func run(cmd *cobra.Command, args []string) error {
 	defer storage.Close()
 
 	srv := NewServer(cfg, storage)
+
+	// Normal mode's access log IS the aggregator: one line per second in which
+	// the cache moved anything. Verbose mode leaves it nil and every request
+	// prints itself instead.
+	if srv.logAgg != nil {
+		go srv.logAgg.Run()
+		defer srv.logAgg.Stop()
+		log.Printf("access log: normal mode, one aggregated line per active second. Use log_mode=%q (or --log-mode %s) for one line per request.", logModeVerbose, logModeVerbose)
+	} else {
+		log.Printf("access log: verbose mode, one line per request")
+	}
 
 	if cfg.Eviction.Enabled() {
 		configureLastUseTracking(storage, cfg.DataDir)

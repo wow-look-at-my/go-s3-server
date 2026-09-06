@@ -157,6 +157,11 @@ type Config struct {
 	DisableAuth   bool            `json:"disable_auth"`
 	Credentials   []Credential    `json:"credentials"`
 
+	// LogMode selects the access log's shape: "normal" (one line per active
+	// second, aggregated) or "verbose" (one line per request). Empty takes
+	// normal. See logagg.go.
+	LogMode string `json:"log_mode"`
+
 	// DashboardListen is the address of the operator dashboard, on its own
 	// port so an access proxy can front it without touching the cache
 	// protocol port. A pointer so an absent field takes the default while an
@@ -240,6 +245,14 @@ func LoadConfig(path string) (*Config, error) {
 	case "never", "always", "content_differs":
 	default:
 		return nil, fmt.Errorf("config: write_once.notification must be \"never\", \"always\", or \"content_differs\"")
+	}
+	if cfg.LogMode == "" {
+		cfg.LogMode = logModeNormal
+	}
+	switch cfg.LogMode {
+	case logModeNormal, logModeVerbose:
+	default:
+		return nil, fmt.Errorf("config: log_mode must be %q or %q, got %q", logModeNormal, logModeVerbose, cfg.LogMode)
 	}
 	if cfg.Bucket == "" {
 		return nil, fmt.Errorf("config: bucket is required")

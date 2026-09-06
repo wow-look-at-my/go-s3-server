@@ -156,7 +156,7 @@ func (t *prefetchTracker) record(user string, keys []string) {
 //
 //	manifest.json                    — index of all entries with metadata
 //	data/<key>                       — raw file content for each entry
-func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tracker *prefetchTracker) {
+func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tracker *prefetchTracker, agg *logAggregator) {
 	if r.Method != "GET" && r.Method != "POST" {
 		writeError(w, 405, "method_not_allowed", "method not allowed")
 		return
@@ -317,6 +317,10 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 			return
 		}
 		streamed++
+		// Counted where the bytes actually leave: an entry that vanished or
+		// failed above never reached the client and must not appear in the
+		// rate.
+		recordObject(agg, e.meta.Metadata, size, false, true)
 	}
 
 	batchRequestsTotal.Inc()
@@ -325,7 +329,9 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 	batchKeysTotal.WithLabelValues("prefetched").Add(float64(nPrefetch))
 	batchKeysTotal.WithLabelValues("suppressed").Add(float64(nSuppressed))
 	batchKeysTotal.WithLabelValues("streamed").Add(float64(streamed))
-	log.Printf("batch get: requested=%d found=%d prefetched=%d suppressed=%d streamed=%d",
+	// Attached to this request's own log line rather than printed as a second
+	// line about the same request.
+	auditFromContext(r.Context()).note("batch_get requested=%d found=%d prefetched=%d suppressed=%d streamed=%d",
 		len(req.Keys), len(entries)-nPrefetch, nPrefetch, nSuppressed, streamed)
 }
 
@@ -346,7 +352,7 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 // manifest and the data members is a whole-request 400 invalid_request. A
 // per-object store failure does NOT abort the batch: it is recorded as an
 // "error" result and the remaining members are still processed.
-func handleBatchPut(w http.ResponseWriter, r *http.Request, storage *Storage, maxObjectBytes int64) {
+func handleBatchPut(w http.ResponseWriter, r *http.Request, storage *Storage, maxObjectBytes int64, agg *logAggregator) {
 	if r.Method != "PUT" {
 		writeError(w, 405, "method_not_allowed", "method not allowed")
 		return
@@ -453,6 +459,7 @@ func handleBatchPut(w http.ResponseWriter, r *http.Request, storage *Storage, ma
 		switch status {
 		case storeStatusStored:
 			nStored++
+			recordObject(agg, p.entry.Metadata, hdr.Size, true, true)
 		case storeStatusDropped:
 			nDropped++
 		case storeStatusConflict:
@@ -474,7 +481,7 @@ func handleBatchPut(w http.ResponseWriter, r *http.Request, storage *Storage, ma
 		}
 	}
 
-	log.Printf("batch put: entries=%d stored=%d dropped=%d conflict=%d error=%d",
+	auditFromContext(r.Context()).note("batch_put entries=%d stored=%d dropped=%d conflict=%d error=%d",
 		len(manifest.Entries), nStored, nDropped, nConflict, nError)
 
 	w.Header().Set("Content-Type", "application/json")

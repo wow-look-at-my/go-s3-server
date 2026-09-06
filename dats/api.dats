@@ -31,7 +31,7 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19010","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:19010","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
 				base=http://127.0.0.1:19010/test-cache
@@ -46,7 +46,7 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19011","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:19011","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
 				base=http://127.0.0.1:19011/test-cache
@@ -66,7 +66,7 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19012","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:19012","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
 				base=http://127.0.0.1:19012/test-cache
@@ -84,7 +84,7 @@ tests:
 		env:
 			DATA_DIR: "{outputs.data}"
 		files:
-			config.json: '{"listen":"127.0.0.1:19013","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:19013","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
 				base=http://127.0.0.1:19013/test-cache
@@ -99,7 +99,7 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19014","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:19014","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
 				base=http://127.0.0.1:19014/test-cache
@@ -121,7 +121,7 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19015","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:19015","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
 				base=http://127.0.0.1:19015/test-cache
@@ -141,7 +141,7 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19016","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:19016","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
 				base=http://127.0.0.1:19016/test-cache
@@ -188,7 +188,7 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19017","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:19017","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
 				body="$(mktemp)"
@@ -205,7 +205,7 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19018","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:19018","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
 				base=http://127.0.0.1:19018/test-cache

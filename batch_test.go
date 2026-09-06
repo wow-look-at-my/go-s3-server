@@ -16,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 func putObject(t *testing.T, ts *http.Client, url, key string, data []byte, meta map[string]string) {
@@ -244,19 +245,20 @@ func TestBatchGet_PrefetchKeepsAdvancingPastSuppressedKeys(t *testing.T) {
 	ts := testSetup(t)
 	client := ts.Client()
 
-	// A cluster larger than one response can carry, so the first request
-	// cannot exhaust it.
-	const total = maxPrefetchEntries + 40
+	// The window has to hold enough unsent keys for every round to have
+	// something to advance to. Each round can carry maxPrefetchEntries.
+	const rounds = 3
+	const total = rounds*maxPrefetchEntries + 10
 	for i := range total {
 		key := fmt.Sprintf("cache/v1adv%05d", i)
 		putObject(t, client, ts.URL, key, []byte(key), map[string]string{"Outputid": fmt.Sprintf("o%d", i)})
 	}
 
 	batchURL := ts.URL + "/testbucket/_batch/get"
-	seen := map[string]bool{}
-	fresh := make([]int, 0, 3)
+	seen := set.New[string]()
+	fresh := make([]int, 0, rounds)
 
-	for round := range 3 {
+	for round := range rounds {
 		body, err := json.Marshal(batchGetRequest{
 			Keys:     []string{fmt.Sprintf("cache/v1adv%05d", round)},
 			Prefetch: true,
@@ -272,8 +274,8 @@ func TestBatchGet_PrefetchKeepsAdvancingPastSuppressedKeys(t *testing.T) {
 			if !e.Prefetch {
 				continue
 			}
-			assert.False(t, seen[e.Key], "round %d re-sent %q, which suppression should have skipped", round, e.Key)
-			seen[e.Key] = true
+			assert.False(t, seen.Contains(e.Key), "round %d re-sent %q, which suppression should have skipped", round, e.Key)
+			seen.Add(e.Key)
 			n++
 		}
 		fresh = append(fresh, n)

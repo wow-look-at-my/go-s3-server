@@ -7,12 +7,15 @@
 	<!-- An empty icon: the page ships no favicon, and without this the browser
 	     asks for one on every load and logs a 404. -->
 	<link rel="icon" href="data:,">
-	<!-- The org design language, Scratch Proto, from its always-latest master
-	     deploy. The stylesheet puts the tokens on :root. The module registers
-	     the components and adopts the same sheet inside each shadow root. Both
-	     files are required, and the page needs no build step of its own. -->
-	<link rel="stylesheet" href="https://sites.pazer.build/scratch_ui/branch/master/scratch-ui.css">
-	<script type="module" src="https://sites.pazer.build/scratch_ui/branch/master/scratch-ui.js"></script>
+	<!-- The org design language, Scratch Proto, from its always-latest deploy.
+	     The stylesheet puts the tokens on :root. The module registers the
+	     components and adopts the same sheet inside each shadow root. Both
+	     files are required, and the page needs no build step of its own.
+	     These are the CANONICAL paths. The /branch/master/ spelling answers
+	     302, and a cross-origin redirect has to carry CORS on every hop for a
+	     module script to load. -->
+	<link rel="stylesheet" href="https://sites.pazer.build/scratch_ui/scratch-ui.css">
+	<script type="module" src="https://sites.pazer.build/scratch_ui/scratch-ui.js"></script>
 	<link rel="stylesheet" href="/dashboard.css">
 </head>
 <body>

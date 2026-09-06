@@ -69,6 +69,7 @@ go-s3-server --config config.json
 | `--bucket` | Override bucket name |
 | `--data-dir` | Override data directory |
 | `--metrics-listen` | Address for the Prometheus `/metrics` server (e.g. `:9090`) |
+| `--dashboard-listen` | Address for the operator dashboard (default `:9002`). `off` disables it. |
 
 All flags except `--config` override the corresponding config file value.
 
@@ -85,6 +86,7 @@ All flags except `--config` override the corresponding config file value.
 | `max_concurrent_requests` | int | `128` | no | Max in-flight requests; excess is shed with `503 + Retry-After`. `0` → default. |
 | `max_object_bytes` | int | `1073741824` (1 GiB) | no | Max single PUT body; larger uploads get `413`. The body is streamed to disk, so this guards disk, not memory. `0` → default. |
 | `eviction` | object | `{"max_bytes":53687091200,"interval":"24h"}` | no | Automatic pruning of the cache (see below). |
+| `dashboard_listen` | string | `:9002` | no | Operator dashboard, on its own port. `""` disables it. It answers without credentials, so front it with an access proxy — see [Dashboard](#dashboard). |
 
 ### Environment variables
 
@@ -117,6 +119,16 @@ The cache is an **LRU**: it is bounded by size, and over budget the least recent
 Setting both `max_bytes: 0` and `max_age: "0"` disables eviction entirely (the server logs a warning that the cache will grow without bound).
 
 "Last used" is the latest of an entry's write time, its filesystem access time, and any read this process saw. Access times survive restarts, so a long-lived entry that is still being read is not mistaken for an idle one — on a `noatime` mount that signal does not exist, and the server says so at startup and tracks reads in memory instead.
+
+## Dashboard
+
+An operator dashboard runs on its **own port** (`dashboard_listen`, default `:9002`), separate from the cache protocol port. It shows hit rate, cache size against budget, batch volume, the tripwire counters, memory, and the running config, polled every 5s.
+
+It answers **without credentials, by design**: publish that port through an access proxy such as Cloudflare Zero Trust, and leave the cache port alone (build machines carry basic-auth credentials, not browser sessions). Set `dashboard_listen` to `""`, or pass `--dashboard-listen off`, to run without it.
+
+Numbers come from the same Prometheus registry `/metrics` serves. The page cannot disagree with a scrape. The UI is built on the org design language, [scratch_ui](https://github.com/wow-look-at-my/scratch_ui), loaded at runtime — so a browser viewing the dashboard needs to reach `sites.pazer.build`.
+
+Full setup, including the two-hostname tunnel config: [docs/dashboard.md](docs/dashboard.md).
 
 ## Authentication
 

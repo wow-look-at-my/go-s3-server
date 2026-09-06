@@ -35,10 +35,10 @@ The page and its assets are embedded in the binary. There is no asset directory 
 
 A counter with no labels becomes one number. A labeled one becomes a series, keyed by its label set. A histogram contributes `<name>_count` and `<name>_sum`, which is what an average needs. The buckets stay in `/metrics` for a time-series database to read.
 
-The page reports two things carefully:
+The page reports these carefully:
 
 - **Cache size** comes from `s3_cache_bytes`. The server writes that gauge at an eviction sweep and every 15 minutes, not on every PUT. Before the first measurement the page says "not measured". It never says `0 B`.
-- **Rates** are computed in the browser from two polls. A reload starts them over. A counter that goes backwards means the server restarted, so the page clears the history instead of drawing a negative rate.
+- **Rates** are computed in the browser, from one poll against the poll before it. A reload starts them over. A counter that goes backwards means the server restarted, so the page clears the history instead of drawing a negative rate.
 
 The snapshot reports configuration, never credentials. `TestDashboardStatsCarryNoCredentials` holds that line.
 
@@ -48,7 +48,7 @@ The dashboard port answers every request. Publish it through an access proxy tha
 
 ### Cloudflare Zero Trust
 
-Use one tunnel with two hostnames. Each hostname points at a different port of this process. Only the dashboard hostname gets an Access policy.
+Use one tunnel, with a hostname per port of this process. Only the dashboard hostname gets an Access policy.
 
 ```yaml
 # cloudflared config.yml

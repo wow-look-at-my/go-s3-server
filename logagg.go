@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // The access log has two modes.
@@ -59,7 +61,7 @@ type secondBucket struct {
 	// the compression ratio divides like against like.
 	wireSized int64
 	unsized   int
-	projects  map[string]struct{}
+	projects  set.Set[string]
 }
 
 // logAggregator turns objectEvents into one line per active second. It is safe
@@ -96,7 +98,7 @@ func (a *logAggregator) Record(ev objectEvent) {
 	defer a.mu.Unlock()
 	b := a.buckets[sec]
 	if b == nil {
-		b = &secondBucket{projects: make(map[string]struct{})}
+		b = &secondBucket{projects: set.New[string]()}
 		a.buckets[sec] = b
 	}
 	if ev.put {
@@ -115,7 +117,7 @@ func (a *logAggregator) Record(ev objectEvent) {
 		b.unsized++
 	}
 	if ev.project != "" {
-		b.projects[ev.project] = struct{}{}
+		b.projects.Add(ev.project)
 	}
 }
 
@@ -195,7 +197,7 @@ func (b *secondBucket) line() string {
 		fmt.Fprintf(&sb, " unsized=%d", b.unsized)
 	}
 
-	if len(b.projects) > 0 {
+	if !b.projects.IsEmpty() {
 		sb.WriteString(" projects=")
 		sb.WriteString(joinProjects(b.projects))
 	}
@@ -218,11 +220,8 @@ func percentInt64(part, whole int64) string {
 
 // joinProjects renders the project set: sorted for a stable line, and bounded
 // so one busy second cannot print a screenful of module paths.
-func joinProjects(set map[string]struct{}) string {
-	names := make([]string, 0, len(set))
-	for name := range set {
-		names = append(names, name)
-	}
+func joinProjects(projects set.Set[string]) string {
+	names := projects.Values()
 	sort.Strings(names)
 	if len(names) <= maxLoggedProjects {
 		return strings.Join(names, ", ")

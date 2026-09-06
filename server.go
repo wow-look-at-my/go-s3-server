@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -47,6 +48,12 @@ type Server struct {
 	// deliberately NOT consulted on the request path: memory pressure changes
 	// how much the server remembers, never whether it answers.
 	mem *memController
+	// verboseLog prints one line per request. In normal mode the per-second
+	// aggregator below is the access log instead.
+	verboseLog bool
+	// logAgg counts objects into per-second lines. It is nil in verbose mode,
+	// where every request already prints itself.
+	logAgg *logAggregator
 	// shuttingDown is set by BeginShutdown when a termination signal is received.
 	// While set, the health endpoint reports 503 so an orchestrator or reverse
 	// proxy stops routing new requests here as http.Server.Shutdown drains the
@@ -70,6 +77,10 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 		prefetchTracker: newPrefetchTracker(),
 		sem:             make(chan struct{}, cfg.MaxConcurrentRequests),
 		mem:             newMemController(memoryBudget),
+		verboseLog:      cfg.LogMode == logModeVerbose,
+	}
+	if !s.verboseLog {
+		s.logAgg = newLogAggregator()
 	}
 	// Everything registered here is rebuildable from disk, so the controller's
 	// only power is to make the server remember less. (Storage is nil in the
@@ -102,6 +113,20 @@ type auditInfo struct {
 	UserAgent string
 	Timestamp time.Time
 	Label     string // decoded object description (type, package, go version, target)
+	// Detail is what the handler wants said about this request, appended to
+	// the request's own verbose line. A handler that logs its own summary line
+	// prints the same request twice under two spellings, which is what made
+	// the verbose log unreadable.
+	Detail string
+}
+
+// note attaches handler detail to the request's log line. It is safe on a nil
+// audit, which is what a directly-invoked handler in a test has.
+func (a *auditInfo) note(format string, v ...any) {
+	if a == nil {
+		return
+	}
+	a.Detail = fmt.Sprintf(format, v...)
 }
 
 type auditKey struct{}
@@ -181,13 +206,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	username := anonymousUser
 	defer func() {
 		duration := time.Since(start)
-		label := ""
-		if a := auditFromContext(r.Context()); a != nil && a.Label != "" {
-			label = " [" + a.Label + "]"
+		// Verbose prints this request, once, with whatever the handler had to
+		// add. Normal prints nothing here: the second-by-second lines from the
+		// aggregator are the access log in that mode.
+		if s.verboseLog {
+			label, detail := "", ""
+			if a := auditFromContext(r.Context()); a != nil {
+				if a.Label != "" {
+					label = " [" + a.Label + "]"
+				}
+				if a.Detail != "" {
+					detail = " " + a.Detail
+				}
+			}
+			log.Printf("req method=%s path=%s%s client_ip=%s user=%s user_agent=%q status=%d bytes=%d duration_ms=%d%s",
+				r.Method, r.URL.Path, label, ip, username, ua,
+				rec.statusCode, rec.bytesWritten, duration.Milliseconds(), detail)
 		}
-		log.Printf("req method=%s path=%s%s client_ip=%s user=%s user_agent=%q status=%d bytes=%d duration_ms=%d",
-			r.Method, r.URL.Path, label, ip, username, ua,
-			rec.statusCode, rec.bytesWritten, duration.Milliseconds())
 		httpRequestsTotal.WithLabelValues(r.Method, route, statusStr(rec.statusCode)).Inc()
 		httpRequestDuration.WithLabelValues(r.Method, route).Observe(duration.Seconds())
 		httpResponseSize.WithLabelValues(r.Method, route).Observe(float64(rec.bytesWritten))
@@ -254,19 +289,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// lookup (GET-with-a-body is proxy-hostile); GET stays accepted for
 		// existing clients.
 		route = "BatchGet"
-		handleBatchGet(rec, r, s.storage, s.prefetchTracker)
+		handleBatchGet(rec, r, s.storage, s.prefetchTracker, s.logAgg)
 	case r.Method == "GET" && key != "":
 		route = "GetObject"
-		handleGetObject(rec, r, s.storage, key)
+		handleGetObject(rec, r, s.storage, key, s.logAgg)
 	case r.Method == "HEAD" && key != "":
 		route = "HeadObject"
 		handleHeadObject(rec, r, s.storage, key)
 	case r.Method == "PUT" && key == "_batch/put":
 		route = "BatchPut"
-		handleBatchPut(rec, r, s.storage, s.config.MaxObjectBytes)
+		handleBatchPut(rec, r, s.storage, s.config.MaxObjectBytes, s.logAgg)
 	case r.Method == "PUT" && key != "":
 		route = "PutObject"
-		handlePutObject(rec, r, s.storage, key, s.config.MaxObjectBytes)
+		handlePutObject(rec, r, s.storage, key, s.config.MaxObjectBytes, s.logAgg)
 	case r.Method == "DELETE" && key != "":
 		route = "DeleteObject"
 		handleDeleteObject(rec, r, s.storage, key)

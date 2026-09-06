@@ -40,7 +40,7 @@ func absentKeyOutcome(storage *Storage, key string) string {
 	return "miss_not_found"
 }
 
-func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string) {
+func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string, agg *logAggregator) {
 	// Open + stream rather than ReadFile + Write: the body is copied straight
 	// from disk to the socket with a fixed-size buffer, so a large object never
 	// becomes a large heap allocation. This is what keeps memory flat when many
@@ -101,6 +101,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		a.Label = objectLabel(meta.Metadata)
 	}
 	getRequestsTotal.WithLabelValues("hit").Inc()
+	recordObject(agg, meta.Metadata, meta.Size, false, false)
 
 	emitObjectHeaders(w, meta)
 	w.WriteHeader(200)
@@ -160,7 +161,7 @@ func handleHeadObject(w http.ResponseWriter, r *http.Request, storage *Storage, 
 	w.WriteHeader(200)
 }
 
-func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string, maxObjectBytes int64) {
+func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string, maxObjectBytes int64, agg *logAggregator) {
 	meta := make(map[string]string)
 	// Native metadata headers first.
 	for k, vals := range r.Header {
@@ -219,6 +220,10 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		if a := auditFromContext(r.Context()); a != nil {
 			a.Label = objectLabel(meta)
 		}
+		// A chunked upload declares no length. The body was streamed, so the
+		// count is unknown here rather than zero -- max(0) keeps it out of the
+		// byte rate instead of inventing a size.
+		recordObject(agg, meta, max(r.ContentLength, 0), true, false)
 	}
 	// stored and dropped (module index) are both 200/no-error to the client: a
 	// dropped index is a no-op (the client recomputes it locally on the miss).

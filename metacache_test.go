@@ -233,7 +233,7 @@ func batchGetDirect(t *testing.T, storage *Storage, tracker *prefetchTracker, ke
 	reqBody, err := json.Marshal(batchGetRequest{Keys: keys})
 	require.NoError(t, err)
 	rec := httptest.NewRecorder()
-	handleBatchGet(rec, httptest.NewRequest(http.MethodPost, "/testbucket/_batch/get", bytes.NewReader(reqBody)), storage, tracker)
+	handleBatchGet(rec, httptest.NewRequest(http.MethodPost, "/testbucket/_batch/get", bytes.NewReader(reqBody)), storage, tracker, nil)
 	require.Equal(t, 200, rec.Code)
 	return parseBatchResponse(t, bytes.NewReader(rec.Body.Bytes()))
 }

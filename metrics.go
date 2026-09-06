@@ -92,6 +92,17 @@ var (
 		Help: "Batch GET key counts by kind: requested, found, prefetched, suppressed, streamed.",
 	}, []string{"kind"})
 
+	// nearbyScanExhaustedTotal counts prefetch selections that ran out of scan
+	// budget before filling their limit, because nearly every candidate in the
+	// window had already been sent to that client. It is the visible edge of
+	// the suppression system: a rising rate means clients are asking for
+	// neighbours that no longer exist to give, and the window or the TTL wants
+	// revisiting. Zero is the normal reading.
+	nearbyScanExhaustedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "s3_prefetch_scan_exhausted_total",
+		Help: "Prefetch selections that hit the scan budget before filling their limit (window mostly already sent).",
+	})
+
 	// batchRequestsTotal counts /_batch/get requests served.
 	batchRequestsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "s3_batch_requests_total",

@@ -44,6 +44,7 @@ func init() {
 	rootCmd.Flags().String("bucket", "", "override bucket name")
 	rootCmd.Flags().String("data-dir", "", "override data directory")
 	rootCmd.Flags().String("metrics-listen", "", "address for Prometheus metrics server (e.g. :9090)")
+	rootCmd.Flags().String("dashboard-listen", "", "address for the operator dashboard (e.g. :9002); \"off\" disables it")
 }
 
 func run(cmd *cobra.Command, args []string) error {
@@ -69,6 +70,15 @@ func run(cmd *cobra.Command, args []string) error {
 	if v, _ := cmd.Flags().GetString("metrics-listen"); v != "" {
 		cfg.MetricsListen = v
 	}
+	// An empty flag value cannot mean "turn the dashboard off": an unset flag
+	// is empty too. "off" is the spelling that disables it from the command
+	// line; the config file uses an explicit empty dashboard_listen.
+	if v, _ := cmd.Flags().GetString("dashboard-listen"); v != "" {
+		if v == "off" {
+			v = ""
+		}
+		cfg.DashboardListen = &v
+	}
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
 	if err != nil {
@@ -92,6 +102,13 @@ func run(cmd *cobra.Command, args []string) error {
 	if cfg.MetricsListen != "" {
 		go startMetricsServer(cfg.MetricsListen)
 		log.Printf("metrics server listening on %s", cfg.MetricsListen)
+	}
+
+	if addr := cfg.DashboardListenAddr(); addr != "" {
+		go startDashboardServer(addr, newDashboard(srv, cfg, time.Now()))
+		log.Printf("dashboard listening on %s; it answers without credentials, so publish that port through an access proxy (e.g. Cloudflare Zero Trust) rather than directly", addr)
+	} else {
+		log.Printf("dashboard disabled (dashboard_listen is empty)")
 	}
 
 	log.Printf("listening on %s bucket=%s data_dir=%s write_once.action=%s write_once.notification=%s",

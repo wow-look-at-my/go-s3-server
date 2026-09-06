@@ -25,7 +25,7 @@ One line per SECOND in which the cache moved an object. A second with no traffic
 
 The rates are per second by construction, because the line IS one second.
 
-`uncompressed` and `ratio` cover only the objects whose client declared a `body-size`. When some object did not, `sized=N/total` says how many of that second's objects the two fields cover. Without that field the line reads as uncompressed being smaller than compressed, which no compressor does. The go-toolchain client always sends `body-size`, so `sized` on a real deployment means something else is writing to the cache.
+`uncompressed` and `ratio` cover only the objects whose client declared a `body-size`. When some object did not, `sized=N/total` says how many of that second's objects those fields cover. Without that field the line reads as uncompressed being smaller than compressed, which no compressor does. The go-toolchain client always sends `body-size`, so `sized` on a real deployment means something else is writing to the cache.
 
 A project is the `module` metadata the client sends. An object with no module falls back to the leading segments of its import path. That prefix is the closest thing to a project a package path carries.
 
@@ -37,7 +37,7 @@ One line per request, and only one.
 2026/09/06 20:53:56 req method=POST path=/cache/_batch/get client_ip=127.0.0.1 user=u user_agent="curl/8.5.0" status=200 bytes=50176 duration_ms=1 batch_get requested=12 found=12 prefetched=30 suppressed=0 streamed=42
 ```
 
-A handler with something to add attaches it to that same line. The batch endpoints used to print their own summary line as well, so one batch request appeared twice under two spellings. Anything a handler wants said now rides the request it belongs to.
+A handler with something to add attaches it to that same line. The batch endpoints used to print their own summary line as well, so one batch request appeared twice, under a different spelling each time. Anything a handler wants said now rides the request it belongs to.
 
 Use verbose to follow one client, or to see the key counts of a specific batch. A CI fleet issues thousands of requests a second, so leave it off under load. The per-request lines bury the very thing being looked for.
 

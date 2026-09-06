@@ -157,6 +157,18 @@ type Config struct {
 	DisableAuth   bool            `json:"disable_auth"`
 	Credentials   []Credential    `json:"credentials"`
 
+	// LogMode selects the access log's shape: "normal" (one line per active
+	// second, aggregated) or "verbose" (one line per request). Empty takes
+	// normal. See logagg.go.
+	LogMode string `json:"log_mode"`
+
+	// DashboardListen is the address of the operator dashboard, on its own
+	// port so an access proxy can front it without touching the cache
+	// protocol port. A pointer so an absent field takes the default while an
+	// explicit "" turns the dashboard off. The page carries no
+	// authentication of its own -- see DashboardListenAddr.
+	DashboardListen *string `json:"dashboard_listen"`
+
 	// MaxConcurrentRequests bounds in-flight requests; excess requests are shed
 	// with 503 + Retry-After instead of piling up until the process OOMs (which
 	// a fronting proxy then surfaces as a 502). 0 → default.
@@ -194,6 +206,18 @@ const (
 	defaultEvictionInterval = 24 * time.Hour
 )
 
+// DashboardListenAddr returns the dashboard's listen address, "" when the
+// dashboard is switched off. The page and its stats endpoint answer WITHOUT
+// authentication: the port exists to be published through an access proxy
+// (Cloudflare Zero Trust or equivalent), which is where the identity check
+// belongs. Do not expose it directly.
+func (c *Config) DashboardListenAddr() string {
+	if c.DashboardListen == nil {
+		return defaultDashboardListen
+	}
+	return *c.DashboardListen
+}
+
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -221,6 +245,14 @@ func LoadConfig(path string) (*Config, error) {
 	case "never", "always", "content_differs":
 	default:
 		return nil, fmt.Errorf("config: write_once.notification must be \"never\", \"always\", or \"content_differs\"")
+	}
+	if cfg.LogMode == "" {
+		cfg.LogMode = logModeNormal
+	}
+	switch cfg.LogMode {
+	case logModeNormal, logModeVerbose:
+	default:
+		return nil, fmt.Errorf("config: log_mode must be %q or %q, got %q", logModeNormal, logModeVerbose, cfg.LogMode)
 	}
 	if cfg.Bucket == "" {
 		return nil, fmt.Errorf("config: bucket is required")

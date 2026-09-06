@@ -462,7 +462,7 @@ func TestRebuildPreservesConcurrentPuts(t *testing.T) {
 	require.Contains(t, string(blob), string(hB[:]))
 
 	// The mtime entry survives too (prefetch relies on it).
-	keys := idx.NearbyKeys(0, 1<<62, 10, nil)
+	keys := idx.NearbyKeys(0, 1<<62, 10, nil, nil)
 	require.ElementsMatch(t, []string{keyA, keyB}, keys)
 
 	// A key present in BOTH the snapshot and pending (a PUT the walk also saw)

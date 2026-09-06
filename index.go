@@ -316,9 +316,16 @@ func removeHash(s [][gbciHashSize]byte, h [gbciHashSize]byte) [][gbciHashSize]by
 }
 
 // NearbyKeys returns up to limit keys whose modification time falls within
-// [startUnix, endUnix], sorted by distance from the midpoint, excluding
-// keys in the exclude set.
-func (idx *Index) NearbyKeys(startUnix, endUnix int64, limit int, exclude map[string]bool) []string {
+// [startUnix, endUnix], sorted by distance from the midpoint, excluding keys in
+// the exclude set and any key skip reports as unwanted.
+//
+// skip is applied DURING selection, not after it. A caller that filters the
+// result instead gets the same keys proposed on every request: once the nearest
+// limit candidates have all been rejected, the window never advances and the
+// caller receives an empty set forever. That is exactly what happened to
+// prefetch, where a client got one pool of entries and then nothing at all for
+// the rest of its build. skip may be nil.
+func (idx *Index) NearbyKeys(startUnix, endUnix int64, limit int, exclude map[string]bool, skip func(string) bool) []string {
 	// The exclusion set arrives keyed by key string; convert it once (it is
 	// bounded by the batch request that produced it) so the scan below can
 	// compare compact keys instead of rebuilding a string per candidate.
@@ -335,7 +342,7 @@ func (idx *Index) NearbyKeys(startUnix, endUnix int64, limit int, exclude map[st
 	// once to drain+sort, then searches.
 	idx.mu.RLock()
 	if len(idx.pendingEntries) == 0 {
-		keys := idx.nearbyKeysLocked(startUnix, endUnix, limit, excluded)
+		keys := idx.nearbyKeysLocked(startUnix, endUnix, limit, excluded, skip)
 		idx.mu.RUnlock()
 		return keys
 	}
@@ -344,8 +351,16 @@ func (idx *Index) NearbyKeys(startUnix, endUnix int64, limit int, exclude map[st
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	idx.drainEntriesLocked()
-	return idx.nearbyKeysLocked(startUnix, endUnix, limit, excluded)
+	return idx.nearbyKeysLocked(startUnix, endUnix, limit, excluded, skip)
 }
+
+// nearbyScanFactor bounds how many candidates a skip-heavy scan examines,
+// as a multiple of the limit. A client deep into a build has been sent most of
+// the window already, so the scan walks past a lot of skipped keys to fill the
+// limit. Materializing a key string per examined candidate is the cost, and
+// this cap keeps one request's worth of that work bounded. Hitting the cap is
+// counted, never silent.
+const nearbyScanFactor = 8
 
 // nearbyKeysLocked is the search itself. The caller must hold idx.mu (read or
 // write) and must have ensured idx.entries is drained and mtime-sorted.
@@ -353,7 +368,7 @@ func (idx *Index) NearbyKeys(startUnix, endUnix int64, limit int, exclude map[st
 // Candidates are carried as positions in idx.entries, not as keys: the window
 // can hold far more entries than the limit, and only the survivors are worth
 // rebuilding a key string for.
-func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded map[compactKey]bool) []string {
+func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded map[compactKey]bool, skip func(string) bool) []string {
 	// Binary search for the start of the time window.
 	lo := sort.Search(len(idx.entries), func(i int) bool {
 		return idx.entries[i].mtimeUnix >= startUnix
@@ -383,13 +398,41 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded
 		return candidates[i].dist < candidates[j].dist
 	})
 
-	if len(candidates) > limit {
-		candidates = candidates[:limit]
+	// Take the nearest candidates the caller still wants. Without skip this is
+	// the first limit of them. With it, the walk continues past the rejects, so
+	// the window advances instead of re-proposing the same nearest keys on
+	// every request.
+	if skip == nil {
+		if len(candidates) > limit {
+			candidates = candidates[:limit]
+		}
+		keys := make([]string, len(candidates))
+		for i, c := range candidates {
+			keys[i] = idx.entries[c.pos].Key()
+		}
+		return keys
 	}
 
-	keys := make([]string, len(candidates))
-	for i, c := range candidates {
-		keys[i] = idx.entries[c.pos].Key()
+	keys := make([]string, 0, limit)
+	examined := 0
+	budget := limit * nearbyScanFactor
+	for _, c := range candidates {
+		if len(keys) == limit {
+			break
+		}
+		if examined == budget {
+			// Out of scan budget with the limit unfilled. Say so: a rate that
+			// keeps climbing means the window is nearly all skipped, and the
+			// caller is asking for keys that are no longer there to give.
+			nearbyScanExhaustedTotal.Inc()
+			break
+		}
+		examined++
+		key := idx.entries[c.pos].Key()
+		if skip(key) {
+			continue
+		}
+		keys = append(keys, key)
 	}
 	return keys
 }

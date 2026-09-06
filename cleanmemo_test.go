@@ -146,7 +146,7 @@ func BenchmarkGetObjectWarmLz4(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				req := httptest.NewRequest("GET", "/testbucket/"+key, nil)
 				rec := httptest.NewRecorder()
-				handleGetObject(rec, req, storage, key)
+				handleGetObject(rec, req, storage, key, nil)
 				require.Equal(b, 200, rec.Code)
 
 			}

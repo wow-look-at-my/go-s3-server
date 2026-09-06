@@ -3,27 +3,36 @@
 <head>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<title>go cache server</title>
+	<title>go build cache</title>
 	<!-- An empty icon: the page ships no favicon, and without this the browser
 	     asks for one on every load and logs a 404. -->
 	<link rel="icon" href="data:,">
+	<!-- The org design language, Scratch Proto, from its always-latest master
+	     deploy. The stylesheet puts the tokens on :root. The module registers
+	     the components and adopts the same sheet inside each shadow root. Both
+	     files are required, and the page needs no build step of its own. -->
+	<link rel="stylesheet" href="https://sites.pazer.build/scratch_ui/branch/master/scratch-ui.css">
+	<script type="module" src="https://sites.pazer.build/scratch_ui/branch/master/scratch-ui.js"></script>
 	<link rel="stylesheet" href="/dashboard.css">
 </head>
 <body>
 	<header>
-		<h1>go build cache <span id="bucket" class="muted"></span></h1>
+		<h1>GO BUILD CACHE <span id="bucket" class="muted"></span></h1>
 		<div class="head-right">
-			<span id="state" class="pill">connecting</span>
+			<!-- The LED reports the state, which is the Proto idiom. The chip
+			     around it is the neutral "off" variant, because a badge variant
+			     carries colour only. -->
+			<scratch-badge variant="off"><scratch-led id="state-led" state="accent" live></scratch-led><span id="state-text">connecting</span></scratch-badge>
 			<span id="uptime" class="muted"></span>
-			<label class="muted"><input type="checkbox" id="autorefresh" checked> live</label>
+			<scratch-toggle id="autorefresh" checked>live</scratch-toggle>
 		</div>
 	</header>
 
 	<main>
 		<section class="row" id="tiles"></section>
 
-		<section class="card">
-			<h2>reads</h2>
+		<section class="panel">
+			<h2>READS</h2>
 			<div class="split">
 				<div>
 					<h3>single GET outcomes</h3>
@@ -36,8 +45,8 @@
 			</div>
 		</section>
 
-		<section class="card">
-			<h2>traffic</h2>
+		<section class="panel">
+			<h2>TRAFFIC</h2>
 			<div class="split">
 				<div>
 					<h3>requests by route</h3>
@@ -52,19 +61,19 @@
 			</div>
 		</section>
 
-		<section class="card">
-			<h2>tripwires</h2>
-			<p class="muted">Each of these should sit at zero, or fall towards it. A rising one is a bug, not load.</p>
+		<section class="panel">
+			<h2>TRIPWIRES</h2>
+			<p class="muted note">Each of these sits at zero, or falls towards it. A rising one is a bug, not load.</p>
 			<table id="tripwires"><tbody></tbody></table>
 		</section>
 
-		<section class="card">
-			<h2>memory</h2>
+		<section class="panel">
+			<h2>MEMORY</h2>
 			<div class="bars" id="memory"></div>
 		</section>
 
-		<section class="card">
-			<h2>configuration</h2>
+		<section class="panel">
+			<h2>CONFIGURATION</h2>
 			<table id="config"><tbody></tbody></table>
 		</section>
 	</main>

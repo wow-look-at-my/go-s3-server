@@ -79,15 +79,27 @@ function tile(label, value, sub, tone) {
 	return el;
 }
 
+// One bar: a label row over a <scratch-progress>. The component owns the
+// geometry and the fill colour, so tone is one of its own states rather than a
+// class this page styles.
 function bar(name, n, max, tone, right) {
 	const el = document.createElement("div");
-	el.className = tone ? `bar ${tone}` : "bar";
-	el.innerHTML = `<span class="name"></span><span class="n"></span><span class="track"><span class="fill"></span></span>`;
+	el.className = "bar";
+	el.innerHTML = `<span class="name"></span><span class="n"></span><scratch-progress></scratch-progress>`;
 	el.querySelector(".name").textContent = name;
 	el.querySelector(".n").textContent = right !== undefined ? right : count(n);
-	const width = max > 0 ? Math.min(100, (n / max) * 100) : 0;
-	el.querySelector(".fill").style.width = `${width}%`;
+	const meter = el.querySelector("scratch-progress");
+	meter.setAttribute("max", String(max > 0 ? max : 1));
+	meter.setAttribute("value", String(max > 0 ? Math.min(n, max) : 0));
+	meter.setAttribute("state", tone === "good" ? "signal" : tone === "bad" ? "danger" : "accent");
 	return el;
+}
+
+function para(text) {
+	const p = document.createElement("p");
+	p.className = "muted";
+	p.textContent = text;
+	return p;
 }
 
 function fill(container, nodes) {
@@ -123,6 +135,16 @@ function cacheSizeTile(cacheBytes, budget, indexed) {
 	return tile("cache size", bytes(cacheBytes), sub, budget && cacheBytes > budget * 0.9 ? "warn" : "");
 }
 
+// The header state: an LED plus its word. The LED carries the three states the
+// design language defines, so serving is good, draining is accent, and a poll
+// that failed is bad.
+function setState(text, led) {
+	$("state-text").textContent = text;
+	const el = $("state-led");
+	el.setAttribute("state", led);
+	el.toggleAttribute("live", led !== "bad");
+}
+
 function drawTiles(stats) {
 	const outcomes = series(stats, "s3_get_requests_total");
 	const reads = sum(outcomes);
@@ -155,7 +177,7 @@ function drawReads(stats) {
 			.map(([k, v]) => bar(k, v, total, tone(k), `${count(v)}  ${percent(v, total)}`)),
 	);
 	if (!Object.keys(outcomes).length) {
-		fill($("get-outcomes"), [Object.assign(document.createElement("p"), { className: "muted", textContent: "no single-object GETs yet" })]);
+		fill($("get-outcomes"), [para("no single-object GETs yet")]);
 	}
 
 	const kinds = series(stats, "s3_batch_keys_total");
@@ -179,7 +201,7 @@ function drawTraffic(stats) {
 	const max = entries.length ? entries[0][1] : 1;
 	fill(
 		$("routes"),
-		entries.length ? entries.map(([k, v]) => bar(k, v, max)) : [Object.assign(document.createElement("p"), { className: "muted", textContent: "no requests yet" })],
+		entries.length ? entries.map(([k, v]) => bar(k, v, max)) : [para("no requests yet")],
 	);
 	drawRate(stats);
 }
@@ -250,7 +272,7 @@ function drawMemory(stats) {
 	if (limit > 0) {
 		nodes.push(bar("process in use", inUse, limit, inUse > limit * 0.85 ? "warn" : "good", `${bytes(inUse)} of ${bytes(limit)}`));
 	} else {
-		nodes.push(Object.assign(document.createElement("p"), { className: "muted", textContent: "no process memory limit discovered; caches use fixed default budgets" }));
+		nodes.push(para("no process memory limit discovered, so caches use fixed default budgets"));
 	}
 	const held = series(stats, "s3_cache_memory_bytes");
 	const budgets = series(stats, "s3_cache_memory_budget_bytes");
@@ -288,9 +310,7 @@ function drawConfig(stats) {
 function draw(stats) {
 	$("bucket").textContent = stats.server.bucket;
 	$("uptime").textContent = duration(stats.uptime_seconds);
-	const pill = $("state");
-	pill.textContent = stats.server.draining ? "draining" : "serving";
-	pill.className = stats.server.draining ? "pill warn" : "pill ok";
+	setState(stats.server.draining ? "draining" : "serving", stats.server.draining ? "accent" : "good");
 	$("footer-note").textContent = `updated ${new Date(stats.generated_at).toLocaleTimeString()}. `;
 
 	drawTiles(stats);
@@ -312,9 +332,7 @@ async function poll() {
 		// A failed poll is reported where the connection state already is. The
 		// page keeps the numbers it drew last, and they are stamped with the
 		// time they came from.
-		const pill = $("state");
-		pill.textContent = "unreachable";
-		pill.className = "pill bad";
+		setState("unreachable", "bad");
 		$("footer-note").textContent = `last poll failed: ${err.message}. `;
 	}
 }

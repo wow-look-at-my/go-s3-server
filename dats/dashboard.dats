@@ -49,7 +49,7 @@ tests:
 			- "css 200"
 			- "js 200"
 			- "stats 200"
-			- "<title>go cache server</title>"
+			- "<title>go build cache</title>"
 
 	- desc: the stats snapshot reports the traffic the cache port actually served
 	  exit: 0

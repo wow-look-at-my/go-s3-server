@@ -118,21 +118,13 @@ func newPrefetchTracker() *prefetchTracker {
 // storage key, so the join is unambiguous.
 func sentKey(user, key string) string { return user + "\x00" + key }
 
-// filterKeys returns the subset of candidate keys not recently sent to user.
-// It records nothing: suppression runs BEFORE the per-key stat/guard/heal
-// work, so up to maxPrefetchEntries already-sent candidates cost a map lookup
-// each instead of a file open plus an lz4 first-block decode. record is called
+// recentlySent reports whether key went to user inside the TTL. It records
+// nothing, and it is cheap enough to run during index selection: one map
+// lookup, before any per-key stat, guard or heal work. record is called
 // afterwards with only the keys that actually made it into the response.
-func (t *prefetchTracker) filterKeys(user string, keys []string) []string {
-	now := time.Now()
-	var out []string
-	for _, k := range keys {
-		if sentAt, ok := t.sent.Get(sentKey(user, k)); ok && now.Sub(sentAt) < prefetchTrackerTTL {
-			continue
-		}
-		out = append(out, k)
-	}
-	return out
+func (t *prefetchTracker) recentlySent(user, key string) bool {
+	sentAt, ok := t.sent.Get(sentKey(user, key))
+	return ok && time.Since(sentAt) < prefetchTrackerTTL
 }
 
 // record marks keys as sent to user now and amortizes eviction of that user's
@@ -232,22 +224,29 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 		}
 	}
 
-	// Prefetch: find related keys by modification time proximity, suppress the
-	// ones already sent to this user recently, and only THEN pay the per-key
-	// stat/guard/heal work for the survivors. Running the tracker first matters:
-	// the guard peek opens the file and decodes an lz4 block, so inspecting up
-	// to maxPrefetchEntries candidates that were about to be thrown away as
-	// already-sent wasted that work on every repeat request. Only the keys that
-	// actually make it into the response are recorded as sent, so a candidate
-	// dropped by the guard stays eligible for a later request.
+	// Prefetch: find related keys by modification time proximity, and let the
+	// index skip the ones already sent to this user recently AS IT SELECTS.
+	// Suppression during selection is what keeps the window moving: filtering
+	// the result afterwards handed back the same nearest maxPrefetchEntries
+	// candidates on every request, so once a client had received them it got
+	// prefetched=0 and suppressed=maxPrefetchEntries for the rest of its build.
+	// The skip is a map lookup, and it runs before the per-key stat, guard and
+	// heal work, so a rejected candidate never costs a file open or an lz4
+	// block decode. Only keys that actually make it into the response are
+	// recorded as sent, so a candidate dropped by the guard stays eligible.
 	var nSuppressed int
 	if req.Prefetch && len(entries) > 0 && !minMod.IsZero() && storage.Index != nil {
 		windowStart := minMod.Add(-prefetchWindow)
 		windowEnd := maxMod.Add(prefetchWindow)
 
-		candidateKeys := storage.Index.NearbyKeys(windowStart.Unix(), windowEnd.Unix(), maxPrefetchEntries, requestedSet)
-		freshKeys := tracker.filterKeys(user, candidateKeys)
-		nSuppressed = len(candidateKeys) - len(freshKeys)
+		freshKeys := storage.Index.NearbyKeys(windowStart.Unix(), windowEnd.Unix(), maxPrefetchEntries, requestedSet,
+			func(key string) bool {
+				if tracker.recentlySent(user, key) {
+					nSuppressed++
+					return true
+				}
+				return false
+			})
 
 		prefetched := buildPrefetchEntries(storage, freshKeys)
 		sentKeys := make([]string, len(prefetched))

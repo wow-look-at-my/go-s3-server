@@ -35,6 +35,12 @@ tests:
 			check.sh: |
 				set -euo pipefail
 				dash=http://127.0.0.1:19130
+				# The dashboard binds in its own goroutine, so the cache port
+				# answering does not mean this port is up yet.
+				for _ in $(seq 1 100); do
+					curl -so /dev/null "$dash/_health" && break
+					sleep 0.1
+				done
 				echo "cache-anonymous $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:19030/test-cache/anon/v1test000000000001)"
 				echo "page $(curl -s -o /dev/null -w '%{http_code}' "$dash/")"
 				echo "css $(curl -s -o /dev/null -w '%{http_code}' "$dash/dashboard.css")"

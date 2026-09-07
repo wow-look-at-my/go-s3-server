@@ -1,8 +1,6 @@
 package cacheclient
 
 import (
-	"github.com/wow-look-at-my/go-containers/set"
-
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/hex"
@@ -65,14 +63,14 @@ type WebBackend struct {
 	// and an allocation per entry to build. A large cache is hundreds of
 	// thousands of entries, and that set is built at startup before the build
 	// does anything at all.
-	keys       set.Set[actionHash] // known keys, from the startup index fetch + Put claims
-	indexEmpty bool                // remote index was empty at startup: nothing to batch-probe for
+	keys       *hashSet // known keys, from the startup index fetch + Put claims
+	indexEmpty bool     // remote index was empty at startup: nothing to batch-probe for
 	// indexAuthoritative marks a fresh, server-confirmed index: an absent key can then miss without a probe.
 	indexAuthoritative bool
 	// indexKeysAtStart is the key count from the startup index fetch, reported in WebSummary to flag a dead remote.
 	indexKeysAtStart int
 	missesMu         sync.RWMutex
-	knownMiss        set.Set[actionHash] // keys confirmed absent from remote this session
+	knownMiss        *hashSet // keys confirmed absent from remote this session
 
 	// emptyBatchBackoffThreshold: after this many empty batches in a row, stop probing for the run (an unset value disables).
 	emptyBatchBackoffThreshold int          // an unset value disables the backoff
@@ -288,7 +286,7 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	b.keys, b.indexAuthoritative = b.loadOrFetchIndex()
 	b.indexEmpty = b.keys.Len() == 0
 	b.indexKeysAtStart = b.keys.Len()
-	b.knownMiss = set.New[actionHash]()
+	b.knownMiss = newHashSet(0)
 	if b.indexAuthoritative {
 		logging.Infof("cacheprog: web index: %d keys", b.keys.Len())
 	} else {
@@ -423,20 +421,22 @@ func (b *WebBackend) ForgetStale(actionID string) {
 // Close drains the batch coalescer and flushes the HTTP error logger.
 
 func (b *WebBackend) Close() error {
-	// Look-ahead first: it is speculation, and nothing waits on it, so a
-	// shutdown must not hold for a round trip nobody asked for.
-	b.lookAhead.Close()
-	// Then the prep pool, which still owes the coalescer every object it holds.
+	// The prep pool first, since it still owes the coalescer every object it holds.
 	b.prep.Close()
 	// Flush the PUT coalescer up front: an unflushed upload was claimed in the index but never stored.
 	if b.putBatchStop != nil {
 		close(b.putBatchStop)
 		<-b.putBatchDone
 	}
+	// The GET coalescer before the look-ahead, because a batch SEEDS the
+	// look-ahead as its last act. Closing the pool first dropped every seed an
+	// in-flight batch was about to make, silently and on timing alone.
 	if b.batchStop != nil {
 		close(b.batchStop)
 		<-b.batchDone
 	}
+	// Now nothing can seed it, so what it holds is all it will ever hold.
+	b.lookAhead.Close()
 	if b.errLog != nil {
 		_ = b.errLog.Close()
 	}

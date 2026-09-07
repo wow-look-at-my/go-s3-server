@@ -1,7 +1,5 @@
 package cacheclient
 
-import "github.com/wow-look-at-my/go-containers/set"
-
 // A consumer that layers its own tiers on top of this client has tests that
 // drive the key grammar and the read guards without a live remote: a pack
 // store's prefetch ordering, a local tier's refusal of a module index. Those
@@ -16,8 +14,8 @@ func NewBareBackend(prefix string) *WebBackend {
 	}
 	return &WebBackend{
 		prefix:    prefix,
-		keys:      set.New[actionHash](),
-		knownMiss: set.New[actionHash](),
+		keys:      newHashSet(0),
+		knownMiss: newHashSet(0),
 	}
 }
 

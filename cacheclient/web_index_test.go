@@ -37,7 +37,7 @@ func TestParseIndexBlob_RoundTrip(t *testing.T) {
 const sha256HexLen = 64
 
 func TestParseIndexBlob_Empty(t *testing.T) {
-	blob := marshalIndex(set.New[actionHash]())
+	blob := marshalIndex(newHashSet(0))
 	got, etag, err := parseIndexBlob(blob)
 	require.NoError(t, err)
 	require.Equal(t, 0, got.Len())
@@ -45,7 +45,7 @@ func TestParseIndexBlob_Empty(t *testing.T) {
 }
 
 func TestParseIndexBlob_BadMagic(t *testing.T) {
-	blob := marshalIndex(set.New[actionHash]())
+	blob := marshalIndex(newHashSet(0))
 	blob[0] = 'X'
 	_, _, err := parseIndexBlob(blob)
 	require.Error(t, err)
@@ -69,14 +69,14 @@ func TestParseIndexBlob_TooSmall(t *testing.T) {
 }
 
 func TestParseIndexBlob_BadVersion(t *testing.T) {
-	blob := marshalIndex(set.New[actionHash]())
+	blob := marshalIndex(newHashSet(0))
 	blob[4] = 99
 	_, _, err := parseIndexBlob(blob)
 	require.Error(t, err)
 }
 
 func TestParseIndexBlob_BadHashSize(t *testing.T) {
-	blob := marshalIndex(set.New[actionHash]())
+	blob := marshalIndex(newHashSet(0))
 	blob[5] = 16
 	_, _, err := parseIndexBlob(blob)
 	require.Error(t, err)

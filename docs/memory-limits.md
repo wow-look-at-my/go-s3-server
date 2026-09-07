@@ -126,6 +126,22 @@ and metadata), and moves one number: the scale applied to every cache budget.
 The gap between 85 % and 65 % is hysteresis; without it the scale would
 oscillate on every sample.
 
+## The client pays for the index in every process, and that is the larger cost
+
+Everything above bounds the SERVER. The client has its own resident cost, and every `go` process carries a private copy. This exhausts a build fleet rather than one build. A `dist test` leg runs many `go` processes at once. The machine's total is one process's peak times that count. A 16 GiB windows runner then reports "Out of memory" with an empty log.
+
+Two numbers describe it. The first is what the startup index costs while the process lives. It comes from a heap profile taken right after `NewWebBackend`, against a store of about 1,008,000 keys. The second is the peak RSS of one `go` process over a whole `go install std`. That is the number the runner runs out of.
+
+| the client's key index | index in live heap | peak RSS of one process |
+| --- | --- | --- |
+| no shared cache at all | — | 35 MiB |
+| a map of `actionHash` | 88 MiB | 463 MiB |
+| a sorted slice (`hashset.go`) | 31 MiB | 325 MiB |
+
+`actionHash` is `[32]byte`. A million keys is therefore 32 MiB of key material. The sorted slice holds essentially nothing else. The map charged 88 MiB for the same keys: buckets, growth slack, and a second set for `knownMiss`. Its cost to the peak is larger than its cost to the live heap. A heap that size also raises every GC target the process works against.
+
+What the remaining gap is NOT is the index. After startup the whole client holds 34 MiB of live heap, and 31 MiB of that is the slice above. So the distance to a 325 MiB peak is the build's own in-flight work rather than anything the client keeps. The look-ahead pool is one bounded part of that. See `lookAheadBudget`. The rest is unattributed and wants its own measurement before anything is done about it.
+
 ## Measured
 
 The shipped binary at `GOMEMLIMIT=16MiB` — far below what the load needs —

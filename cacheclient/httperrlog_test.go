@@ -18,6 +18,53 @@ func newTestLogger(buf *bytes.Buffer) *httpErrLogger {
 	return newHTTPErrLogger(buf, time.Hour)
 }
 
+// captureLogger installs a Logger for one test and returns what it collected.
+// A batch summary goes there rather than to the writer, so the consumer can
+// decide whether its build's output carries it.
+type captureLogger struct {
+	mu   sync.Mutex
+	sb   strings.Builder
+	prev Logger
+}
+
+// captureMu serializes the capture. logging is one package variable, so two
+// tests that install a capture at once share whichever one landed last: the
+// second test's lines go to the first test's buffer, and the first test reads
+// an empty one. Both then fail on somebody else's output. A mutex held for the
+// whole test gives each one the variable to itself.
+//
+// It is a mutex rather than t.Serial because this module is consumed by trees
+// built with a stock toolchain, which has no such method. It is also narrower:
+// a test that never captures has no reason to wait.
+var captureMu sync.Mutex
+
+func newCaptureLogger(t *testing.T) *captureLogger {
+	t.Helper()
+	captureMu.Lock()
+	c := &captureLogger{prev: logging}
+	SetLogger(c)
+	t.Cleanup(func() {
+		logging = c.prev
+		captureMu.Unlock()
+	})
+	return c
+}
+
+func (c *captureLogger) Infof(format string, args ...any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fmt.Fprintf(&c.sb, format+"\n", args...)
+}
+
+func (c *captureLogger) Warnf(format string, args ...any)  { c.Infof(format, args...) }
+func (c *captureLogger) Debugf(format string, args ...any) { c.Infof(format, args...) }
+
+func (c *captureLogger) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sb.String()
+}
+
 // syncBuffer is a mutex-guarded bytes.Buffer, safe for a test to read while
 // the logger's ticker goroutine may still be flushing into it.
 type syncBuffer struct {
@@ -182,10 +229,16 @@ func TestHTTPErrLogger_ConcurrentRecord(t *testing.T) {
 
 func TestHTTPErrLogger_NilReceiver(t *testing.T) {
 	var l *httpErrLogger
+	// A nil receiver has no writer, so it reports straight to the package
+	// logger. Capturing that is what keeps these two lines out of whatever
+	// buffer a test running beside this one installed.
+	cap := newCaptureLogger(t)
 	require.NotPanics(t, func() {
 		l.Record("web put", 502, "aabbccdd", "boom")
 		l.Record("web batch get", 502, "ccddeeff", "")
 	})
+	require.Contains(t, cap.String(), "web put aabbccdd: HTTP 502: boom")
+	require.Contains(t, cap.String(), "web batch get ccddeeff: HTTP 502")
 }
 
 // The aggregated summaries must reach the installed Logger, not a stream of
@@ -241,31 +294,38 @@ func TestHTTPErrLogger_ShortIDSafe(t *testing.T) {
 	require.Contains(t, buf.String(), "ab12")
 }
 
+// A batch summary reaches the Logger, never the captured writer. It says the
+// cache is working, once per flush for the whole process, and a consumer whose
+// own output is data somebody parses has to be able to quiet it.
 func TestHTTPErrLogger_BatchHTTPSingleHit(t *testing.T) {
 	var buf bytes.Buffer
 	l := newTestLogger(&buf)
+	cap := newCaptureLogger(t)
 
 	l.RecordBatchHTTP(100, 25, 47*time.Millisecond)
 	require.NoError(t, l.Close())
 
-	require.Equal(t, "cacheprog: batch GET: 100 keys → 25 entries in 47ms\n", buf.String())
+	require.Equal(t, "cacheprog: batch GET: 100 keys → 25 entries in 47ms\n", cap.String())
+	require.Empty(t, buf.String(), "a summary is not a failure and must not reach the writer")
 }
 
 func TestHTTPErrLogger_BatchHTTPSingleMiss(t *testing.T) {
 	var buf bytes.Buffer
 	l := newTestLogger(&buf)
+	cap := newCaptureLogger(t)
 
 	l.RecordBatchHTTP(100, 0, 47*time.Millisecond)
 	require.NoError(t, l.Close())
 
 	require.Equal(t,
 		"cacheprog: batch GET: 100 keys → 0 entries (server has no entries for any of them) in 47ms\n",
-		buf.String())
+		cap.String())
 }
 
 func TestHTTPErrLogger_BatchHTTPCoalescedMisses(t *testing.T) {
 	var buf bytes.Buffer
 	l := newTestLogger(&buf)
+	cap := newCaptureLogger(t)
 
 	// Several all-miss batch HTTP requests, whose keys and durations the summary totals.
 	l.RecordBatchHTTP(100, 0, 30*time.Millisecond)
@@ -275,12 +335,13 @@ func TestHTTPErrLogger_BatchHTTPCoalescedMisses(t *testing.T) {
 
 	require.Equal(t,
 		"cacheprog: batch GET ×3: 300 keys → 0 entries (server has no entries), 120ms total\n",
-		buf.String())
+		cap.String())
 }
 
 func TestHTTPErrLogger_BatchHTTPCoalescedHits(t *testing.T) {
 	var buf bytes.Buffer
 	l := newTestLogger(&buf)
+	cap := newCaptureLogger(t)
 
 	// The summary totals the keys, entries and duration.
 	l.RecordBatchHTTP(100, 25, 47*time.Millisecond)
@@ -289,40 +350,48 @@ func TestHTTPErrLogger_BatchHTTPCoalescedHits(t *testing.T) {
 
 	require.Equal(t,
 		"cacheprog: batch GET ×2: 200 keys → 55 entries, 97ms total\n",
-		buf.String())
+		cap.String())
 }
 
 func TestHTTPErrLogger_BatchHTTPHitsAndMissesStayDistinct(t *testing.T) {
 	var buf bytes.Buffer
 	l := newTestLogger(&buf)
+	cap := newCaptureLogger(t)
 
 	l.RecordBatchHTTP(100, 0, 30*time.Millisecond)
 	l.RecordBatchHTTP(50, 25, 40*time.Millisecond)
 	require.NoError(t, l.Close())
 
-	out := buf.String()
+	out := cap.String()
 	require.Equal(t, 2, strings.Count(out, "\n"), "expected hit and miss buckets to stay separate, got: %q", out)
 }
 
 func TestHTTPErrLogger_BatchHTTPNilReceiver(t *testing.T) {
 	var l *httpErrLogger
+	// As above: no receiver means no writer, so the line goes to the package
+	// logger and must be captured rather than left loose in the package.
+	newCaptureLogger(t)
 	require.NotPanics(t, func() {
 		l.RecordBatchHTTP(100, 0, 30*time.Millisecond)
 	})
 }
 
+// One flush carries both kinds, and they part company by destination: the
+// failure to the writer, the summary to the Logger. That split is the whole
+// point -- a consumer can quiet the second without losing the first.
 func TestHTTPErrLogger_MixedHTTPErrAndBatchHTTP(t *testing.T) {
 	var buf bytes.Buffer
 	l := newTestLogger(&buf)
+	cap := newCaptureLogger(t)
 
 	l.Record("web put", 502, "aaaaaaaa", "error code: 502")
 	l.RecordBatchHTTP(100, 0, 30*time.Millisecond)
 	require.NoError(t, l.Close())
 
-	out := buf.String()
-	require.Equal(t, 2, strings.Count(out, "\n"), "expected both groups flushed, got: %q", out)
-	require.Contains(t, out, "HTTP 502")
-	require.Contains(t, out, "0 entries (server has no entries for any of them)")
+	require.Contains(t, buf.String(), "HTTP 502")
+	require.NotContains(t, buf.String(), "0 entries")
+	require.Contains(t, cap.String(), "0 entries (server has no entries for any of them)")
+	require.NotContains(t, cap.String(), "HTTP 502")
 }
 
 func TestHTTPErrLogger_NoFlushWhenEmpty(t *testing.T) {

@@ -100,3 +100,27 @@ func TestStreamBatchResponseDropsAnUnnamedBody(t *testing.T) {
 	assert.Equal(t, key, entries[0].Key)
 	assert.Equal(t, []byte("keep"), entries[0].Data)
 }
+
+// A response cut mid-body costs the tail, not the batch: whatever was handed
+// over before the cut is already the caller's. The error says how far the last
+// member got, because "unexpected EOF" alone cannot tell a response that
+// stopped one byte short from one that died on its first body.
+func TestStreamBatchResponseKeepsWhatArrivedBeforeATruncation(t *testing.T) {
+	const bodies, size = 4, 4096
+	blob := bigBatch(t, bodies, size)
+
+	var got []BatchEntry
+	err := streamBatchResponse(bytes.NewReader(blob[:len(blob)/2]), func(e BatchEntry) {
+		got = append(got, e)
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	assert.Regexp(t, `read entry data/\S+: \d+ of \d+ bytes`, err.Error(),
+		"the error must say how far the cut member got")
+	assert.NotEmpty(t, got, "entries delivered before the cut are the caller's to keep")
+	assert.Less(t, len(got), bodies, "a half response must not yield every body")
+	for _, e := range got {
+		assert.Len(t, e.Data, size, "a delivered body is whole or not delivered")
+	}
+}

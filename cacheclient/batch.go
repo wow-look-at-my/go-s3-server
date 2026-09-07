@@ -69,6 +69,22 @@ func streamBatchResponse(r io.Reader, fn func(BatchEntry)) error {
 	var manifest batchGetManifest
 	meta := map[string]*batchGetManifestEntry{}
 
+	readMember := func(tr *tar.Reader, hdr *tar.Header) ([]byte, error) {
+		// The header states the size, so the body lands in one exactly-sized
+		// allocation rather than io.ReadAll's doubling.
+		raw := make([]byte, hdr.Size)
+		n, err := io.ReadFull(tr, raw)
+		if err != nil {
+			// Say how far it got. A cut response and a server that stopped
+			// after one member both surface as "unexpected EOF", and the
+			// counts are what tell them apart. Entries handed over before this
+			// point are already the caller's -- streaming means a truncated
+			// response costs the tail, not the batch.
+			return nil, fmt.Errorf("read entry %s: %d of %d bytes: %w", hdr.Name, n, hdr.Size, err)
+		}
+		return raw, nil
+	}
+
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -81,9 +97,9 @@ func streamBatchResponse(r io.Reader, fn func(BatchEntry)) error {
 		if hdr.Name == "manifest.json" {
 			// The header states the size, so the body lands in one exactly-sized
 			// allocation rather than io.ReadAll's doubling.
-			raw := make([]byte, hdr.Size)
-			if _, err := io.ReadFull(tr, raw); err != nil {
-				return fmt.Errorf("read entry %s: %w", hdr.Name, err)
+			raw, err := readMember(tr, hdr)
+			if err != nil {
+				return err
 			}
 			if err := json.Unmarshal(raw, &manifest); err != nil {
 				return fmt.Errorf("parse manifest: %w", err)
@@ -103,9 +119,9 @@ func streamBatchResponse(r io.Reader, fn func(BatchEntry)) error {
 			// walking the manifest rather than the members.
 			continue
 		}
-		raw := make([]byte, hdr.Size)
-		if _, err := io.ReadFull(tr, raw); err != nil {
-			return fmt.Errorf("read entry %s: %w", hdr.Name, err)
+		raw, err := readMember(tr, hdr)
+		if err != nil {
+			return err
 		}
 		rawSize, _ := strconv.ParseInt(me.Metadata["body-size"], 10, 64)
 		fn(BatchEntry{

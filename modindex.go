@@ -85,8 +85,15 @@ const indexPutPeekBytes = 1 << 20
 // safer default here because the version-3 purge plus the client-side guard
 // already bound any residual risk.
 func looksLikeGoModuleIndex(input []byte, compression string) bool {
+	// A zstd body settles through the shared decoder, which reads only the
+	// bytes the magic needs. The codec comes off the frame rather than the
+	// metadata hint: the bytes cannot disagree with themselves.
+	if frameCodec(input) == "zstd" {
+		match, _ := readIsModuleIndex(bytes.NewReader(input), compression)
+		return match
+	}
 	data := input
-	if compression == "lz4" {
+	if compression == "lz4" || frameCodec(input) == "lz4" {
 		// Settle it from the frame header and first literal run when possible;
 		// only an unusual frame shape falls through to a real decode (lz4head.go).
 		if match, decided := lz4HasPrefix(input, goModuleIndexMagic); decided {
@@ -137,23 +144,41 @@ func looksLikeGoModuleIndex(input []byte, compression string) bool {
 // hide. Previously both collapsed into "not an index", so a failing disk read
 // let the serve path emit a 200 header and then die mid-copy, invisibly.
 func readIsModuleIndex(r io.Reader, compression string) (bool, error) {
-	if compression == "lz4" {
+	// Peek far enough to name the codec AND to run lz4's header fast path.
+	var head [lz4HeadPeekBytes]byte
+	headN, headErr := io.ReadFull(r, head[:])
+	if headErr != nil && !errors.Is(headErr, io.EOF) && !errors.Is(headErr, io.ErrUnexpectedEOF) {
+		return false, headErr
+	}
+	codec := frameCodec(head[:headN])
+	r = io.MultiReader(bytes.NewReader(head[:headN]), r)
+
+	if codec == "zstd" {
+		// zstd has no equivalent of lz4's readable first literal run, so the
+		// verdict costs one decoded block. The decoder pulls only as much
+		// compressed input as that takes.
+		zr, release, _, err := decompressingReader(r)
+		if err != nil {
+			return false, nil // unreadable frame: not an index, fail open
+		}
+		defer release()
+		buf := make([]byte, indexMagicProbeBytes)
+		n, err := io.ReadFull(zr, buf)
+		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+			return false, nil
+		}
+		return bytes.HasPrefix(buf[:n], []byte(goModuleIndexMagic)), nil
+	}
+
+	if compression == "lz4" || codec == "lz4" {
 		// Fast path: the leading decompressed bytes are readable straight out of
 		// the frame's first literal run (lz4head.go), so the common verdict costs
-		// one small read instead of decoding a whole block off disk. A short read
-		// is not an error here -- a body smaller than the peek is normal -- but a
-		// genuine source failure still surfaces, same as below.
-		var head [lz4HeadPeekBytes]byte
-		n, headErr := io.ReadFull(r, head[:])
-		if headErr != nil && !errors.Is(headErr, io.EOF) && !errors.Is(headErr, io.ErrUnexpectedEOF) {
-			return false, headErr
-		}
+		// one small read instead of decoding a whole block off disk.
+		n := headN
 		if match, decided := lz4HasPrefix(head[:n], goModuleIndexMagic); decided {
 			return match, nil
 		}
-		// Undecided: replay the consumed head in front of the rest and decode.
-		r = io.MultiReader(bytes.NewReader(head[:n]), r)
-
+		// Undecided: decode. r already replays the consumed head.
 		buf := make([]byte, indexMagicProbeBytes)
 		src := &errTrackingReader{r: r}
 		zr := lz4.NewReader(src)

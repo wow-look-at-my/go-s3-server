@@ -23,21 +23,21 @@ func TestParseIndexBlob_RoundTrip(t *testing.T) {
 		keys.Add(gbciKeyPrefix + hex.EncodeToString(h[:]))
 	}
 
-	blob := marshalIndex(keys)
+	blob := marshalIndex(keySetToHashes(keys))
 	got, etag, err := parseIndexBlob(blob)
 	require.NoError(t, err)
 	require.Equal(t, keys.Len(), got.Len())
 	require.True(t, strings.HasPrefix(etag, `"`) && strings.HasSuffix(etag, `"`))
 	require.Equal(t, 1+sha256HexLen+1, len(etag))
 	for k := range keys.All() {
-		require.True(t, got.Contains(k))
+		require.True(t, got.Contains(hashOfKey(k)))
 	}
 }
 
 const sha256HexLen = 64
 
 func TestParseIndexBlob_Empty(t *testing.T) {
-	blob := marshalIndex(set.New[string]())
+	blob := marshalIndex(set.New[actionHash]())
 	got, etag, err := parseIndexBlob(blob)
 	require.NoError(t, err)
 	require.Equal(t, 0, got.Len())
@@ -45,7 +45,7 @@ func TestParseIndexBlob_Empty(t *testing.T) {
 }
 
 func TestParseIndexBlob_BadMagic(t *testing.T) {
-	blob := marshalIndex(set.New[string]())
+	blob := marshalIndex(set.New[actionHash]())
 	blob[0] = 'X'
 	_, _, err := parseIndexBlob(blob)
 	require.Error(t, err)
@@ -56,7 +56,7 @@ func TestParseIndexBlob_TrailerMismatch(t *testing.T) {
 	var h [gbciHashSize]byte
 	h[0] = 1
 	keys.Add(gbciKeyPrefix + hex.EncodeToString(h[:]))
-	blob := marshalIndex(keys)
+	blob := marshalIndex(keySetToHashes(keys))
 	// Flip a byte in the body so the trailer no longer matches.
 	blob[gbciHeaderSize] ^= 0xff
 	_, _, err := parseIndexBlob(blob)
@@ -69,14 +69,14 @@ func TestParseIndexBlob_TooSmall(t *testing.T) {
 }
 
 func TestParseIndexBlob_BadVersion(t *testing.T) {
-	blob := marshalIndex(set.New[string]())
+	blob := marshalIndex(set.New[actionHash]())
 	blob[4] = 99
 	_, _, err := parseIndexBlob(blob)
 	require.Error(t, err)
 }
 
 func TestParseIndexBlob_BadHashSize(t *testing.T) {
-	blob := marshalIndex(set.New[string]())
+	blob := marshalIndex(set.New[actionHash]())
 	blob[5] = 16
 	_, _, err := parseIndexBlob(blob)
 	require.Error(t, err)
@@ -87,7 +87,7 @@ func TestParseIndexBlob_LengthMismatch(t *testing.T) {
 	var h [gbciHashSize]byte
 	h[0] = 1
 	keys.Add(gbciKeyPrefix + hex.EncodeToString(h[:]))
-	blob := marshalIndex(keys)
+	blob := marshalIndex(keySetToHashes(keys))
 	// Lie about the count.
 	binary.LittleEndian.PutUint64(blob[16:24], 99)
 	_, _, err := parseIndexBlob(blob)
@@ -121,7 +121,7 @@ type indexFixture struct {
 
 func newIndexFixture(t *testing.T, bucket string, initial set.Set[string]) *indexFixture {
 	f := &indexFixture{t: t, bucket: bucket}
-	b := marshalIndex(initial)
+	b := marshalIndex(keySetToHashes(initial))
 	f.blob.Store(&b)
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.hitsAny.Add(1)
@@ -173,7 +173,7 @@ func TestLoadOrFetchIndex_ColdStart(t *testing.T) {
 
 	require.Equal(t, want.Len(), b.keys.Len())
 	for k := range want.All() {
-		require.True(t, b.keys.Contains(k), "missing %q", k)
+		require.True(t, b.keys.Contains(hashOfKey(k)), "missing %q", k)
 	}
 	require.Equal(t, int32(1), f.hits200.Load(), "expected exactly one 200 fetch")
 	require.Equal(t, int32(0), f.hits304.Load())
@@ -210,7 +210,7 @@ func TestLoadOrFetchIndex_WarmCache304(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, 1, b2.keys.Len())
-	require.True(t, b2.keys.Contains(gbciKeyPrefix+hex.EncodeToString(h[:])))
+	require.True(t, b2.keys.Contains(hashOfKey(gbciKeyPrefix+hex.EncodeToString(h[:]))))
 	require.Equal(t, int32(1), f.hits304.Load(), "expected one 304 on warm restart")
 	require.Equal(t, int32(1), f.hits200.Load(), "200 count should not have grown")
 }
@@ -300,7 +300,7 @@ func TestLoadOrFetchIndex_DiskBlobBeatsServerError(t *testing.T) {
 	want.Add(gbciKeyPrefix + hex.EncodeToString(h[:]))
 
 	var broken atomic.Bool
-	blob := marshalIndex(want)
+	blob := marshalIndex(keySetToHashes(want))
 	etag := indexETag(blob)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -356,7 +356,7 @@ func TestWriteAndReadIndexBlob(t *testing.T) {
 	var h [gbciHashSize]byte
 	h[0] = 0x42
 	keys.Add(gbciKeyPrefix + hex.EncodeToString(h[:]))
-	blob := marshalIndex(keys)
+	blob := marshalIndex(keySetToHashes(keys))
 	b.writeIndexBlob(path, blob)
 
 	got, gotKeys, etag := b.readDiskIndex(path)

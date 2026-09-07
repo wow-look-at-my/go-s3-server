@@ -64,14 +64,14 @@ func TestWebBackend_RemoteNeverDisabledAfterFailureBurst(t *testing.T) {
 	// A long burst of failing GETs — far more than a handful.
 	const burst = 40
 	for i := 0; i < burst; i++ {
-		_, _, _, _, miss, _, err := b.Get(actionID)
+		_, _, _, _, miss, _, err := b.getTest(actionID)
 		require.NoError(t, err)
 		require.True(t, miss, "a failing remote GET degrades to a clean miss")
 	}
 
 	// The backend recovers; the next GET must still attempt the remote and hit, proving the burst never disabled the tier.
 	failing.Store(false)
-	gotOutputID, body, size, _, miss, _, err := b.Get(actionID)
+	gotOutputID, body, size, _, miss, _, err := b.getTest(actionID)
 	require.NoError(t, err)
 	require.False(t, miss, "after a failure burst the remote must still be attempted and hit, not permanently disabled")
 	require.Equal(t, outputID, gotOutputID)
@@ -117,7 +117,7 @@ func TestWebBackend_RetriesTransientThenRecovers(t *testing.T) {
 	defer b.Close()
 	primeIndex(b, actionID)
 
-	gotOutputID, body, size, _, miss, _, err := b.Get(actionID)
+	gotOutputID, body, size, _, miss, _, err := b.getTest(actionID)
 	require.NoError(t, err)
 	require.False(t, miss, "a backend that recovers within the retry budget must yield a hit, not a miss")
 	require.Equal(t, outputID, gotOutputID)
@@ -165,7 +165,7 @@ func TestWebBackend_PutRetriesTransient503ThenSucceeds(t *testing.T) {
 
 	payload := largePayload(1024)
 	outputID := testOutputID(payload)
-	err = b.Put(actionID, outputID, strings.NewReader(payload), int64(len(payload)))
+	err = b.putTest(actionID, outputID, strings.NewReader(payload), int64(len(payload)))
 	require.NoError(t, err, "a 503-shed PUT must be retried and ultimately succeed, not silently dropped")
 	require.Equal(t, int64(3), putAttempts.Load(), "should have retried twice before the 3rd PUT attempt was admitted")
 	require.Equal(t, uint32(1), b.Stats.Puts.Load(), "the object must be recorded as stored")

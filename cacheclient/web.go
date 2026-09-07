@@ -211,8 +211,19 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		TLSClientConfig:       &tls.Config{},
-		ForceAttemptHTTP2:     true,
+		TLSClientConfig: &tls.Config{},
+		// HTTP/1.1, deliberately. HTTP/2 multiplexes every request onto ONE TCP
+		// connection, so MaxConnsPerHost below stops meaning anything: the pool
+		// holds one connection with one congestion window, and throughput ramps
+		// at whatever that single window opens at. This workload is many
+		// independent blobs and wants many independent windows, which is what
+		// the connection pool gives it once nothing collapses them.
+		//
+		// H2's advantages -- header compression, one handshake -- are worth
+		// little here: the requests are few and large, and the bodies dwarf the
+		// headers.
+		ForceAttemptHTTP2:     false,
+		TLSNextProto:          map[string]func(string, *tls.Conn) http.RoundTripper{},
 		MaxIdleConns:          MaxConnsPerHost,
 		MaxIdleConnsPerHost:   MaxConnsPerHost,
 		MaxConnsPerHost:       MaxConnsPerHost,

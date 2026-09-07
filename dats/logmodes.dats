@@ -25,11 +25,21 @@ shared:
 				sed 's/^/server: /' "$log" >&2
 				exit 1
 			fi
-			bash "$check"
+			# This suite asserts on what the server wrote, so the log goes to
+			# stdout either way. A dead server is still named: a check that
+			# cannot reach one which HAD answered otherwise reports only its
+			# own exit status.
+			status=0
+			bash "$check" || status=$?
+			if [ "$status" -ne 0 ]; then
+				echo "the check exited $status" >&2
+				kill -0 "$server" 2>/dev/null || echo "the server had already exited" >&2
+			fi
 			# The aggregator emits a second once it has ended, so give the
 			# ticker a beat before reading the log.
 			sleep 1.5
 			sed 's/^/log /' "$log"
+			exit "$status"
 
 tests:
 	- desc: normal mode reports one aggregated line per active second, and no per-request lines

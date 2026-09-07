@@ -1,8 +1,6 @@
 package cacheclient
 
 import (
-	"github.com/wow-look-at-my/go-containers/set"
-
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/hex"
@@ -65,14 +63,14 @@ type WebBackend struct {
 	// and an allocation per entry to build. A large cache is hundreds of
 	// thousands of entries, and that set is built at startup before the build
 	// does anything at all.
-	keys       set.Set[actionHash] // known keys, from the startup index fetch + Put claims
-	indexEmpty bool                // remote index was empty at startup: nothing to batch-probe for
+	keys       *hashSet // known keys, from the startup index fetch + Put claims
+	indexEmpty bool     // remote index was empty at startup: nothing to batch-probe for
 	// indexAuthoritative marks a fresh, server-confirmed index: an absent key can then miss without a probe.
 	indexAuthoritative bool
 	// indexKeysAtStart is the key count from the startup index fetch, reported in WebSummary to flag a dead remote.
 	indexKeysAtStart int
 	missesMu         sync.RWMutex
-	knownMiss        set.Set[actionHash] // keys confirmed absent from remote this session
+	knownMiss        *hashSet // keys confirmed absent from remote this session
 
 	// emptyBatchBackoffThreshold: after this many empty batches in a row, stop probing for the run (an unset value disables).
 	emptyBatchBackoffThreshold int          // an unset value disables the backoff
@@ -288,7 +286,7 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	b.keys, b.indexAuthoritative = b.loadOrFetchIndex()
 	b.indexEmpty = b.keys.Len() == 0
 	b.indexKeysAtStart = b.keys.Len()
-	b.knownMiss = set.New[actionHash]()
+	b.knownMiss = newHashSet(0)
 	if b.indexAuthoritative {
 		logging.Infof("cacheprog: web index: %d keys", b.keys.Len())
 	} else {

@@ -128,19 +128,19 @@ oscillate on every sample.
 
 ## The client pays for the index in every process, and that is the larger cost
 
-Everything above bounds the SERVER. The client has its own resident cost. It is much larger. Every `go` process carries a private copy. One `go install std` against a store of about 1,008,000 keys, peak RSS of one process:
+Everything above bounds the SERVER. The client has its own resident cost, and every `go` process carries a private copy. This exhausts a build fleet rather than one build. A `dist test` leg runs many `go` processes at once. The machine's total is one process's peak times that count. A 16 GiB windows runner then reports "Out of memory" with an empty log.
 
-| configuration | peak RSS |
-| --- | --- |
-| no shared cache | 36 MiB |
-| cache on, `GO_TOOLCHAIN_CACHE_LOOKAHEAD=0` | 324 MiB |
-| cache on, look-ahead on | 416 MiB |
+Two numbers describe it. The first is what the startup index costs while the process lives. It comes from a heap profile taken right after `NewWebBackend`, against a store of about 1,008,000 keys. The second is the peak RSS of one `go` process over a whole `go install std`. That is the number the runner runs out of.
 
-So the index costs about 288 MiB. The look-ahead pool costs about 92 MiB. The pool now has a byte budget. The index has none. The index is the bigger number.
+| the client's key index | index in live heap | peak RSS of one process |
+| --- | --- | --- |
+| no shared cache at all | — | 35 MiB |
+| a map of `actionHash` | 88 MiB | 463 MiB |
+| a sorted slice (`hashset.go`) | 31 MiB | 325 MiB |
 
-The keys are already compact. `actionHash` is `[32]byte`, so a million of them is 32 MiB of key material. The other 250 MiB is what a Go map charges to hold them: buckets, growth slack, and a second set for `knownMiss`. A sorted slice with a binary-search lookup stores the same keys in the 32 MiB and nothing else. What that costs to write is the mutation. `keys` gains entries from Put claims while the build runs, under a lock.
+`actionHash` is `[32]byte`. A million keys is therefore 32 MiB of key material. The sorted slice holds essentially nothing else. The map charged 88 MiB for the same keys: buckets, growth slack, and a second set for `knownMiss`. Its cost to the peak is larger than its cost to the live heap. A heap that size also raises every GC target the process works against.
 
-This is what exhausts a build fleet rather than one build. A `dist test` leg runs many `go` processes at once. The machine's total is 324 MiB times that count. A 16 GiB windows runner then reports "Out of memory" with an empty log.
+What the remaining gap is NOT is the index. After startup the whole client holds 34 MiB of live heap, and 31 MiB of that is the slice above. So the distance to a 325 MiB peak is the build's own in-flight work rather than anything the client keeps. The look-ahead pool is one bounded part of that. See `lookAheadBudget`. The rest is unattributed and wants its own measurement before anything is done about it.
 
 ## Measured
 

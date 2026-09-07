@@ -26,8 +26,8 @@ func hashOfKey(key string) actionHash {
 
 // keySetToHashes converts a set of full cache keys into the hash set the index
 // speaks, for a test that builds its expectation as key strings.
-func keySetToHashes(keys set.Set[string]) set.Set[actionHash] {
-	s := set.New[actionHash](keys.Len())
+func keySetToHashes(keys set.Set[string]) *hashSet {
+	s := newHashSet(keys.Len())
 	for k := range keys.All() {
 		s.Add(hashOfKey(k))
 	}

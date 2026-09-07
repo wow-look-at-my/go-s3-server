@@ -59,6 +59,16 @@ One caller must not accept an unrecognized frame. `reconstructOutputID` hashes a
 
 `GO_TOOLCHAIN_CACHE_ZSTD_LEVEL` buys a smaller wire for more CPU.
 
+## The write path holds a path, not a body
+
+`Put` takes bytes. A caller holding a file must read the whole thing first. cmd/go's `offer` did that on the goroutine that had just finished a compile. The body then waited in the prep queue for a worker. That queue is four times the worker count deep. So peak resident uncompressed bodies was four times what the workers were compressing. On 32 cores that is 128 of them, which is the axis the Windows CI ran out of memory along.
+
+`PutFile` takes a path. The claim stays on the caller's goroutine, because claiming is what stops two callers uploading one object, and it is a map probe. The read moves to `prepare`, which already needed the whole body for the build-id guard, the module-index guard, zstd and the metadata.
+
+The caller owes the file's lifetime. A file that is gone by the time a worker opens it drops the upload and the claim together. A kept claim leaves the key advertised to this process and stored by nobody.
+
+cmd/go satisfies the lifetime already. `SharedCache.Close` joins the backend's `Close` before the `DiskCache`'s. That drains the prep pool and the coalescer before anything trims.
+
 ## The rest of the read path
 
 Two things a reader did per hit cost more than they had to.

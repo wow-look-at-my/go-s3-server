@@ -33,11 +33,7 @@ jobs:
       # Builds, tests, runs dats/*.dats, and autoreleases the binary buildhost serves as an image.
       - uses: wow-look-at-my/go-toolchain@master
 
-      # cacheclient is its own Go module, so the run above never executes its
-      # tests: a root run vets and covers it and stops there. Without this step
-      # the client half of the wire protocol gates nothing, and a test added
-      # beside it passes by never running. It publishes nothing -- the client is
-      # a library, and the release above is the server.
+      # cacheclient is its own module: without this step its tests never run.
       - uses: wow-look-at-my/go-toolchain@master
         with:
           working-directory: cacheclient

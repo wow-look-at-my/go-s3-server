@@ -63,8 +63,8 @@ type secondBucket struct {
 	puts, gets       int
 	batchedObjects   int
 	lookAheadObjects int
-	wireBytes      int64
-	rawBytes       int64
+	wireBytes        int64
+	rawBytes         int64
 	// wireSized is the wire bytes of the objects that declared a raw size, so
 	// the compression ratio divides like against like.
 	wireSized int64

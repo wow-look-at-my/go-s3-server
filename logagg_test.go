@@ -131,11 +131,23 @@ func TestNilAggregatorRecordsNothing(t *testing.T) {
 }
 
 func TestProjectOfPrefersTheModuleThenTrimsTheImportPath(t *testing.T) {
-	assert.Equal(t, "example.com/mod", projectOf(map[string]string{"module": "example.com/mod", "pkg": "example.com/mod/deep/pkg"}))
-	assert.Equal(t, "example.com/owner/repo", projectOf(map[string]string{"pkg": "example.com/owner/repo/internal/thing"}))
-	assert.Equal(t, "std/fmt", projectOf(map[string]string{"pkg": "std/fmt"}))
-	assert.Empty(t, projectOf(map[string]string{"outputid": "x"}))
-	assert.Empty(t, projectOf(nil))
+	none := requestProvenance{}
+	assert.Equal(t, "example.com/mod", projectOf(map[string]string{"module": "example.com/mod", "pkg": "example.com/mod/deep/pkg"}, none))
+	assert.Equal(t, "example.com/owner/repo", projectOf(map[string]string{"pkg": "example.com/owner/repo/internal/thing"}, none))
+	assert.Equal(t, "std/fmt", projectOf(map[string]string{"pkg": "std/fmt"}, none))
+	assert.Empty(t, projectOf(map[string]string{"outputid": "x"}, none))
+	assert.Empty(t, projectOf(nil, none))
+}
+
+// An object can carry no metadata at all -- a served body whose xattrs were
+// never stamped. The request that moved it still names a project, and that is
+// the whole reason the client sends the header.
+func TestProjectOfFallsBackToTheRequestingBuild(t *testing.T) {
+	asking := requestProvenance{module: "example.com/asker"}
+	assert.Equal(t, "example.com/asker", projectOf(nil, asking))
+	assert.Equal(t, "example.com/asker", projectOf(map[string]string{"outputid": "x"}, asking))
+	// The object's own module still wins: it says what the bytes ARE.
+	assert.Equal(t, "example.com/mod", projectOf(map[string]string{"module": "example.com/mod"}, asking))
 }
 
 func TestRawSizeOfRejectsWhatItCannotTrust(t *testing.T) {

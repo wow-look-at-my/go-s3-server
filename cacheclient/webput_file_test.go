@@ -70,12 +70,17 @@ func TestPutFileStoresTheSameObjectAsPut(t *testing.T) {
 func TestPutFileDropsTheClaimWhenTheBodyIsGone(t *testing.T) {
 	const action = "aabbccdd11223301"
 	b, _, _ := collectStoredBodies(t)
+	// The warning is contract, not decoration, so it is captured and asserted.
+	// Capturing also keeps it out of whatever buffer another test installed.
+	cap := newCaptureLogger(t)
 
 	require.NoError(t, b.PutFile(action, testOutputID("x"), filepath.Join(t.TempDir(), "absent")))
 	b.prep.await()
 
 	assert.False(t, claimed(b, action),
 		"a body that could not be read must release its key so a later run re-uploads")
+	assert.Contains(t, cap.String(), "read body:",
+		"a dropped upload says why; a silent one is indistinguishable from a stored object")
 	require.NoError(t, b.Close())
 }
 

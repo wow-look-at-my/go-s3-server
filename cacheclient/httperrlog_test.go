@@ -27,11 +27,26 @@ type captureLogger struct {
 	prev Logger
 }
 
+// captureMu serializes the capture. logging is one package variable, so two
+// tests that install a capture at once share whichever one landed last: the
+// second test's lines go to the first test's buffer, and the first test reads
+// an empty one. Both then fail on somebody else's output. A mutex held for the
+// whole test gives each one the variable to itself.
+//
+// It is a mutex rather than t.Serial because this module is consumed by trees
+// built with a stock toolchain, which has no such method. It is also narrower:
+// a test that never captures has no reason to wait.
+var captureMu sync.Mutex
+
 func newCaptureLogger(t *testing.T) *captureLogger {
 	t.Helper()
+	captureMu.Lock()
 	c := &captureLogger{prev: logging}
 	SetLogger(c)
-	t.Cleanup(func() { logging = c.prev })
+	t.Cleanup(func() {
+		logging = c.prev
+		captureMu.Unlock()
+	})
 	return c
 }
 
@@ -214,10 +229,16 @@ func TestHTTPErrLogger_ConcurrentRecord(t *testing.T) {
 
 func TestHTTPErrLogger_NilReceiver(t *testing.T) {
 	var l *httpErrLogger
+	// A nil receiver has no writer, so it reports straight to the package
+	// logger. Capturing that is what keeps these two lines out of whatever
+	// buffer a test running beside this one installed.
+	cap := newCaptureLogger(t)
 	require.NotPanics(t, func() {
 		l.Record("web put", 502, "aabbccdd", "boom")
 		l.Record("web batch get", 502, "ccddeeff", "")
 	})
+	require.Contains(t, cap.String(), "web put aabbccdd: HTTP 502: boom")
+	require.Contains(t, cap.String(), "web batch get ccddeeff: HTTP 502")
 }
 
 func TestHTTPErrLogger_ShortIDSafe(t *testing.T) {
@@ -304,6 +325,9 @@ func TestHTTPErrLogger_BatchHTTPHitsAndMissesStayDistinct(t *testing.T) {
 
 func TestHTTPErrLogger_BatchHTTPNilReceiver(t *testing.T) {
 	var l *httpErrLogger
+	// As above: no receiver means no writer, so the line goes to the package
+	// logger and must be captured rather than left loose in the package.
+	newCaptureLogger(t)
 	require.NotPanics(t, func() {
 		l.RecordBatchHTTP(100, 0, 30*time.Millisecond)
 	})

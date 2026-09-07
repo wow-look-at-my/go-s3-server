@@ -58,38 +58,43 @@ var zstdProbeDecoders = sync.Pool{New: func() any {
 
 // decompressingReader wraps r in the decoder its own frame magic names. It
 // returns the reader to read decompressed bytes from, a release function the
-// caller must call, and whether the body was compressed at all.
+// caller must call, and the codec it recognized.
+//
+// The codec is "" for a body that opens with neither frame magic. That reader
+// is the bytes as they stand, which is right for a caller matching a magic
+// prefix on a possibly-uncompressed body. It is WRONG for a caller that must
+// have the decompressed bytes, so such a caller checks the codec: hashing a
+// body that never decompressed would mint a confident, wrong content address.
 //
 // The peek is non-destructive: whatever it consumed is replayed in front of
 // the rest, so the caller hands over a plain io.Reader and gets one back.
-func decompressingReader(r io.Reader) (io.Reader, func(), error) {
+func decompressingReader(r io.Reader) (io.Reader, func(), string, error) {
 	br := bufio.NewReaderSize(r, 4096)
 	head, err := br.Peek(codecPeekBytes)
 	if err != nil && len(head) < codecPeekBytes {
-		// Too short to be either frame. Hand back what there is; a caller
-		// looking for a magic prefix will simply not find one.
-		return br, func() {}, nil
+		// Too short to be either frame.
+		return br, func() {}, "", nil
 	}
 
-	switch frameCodec(head) {
+	switch codec := frameCodec(head); codec {
 	case "zstd":
 		d, _ := zstdProbeDecoders.Get().(*zstd.Decoder)
 		if d == nil {
-			return nil, func() {}, errNoZstdDecoder
+			return nil, func() {}, codec, errNoZstdDecoder
 		}
 		if err := d.Reset(br); err != nil {
 			zstdProbeDecoders.Put(d)
-			return nil, func() {}, err
+			return nil, func() {}, codec, err
 		}
 		return d.IOReadCloser(), func() {
 			// Reset to nil releases the decoder's buffers before it goes back
 			// to the pool, so an abandoned probe does not park them there.
 			_ = d.Reset(nil)
 			zstdProbeDecoders.Put(d)
-		}, nil
+		}, codec, nil
 	case "lz4":
 		zr := lz4.NewReader(br)
-		return zr, func() { zr.Reset(nil) }, nil
+		return zr, func() { zr.Reset(nil) }, codec, nil
 	}
-	return br, func() {}, nil
+	return br, func() {}, "", nil
 }

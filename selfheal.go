@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"os"
-
 )
 
 // outputIDMetaKey is the metadata field holding the GOCACHEPROG outputID -- the
@@ -137,9 +136,16 @@ func reconstructOutputID(storage *Storage, key string, f *os.File) (string, erro
 	h := sha256.New()
 	// The codec comes off the body's own frame magic, so a store holding both
 	// zstd and lz4 objects heals either one.
-	zr, release, decErr := decompressingReader(f)
+	zr, release, codec, decErr := decompressingReader(f)
 	if decErr != nil {
 		return "", fmt.Errorf("decompress body: %w", decErr)
+	}
+	if codec == "" {
+		// The body opens with neither frame magic, so it is not something this
+		// cache stored. Hashing it as it stands would mint a confident, wrong
+		// content address and wedge the key for good.
+		release()
+		return "", fmt.Errorf("decompress body: not a compressed frame")
 	}
 	_, copyErr := io.Copy(h, zr)
 	release()

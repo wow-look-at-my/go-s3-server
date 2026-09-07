@@ -157,7 +157,7 @@ func readIsModuleIndex(r io.Reader, compression string) (bool, error) {
 		// zstd has no equivalent of lz4's readable first literal run, so the
 		// verdict costs one decoded block. The decoder pulls only as much
 		// compressed input as that takes.
-		zr, release, err := decompressingReader(r)
+		zr, release, _, err := decompressingReader(r)
 		if err != nil {
 			return false, nil // unreadable frame: not an index, fail open
 		}

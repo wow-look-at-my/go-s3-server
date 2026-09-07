@@ -421,20 +421,22 @@ func (b *WebBackend) ForgetStale(actionID string) {
 // Close drains the batch coalescer and flushes the HTTP error logger.
 
 func (b *WebBackend) Close() error {
-	// Look-ahead first: it is speculation, and nothing waits on it, so a
-	// shutdown must not hold for a round trip nobody asked for.
-	b.lookAhead.Close()
-	// Then the prep pool, which still owes the coalescer every object it holds.
+	// The prep pool first, since it still owes the coalescer every object it holds.
 	b.prep.Close()
 	// Flush the PUT coalescer up front: an unflushed upload was claimed in the index but never stored.
 	if b.putBatchStop != nil {
 		close(b.putBatchStop)
 		<-b.putBatchDone
 	}
+	// The GET coalescer before the look-ahead, because a batch SEEDS the
+	// look-ahead as its last act. Closing the pool first dropped every seed an
+	// in-flight batch was about to make, silently and on timing alone.
 	if b.batchStop != nil {
 		close(b.batchStop)
 		<-b.batchDone
 	}
+	// Now nothing can seed it, so what it holds is all it will ever hold.
+	b.lookAhead.Close()
 	if b.errLog != nil {
 		_ = b.errLog.Close()
 	}

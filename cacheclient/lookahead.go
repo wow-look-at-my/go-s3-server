@@ -93,6 +93,11 @@ func (la *lookAhead) charge(entries []BatchEntry) func() {
 	return func() { la.held.Add(-n) }
 }
 
+// lookAheadChunk is how many entries a worker hands the populator at once. It
+// trades a few more calls for a resident set that does not grow with whatever
+// the server chose to send.
+const lookAheadChunk = 16
+
 // lookAheadDefaults returns the worker count and queue depth. Workers scale
 // with the machine because each one is a socket read, not a core's worth of
 // work, and the floor matters more than the ceiling on a small runner.
@@ -234,17 +239,44 @@ func (la *lookAhead) expand(seed []string) {
 		b.Pool.Release()
 		return
 	}
-	entries, err := parseBatchResponse(resp.Body)
+	// The window is handed over in chunks as it arrives, so a worker holds a
+	// chunk rather than the whole response. The budget above bounds the pool;
+	// this bounds each worker inside it.
+	var (
+		chunk  []BatchEntry
+		count  int
+		flush  = func() {}
+		ingest = func(e BatchEntry) {
+			count++
+			chunk = append(chunk, e)
+			if len(chunk) >= lookAheadChunk {
+				flush()
+			}
+		}
+	)
+	flush = func() {
+		if len(chunk) == 0 {
+			return
+		}
+		release := la.charge(chunk)
+		// Each worker ingests its own answer, so verification and the local write
+		// run at the pool's width rather than one batch at a time.
+		b.OnBatchEntries(chunk)
+		release()
+		chunk = nil
+	}
+
+	err = streamBatchResponse(resp.Body, ingest)
 	resp.Body.Close()
 	b.Pool.Release()
-	if err != nil || len(entries) == 0 {
+	if err != nil {
 		return
 	}
-	defer la.charge(entries)()
+	flush()
+	if count == 0 {
+		return
+	}
 
-	la.Entries.Add(uint32(len(entries)))
-	b.batchTiming.recordLookAhead(len(entries), time.Since(start))
-	// Each worker ingests its own answer, so verification and the local write
-	// run at the pool's width rather than one batch at a time.
-	b.OnBatchEntries(entries)
+	la.Entries.Add(uint32(count))
+	b.batchTiming.recordLookAhead(count, time.Since(start))
 }

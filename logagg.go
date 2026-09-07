@@ -25,6 +25,7 @@ import (
 const (
 	headerModule  = "X-Cache-Module"
 	headerKind    = "X-Cache-Kind"
+	headerBuild   = "X-Cache-Build"
 	kindLookAhead = "look-ahead"
 )
 
@@ -283,6 +284,10 @@ func byteSize(n int64) string {
 type requestProvenance struct {
 	module    string
 	lookAhead bool
+	// build names the one build this request belongs to. Prefetch suppression
+	// is scoped to it, so a window a build has already been given stays
+	// suppressed for that build and for no other.
+	build string
 }
 
 // provenanceOf reads the client's provenance headers. A request without them
@@ -294,6 +299,7 @@ func provenanceOf(r *http.Request) requestProvenance {
 	return requestProvenance{
 		module:    r.Header.Get(headerModule),
 		lookAhead: r.Header.Get(headerKind) == kindLookAhead,
+		build:     r.Header.Get(headerBuild),
 	}
 }
 

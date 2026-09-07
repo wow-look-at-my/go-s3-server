@@ -88,8 +88,10 @@ const prefetchWindow = 30 * time.Second
 // beyond what was explicitly requested.
 const maxPrefetchEntries = 200
 
-// prefetchTrackerTTL is how long the server remembers having sent a key to a
-// given user. Prefetch entries are suppressed for this duration.
+// prefetchTrackerTTL bounds how long the server remembers having sent a key to
+// a given build. It is a backstop for a build that never ends and for a client
+// that sends no build header: the scope that matters is the build, and a build
+// that finishes stops asking.
 const prefetchTrackerTTL = 5 * time.Minute
 
 // prefetchSentEntryBytes is what one remembered send costs: the user+key
@@ -100,15 +102,26 @@ const prefetchSentEntryBytes = 160
 const prefetchTrackerKind = "prefetch-sent"
 
 // prefetchTracker remembers which keys were recently sent as prefetch to each
-// user so that subsequent batch requests from the same user do not receive the
-// same bulk data over and over (e.g. the same 200-entry pool on every request).
+// BUILD, so successive look-ahead requests within one build keep moving the
+// window instead of receiving the same 200-entry pool over and over.
+//
+// The scope is the build, not the user. It was the user, for five minutes, and
+// a user runs several builds in five minutes: the first build received the
+// window and every build after it received an empty one, so a second build in
+// a row fetched every object on its critical path and finished slower than a
+// build with no cache at all. A build ends and stops asking; a user does not.
+//
+// A client that sends no build header falls back to the username, which is the
+// old behavior, because two builds sharing one scope is the lesser fault. It
+// costs one of them a window; sharing nothing would hand one build the same
+// pool on every request for the whole build.
 //
 // Bounded in bytes with LRU eviction like the other in-memory caches: an
-// evicted record means one pool of prefetch entries may be offered to that user
-// a second time, which is a little wasted bandwidth and nothing else. Records
-// also expire on their own after prefetchTrackerTTL.
+// evicted record means one pool of prefetch entries may be offered to that
+// build a second time, which is a little wasted bandwidth and nothing else.
+// Records also expire on their own after prefetchTrackerTTL.
 type prefetchTracker struct {
-	sent *lruCache[string, time.Time] // "user\x00key" → sent_at
+	sent *lruCache[string, time.Time] // "scope\x00key" → sent_at
 }
 
 func newPrefetchTracker() *prefetchTracker {
@@ -119,26 +132,35 @@ func newPrefetchTracker() *prefetchTracker {
 	)}
 }
 
-// sentKey is the tracker's composite key. NUL cannot appear in a username or a
+// sentKey is the tracker's composite key. NUL cannot appear in a scope or a
 // storage key, so the join is unambiguous.
-func sentKey(user, key string) string { return user + "\x00" + key }
+func sentKey(scope, key string) string { return scope + "\x00" + key }
 
-// recentlySent reports whether key went to user inside the TTL. It records
+// prefetchScope is what suppression is remembered against: the build, or the
+// user for a client too old to name one.
+func prefetchScope(prov requestProvenance, user string) string {
+	if prov.build != "" {
+		return prov.build
+	}
+	return user
+}
+
+// recentlySent reports whether key went to scope inside the TTL. It records
 // nothing, and it is cheap enough to run during index selection: one map
 // lookup, before any per-key stat, guard or heal work. record is called
 // afterwards with only the keys that actually made it into the response.
-func (t *prefetchTracker) recentlySent(user, key string) bool {
-	sentAt, ok := t.sent.Get(sentKey(user, key))
+func (t *prefetchTracker) recentlySent(scope, key string) bool {
+	sentAt, ok := t.sent.Get(sentKey(scope, key))
 	return ok && time.Since(sentAt) < prefetchTrackerTTL
 }
 
-// record marks keys as sent to user now and amortizes eviction of that user's
+// record marks keys as sent to scope now and amortizes eviction of that scope's
 // stale entries. Only keys that were genuinely included in a response should
 // be recorded — a candidate dropped by the guard/heal checks stays eligible.
-func (t *prefetchTracker) record(user string, keys []string) {
+func (t *prefetchTracker) record(scope string, keys []string) {
 	now := time.Now()
 	for _, k := range keys {
-		t.sent.Put(sentKey(user, k), now)
+		t.sent.Put(sentKey(scope, k), now)
 	}
 	// Expiry needs no sweep: filterKeys treats a record older than the TTL as
 	// absent, and the byte bound evicts the least-recently-used records, which
@@ -154,8 +176,8 @@ func (t *prefetchTracker) record(user string, keys []string) {
 // If prefetch is enabled, the server also includes entries whose modification
 // time falls within ±30s of the requested entries, capturing entries from the
 // same build that the client is likely to need next. The prefetchTracker
-// suppresses keys already sent to this user recently, preventing the same
-// 200-entry pool from flooding the client on every request.
+// suppresses keys already sent to THIS BUILD, preventing the same 200-entry
+// pool from flooding the client on every request.
 //
 // The tar layout is:
 //
@@ -187,6 +209,7 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 		user = a.Username
 	}
 	prov := provenanceOf(r)
+	scope := prefetchScope(prov, user)
 
 	// Phase 1: collect metadata for the requested keys WITHOUT reading bodies.
 	// Stat is cheap (os.Stat + xattrs); the bodies are streamed later, one at a
@@ -231,7 +254,7 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 	}
 
 	// Prefetch: find related keys by modification time proximity, and let the
-	// index skip the ones already sent to this user recently AS IT SELECTS.
+	// index skip the ones already sent to this build AS IT SELECTS.
 	// Suppression during selection is what keeps the window moving: filtering
 	// the result afterwards handed back the same nearest maxPrefetchEntries
 	// candidates on every request, so once a client had received them it got
@@ -247,7 +270,7 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 
 		freshKeys := storage.Index.NearbyKeys(windowStart.Unix(), windowEnd.Unix(), maxPrefetchEntries, requestedSet,
 			func(key string) bool {
-				if tracker.recentlySent(user, key) {
+				if tracker.recentlySent(scope, key) {
 					nSuppressed++
 					return true
 				}
@@ -259,7 +282,7 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 		for i, e := range prefetched {
 			sentKeys[i] = e.key
 		}
-		tracker.record(user, sentKeys)
+		tracker.record(scope, sentKeys)
 		if req.PrefetchOnly {
 			// The requested keys were the anchor, not the ask. They still had to
 			// be stat'ed to find the window, and they still set it, but only the

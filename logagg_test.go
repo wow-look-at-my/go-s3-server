@@ -137,6 +137,7 @@ func TestNilAggregatorRecordsNothing(t *testing.T) {
 func TestProvenanceHeadersMatchTheClient(t *testing.T) {
 	assert.Equal(t, cacheclient.HeaderModule, headerModule)
 	assert.Equal(t, cacheclient.HeaderKind, headerKind)
+	assert.Equal(t, cacheclient.HeaderBuild, headerBuild)
 	assert.Equal(t, cacheclient.KindLookAhead, kindLookAhead)
 }
 

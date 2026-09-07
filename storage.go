@@ -46,6 +46,12 @@ var (
 // file even when the client asks for PutExecutable's behavior -- a permanent,
 // silent loss of the executable bit for every object cached before this
 // change. A missing key is simply rebuilt and re-uploaded with the flag.
+//
+// The server stores metadata opaquely and cannot tell an executable body from
+// ordinary data (a cosmo APE starts with a '#!' shell header, so there is
+// nothing to sniff), so these nameless entries are unrepairable in place;
+// clients now stamp executable metadata on every executable upload, and each
+// purged entry is simply rebuilt and re-uploaded.
 const currentCacheVersion = 4
 
 const cacheVersionFile = ".cache_version"

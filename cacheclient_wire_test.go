@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"strings"
 	"testing"
 
@@ -74,7 +73,7 @@ func TestCacheClientColdGetIsServedOverTheWire(t *testing.T) {
 	writer, err := cacheclient.NewWebBackend(cfg)
 	require.NoError(t, err)
 	for _, o := range objs {
-		require.NoError(t, writer.Put(o.actionID, o.outputID, strings.NewReader(string(o.body)), int64(len(o.body))))
+		require.NoError(t, writer.Put(o.actionID, o.outputID, o.body))
 	}
 	// Close flushes the PUT coalescer: until it returns, an upload is claimed
 	// in the client's index but not yet stored on the server.
@@ -93,17 +92,10 @@ func TestCacheClientColdGetIsServedOverTheWire(t *testing.T) {
 	t.Cleanup(func() { reader.Close() })
 
 	for _, o := range objs {
-		outputID, body, size, _, miss, _, err := reader.Get(o.actionID)
-		require.NoError(t, err)
+		outputID, got, _, miss := reader.Get(o.actionID)
 		require.False(t, miss, "a cold client must be served the key the server advertises")
-
-		got, err := io.ReadAll(body)
-		require.NoError(t, err)
-		body.Close()
-
 		require.Equal(t, o.body, got)
 		require.Equal(t, o.outputID, outputID, "the served output ID must be the body's own hash")
-		require.Equal(t, int64(len(o.body)), size)
 	}
 
 	require.Greater(t, testutil.ToFloat64(batchKeysTotal.WithLabelValues("streamed")), streamedBefore,
@@ -111,7 +103,6 @@ func TestCacheClientColdGetIsServedOverTheWire(t *testing.T) {
 
 	// A key nobody stored is a clean miss, not an error and not a stray body.
 	absent := sha256.Sum256([]byte("never-stored"))
-	_, _, _, _, miss, _, err := reader.Get(hex.EncodeToString(absent[:]))
-	require.NoError(t, err)
+	_, _, _, miss := reader.Get(hex.EncodeToString(absent[:]))
 	require.True(t, miss)
 }

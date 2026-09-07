@@ -8,7 +8,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	github.com/wow-look-at-my/go-containers v0.0.0-20260826161058-40a3d1ef3d41 // go-toolchain:auto-branch
-	github.com/wow-look-at-my/go-s3-server/cacheclient v0.0.0-20260906210800-d738cdac1d22 // go-toolchain:auto-branch
+	github.com/wow-look-at-my/go-s3-server/cacheclient v0.0.0-20260907051336-50d5a142853a // go-toolchain:auto-branch
 	golang.org/x/sys v0.35.0
 )
 
@@ -16,7 +16,10 @@ require (
 // a published version: protocol and server change together in one commit.
 replace github.com/wow-look-at-my/go-s3-server/cacheclient => ./cacheclient
 
-require github.com/prometheus/client_model v0.6.2
+require (
+	github.com/klauspost/compress v1.20.0
+	github.com/prometheus/client_model v0.6.2
+)
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect

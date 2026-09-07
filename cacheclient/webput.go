@@ -2,7 +2,6 @@ package cacheclient
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,146 +9,142 @@ import (
 )
 
 // putReq is a prepped object queued for the PUT coalescer. The per-object
-// preparation (optimistic index claim, build-id/module-index guard, lz4) has
-// already run in Put; the coalescer only frames and ships these.
+// preparation (guards, lz4, metadata) has already run on a prep worker; the
+// coalescer only frames and ships these.
+//
+// It holds the compressed bytes and nothing else. It used to carry the
+// uncompressed body alongside them, which doubled what a queue of a hundred
+// multi-megabyte objects held, for a field no path after this point read.
 type putReq struct {
 	actionID   string
 	key        string
+	hash       actionHash
 	outputID   string
-	raw        []byte            // uncompressed body, kept for the single-PUT fallback / label
 	compressed []byte            // lz4-compressed body, the data/<key> member bytes
 	metadata   map[string]string // manifest metadata: lowercased meta names sans X-Cache-Meta-
 }
 
-// Put stores a cached object with LZ4 compression. The per-object preparation
-// (optimistic index claim, read, build-id/module-index write guards, lz4, and
-// the metadata map) runs synchronously here; the upload itself is COALESCED:
-// the prepped object is enqueued onto the PUT coalescer (batchPutCoalescer),
-// which ships many objects as a single /_batch/put tar instead of an HTTP PUT per
-// object — a CI build stores thousands of objects and the per-object PUT storm
-// saturated the cache server's admission control. Put returns nil immediately
-// (fire-and-forget, matching the prior async model); the coalescer reports
-// per-object outcomes (rolling back a claim on a server-side error) and the
-// whole batch is retried as a single tar on a shed. If the server does not
-// support the batch endpoint (sticky batchPutUnsupported, set when it refuses),
-// Put falls back to the per-object doRetryPUT path — the single-PUT retry
-// is the floor.
-func (b *WebBackend) Put(actionID, outputID string, body io.Reader, bodySize int64) error {
-	return b.put(actionID, outputID, body, bodySize, false)
-}
-
-// PutExecutable mirrors Put for an object the build will later run directly
-// (go run, a shebang script). The stored metadata records this so a later Get
-// can restore the executable bit on the file it writes, instead of every
-// cache object defaulting to executable regardless of what it holds.
-func (b *WebBackend) PutExecutable(actionID, outputID string, body io.Reader, bodySize int64) error {
-	return b.put(actionID, outputID, body, bodySize, true)
-}
-
-func (b *WebBackend) put(actionID, outputID string, body io.Reader, bodySize int64, executable bool) error {
-	key := b.key(actionID)
+// Put stores a cached object, compressed, and returns at once: the guards,
+// the compression and the upload all happen behind it. Uploads are coalesced
+// into /_batch/put tars, because a build stores thousands of objects and a PUT
+// per object saturates the server's admission control.
+//
+// It takes the body as bytes rather than a reader because everything it does
+// with them happens on another goroutine: a reader would pin the caller here
+// until the read finished, and the caller is a build goroutine that has
+// somewhere better to be. The one thing Put does synchronously is claim the
+// key, which is what stops two callers uploading the same object.
+func (b *WebBackend) Put(actionID, outputID string, data []byte) error {
+	h, ok := parseActionHash(actionID)
+	if !ok {
+		return fmt.Errorf("web put: %q is not an action ID", actionID)
+	}
 
 	// Atomically check-and-claim: skip if the key is already known or being uploaded.
 	b.keysMu.Lock()
-	if b.keys.Contains(key) {
+	if b.keys.Contains(h) {
 		b.keysMu.Unlock()
 		b.PutSkippedKnown.Increment()
 		return nil
 	}
-	b.keys.Add(key)
+	b.keys.Add(h)
 	b.keysMu.Unlock()
 
-	// Release the claim unless queued=true: a path sets that as soon as it owns rollback.
-	var queued bool
-	defer func() {
-		if !queued {
-			b.removeClaimed(key)
-		}
-	}()
-
-	raw, err := io.ReadAll(body)
-	if err != nil {
-		return fmt.Errorf("web put read: %w", err)
+	if !b.prep.submit(putJob{actionID: actionID, key: b.key(actionID), hash: h, outputID: outputID, data: data}) {
+		// Nowhere to run the work: drop the claim so a later run re-uploads.
+		b.removeClaimed(h)
 	}
+	return nil
+}
 
+// prepare turns a claimed object into a queued upload: the guards that decide
+// whether it may be published at all, then lz4, then the metadata. It runs on
+// a prep worker. Compression is the expensive half, and it used to run on the
+// build's own goroutine right after a compile finished -- the one moment that
+// goroutine could have started the next compile instead.
+func (b *WebBackend) prepare(j putJob) {
 	// Cross-contamination guard: refuse to publish a package under a key that disagrees
 	// with its own build id. The body<->outputID hash alone cannot catch a swapped
 	// (actionID, object) pair, so this is the only defense against poisoning the cache.
-	if act, ok := BuildIDMatchesAction(actionID, raw); !ok {
+	if act, ok := BuildIDMatchesAction(j.actionID, j.data); !ok {
 		b.PutRefusedBuildID.Increment()
 		logging.Warnf("cacheprog: web put %s: refusing upload, build-id action mismatch (want action=%s, got action=%s); object does not belong under this key",
-			ShortID(actionID), ExpectedBuildIDAction(actionID), act)
-		return nil
+			ShortID(j.actionID), ExpectedBuildIDAction(j.actionID), act)
+		b.removeClaimed(j.hash)
+		return
 	}
 
 	// Never publish a Go module index: the read side can't verify it, so it refuses every
 	// upload; recomputing locally is free.
-	if IsGoModuleIndex(raw) {
+	if IsGoModuleIndex(j.data) {
 		b.PutRefusedModIndex.Increment()
-		return nil
+		b.removeClaimed(j.hash)
+		return
 	}
 
 	compressStart := time.Now()
-	compressed, err := Compress(raw)
+	compressed, err := Compress(j.data)
 	if b.Latency != nil {
 		b.Latency.Compress.Record(time.Since(compressStart))
 	}
 	if err != nil {
-		return fmt.Errorf("web put compress: %w", err)
+		logging.Warnf("cacheprog: web put %s: compress: %v", ShortID(j.actionID), err)
+		b.removeClaimed(j.hash)
+		return
 	}
+	b.CompressedBytes.Add(uint32(len(compressed)))
+	b.RawBytes.Add(uint32(len(j.data)))
 
 	// meta holds lowercased names without the X-Cache-Meta- prefix; metadataHeaders
 	// derives the single-PUT headers from this same map, keeping both paths in sync.
 	meta := map[string]string{
-		"outputid":    outputID,
-		"object-type": detectObjectType(raw),
-		"body-size":   strconv.FormatInt(bodySize, 10),
-		"compression": "lz4",
+		"outputid":    j.outputID,
+		"object-type": detectObjectType(j.data),
+		"body-size":   strconv.Itoa(len(j.data)),
+		"compression": "zstd",
 		"created":     time.Now().UTC().Format(time.RFC3339),
 	}
 	if b.version != "" {
 		meta["toolchain-version"] = b.version
 	}
-	if b.module != "" {
-		meta["module"] = b.module
+	if module := b.moduleName(); module != "" {
+		meta["module"] = module
 	}
-	if goVer, target := parseArchiveHeader(raw); goVer != "" {
+	if goVer, target := parseArchiveHeader(j.data); goVer != "" {
 		meta["go-version"] = goVer
 		meta["target"] = target
 	}
-	if pkg := parseImportPath(raw); pkg != "" {
+	if pkg := parseImportPath(j.data); pkg != "" {
 		meta["pkg"] = pkg
 	}
-	if files := parseSourceFiles(raw); len(files) > 0 {
+	if files := parseSourceFiles(j.data); len(files) > 0 {
 		meta["src"] = capSrcList(files)
-	}
-	if executable {
-		meta["executable"] = "1"
 	}
 
 	pr := putReq{
-		actionID:   actionID,
-		key:        key,
-		outputID:   outputID,
-		raw:        raw,
+		actionID:   j.actionID,
+		key:        j.key,
+		hash:       j.hash,
+		outputID:   j.outputID,
 		compressed: compressed,
 		metadata:   meta,
 	}
 
 	// No batch endpoint (learned from an earlier refusal): fall back to the single-PUT path.
 	if b.batchPutUnsupported.Load() {
-		queued = true // putSingle owns the claim from here on.
-		return b.putSingle(pr)
+		if err := b.putSingle(pr); err != nil && !isLoggedErr(err) {
+			logging.Warnf("cacheprog: web put %s: %v", ShortID(pr.actionID), err)
+		}
+		return
 	}
 
 	// Enqueue onto the coalescer, which now owns the claim, until a per-object or whole-batch failure rolls it back.
 	select {
 	case b.putBatchReqCh <- pr:
-		queued = true
 	case <-b.putBatchStop:
 		// Backend is closing — drop the claim so a later run re-uploads.
+		b.removeClaimed(pr.hash)
 	}
-	return nil
 }
 
 // metadataHeaders renders the meta map back into X-Cache-Meta-* headers, the inverse of

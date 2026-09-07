@@ -201,17 +201,17 @@ func TestHTTPErrLogger_BatchHTTPSingleHit(t *testing.T) {
 	var buf bytes.Buffer
 	l := newTestLogger(&buf)
 
-	l.RecordBatchHTTP(100, 25, 5, 47*time.Millisecond)
+	l.RecordBatchHTTP(100, 25, 47*time.Millisecond)
 	require.NoError(t, l.Close())
 
-	require.Equal(t, "cacheprog: batch GET: 100 keys → 25 entries (5 prefetched) in 47ms\n", buf.String())
+	require.Equal(t, "cacheprog: batch GET: 100 keys → 25 entries in 47ms\n", buf.String())
 }
 
 func TestHTTPErrLogger_BatchHTTPSingleMiss(t *testing.T) {
 	var buf bytes.Buffer
 	l := newTestLogger(&buf)
 
-	l.RecordBatchHTTP(100, 0, 0, 47*time.Millisecond)
+	l.RecordBatchHTTP(100, 0, 47*time.Millisecond)
 	require.NoError(t, l.Close())
 
 	require.Equal(t,
@@ -224,9 +224,9 @@ func TestHTTPErrLogger_BatchHTTPCoalescedMisses(t *testing.T) {
 	l := newTestLogger(&buf)
 
 	// Several all-miss batch HTTP requests, whose keys and durations the summary totals.
-	l.RecordBatchHTTP(100, 0, 0, 30*time.Millisecond)
-	l.RecordBatchHTTP(80, 0, 0, 50*time.Millisecond)
-	l.RecordBatchHTTP(120, 0, 0, 40*time.Millisecond)
+	l.RecordBatchHTTP(100, 0, 30*time.Millisecond)
+	l.RecordBatchHTTP(80, 0, 50*time.Millisecond)
+	l.RecordBatchHTTP(120, 0, 40*time.Millisecond)
 	require.NoError(t, l.Close())
 
 	require.Equal(t,
@@ -238,13 +238,13 @@ func TestHTTPErrLogger_BatchHTTPCoalescedHits(t *testing.T) {
 	var buf bytes.Buffer
 	l := newTestLogger(&buf)
 
-	// The summary totals the keys, entries, prefetches and duration.
-	l.RecordBatchHTTP(100, 25, 5, 47*time.Millisecond)
-	l.RecordBatchHTTP(100, 30, 6, 50*time.Millisecond)
+	// The summary totals the keys, entries and duration.
+	l.RecordBatchHTTP(100, 25, 47*time.Millisecond)
+	l.RecordBatchHTTP(100, 30, 50*time.Millisecond)
 	require.NoError(t, l.Close())
 
 	require.Equal(t,
-		"cacheprog: batch GET ×2: 200 keys → 55 entries (11 prefetched), 97ms total\n",
+		"cacheprog: batch GET ×2: 200 keys → 55 entries, 97ms total\n",
 		buf.String())
 }
 
@@ -252,8 +252,8 @@ func TestHTTPErrLogger_BatchHTTPHitsAndMissesStayDistinct(t *testing.T) {
 	var buf bytes.Buffer
 	l := newTestLogger(&buf)
 
-	l.RecordBatchHTTP(100, 0, 0, 30*time.Millisecond)
-	l.RecordBatchHTTP(50, 25, 5, 40*time.Millisecond)
+	l.RecordBatchHTTP(100, 0, 30*time.Millisecond)
+	l.RecordBatchHTTP(50, 25, 40*time.Millisecond)
 	require.NoError(t, l.Close())
 
 	out := buf.String()
@@ -263,7 +263,7 @@ func TestHTTPErrLogger_BatchHTTPHitsAndMissesStayDistinct(t *testing.T) {
 func TestHTTPErrLogger_BatchHTTPNilReceiver(t *testing.T) {
 	var l *httpErrLogger
 	require.NotPanics(t, func() {
-		l.RecordBatchHTTP(100, 0, 0, 30*time.Millisecond)
+		l.RecordBatchHTTP(100, 0, 30*time.Millisecond)
 	})
 }
 
@@ -272,7 +272,7 @@ func TestHTTPErrLogger_MixedHTTPErrAndBatchHTTP(t *testing.T) {
 	l := newTestLogger(&buf)
 
 	l.Record("web put", 502, "aaaaaaaa", "error code: 502")
-	l.RecordBatchHTTP(100, 0, 0, 30*time.Millisecond)
+	l.RecordBatchHTTP(100, 0, 30*time.Millisecond)
 	require.NoError(t, l.Close())
 
 	out := buf.String()

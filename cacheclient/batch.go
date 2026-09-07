@@ -269,7 +269,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 
 	trip := time.Since(start)
 	b.batchTiming.recordTrip(trip)
-	b.errLog.RecordBatchHTTP(len(reqs), len(entries), 0, trip)
+	b.errLog.RecordBatchHTTP(len(reqs), len(entries), trip)
 
 	// Index returned entries by key for constant-time lookup.
 	entryByKey := make(map[string]*BatchEntry, len(entries))

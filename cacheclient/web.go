@@ -3,7 +3,9 @@ package cacheclient
 import (
 	"github.com/wow-look-at-my/go-containers/set"
 
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -463,6 +465,7 @@ func (b *WebBackend) signRequest(req *http.Request) {
 		req.Header.Set(HeaderTarget, b.target)
 	}
 	req.Header.Set(HeaderClient, clientVersion)
+	req.Header.Set(HeaderBuild, buildID)
 }
 
 // SetModule names the module whose build is running, for consumers that learn
@@ -488,7 +491,31 @@ const (
 	HeaderTarget    = "X-Cache-Target"    // GOOS/GOARCH the build is producing
 	HeaderClient    = "X-Cache-Client"    // this client's wire version
 	HeaderKind      = "X-Cache-Kind"      // KindCritical or KindLookAhead
+	HeaderBuild     = "X-Cache-Build"     // one build, so prefetch suppression ends with it
 )
+
+// buildID names this process's build. It is random per process, and it exists
+// for the server's prefetch suppression.
+//
+// The server must not hand one look-ahead request the same window it just
+// handed the last one, so it remembers what it sent. What it remembered was the
+// USER, for five minutes, and a user runs many builds in five minutes: the
+// first build got the window and every build after it got an empty one, so a
+// second build in a row fell back to fetching every object on its critical
+// path. Scoped to the build, suppression still moves the window within a build
+// and ends when the build does.
+//
+// A collision costs one build a suppressed window, so a failed read of the
+// system source falls back to the clock and the pid rather than to a constant.
+var buildID = newBuildID()
+
+func newBuildID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
+}
 
 // Request kinds. A server that cannot tell these apart cannot tell a build
 // that is waiting from one that is merely reading ahead.

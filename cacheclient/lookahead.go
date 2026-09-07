@@ -118,6 +118,24 @@ func (la *lookAhead) Close() {
 	}
 	close(la.stop)
 	la.wg.Wait()
+	la.report()
+}
+
+// report states what the pool actually did. Without it a build cannot tell a
+// look-ahead that covered it from one that fetched nothing: both print the same
+// batch GET line, because the critical path's own requests carry no prefetch.
+//
+// Entries is what the pool handed the populator, not what the build went on to
+// use. Dropped counts seeds refused for a full queue. A large Requests against
+// a small Entries means the mtime window around this build's keys holds nobody
+// else's work worth having.
+func (la *lookAhead) report() {
+	reqs := la.Requests.Load()
+	if reqs == 0 {
+		return
+	}
+	logging.Infof("cacheprog: look-ahead: %d requests -> %d entries, %d seeds dropped",
+		reqs, la.Entries.Load(), la.Dropped.Load())
 }
 
 func (la *lookAhead) worker() {

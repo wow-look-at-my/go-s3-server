@@ -32,11 +32,20 @@ func putObject(t *testing.T, ts *http.Client, url, key string, data []byte, meta
 }
 
 func doBatchGet(client *http.Client, url string, body []byte) (*http.Response, error) {
+	return doBatchGetAs(client, url, body, "")
+}
+
+// doBatchGetAs issues a batch GET as one named build. An empty build sends no
+// header, which is the older client the scope has to keep working for.
+func doBatchGetAs(client *http.Client, url string, body []byte, build string) (*http.Response, error) {
 	req, err := http.NewRequest("GET", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if build != "" {
+		req.Header.Set(headerBuild, build)
+	}
 	return client.Do(req)
 }
 
@@ -234,6 +243,49 @@ func TestBatchGet_PrefetchSuppression(t *testing.T) {
 				"key %q was already prefetched in first response; should be suppressed", e.Key)
 		}
 	}
+}
+
+// Suppression ends with the build that earned it. It was scoped to the user
+// for five minutes, and one user runs several builds in five minutes: the
+// first build was handed the window and every build after it was handed an
+// empty one, so a second build in a row fetched every object on its critical
+// path and finished slower than a build with no cache at all.
+func TestBatchGet_PrefetchSuppressionIsPerBuild(t *testing.T) {
+	ts := testSetup(t)
+	client := ts.Client()
+
+	putObject(t, client, ts.URL, "cache/v1b1", []byte("data1"), map[string]string{"Outputid": "o1"})
+	putObject(t, client, ts.URL, "cache/v1b2", []byte("data2"), map[string]string{"Outputid": "o2"})
+	putObject(t, client, ts.URL, "cache/v1b3", []byte("data3"), map[string]string{"Outputid": "o3"})
+
+	batchURL := ts.URL + "/testbucket/_batch/get"
+	body, _ := json.Marshal(batchGetRequest{Keys: []string{"cache/v1b1"}, Prefetch: true})
+
+	prefetchedBy := func(build string) map[string]bool {
+		resp, err := doBatchGetAs(client, batchURL, body, build)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Equal(t, 200, resp.StatusCode)
+		manifest, _ := parseBatchResponse(t, resp.Body)
+		got := map[string]bool{}
+		for _, e := range manifest.Entries {
+			if e.Prefetch {
+				got[e.Key] = true
+			}
+		}
+		return got
+	}
+
+	first := prefetchedBy("build-one")
+	require.NotEmpty(t, first, "the first build must be given a window")
+
+	// Same user, same keys, same instant: only the build differs.
+	second := prefetchedBy("build-two")
+	assert.Equal(t, first, second, "a second build must be given the same window, not an empty one")
+
+	// Within one build, suppression still holds, or a build receives the same
+	// pool on every look-ahead request for its whole run.
+	assert.Empty(t, prefetchedBy("build-one"), "a repeat request from one build stays suppressed")
 }
 
 // Suppression must not stop prefetch. Selection skips already-sent keys as it

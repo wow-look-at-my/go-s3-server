@@ -24,7 +24,17 @@ shared:
 				sed 's/^/server: /' "$log" >&2
 				exit 1
 			fi
-			bash "$check"
+			# A failing check gets the server's log too. Without this a check
+			# that cannot reach a server which HAD answered reports only its own
+			# exit status, and the one process that knows why says nothing.
+			status=0
+			bash "$check" || status=$?
+			if [ "$status" -ne 0 ]; then
+				echo "the check exited $status" >&2
+				kill -0 "$server" 2>/dev/null || echo "the server had already exited" >&2
+				sed 's/^/server: /' "$log" >&2
+			fi
+			exit "$status"
 
 tests:
 	- desc: the first PUT of a key stores it

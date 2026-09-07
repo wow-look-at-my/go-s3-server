@@ -126,6 +126,22 @@ and metadata), and moves one number: the scale applied to every cache budget.
 The gap between 85 % and 65 % is hysteresis; without it the scale would
 oscillate on every sample.
 
+## The client pays for the index in every process, and that is the larger cost
+
+Everything above bounds the SERVER. The client has its own resident cost. It is much larger. Every `go` process carries a private copy. One `go install std` against a store of about 1,008,000 keys, peak RSS of one process:
+
+| configuration | peak RSS |
+| --- | --- |
+| no shared cache | 36 MiB |
+| cache on, `GO_TOOLCHAIN_CACHE_LOOKAHEAD=0` | 324 MiB |
+| cache on, look-ahead on | 416 MiB |
+
+So the index costs about 288 MiB. The look-ahead pool costs about 92 MiB. The pool now has a byte budget. The index has none. The index is the bigger number.
+
+The keys are already compact. `actionHash` is `[32]byte`, so a million of them is 32 MiB of key material. The other 250 MiB is what a Go map charges to hold them: buckets, growth slack, and a second set for `knownMiss`. A sorted slice with a binary-search lookup stores the same keys in the 32 MiB and nothing else. What that costs to write is the mutation. `keys` gains entries from Put claims while the build runs, under a lock.
+
+This is what exhausts a build fleet rather than one build. A `dist test` leg runs many `go` processes at once. The machine's total is 324 MiB times that count. A 16 GiB windows runner then reports "Out of memory" with an empty log.
+
 ## Measured
 
 The shipped binary at `GOMEMLIMIT=16MiB` — far below what the load needs —

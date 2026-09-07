@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // fakeBatchServer returns an httptest.Server that mimics the /_batch/get
@@ -52,9 +53,9 @@ func fakeBatchServer(t *testing.T, store map[string][]byte, meta map[string]map[
 
 			var entries []batchGetManifestEntry
 			dataMap := map[string][]byte{}
-			requested := map[string]bool{}
+			requested := set.New[string]()
 			for _, key := range req.Keys {
-				requested[key] = true
+				requested.Add(key)
 				d, ok := store[key]
 				// PrefetchOnly names its keys to say where to look, and wants
 				// none of their bodies back.
@@ -72,7 +73,7 @@ func fakeBatchServer(t *testing.T, store map[string][]byte, meta map[string]map[
 			// as the window around those keys.
 			if req.Prefetch {
 				for key, d := range store {
-					if requested[key] {
+					if requested.Contains(key) {
 						continue
 					}
 					entries = append(entries, batchGetManifestEntry{
@@ -441,10 +442,18 @@ func TestGet_CoalescesConcurrentRequestsIntoOneHTTPRequest(t *testing.T) {
 	}
 	wg.Wait()
 
-	// batchMaxKeys plus coalescing should fit every caller into a couple of requests.
+	// Coalescing must still fold hundreds of callers into a handful of requests.
+	//
+	// The bound is 5 rather than 3 because the window is Nagle's rule now: the
+	// first batch leaves the moment it exists instead of sitting out a fixed
+	// 10ms, so it carries however many keys had arrived by then -- sometimes
+	// one. That costs an extra request under a 200-way burst and saves the
+	// whole 10ms on every lookup of an ordinary build, which never has more
+	// than its own -p keys outstanding. Batches still form under load, which
+	// is what the maximum below pins.
 	calls := atomic.LoadInt32(&batchHTTPCalls)
-	require.LessOrEqual(t, calls, int32(3),
-		"expected ≤3 HTTP requests for %d parallel Gets, got %d (no client-side batching)", N, calls)
+	require.LessOrEqual(t, calls, int32(5),
+		"expected ≤5 HTTP requests for %d parallel Gets, got %d (no client-side batching)", N, calls)
 	require.Greater(t, atomic.LoadInt32(&maxKeysInOneRequest), int32(1),
 		"expected at least one HTTP request to carry multiple keys; max was %d", atomic.LoadInt32(&maxKeysInOneRequest))
 }

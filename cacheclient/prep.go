@@ -6,12 +6,19 @@ import (
 )
 
 // putJob is a claimed object waiting for a prep worker.
+//
+// The body arrives one of two ways. data carries it for a caller that already
+// holds the bytes. path names a file for a caller that does not, and then the
+// body is not resident while the job waits: the queue is four times the worker
+// count deep, so a body held from submit to prepare cost four times the peak a
+// body read ON the worker does.
 type putJob struct {
 	actionID string
 	key      string
 	hash     actionHash
 	outputID string
 	data     []byte
+	path     string
 }
 
 // prepPool compresses outgoing objects.

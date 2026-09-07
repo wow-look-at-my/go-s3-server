@@ -61,6 +61,7 @@ type lookAhead struct {
 	// how a windows runner reached "Out of memory" with an empty log.
 	held   atomic.Int64
 	budget int64
+	chunk  int64 // bytes one worker may hold between hand-offs
 
 	Requests AtomicCounter // look-ahead round trips issued
 	Entries  AtomicCounter // entries they brought back
@@ -96,7 +97,30 @@ func (la *lookAhead) charge(entries []BatchEntry) func() {
 // lookAheadChunk is how many entries a worker hands the populator at once. It
 // trades a few more calls for a resident set that does not grow with whatever
 // the server chose to send.
+//
+// A COUNT IS NOT A SIZE, which is the whole reason chunkBudget exists beside
+// it. Sixteen compiled archives are megabytes, and every worker may hold that
+// many at once.
 const lookAheadChunk = 16
+
+// minChunkBudget keeps a worker's hand-off from degenerating to one entry at a
+// time on a small budget. One entry is always held whatever this says: a pool
+// that can carry nothing is a pool that fetches and discards.
+const minChunkBudget = 256 << 10
+
+// chunkBudget is the bytes one worker may accumulate before handing them over.
+// The pool's peak is the worker count times this, so dividing the budget across
+// the workers is what makes the budget describe the pool rather than one fetch.
+func chunkBudget(budget int64, workers int) int64 {
+	if budget <= 0 || workers <= 0 {
+		return 0 // unbounded, as an unset budget asks for
+	}
+	per := budget / int64(workers)
+	if per < minChunkBudget {
+		per = minChunkBudget
+	}
+	return per
+}
 
 // lookAheadDefaults returns the worker count and queue depth. Workers scale
 // with the machine because each one is a socket read, not a core's worth of
@@ -117,12 +141,14 @@ func newLookAhead(b *WebBackend) *lookAhead {
 	if workers <= 0 {
 		return nil
 	}
+	budget := lookAheadBudget()
 	la := &lookAhead{
 		b:      b,
 		seeds:  make(chan []string, depth),
 		stop:   make(chan struct{}),
 		seeded: set.New[string](),
-		budget: lookAheadBudget(),
+		budget: budget,
+		chunk:  chunkBudget(budget, workers),
 	}
 	la.wg.Add(workers)
 	for range workers {
@@ -240,17 +266,29 @@ func (la *lookAhead) expand(seed []string) {
 		return
 	}
 	// The window is handed over in chunks as it arrives, so a worker holds a
-	// chunk rather than the whole response. The budget above bounds the pool;
-	// this bounds each worker inside it.
+	// chunk rather than the whole response. The gate above only decides whether
+	// to START this fetch, so what bounds the pool is the byte cap on a chunk
+	// times the workers, plus the re-check after each hand-off.
 	var (
-		chunk  []BatchEntry
-		count  int
-		flush  = func() {}
-		ingest = func(e BatchEntry) {
+		chunk     []BatchEntry
+		chunkSize int64
+		count     int
+		full      bool
+		flush     = func() {}
+		ingest    = func(e BatchEntry) {
+			// The pool filled up while this window was streaming. The rest of it
+			// goes on the floor rather than into memory nobody asked for: the
+			// keys stay in the index, so a later hit asks for them again.
+			if full {
+				la.Dropped.Increment()
+				return
+			}
 			count++
 			chunk = append(chunk, e)
-			if len(chunk) >= lookAheadChunk {
+			chunkSize += int64(len(e.Data))
+			if len(chunk) >= lookAheadChunk || (la.chunk > 0 && chunkSize >= la.chunk) {
 				flush()
+				full = la.overBudget()
 			}
 		}
 	)
@@ -264,6 +302,7 @@ func (la *lookAhead) expand(seed []string) {
 		b.OnBatchEntries(chunk)
 		release()
 		chunk = nil
+		chunkSize = 0
 	}
 
 	err = streamBatchResponse(resp.Body, ingest)

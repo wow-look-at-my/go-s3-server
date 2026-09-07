@@ -101,7 +101,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		a.Label = objectLabel(meta.Metadata)
 	}
 	getRequestsTotal.WithLabelValues("hit").Inc()
-	recordObject(agg, meta.Metadata, meta.Size, false, false)
+	recordObject(agg, provenanceOf(r), meta.Metadata, meta.Size, false, false)
 
 	emitObjectHeaders(w, meta)
 	w.WriteHeader(200)
@@ -223,7 +223,7 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		// A chunked upload declares no length. The body was streamed, so the
 		// count is unknown here rather than zero -- max(0) keeps it out of the
 		// byte rate instead of inventing a size.
-		recordObject(agg, meta, max(r.ContentLength, 0), true, false)
+		recordObject(agg, provenanceOf(r), meta, max(r.ContentLength, 0), true, false)
 	}
 	// stored and dropped (module index) are both 200/no-error to the client: a
 	// dropped index is a no-op (the client recomputes it locally on the miss).

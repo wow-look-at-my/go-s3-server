@@ -10,9 +10,9 @@ import (
 func TestBatchTimingsSplitWaitFromRoundTrip(t *testing.T) {
 	var timing batchTiming
 	timing.recordWait(4, 10*time.Millisecond)
-	timing.recordTrip(2*time.Millisecond)
+	timing.recordTrip(2 * time.Millisecond)
 	timing.recordWait(2, 10*time.Millisecond)
-	timing.recordTrip(2*time.Millisecond)
+	timing.recordTrip(2 * time.Millisecond)
 
 	got := timing.snapshot()
 	assert.Equal(t, uint64(2), got.Batches)

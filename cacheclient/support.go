@@ -16,21 +16,25 @@ func NewBareBackend(prefix string) *WebBackend {
 	}
 	return &WebBackend{
 		prefix:    prefix,
-		keys:      set.New[string](),
-		knownMiss: set.New[string](),
+		keys:      set.New[actionHash](),
+		knownMiss: set.New[actionHash](),
 	}
 }
 
 // MarkPresent records that the remote holds actionID, the same claim a Put
 // makes. A Get for a claimed key takes the batch path instead of missing.
 func (b *WebBackend) MarkPresent(actionID string) {
-	key := b.key(actionID)
+	h, ok := parseActionHash(actionID)
+	if !ok {
+		return
+	}
 	b.keysMu.Lock()
-	b.keys.Add(key)
+	b.keys.Add(h)
 	b.keysMu.Unlock()
 }
 
 // Present reports whether actionID is claimed, by the startup index or a Put.
 func (b *WebBackend) Present(actionID string) bool {
-	return b.keyKnown(b.key(actionID))
+	h, ok := parseActionHash(actionID)
+	return ok && b.keyKnown(h)
 }

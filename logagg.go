@@ -11,7 +11,21 @@ import (
 	"time"
 
 	"github.com/wow-look-at-my/go-containers/set"
-	"github.com/wow-look-at-my/go-s3-server/cacheclient"
+)
+
+// The provenance headers a client stamps on its requests. They are spelled out
+// here rather than imported from cacheclient, because a server reads them the
+// way it reads Content-Type: as a wire contract that any client version may or
+// may not honor. Importing the client to name them would put the client's whole
+// package in the server's dependency graph, and with it in the server's
+// coverage, for five strings.
+//
+// TestProvenanceHeadersMatchTheClient pins them against the client's own
+// constants, so the two cannot drift apart in silence.
+const (
+	headerModule  = "X-Cache-Module"
+	headerKind    = "X-Cache-Kind"
+	kindLookAhead = "look-ahead"
 )
 
 // The access log has two modes.
@@ -278,8 +292,8 @@ func provenanceOf(r *http.Request) requestProvenance {
 		return requestProvenance{}
 	}
 	return requestProvenance{
-		module:    r.Header.Get(cacheclient.HeaderModule),
-		lookAhead: r.Header.Get(cacheclient.HeaderKind) == cacheclient.KindLookAhead,
+		module:    r.Header.Get(headerModule),
+		lookAhead: r.Header.Get(headerKind) == kindLookAhead,
 	}
 }
 

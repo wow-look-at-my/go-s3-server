@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/go-s3-server/cacheclient"
 )
 
 // captureAggregator returns an aggregator whose clock and output the test
@@ -128,6 +129,15 @@ func TestNilAggregatorRecordsNothing(t *testing.T) {
 		a.Stop()
 		recordObject(a, requestProvenance{}, map[string]string{"module": "example.com/x"}, 10, true, false)
 	}, "verbose mode installs no aggregator, and every record site must tolerate that")
+}
+
+// The server names the provenance headers itself so the client stays out of
+// its dependency graph. That only holds if the two spellings agree, which is
+// what this pins -- in a test, where importing the client costs nothing.
+func TestProvenanceHeadersMatchTheClient(t *testing.T) {
+	assert.Equal(t, cacheclient.HeaderModule, headerModule)
+	assert.Equal(t, cacheclient.HeaderKind, headerKind)
+	assert.Equal(t, cacheclient.KindLookAhead, kindLookAhead)
 }
 
 func TestProjectOfPrefersTheModuleThenTrimsTheImportPath(t *testing.T) {

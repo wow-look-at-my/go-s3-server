@@ -31,7 +31,7 @@ func TestWebBackend_EmptyIndexSkipsBatch(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	var batchGets, puts atomic.Int64
 	// A real empty blob: no keys, reported authoritatively. A missing index is a fetch failure instead (see the sibling test).
-	srv := emptyIndexServer(t, &batchGets, &puts, marshalIndex(set.New[actionHash]()))
+	srv := emptyIndexServer(t, &batchGets, &puts, marshalIndex(newHashSet(0)))
 	defer srv.Close()
 
 	b, err := NewWebBackend(WebConfig{

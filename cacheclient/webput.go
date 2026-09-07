@@ -3,6 +3,7 @@ package cacheclient
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +36,28 @@ type putReq struct {
 // somewhere better to be. The one thing Put does synchronously is claim the
 // key, which is what stops two callers uploading the same object.
 func (b *WebBackend) Put(actionID, outputID string, data []byte) error {
+	return b.enqueuePut(actionID, outputID, data, "")
+}
+
+// PutFile is Put over a body that is still on disk, for a caller holding a file
+// rather than bytes. The read runs on a prep worker, so the caller neither
+// waits for it nor allocates the body, and the queue holds a path instead of
+// megabytes while the job waits its turn.
+//
+// The file must outlive the upload. Close drains the prep pool and the
+// coalescer, so a caller that closes this backend before deleting the file is
+// safe; one that deletes earlier is not.
+func (b *WebBackend) PutFile(actionID, outputID, path string) error {
+	if path == "" {
+		return fmt.Errorf("web put %s: no path to read the body from", ShortID(actionID))
+	}
+	return b.enqueuePut(actionID, outputID, nil, path)
+}
+
+// enqueuePut claims the key and hands the object to a prep worker. The claim is
+// the one thing that happens on the caller's goroutine, because it is what
+// stops two callers uploading the same object.
+func (b *WebBackend) enqueuePut(actionID, outputID string, data []byte, path string) error {
 	h, ok := parseActionHash(actionID)
 	if !ok {
 		return fmt.Errorf("web put: %q is not an action ID", actionID)
@@ -50,7 +73,8 @@ func (b *WebBackend) Put(actionID, outputID string, data []byte) error {
 	b.keys.Add(h)
 	b.keysMu.Unlock()
 
-	if !b.prep.submit(putJob{actionID: actionID, key: b.key(actionID), hash: h, outputID: outputID, data: data}) {
+	j := putJob{actionID: actionID, key: b.key(actionID), hash: h, outputID: outputID, data: data, path: path}
+	if !b.prep.submit(j) {
 		// Nowhere to run the work: drop the claim so a later run re-uploads.
 		b.removeClaimed(h)
 	}
@@ -63,6 +87,20 @@ func (b *WebBackend) Put(actionID, outputID string, data []byte) error {
 // build's own goroutine right after a compile finished -- the one moment that
 // goroutine could have started the next compile instead.
 func (b *WebBackend) prepare(j putJob) {
+	// A file-backed job carries a path, and the body is read here rather than by
+	// the caller. A file that has gone is a dropped upload, not a broken build,
+	// but it is never silent: the claim must go too, or the key stays claimed
+	// and nothing ever stores it.
+	if j.data == nil && j.path != "" {
+		data, err := os.ReadFile(j.path)
+		if err != nil {
+			logging.Warnf("cacheprog: web put %s: read body: %v; not uploading this object", ShortID(j.actionID), err)
+			b.removeClaimed(j.hash)
+			return
+		}
+		j.data = data
+	}
+
 	// Cross-contamination guard: refuse to publish a package under a key that disagrees
 	// with its own build id. The body<->outputID hash alone cannot catch a swapped
 	// (actionID, object) pair, so this is the only defense against poisoning the cache.

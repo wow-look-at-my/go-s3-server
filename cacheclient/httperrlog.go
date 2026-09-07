@@ -159,11 +159,19 @@ func (l *httpErrLogger) flush() {
 	l.groups = map[httpErrKey]*httpErrGroup{}
 	l.batchHTTP = map[batchHTTPKey]*batchHTTPGroup{}
 	l.mu.Unlock()
+	// A failure goes to the writer this logger captured, which is the one
+	// destination SetLogger cannot reach. A consumer that wants its build's
+	// output clean still has to hear that the cache stopped working.
 	for k, g := range groups {
 		fmt.Fprintln(l.w, formatGroup(k, g))
 	}
+	// A batch summary is not a failure. It says the cache is working, once per
+	// flush for the life of the process, so it goes through the Logger like
+	// every other routine line and the consumer decides whether to print it.
+	// On the writer it was unreachable by SetLogger, and a consumer whose
+	// output is DATA -- a go command somebody parses -- had no way to quiet it.
 	for k, g := range batchHTTP {
-		fmt.Fprintln(l.w, formatBatchHTTPGroup(k, g))
+		logging.Infof("%s", formatBatchHTTPGroup(k, g))
 	}
 }
 

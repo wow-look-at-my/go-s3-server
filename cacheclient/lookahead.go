@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wow-look-at-my/go-containers/set"
@@ -25,10 +26,10 @@ import (
 //
 // Two properties decide where that work runs.
 //
-// It must not ride the request the build is blocked on. A prefetch answer is
-// up to prefetchBudget bytes of bodies nobody is waiting for, in front of the
-// four the compiler is stalled on, on one connection. That is how a cache ends
-// up slower than no cache at all.
+// It must not ride the request the build is blocked on. A prefetch answer is a
+// window of bodies nobody is waiting for, in front of the four the compiler is
+// stalled on, on one connection. That is how a cache ends up slower than no
+// cache at all.
 //
 // And it must not be bounded by the build's parallelism. The build's -p is a
 // count of compilers, chosen for the machine's cores. Fetching is not
@@ -48,9 +49,48 @@ type lookAhead struct {
 	mu     sync.Mutex
 	seeded set.Set[string]
 
+	// held is what the workers are carrying right now, in bytes, and budget is
+	// what they may carry between them. A worker reads a whole batch response
+	// into memory before the populator sees any of it, so without this the
+	// pool's peak is workers times whatever the server chose to send.
+	//
+	// The server caps a window at maxPrefetchEntries, which counts ENTRIES. A
+	// count is not a size. It also has no idea how many of these pools exist:
+	// `dist test` runs many go processes at once and each one builds its own,
+	// so the machine's total is this budget times the number of builds. That is
+	// how a windows runner reached "Out of memory" with an empty log.
+	held   atomic.Int64
+	budget int64
+
 	Requests AtomicCounter // look-ahead round trips issued
 	Entries  AtomicCounter // entries they brought back
-	Dropped  AtomicCounter // seeds refused because the queue was full
+	Dropped  AtomicCounter // seeds refused: the queue was full, or the budget was spent
+}
+
+// lookAheadBudget is what one pool may hold in memory at once. Look-ahead is
+// speculation, so the answer to a full budget is to drop the seed rather than
+// to wait: the build never asked for these bytes.
+func lookAheadBudget() int64 {
+	return int64(envInt("GO_TOOLCHAIN_CACHE_LOOKAHEAD_BYTES", 32<<20))
+}
+
+// overBudget reports whether the workers are already carrying everything this
+// pool may hold. A budget of zero or less holds nothing back, which is what a
+// caller asking for no bound gets.
+func (la *lookAhead) overBudget() bool {
+	return la.budget > 0 && la.held.Load() >= la.budget
+}
+
+// charge records what this worker holds and returns the release. The gate reads
+// the same counter, so a window already in memory is what stops the next worker
+// from fetching another one.
+func (la *lookAhead) charge(entries []BatchEntry) func() {
+	var n int64
+	for i := range entries {
+		n += int64(len(entries[i].Data))
+	}
+	la.held.Add(n)
+	return func() { la.held.Add(-n) }
 }
 
 // lookAheadDefaults returns the worker count and queue depth. Workers scale
@@ -77,6 +117,7 @@ func newLookAhead(b *WebBackend) *lookAhead {
 		seeds:  make(chan []string, depth),
 		stop:   make(chan struct{}),
 		seeded: set.New[string](),
+		budget: lookAheadBudget(),
 	}
 	la.wg.Add(workers)
 	for range workers {
@@ -159,6 +200,13 @@ func (la *lookAhead) expand(seed []string) {
 	if b.OnBatchEntries == nil {
 		return
 	}
+	// Over budget, this seed goes on the floor. Waiting for room would hold a
+	// worker on bodies nobody asked for, and the window is still there to be
+	// asked for again from the next key that hits.
+	if la.overBudget() {
+		la.Dropped.Add(uint32(len(seed)))
+		return
+	}
 	body, err := json.Marshal(batchGetRequest{Keys: seed, Prefetch: true, PrefetchOnly: true})
 	if err != nil {
 		return
@@ -192,6 +240,8 @@ func (la *lookAhead) expand(seed []string) {
 	if err != nil || len(entries) == 0 {
 		return
 	}
+	defer la.charge(entries)()
+
 	la.Entries.Add(uint32(len(entries)))
 	b.batchTiming.recordLookAhead(len(entries), time.Since(start))
 	// Each worker ingests its own answer, so verification and the local write

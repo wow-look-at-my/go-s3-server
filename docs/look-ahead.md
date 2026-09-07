@@ -32,12 +32,24 @@ A hit seeds the pool with the keys that answered, deduplicated. A key that misse
 
 | | wall | bytes | allocations |
 |---|---|---|---|
-| loopback, old (carried=32) | 32.3 ms | 13.9 MB | 33,318 |
-| loopback, new (carried=0) | 24.2 ms | 8.7 MB | 7,274 |
-| 5 ms RTT, old (carried=32) | 157.7 ms | 9.9 MB | 33,296 |
-| 5 ms RTT, new (carried=0) | 149.6 ms | 7.1 MB | 7,282 |
+| loopback, old (lz4, carried=32) | 32.3 ms | 13.9 MB | 33,318 |
+| loopback, new (zstd, carried=0) | 23.0 ms | 4.2 MB | 6,443 |
+| 5 ms RTT, old (lz4, carried=32) | 161.2 ms | 7.1 MB | 32,546 |
+| 5 ms RTT, new (zstd, carried=0) | 152.2 ms | 4.3 MB | 6,500 |
 
-A quarter of the wall time and four and a half times the allocations, spent on bodies nobody asked for. On a real link the byte column dominates. There the round trip is tens of milliseconds and the bandwidth is finite.
+That is 29% off the wall time, 70% off the memory, and five times fewer allocations. Most of the remaining wall time is the round trips, which no client can remove. Most of what went was bodies nobody asked for. On a real link the byte column dominates: there the round trip is tens of milliseconds and the bandwidth is finite.
+
+## The wire codec
+
+The codec is zstd. It replaced lz4 because this cache's constraint is bandwidth rather than compression speed. A build waiting on a link cares how many bytes cross it. zstd carries far fewer of them for a comparable cost. The compression itself now runs on the prep pool, off the goroutine that just finished a compile.
+
+A stored object names its codec in its own first four bytes. So a store holding both is read correctly without consulting metadata, and without a migration. The lz4 reader stays for as long as lz4 objects do.
+
+The server reads that frame magic too, rather than the `compression` metadata. The two can disagree. Metadata lives in an xattr, and a `data_dir` copy that does not preserve xattrs loses it. That is the same failure `selfheal.go` exists to repair. The bytes cannot disagree with themselves.
+
+One caller must not accept an unrecognized frame. `reconstructOutputID` hashes a decompressed body to rebuild a lost content address. A body that never decompressed hashes as it stands. That mints a confident wrong answer, and wedges the key for good. So `decompressingReader` reports which codec it recognized. That caller refuses an empty one.
+
+`GO_TOOLCHAIN_CACHE_ZSTD_LEVEL` buys a smaller wire for more CPU.
 
 ## The rest of the read path
 

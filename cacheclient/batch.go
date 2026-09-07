@@ -49,13 +49,41 @@ type BatchEntry struct {
 	RawSize int64
 }
 
-// parseBatchResponse reads a tar stream from the server's /_batch/get
-// endpoint and returns all entries with their data and metadata.
-func parseBatchResponse(r io.Reader) ([]BatchEntry, error) {
+// streamBatchResponse reads a tar stream from the server's /_batch/get endpoint
+// and hands each entry to fn as it arrives.
+//
+// It streams because the alternative was the client's largest resident cost. A
+// response carries up to batchMaxKeys requested bodies plus the server's whole
+// prefetch window, several requests are in flight at once, and every `go`
+// process in a `dist test` run builds its own. Nothing bounded the BYTES: the
+// caps upstream and downstream both count ENTRIES, and a count is not a size.
+// That is what put a windows runner into ERROR_COMMITMENT_LIMIT.
+//
+// The server writes manifest.json as the tar's FIRST member, so an entry's
+// metadata is always known by the time its body arrives. Holding one body
+// rather than the whole tar is what that ordering buys, and it also unblocks a
+// waiting caller as its own body lands instead of after the last one.
+func streamBatchResponse(r io.Reader, fn func(BatchEntry)) error {
 	tr := tar.NewReader(r)
 
 	var manifest batchGetManifest
-	dataByKey := map[string][]byte{}
+	meta := map[string]*batchGetManifestEntry{}
+
+	readMember := func(tr *tar.Reader, hdr *tar.Header) ([]byte, error) {
+		// The header states the size, so the body lands in one exactly-sized
+		// allocation rather than io.ReadAll's doubling.
+		raw := make([]byte, hdr.Size)
+		n, err := io.ReadFull(tr, raw)
+		if err != nil {
+			// Say how far it got. A cut response and a server that stopped
+			// after one member both surface as "unexpected EOF", and the
+			// counts are what tell them apart. Entries handed over before this
+			// point are already the caller's -- streaming means a truncated
+			// response costs the tail, not the batch.
+			return nil, fmt.Errorf("read entry %s: %d of %d bytes: %w", hdr.Name, n, hdr.Size, err)
+		}
+		return raw, nil
+	}
 
 	for {
 		hdr, err := tr.Next()
@@ -63,42 +91,56 @@ func parseBatchResponse(r io.Reader) ([]BatchEntry, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("read tar: %w", err)
-		}
-
-		// The header states the size, so the body lands in one exactly-sized
-		// allocation rather than io.ReadAll's doubling.
-		raw := make([]byte, hdr.Size)
-		if _, err := io.ReadFull(tr, raw); err != nil {
-			return nil, fmt.Errorf("read entry %s: %w", hdr.Name, err)
+			return fmt.Errorf("read tar: %w", err)
 		}
 
 		if hdr.Name == "manifest.json" {
+			// The header states the size, so the body lands in one exactly-sized
+			// allocation rather than io.ReadAll's doubling.
+			raw, err := readMember(tr, hdr)
+			if err != nil {
+				return err
+			}
 			if err := json.Unmarshal(raw, &manifest); err != nil {
-				return nil, fmt.Errorf("parse manifest: %w", err)
+				return fmt.Errorf("parse manifest: %w", err)
+			}
+			for i := range manifest.Entries {
+				meta[manifest.Entries[i].Key] = &manifest.Entries[i]
 			}
 			continue
 		}
 
-		if len(hdr.Name) > 5 && hdr.Name[:5] == "data/" {
-			dataByKey[hdr.Name[5:]] = raw
-		}
-	}
-
-	entries := make([]BatchEntry, 0, len(manifest.Entries))
-	for _, me := range manifest.Entries {
-		data, ok := dataByKey[me.Key]
-		if !ok {
+		if len(hdr.Name) <= 5 || hdr.Name[:5] != "data/" {
 			continue
 		}
+		me, ok := meta[hdr.Name[5:]]
+		if !ok {
+			// A body the manifest never named. The old code dropped it too, by
+			// walking the manifest rather than the members.
+			continue
+		}
+		raw, err := readMember(tr, hdr)
+		if err != nil {
+			return err
+		}
 		rawSize, _ := strconv.ParseInt(me.Metadata["body-size"], 10, 64)
-		entries = append(entries, BatchEntry{
+		fn(BatchEntry{
 			Key:      me.Key,
 			OutputID: me.Metadata["outputid"],
-			Data:     data,
+			Data:     raw,
 			Prefetch: me.Prefetch,
 			RawSize:  rawSize,
 		})
+	}
+	return nil
+}
+
+// parseBatchResponse collects a whole response. It is the shape the tests were
+// written against; the paths that carry real traffic stream instead.
+func parseBatchResponse(r io.Reader) ([]BatchEntry, error) {
+	var entries []BatchEntry
+	if err := streamBatchResponse(r, func(e BatchEntry) { entries = append(entries, e) }); err != nil {
+		return nil, err
 	}
 	return entries, nil
 }
@@ -255,49 +297,62 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 		return
 	}
 
-	entries, err := parseBatchResponse(resp.Body)
-	resp.Body.Close()
-	b.Pool.Release()
-	if err != nil {
-		logging.Warnf("cacheprog: web batch get: parse: %v", err)
-		respondAllMiss(&b.MissReadBody)
-		return
-	}
-
-	// A run of empty batches stops probing after a threshold; any non-empty batch resets it.
-	b.noteBatchEntries(len(entries))
-
-	trip := time.Since(start)
-	b.batchTiming.recordTrip(trip)
-	b.errLog.RecordBatchHTTP(len(reqs), len(entries), trip)
-
-	// Index returned entries by key for constant-time lookup.
-	entryByKey := make(map[string]*BatchEntry, len(entries))
-	for i := range entries {
-		entryByKey[entries[i].Key] = &entries[i]
-	}
-
-	hit := make([]string, 0, len(reqs))
+	// Each body is answered as it arrives rather than after the last one, so the
+	// response is never resident as a whole and a blocked caller waits only for
+	// its own object.
+	reqByKey := make(map[string]batchReq, len(reqs))
 	for _, r := range reqs {
-		e, ok := entryByKey[r.key]
+		reqByKey[r.key] = r
+	}
+	hit := make([]string, 0, len(reqs))
+	count := 0
+
+	err = streamBatchResponse(resp.Body, func(e BatchEntry) {
+		count++
+		r, ok := reqByKey[e.Key]
 		if !ok {
-			// Authoritative absence: a healthy response omitted this key. Drop the
-			// stale index claim (reclaimAbsent) so the PUT path re-uploads it.
-			if b.reclaimAbsent(r.hash) {
-				b.MissHTTP404.Increment()
-			}
-			r.resp <- batchResp{miss: true}
-			continue
+			return // a prefetched body nobody in this batch asked for
 		}
+		delete(reqByKey, e.Key)
 		data, ok := b.verify("web batch get", r.actionID, e.OutputID, e.Data, e.RawSize)
 		if !ok {
 			r.resp <- batchResp{miss: true}
-			continue
+			return
 		}
 		b.Stats.Hits.Increment()
 		hit = append(hit, r.key)
 		r.resp <- batchResp{outputID: e.OutputID, data: data, t: time.Now()}
+	})
+	resp.Body.Close()
+	b.Pool.Release()
+	if err != nil {
+		logging.Warnf("cacheprog: web batch get: parse: %v", err)
+		// Only the callers still waiting: one already answered must not be sent
+		// a second reply.
+		for _, r := range reqByKey {
+			if b.keyKnown(r.hash) {
+				b.MissReadBody.Increment()
+			}
+			r.resp <- batchResp{miss: true}
+		}
+		return
 	}
+
+	// Whatever the stream never named is authoritatively absent. Drop the stale
+	// index claim (reclaimAbsent) so the PUT path re-uploads it.
+	for _, r := range reqByKey {
+		if b.reclaimAbsent(r.hash) {
+			b.MissHTTP404.Increment()
+		}
+		r.resp <- batchResp{miss: true}
+	}
+
+	// A run of empty batches stops probing after a threshold; any non-empty batch resets it.
+	b.noteBatchEntries(count)
+
+	trip := time.Since(start)
+	b.batchTiming.recordTrip(trip)
+	b.errLog.RecordBatchHTTP(len(reqs), count, trip)
 
 	// The keys that answered are where this build's objects sit in the store's
 	// time order, and that order is the only anchor the look-ahead has. A key

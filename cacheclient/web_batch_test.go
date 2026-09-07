@@ -442,18 +442,20 @@ func TestGet_CoalescesConcurrentRequestsIntoOneHTTPRequest(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Coalescing must still fold hundreds of callers into a handful of requests.
+	// Coalescing must fold hundreds of callers into a handful of requests. Both
+	// bounds below are far from what this actually measures, on purpose.
 	//
-	// The bound is 5 rather than 3 because the window is Nagle's rule now: the
-	// first batch leaves the moment it exists instead of sitting out a fixed
-	// 10ms, so it carries however many keys had arrived by then -- sometimes
-	// one. That costs an extra request under a 200-way burst and saves the
-	// whole 10ms on every lookup of an ordinary build, which never has more
-	// than its own -p keys outstanding. Batches still form under load, which
-	// is what the maximum below pins.
+	// The exact count is scheduler noise. The window is Nagle's rule: the first
+	// batch leaves the moment it exists rather than sitting out a fixed 10ms, so
+	// it carries however many of the 200 goroutines had arrived by then. That is
+	// three requests on an idle machine and six on a loaded one, and an assertion
+	// pinned to the low end fails on a busy runner while measuring nothing about
+	// the client. What cannot happen with coalescing working is a request per
+	// caller. A tenth of the callers is an order of magnitude away from either
+	// answer, so it separates them under any interleaving.
 	calls := atomic.LoadInt32(&batchHTTPCalls)
-	require.LessOrEqual(t, calls, int32(5),
-		"expected ≤5 HTTP requests for %d parallel Gets, got %d (no client-side batching)", N, calls)
+	require.LessOrEqual(t, calls, int32(N/10),
+		"expected ≤%d HTTP requests for %d parallel Gets, got %d (no client-side batching)", N/10, N, calls)
 	require.Greater(t, atomic.LoadInt32(&maxKeysInOneRequest), int32(1),
 		"expected at least one HTTP request to carry multiple keys; max was %d", atomic.LoadInt32(&maxKeysInOneRequest))
 }

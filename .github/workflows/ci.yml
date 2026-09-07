@@ -33,6 +33,12 @@ jobs:
       # Builds, tests, runs dats/*.dats, and autoreleases the binary buildhost serves as an image.
       - uses: wow-look-at-my/go-toolchain@master
 
+      # cacheclient is its own module: without this step its tests never run.
+      - uses: wow-look-at-my/go-toolchain@master
+        with:
+          working-directory: cacheclient
+          autorelease: 'false'
+
   # Publishes oci.pazer.build/go-s3-server via GHA OIDC (no stored registry secret) -- the image the deployment pulls and docker-updater tracks; :latest moves only on the default branch. Restores the job #65 removed, which had neither a working action nor a Dockerfile.
   docker:
     needs: test

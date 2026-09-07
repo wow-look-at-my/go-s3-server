@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,25 +23,114 @@ const (
 	benchPerLevel = 4  // the build's -p: how many keys can be outstanding at once
 )
 
-// buildShapeServer answers /_batch/get with the requested bodies plus
-// carried speculative ones, after latency.
+// benchKey names the object a build asks for at one position in the walk.
+// runBuildShape and the fake server must agree on it, because a speculative
+// body for a key the build never asks for cannot model a prefetch that pays
+// off: it is pure cost by construction, whatever the client does with it.
+func benchKey(n int) string { return fmt.Sprintf("%064x", n) }
+
+// benchWireKey is the same object as it travels: Get takes a bare action ID
+// and the client prefixes it, so a manifest and a tier are keyed by this and
+// never by benchKey.
+func benchWireKey(n int) string { return gbciKeyPrefix + benchKey(n) }
+
+// benchKeyIndex reverses benchWireKey, and reports whether the key is one.
+func benchKeyIndex(key string) (int, bool) {
+	rest, ok := strings.CutPrefix(key, gbciKeyPrefix)
+	if !ok {
+		return 0, false
+	}
+	var n int
+	if _, err := fmt.Sscanf(rest, "%064x", &n); err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// localTier stands in for the disk cache cmd/go puts in front of this client,
+// which is the only place a look-ahead fetch can land.
 //
-// It attaches those extras to a blocking request WITHOUT being asked, which is
-// what the old wire shape did: the client set prefetch on every critical-path
-// batch, so a request four keys wide came back carrying dozens of bodies
-// nobody was waiting for. Reproducing it here rather than reintroducing the
-// flag is what makes the two shapes comparable.
+// A benchmark without one measures a client whose look-ahead is switched OFF:
+// expand returns at once when OnBatchEntries is nil, so the pool issues no
+// request at all. Nothing ships that way. cmd/go always installs
+// SharedCache.populate, and the build's next Get then reads what the pool
+// already put on disk instead of reaching the network.
+type localTier struct {
+	mu   sync.Mutex
+	objs map[string]struct{}
+	Hits int
+}
+
+func newLocalTier() *localTier { return &localTier{objs: map[string]struct{}{}} }
+
+func (t *localTier) store(entries []BatchEntry) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, e := range entries {
+		t.objs[e.Key] = struct{}{}
+	}
+}
+
+// take reports whether the object is already local, counting the hit.
+func (t *localTier) take(key string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, ok := t.objs[key]; !ok {
+		return false
+	}
+	t.Hits++
+	return true
+}
+
+// buildShapeServer answers /_batch/get after latency.
+//
+// The speculative bodies it attaches are the keys the build asks for at the
+// NEXT levels of the walk, which is what a real server's store locality
+// approximates. Where they ride decides which shape is under test.
+//
+// onBlocking is the old wire shape: the client set prefetch on every
+// critical-path batch, so a request four keys wide came back carrying dozens
+// of bodies nobody was waiting for yet. Reproducing it here rather than
+// reintroducing the flag is what makes the two shapes comparable.
+//
+// A PrefetchOnly request is the look-ahead pool asking for the window around a
+// seed, off the critical path. Answering it with nothing, as an earlier
+// version of this server did, leaves the pool unable to fetch anything and
+// makes every arm a no-prefetch arm.
 //
 // The latency stands in for a WAN round trip, which is where the difference
-// shows: on loopback a wasted megabyte is nearly free, and on a real link it is
-// the whole cost.
-func buildShapeServer(tb testing.TB, body []byte, carried int, latency time.Duration) *httptest.Server {
+// shows: on loopback a wasted megabyte is nearly free, and on a real link it
+// is the whole cost.
+func buildShapeServer(tb testing.TB, body []byte, carried int, onBlocking bool, latency time.Duration) *httptest.Server {
 	tb.Helper()
 	compressed, err := Compress(body)
 	if err != nil {
 		tb.Fatalf("compress: %v", err)
 	}
 	outputID := testOutputID(string(body))
+
+	// window names the keys stored around the requested ones: the next levels
+	// of the walk, in order, capped at carried.
+	window := func(keys []string) []string {
+		var out []string
+		for step := 1; len(out) < carried; step++ {
+			for _, k := range keys {
+				n, ok := benchKeyIndex(k)
+				if !ok {
+					continue
+				}
+				next := n + step*benchPerLevel
+				if next >= benchLevels*benchPerLevel || len(out) >= carried {
+					continue
+				}
+				out = append(out, benchWireKey(next))
+			}
+			if step > benchLevels {
+				break
+			}
+		}
+		return out
+	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/testbucket/_batch/get" {
@@ -54,23 +144,20 @@ func buildShapeServer(tb testing.TB, body []byte, carried int, latency time.Dura
 		}
 
 		var entries []batchGetManifestEntry
+		add := func(key string, prefetch bool) {
+			entries = append(entries, batchGetManifestEntry{
+				Key: key, Size: int64(len(compressed)), Prefetch: prefetch,
+				Metadata: map[string]string{"outputid": outputID},
+			})
+		}
 		if !req.PrefetchOnly {
 			for _, k := range req.Keys {
-				entries = append(entries, batchGetManifestEntry{
-					Key: k, Size: int64(len(compressed)),
-					Metadata: map[string]string{"outputid": outputID},
-				})
+				add(k, false)
 			}
 		}
-		// The speculative half. A real server picks these by store locality; what
-		// matters here is only that they are bodies nobody asked for, riding the
-		// request the build is blocked on.
-		if !req.PrefetchOnly {
-			for i := range carried {
-				entries = append(entries, batchGetManifestEntry{
-					Key: fmt.Sprintf("go-buildcache/v1%064x", 1<<40|i), Size: int64(len(compressed)),
-					Metadata: map[string]string{"outputid": outputID}, Prefetch: true,
-				})
+		if req.PrefetchOnly || onBlocking {
+			for _, k := range window(req.Keys) {
+				add(k, true)
 			}
 		}
 
@@ -90,9 +177,12 @@ func buildShapeServer(tb testing.TB, body []byte, carried int, latency time.Dura
 	return srv
 }
 
-// runBuildShape walks the levels, waiting for each before starting the next,
-// and answers with the wall time the whole walk took.
-func runBuildShape(tb testing.TB, b *WebBackend) {
+// runBuildShape walks the levels, waiting for each before starting the next.
+//
+// A key already in the local tier costs nothing: the build reads it and never
+// reaches the network. That is what a look-ahead fetch buys, and a run without
+// the tier cannot show it.
+func runBuildShape(tb testing.TB, b *WebBackend, tier *localTier) {
 	tb.Helper()
 	for level := range benchLevels {
 		var wg sync.WaitGroup
@@ -100,7 +190,11 @@ func runBuildShape(tb testing.TB, b *WebBackend) {
 			wg.Add(1)
 			go func(level, i int) {
 				defer wg.Done()
-				id := fmt.Sprintf("%064x", level*benchPerLevel+i)
+				n := level*benchPerLevel + i
+				if tier.take(benchWireKey(n)) {
+					return
+				}
+				id := benchKey(n)
 				b.MarkPresent(id)
 				b.Get(id)
 			}(level, i)
@@ -121,20 +215,28 @@ func BenchmarkBuildShape(bench *testing.B) {
 		body[i] = byte(i * 7)
 	}
 
-	// carried=0 is what the critical path asks for now. carried=32 is the shape
-	// it used to get: the same four keys, plus 32 bodies for nobody.
+	// Three shapes. none is the critical path alone, with nothing fetched
+	// ahead of it: the floor a cache must beat. blocking is the old wire
+	// shape, where the speculative bodies ride the request the build is
+	// waiting on. lookahead is what ships: the pool fetches the same window
+	// off the critical path, into the tier the build reads next.
 	for _, tc := range []struct {
-		name    string
-		carried int
-		latency time.Duration
+		name       string
+		carried    int
+		onBlocking bool
+		lookAhead  bool
+		latency    time.Duration
 	}{
-		{"lan/carried=0", 0, 0},
-		{"lan/carried=32", 32, 0},
-		{"wan/carried=0", 0, 5 * time.Millisecond},
-		{"wan/carried=32", 32, 5 * time.Millisecond},
+		{"lan/none", 0, false, false, 0},
+		{"lan/blocking", 32, true, false, 0},
+		{"lan/lookahead", 32, false, true, 0},
+		{"wan/none", 0, false, false, 5 * time.Millisecond},
+		{"wan/blocking", 32, true, false, 5 * time.Millisecond},
+		{"wan/lookahead", 32, false, true, 5 * time.Millisecond},
 	} {
 		bench.Run(tc.name, func(bench *testing.B) {
-			srv := buildShapeServer(bench, body, tc.carried, tc.latency)
+			srv := buildShapeServer(bench, body, tc.carried, tc.onBlocking, tc.latency)
+			var hits int
 			for range bench.N {
 				b, err := NewWebBackend(WebConfig{
 					Bucket: "testbucket", Endpoint: srv.URL,
@@ -143,8 +245,18 @@ func BenchmarkBuildShape(bench *testing.B) {
 				if err != nil || b == nil {
 					bench.Fatalf("backend: %v", err)
 				}
-				runBuildShape(bench, b)
+				tier := newLocalTier()
+				if tc.lookAhead {
+					b.OnBatchEntries = tier.store
+				}
+				runBuildShape(bench, b, tier)
 				b.Close()
+				hits += tier.Hits
+			}
+			// A look-ahead arm that never hit the tier measured the same thing
+			// as none, and would read as a speedup that is really a no-op.
+			if tc.lookAhead && hits == 0 {
+				bench.Fatal("look-ahead arm served no key from the local tier")
 			}
 		})
 	}

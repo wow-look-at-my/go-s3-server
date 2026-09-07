@@ -16,7 +16,10 @@ require (
 // a published version: protocol and server change together in one commit.
 replace github.com/wow-look-at-my/go-s3-server/cacheclient => ./cacheclient
 
-require github.com/prometheus/client_model v0.6.2
+require (
+	github.com/klauspost/compress v1.20.0
+	github.com/prometheus/client_model v0.6.2
+)
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect

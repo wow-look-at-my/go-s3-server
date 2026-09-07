@@ -101,7 +101,7 @@ func (b *WebBackend) prepare(j putJob) {
 		"outputid":    j.outputID,
 		"object-type": detectObjectType(j.data),
 		"body-size":   strconv.Itoa(len(j.data)),
-		"compression": "lz4",
+		"compression": "zstd",
 		"created":     time.Now().UTC().Format(time.RFC3339),
 	}
 	if b.version != "" {

@@ -2,28 +2,89 @@ package cacheclient
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 	"strconv"
 	"strings"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/pierrec/lz4/v4"
 )
 
-// Compress frames data as lz4, the wire form every stored body takes.
+// The wire codec is zstd. It replaced lz4 because the constraint on this cache
+// is bandwidth, not compression speed: a build that waits on a link cares how
+// many bytes cross it, and zstd carries far fewer for a comparable cost. The
+// compression itself runs on the prep pool, off the goroutine that just
+// finished a compile, so what it spends is no longer charged to the build.
+//
+// A stored object names its codec in its own first bytes, so a cache holding
+// both is read correctly without consulting metadata, and without a migration.
+// The lz4 reader therefore stays for as long as lz4 objects do.
+const (
+	zstdMagic = 0xFD2FB528
+	lz4Magic  = 0x184D2204
+)
+
+// zstdEncoder and zstdDecoder are shared. Building either one costs far more
+// than a single object, and EncodeAll and DecodeAll are safe for concurrent
+// use, which is what the prep and look-ahead pools need.
+var (
+	zstdEncoder = mustZstdEncoder()
+	zstdDecoder = mustZstdDecoder()
+)
+
+func mustZstdEncoder() *zstd.Encoder {
+	// Concurrency 1: the pools above already decide how many objects are in
+	// flight, and a second layer of goroutines per object only competes with
+	// them for the same cores.
+	e, err := zstd.NewWriter(nil,
+		zstd.WithEncoderLevel(zstdLevel()),
+		zstd.WithEncoderConcurrency(1))
+	if err != nil {
+		panic("cacheclient: zstd encoder: " + err.Error())
+	}
+	return e
+}
+
+func mustZstdDecoder() *zstd.Decoder {
+	d, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(0))
+	if err != nil {
+		panic("cacheclient: zstd decoder: " + err.Error())
+	}
+	return d
+}
+
+// zstdLevel picks the encoder level. The default trades a little ratio for a
+// lot of speed, which is the right default for a machine that also has to
+// compile. A bandwidth-bound deployment can buy a smaller wire.
+func zstdLevel() zstd.EncoderLevel {
+	switch envInt("GO_TOOLCHAIN_CACHE_ZSTD_LEVEL", 0) {
+	case 1:
+		return zstd.SpeedFastest
+	case 3:
+		return zstd.SpeedBetterCompression
+	case 4:
+		return zstd.SpeedBestCompression
+	default:
+		return zstd.SpeedDefault
+	}
+}
+
+// Compress frames data for the wire.
 func Compress(data []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	w := lz4.NewWriter(&buf)
-	if _, err := w.Write(data); err != nil {
-		return nil, err
-	}
-	if err := w.Close(); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	return zstdEncoder.EncodeAll(data, nil), nil
 }
 
 func Decompress(data []byte) ([]byte, error) {
 	return DecompressSized(data, 0)
+}
+
+// codecMagic reads the frame magic a stored body opens with.
+func codecMagic(data []byte) uint32 {
+	if len(data) < 4 {
+		return 0
+	}
+	return binary.LittleEndian.Uint32(data)
 }
 
 // DecompressSized is Decompress when the uncompressed length is already known,
@@ -36,8 +97,19 @@ func Decompress(data []byte) ([]byte, error) {
 // waste when the size was on the wire all along. A wrong size costs nothing
 // but the old behavior: the buffer is a starting capacity, not a promise.
 func DecompressSized(data []byte, size int64) ([]byte, error) {
+	presized := size > 0 && size <= maxPresizedBody
+
+	if codecMagic(data) == zstdMagic {
+		if presized {
+			return zstdDecoder.DecodeAll(data, make([]byte, 0, size))
+		}
+		return zstdDecoder.DecodeAll(data, nil)
+	}
+
+	// lz4, the codec this cache used to write. An object stored then is still
+	// served now.
 	r := lz4.NewReader(bytes.NewReader(data))
-	if size <= 0 || size > maxPresizedBody {
+	if !presized {
 		return io.ReadAll(r)
 	}
 	buf := bytes.NewBuffer(make([]byte, 0, size))

@@ -77,7 +77,7 @@ func TestWebBackend_PutAndGet(t *testing.T) {
 	require.Equal(t, outputID, h.Get("X-Cache-Meta-Outputid"))
 	require.Equal(t, "unknown", h.Get("X-Cache-Meta-Object-Type"))
 	require.Equal(t, strconv.Itoa(len(payload)), h.Get("X-Cache-Meta-Body-Size"))
-	require.Equal(t, "lz4", h.Get("X-Cache-Meta-Compression"))
+	require.Equal(t, "zstd", h.Get("X-Cache-Meta-Compression"))
 	require.NotEmpty(t, h.Get("X-Cache-Meta-Created"))
 	require.Equal(t, "v1.2.3", h.Get("X-Cache-Meta-Toolchain-Version"))
 	// Plain text body has no go object header, so these should be absent.

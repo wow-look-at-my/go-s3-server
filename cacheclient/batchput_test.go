@@ -401,7 +401,7 @@ func TestBatchPut_ManifestMetadataMatchesHeaders(t *testing.T) {
 	}
 
 	require.Equal(t, out, gotMeta["outputid"])
-	require.Equal(t, "lz4", gotMeta["compression"])
+	require.Equal(t, "zstd", gotMeta["compression"])
 	require.Equal(t, strconv.Itoa(len(payload)), gotMeta["body-size"])
 	require.NotEmpty(t, gotMeta["object-type"])
 	require.NotEmpty(t, gotMeta["created"])

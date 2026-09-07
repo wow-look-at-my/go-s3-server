@@ -8,7 +8,7 @@ import (
 
 // getIndividual fetches a single object stored under an individual cache key.
 // It is the fallback sendBatch uses against a server with no batch endpoint.
-func (b *WebBackend) getIndividual(actionID, key string) batchResp {
+func (b *WebBackend) getIndividual(actionID, key string, h actionHash) batchResp {
 	req, err := http.NewRequest("GET", b.url(key), nil)
 	if err != nil {
 		return batchResp{miss: true}
@@ -30,7 +30,7 @@ func (b *WebBackend) getIndividual(actionID, key string) batchResp {
 		b.Pool.Release()
 		b.MissHTTP404.Increment()
 		// Drop the stale index claim so the PUT path re-uploads; otherwise the key 404s forever.
-		b.reclaimAbsent(key)
+		b.reclaimAbsent(h)
 		return batchResp{miss: true}
 	}
 	if resp.StatusCode != 200 {
@@ -76,7 +76,7 @@ func (b *WebBackend) getIndividual(actionID, key string) batchResp {
 	if !ok {
 		// This path holds the key, so a refused body also loses its index
 		// claim: the recompute that follows is then free to re-upload it.
-		b.removeClaimed(key)
+		b.removeClaimed(h)
 		return batchResp{miss: true}
 	}
 
@@ -94,10 +94,10 @@ func (b *WebBackend) getIndividual(actionID, key string) batchResp {
 // getBatch enqueues this key on the coalescer and waits for the result.
 // Multiple concurrent callers funnel into the same outgoing HTTP request
 // instead of each making their own — see batchCoalescer / sendBatch.
-func (b *WebBackend) getBatch(actionID, key string) batchResp {
+func (b *WebBackend) getBatch(actionID, key string, h actionHash) batchResp {
 	respCh := make(chan batchResp, 1)
 	select {
-	case b.batchReqCh <- batchReq{actionID: actionID, key: key, resp: respCh}:
+	case b.batchReqCh <- batchReq{actionID: actionID, key: key, hash: h, resp: respCh}:
 	case <-b.batchStop:
 		// Backend is closing — return miss so the caller can fall back.
 		return batchResp{miss: true}
@@ -118,8 +118,8 @@ func (b *WebBackend) getBatch(actionID, key string) batchResp {
 
 // removeClaimed removes a key that was optimistically added to the index
 // when the upload fails, so it can be retried on the next attempt.
-func (b *WebBackend) removeClaimed(key string) {
+func (b *WebBackend) removeClaimed(h actionHash) {
 	b.keysMu.Lock()
-	b.keys.Remove(key)
+	b.keys.Remove(h)
 	b.keysMu.Unlock()
 }

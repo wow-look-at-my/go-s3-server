@@ -201,7 +201,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 	// authoritative OK-without-key response proves absence.
 	respondAllMiss := func(reason *AtomicCounter) {
 		for _, r := range reqs {
-			if reason != nil && b.keyKnown(r.key) {
+			if reason != nil && b.keyKnown(r.hash) {
 				reason.Increment()
 			}
 			r.resp <- batchResp{miss: true}
@@ -236,7 +236,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 		// GETs for every caller in this batch.
 		if resp.StatusCode == 404 || resp.StatusCode == 405 {
 			for _, r := range reqs {
-				r.resp <- b.getIndividual(r.actionID, r.key)
+				r.resp <- b.getIndividual(r.actionID, r.key, r.hash)
 			}
 			return
 		}
@@ -276,7 +276,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 		if !ok {
 			// Authoritative absence: a healthy response omitted this key. Drop the
 			// stale index claim (reclaimAbsent) so the PUT path re-uploads it.
-			if b.reclaimAbsent(r.key) {
+			if b.reclaimAbsent(r.hash) {
 				b.MissHTTP404.Increment()
 			}
 			r.resp <- batchResp{miss: true}

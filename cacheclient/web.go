@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -41,19 +40,23 @@ type WebConfig struct {
 // coalescer), falling back to individual PUTs against a server that does not
 // support it.
 type WebBackend struct {
-	client     *http.Client
-	bucket     string
-	prefix     string
-	endpoint   string
-	accessKey  string
-	secretKey  string
-	version    string // go-toolchain version for object metadata
-	module     string // main module path for object metadata (provenance)
-	target     string // GOOS/GOARCH this build produces, for request provenance
-	Stats      CacheStats
-	Pool       ConcurrencyTracker // HTTP connection pool usage (shared across all Servers)
-	Latency    *LatencyStats      // optional; set by Server for sub-operation tracking
-	keysMu sync.RWMutex
+	client    *http.Client
+	bucket    string
+	prefix    string
+	endpoint  string
+	accessKey string
+	secretKey string
+	version   string // go-toolchain version for object metadata
+	module    string // main module path for object metadata (provenance)
+	target    string // GOOS/GOARCH this build produces, for request provenance
+	// moduleLate carries a module path learned after the backend was built. A
+	// consumer often knows its endpoint before it knows which module it is
+	// building, and the requests in between still deserve an attribution.
+	moduleLate atomic.Pointer[string]
+	Stats     CacheStats
+	Pool      ConcurrencyTracker // HTTP connection pool usage (shared across all Servers)
+	Latency   *LatencyStats      // optional; set by Server for sub-operation tracking
+	keysMu    sync.RWMutex
 	// keys holds RAW ACTION HASHES, not cache-key strings. A key string is the
 	// same 32-byte hash written as 64 hex characters behind a fixed prefix, so
 	// a string set costs about three times the memory and charges a hex encode
@@ -439,8 +442,8 @@ func (b *WebBackend) GetStats() *CacheStats { return &b.Stats }
 // server cannot tell a slow build from a busy one.
 func (b *WebBackend) signRequest(req *http.Request) {
 	req.SetBasicAuth(b.accessKey, b.secretKey)
-	if b.module != "" {
-		req.Header.Set(HeaderModule, b.module)
+	if module := b.moduleName(); module != "" {
+		req.Header.Set(HeaderModule, module)
 	}
 	if b.version != "" {
 		req.Header.Set(HeaderToolchain, b.version)
@@ -449,6 +452,22 @@ func (b *WebBackend) signRequest(req *http.Request) {
 		req.Header.Set(HeaderTarget, b.target)
 	}
 	req.Header.Set(HeaderClient, clientVersion)
+}
+
+// SetModule names the module whose build is running, for consumers that learn
+// it after the backend exists.
+func (b *WebBackend) SetModule(path string) {
+	if path != "" {
+		b.moduleLate.Store(&path)
+	}
+}
+
+// moduleName is the configured module path, or one set later.
+func (b *WebBackend) moduleName() string {
+	if p := b.moduleLate.Load(); p != nil {
+		return *p
+	}
+	return b.module
 }
 
 // The provenance headers a client stamps on every request.

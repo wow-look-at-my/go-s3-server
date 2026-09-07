@@ -31,6 +31,18 @@ type prepPool struct {
 	jobs chan putJob
 	stop chan struct{}
 	wg   sync.WaitGroup
+	// pending counts objects submitted but not yet prepared, so a caller can
+	// wait for the decisions Put made asynchronously.
+	pending sync.WaitGroup
+}
+
+// await blocks until every object submitted so far has been prepared and
+// either queued for upload or refused.
+func (p *prepPool) await() {
+	if p == nil {
+		return
+	}
+	p.pending.Wait()
 }
 
 func newPrepPool(b *WebBackend) *prepPool {
@@ -64,10 +76,12 @@ func (p *prepPool) submit(j putJob) bool {
 	if p == nil {
 		return false
 	}
+	p.pending.Add(1)
 	select {
 	case p.jobs <- j:
 		return true
 	case <-p.stop:
+		p.pending.Done()
 		return false
 	}
 }
@@ -88,6 +102,7 @@ func (p *prepPool) worker() {
 		select {
 		case j := <-p.jobs:
 			p.b.prepare(j)
+				p.pending.Done()
 		case <-p.stop:
 			// Whatever is already queued was claimed and must still be shipped;
 			// dropping it here would leave the key claimed and never stored.
@@ -95,6 +110,7 @@ func (p *prepPool) worker() {
 				select {
 				case j := <-p.jobs:
 					p.b.prepare(j)
+				p.pending.Done()
 				default:
 					return
 				}

@@ -126,7 +126,7 @@ func TestNilAggregatorRecordsNothing(t *testing.T) {
 	assert.NotPanics(t, func() {
 		a.Record(objectEvent{put: true})
 		a.Stop()
-		recordObject(a, map[string]string{"module": "example.com/x"}, 10, true, false)
+		recordObject(a, requestProvenance{}, map[string]string{"module": "example.com/x"}, 10, true, false)
 	}, "verbose mode installs no aggregator, and every record site must tolerate that")
 }
 

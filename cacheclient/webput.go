@@ -2,7 +2,6 @@ package cacheclient
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -108,8 +107,8 @@ func (b *WebBackend) prepare(j putJob) {
 	if b.version != "" {
 		meta["toolchain-version"] = b.version
 	}
-	if b.module != "" {
-		meta["module"] = b.module
+	if module := b.moduleName(); module != "" {
+		meta["module"] = module
 	}
 	if goVer, target := parseArchiveHeader(j.data); goVer != "" {
 		meta["go-version"] = goVer

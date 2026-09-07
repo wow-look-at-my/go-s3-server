@@ -45,15 +45,25 @@ const gbciHashSize = hashSize
 // string per entry.
 type actionHash = [hashSize]byte
 
-// parseActionHash decodes a hex action ID. An ID of the wrong length or with a
-// non-hex digit is not an action ID, and no round trip is owed to it.
+// parseActionHash decodes a hex action ID into the bytes the client indexes
+// by. A cmd/go action ID is always 32 bytes, so it fills the array exactly.
+//
+// A shorter hex id lands left-aligned and zero-extended rather than being
+// refused. Such an id cannot come from the wire -- the index format is 32
+// bytes per entry, and every key the server names is 64 hex characters -- so
+// it is always a consumer's own synthetic id, and it only ever has to match
+// itself. Refusing it would break that consumer for a strictness the format
+// already enforces everywhere it matters.
+//
+// Anything that is not even-length hex, or is longer than an action ID, is not
+// an id at all, and no round trip is owed to it.
 func parseActionHash(actionID string) (actionHash, bool) {
 	var h actionHash
-	if len(actionID) != hashSize*2 {
+	if len(actionID) == 0 || len(actionID) > hashSize*2 || len(actionID)%2 != 0 {
 		return h, false
 	}
-	if _, err := hex.Decode(h[:], []byte(actionID)); err != nil {
-		return h, false
+	if _, err := hex.Decode(h[:len(actionID)/2], []byte(actionID)); err != nil {
+		return actionHash{}, false
 	}
 	return h, true
 }

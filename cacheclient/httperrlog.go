@@ -53,7 +53,6 @@ type batchHTTPGroup struct {
 	total      int           // number of HTTP requests in this bucket
 	sumKeys    int           // sum of keys requested across all requests
 	sumEntries int           // sum of entries returned
-	sumPref    int           // sum of prefetched entries
 	sumDur     time.Duration // sum of HTTP durations
 }
 
@@ -109,10 +108,15 @@ func (l *httpErrLogger) Record(op string, status int, id, body string) {
 // (which may carry many keys after client-side coalescing). Buckets are
 // split by hit/all-miss so a flaky cold cache stays distinguishable from
 // a working remote. Nil-safe.
-func (l *httpErrLogger) RecordBatchHTTP(keysRequested, entriesReturned, prefetched int, dur time.Duration) {
+//
+// It reports no prefetch count. These are the requests the build is blocked
+// on, and they ask for exactly the keys they need: the window rides the
+// look-ahead pool's own requests instead. Printing a count that is zero by
+// construction read as a dead prefetch on every build.
+func (l *httpErrLogger) RecordBatchHTTP(keysRequested, entriesReturned int, dur time.Duration) {
 	if l == nil {
-		logging.Infof("cacheprog: batch GET: %d keys → %d entries (%d prefetched) in %v",
-			keysRequested, entriesReturned, prefetched, dur.Round(time.Millisecond))
+		logging.Infof("cacheprog: batch GET: %d keys → %d entries in %v",
+			keysRequested, entriesReturned, dur.Round(time.Millisecond))
 		return
 	}
 	key := batchHTTPKey{allMiss: entriesReturned == 0}
@@ -125,7 +129,6 @@ func (l *httpErrLogger) RecordBatchHTTP(keysRequested, entriesReturned, prefetch
 	g.total++
 	g.sumKeys += keysRequested
 	g.sumEntries += entriesReturned
-	g.sumPref += prefetched
 	g.sumDur += dur
 	l.mu.Unlock()
 }
@@ -197,16 +200,16 @@ func formatBatchHTTPGroup(k batchHTTPKey, g *batchHTTPGroup) string {
 			return fmt.Sprintf("cacheprog: batch GET: %d keys → 0 entries (server has no entries for any of them) in %dms",
 				g.sumKeys, durMs)
 		}
-		return fmt.Sprintf("cacheprog: batch GET: %d keys → %d entries (%d prefetched) in %dms",
-			g.sumKeys, g.sumEntries, g.sumPref, durMs)
+		return fmt.Sprintf("cacheprog: batch GET: %d keys → %d entries in %dms",
+			g.sumKeys, g.sumEntries, durMs)
 	}
 
 	if k.allMiss {
 		return fmt.Sprintf("cacheprog: batch GET ×%d: %d keys → 0 entries (server has no entries), %dms total",
 			g.total, g.sumKeys, durMs)
 	}
-	return fmt.Sprintf("cacheprog: batch GET ×%d: %d keys → %d entries (%d prefetched), %dms total",
-		g.total, g.sumKeys, g.sumEntries, g.sumPref, durMs)
+	return fmt.Sprintf("cacheprog: batch GET ×%d: %d keys → %d entries, %dms total",
+		g.total, g.sumKeys, g.sumEntries, durMs)
 }
 
 // formatIDList renders the named IDs + "and N more" tail (or a bare

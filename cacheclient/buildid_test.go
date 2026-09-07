@@ -143,11 +143,11 @@ func TestWebBackend_GetRejectsBuildIDMismatch(t *testing.T) {
 	contains := func() bool {
 		b.keysMu.RLock()
 		defer b.keysMu.RUnlock()
-		return b.keys.Contains(b.key(actionID))
+		return b.keys.Contains(hashOf(actionID))
 	}
 	require.True(t, contains(), "precondition: key is in the index")
 
-	_, _, _, _, miss, _, err := b.Get(actionID)
+	_, _, _, _, miss, _, err := b.getTest(actionID)
 	require.NoError(t, err)
 	require.True(t, miss, "a build-id-mismatched object must be a miss, never served")
 	require.Equal(t, uint32(1), b.MissBuildID.Load())
@@ -189,14 +189,14 @@ func TestWebBackend_GetRejectsStrippedBuildID(t *testing.T) {
 	defer b.Close()
 	primeIndex(b, actionID)
 
-	_, _, _, _, miss, _, err := b.Get(actionID)
+	_, _, _, _, miss, _, err := b.getTest(actionID)
 	require.NoError(t, err)
 	require.True(t, miss, "a package archive with no build id must be a miss, never served")
 	require.Equal(t, uint32(1), b.MissBuildID.Load())
 	require.Equal(t, uint32(0), b.Stats.Hits.Load())
 
 	b.keysMu.RLock()
-	stillKnown := b.keys.Contains(b.key(actionID))
+	stillKnown := b.keys.Contains(hashOf(actionID))
 	b.keysMu.RUnlock()
 	require.False(t, stillKnown, "the stripped object's key must be evicted")
 }
@@ -230,7 +230,7 @@ func TestWebBackend_GetServesMatchingBuildID(t *testing.T) {
 	defer b.Close()
 	primeIndex(b, actionID)
 
-	gotOutputID, body, _, _, miss, _, err := b.Get(actionID)
+	gotOutputID, body, _, _, miss, _, err := b.getTest(actionID)
 	require.NoError(t, err)
 	require.False(t, miss)
 	require.Equal(t, outputID, gotOutputID)
@@ -264,7 +264,7 @@ func TestGetBatch_RejectsBuildIDMismatch(t *testing.T) {
 	store[key] = compressed
 	meta[key] = map[string]string{"outputid": testOutputID(poison)} // self-consistent hash
 
-	_, _, _, _, miss, _, err := b.getBatch(actionID, key)
+	_, _, _, _, miss, _, err := b.getBatchTest(actionID, key)
 	require.NoError(t, err)
 	require.True(t, miss, "a batched build-id-mismatched entry must be a miss")
 	require.Equal(t, uint32(1), b.MissBuildID.Load())
@@ -298,13 +298,13 @@ func TestWebBackend_PutRefusesBuildIDMismatch(t *testing.T) {
 	require.NoError(t, err)
 	defer b.Close()
 
-	err = b.Put(actionID, testOutputID(string(poison)), strings.NewReader(string(poison)), int64(len(poison)))
+	err = b.putTest(actionID, testOutputID(string(poison)), strings.NewReader(string(poison)), int64(len(poison)))
 	require.NoError(t, err, "a refused poison upload is a skip, not an error")
 	require.Equal(t, 0, putHits, "poison must never be uploaded to the shared cache")
 	require.Equal(t, uint32(0), b.Stats.Puts.Load())
 
 	b.keysMu.RLock()
-	claimed := b.keys.Contains(b.key(actionID))
+	claimed := b.keys.Contains(hashOf(actionID))
 	b.keysMu.RUnlock()
 	require.False(t, claimed, "the optimistic claim must be released so a later correct Put can run")
 }

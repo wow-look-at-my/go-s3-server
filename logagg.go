@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -10,6 +11,21 @@ import (
 	"time"
 
 	"github.com/wow-look-at-my/go-containers/set"
+)
+
+// The provenance headers a client stamps on its requests. They are spelled out
+// here rather than imported from cacheclient, because a server reads them the
+// way it reads Content-Type: as a wire contract that any client version may or
+// may not honor. Importing the client to name them would put the client's whole
+// package in the server's dependency graph, and with it in the server's
+// coverage, for five strings.
+//
+// TestProvenanceHeadersMatchTheClient pins them against the client's own
+// constants, so the two cannot drift apart in silence.
+const (
+	headerModule  = "X-Cache-Module"
+	headerKind    = "X-Cache-Kind"
+	kindLookAhead = "look-ahead"
 )
 
 // The access log has two modes.
@@ -49,14 +65,20 @@ type objectEvent struct {
 	// compressed to nothing.
 	rawKnown bool
 	project  string
+	// lookAhead marks an object the client fetched before anything asked for
+	// it. A second in which most of the traffic is look-ahead is a cache
+	// working ahead of a build, not a build waiting on a cache, and a log that
+	// cannot tell those apart reports the two identically.
+	lookAhead bool
 }
 
 // secondBucket accumulates one second of objectEvents.
 type secondBucket struct {
-	puts, gets     int
-	batchedObjects int
-	wireBytes      int64
-	rawBytes       int64
+	puts, gets       int
+	batchedObjects   int
+	lookAheadObjects int
+	wireBytes        int64
+	rawBytes         int64
 	// wireSized is the wire bytes of the objects that declared a raw size, so
 	// the compression ratio divides like against like.
 	wireSized int64
@@ -108,6 +130,9 @@ func (a *logAggregator) Record(ev objectEvent) {
 	}
 	if ev.batched {
 		b.batchedObjects++
+	}
+	if ev.lookAhead {
+		b.lookAheadObjects++
 	}
 	b.wireBytes += ev.wire
 	if ev.rawKnown {
@@ -182,6 +207,9 @@ func (b *secondBucket) line() string {
 
 	objects := b.puts + b.gets
 	fmt.Fprintf(&sb, " batched=%s", percent(b.batchedObjects, objects))
+	if b.lookAheadObjects > 0 {
+		fmt.Fprintf(&sb, " ahead=%s", percent(b.lookAheadObjects, objects))
+	}
 
 	// compressed is every byte that crossed the wire. uncompressed and the
 	// ratio cover only the objects whose client declared a body-size, because
@@ -249,44 +277,64 @@ func byteSize(n int64) string {
 	return strconv.FormatFloat(value, 'f', 0, 64) + units[i]
 }
 
+// requestProvenance is what a client said about itself on the request that
+// moved an object. An object's own metadata says what it IS; these headers say
+// who wanted it, which is the question a log about traffic answers.
+type requestProvenance struct {
+	module    string
+	lookAhead bool
+}
+
+// provenanceOf reads the client's provenance headers. A request without them
+// is not an error: an older client, or curl.
+func provenanceOf(r *http.Request) requestProvenance {
+	if r == nil {
+		return requestProvenance{}
+	}
+	return requestProvenance{
+		module:    r.Header.Get(headerModule),
+		lookAhead: r.Header.Get(headerKind) == kindLookAhead,
+	}
+}
+
 // recordObject files one object move under the current second. wire is the
 // stored (compressed) size, which is what crossed the network. The raw size
-// and the project come from the object's own metadata.
-func recordObject(agg *logAggregator, meta map[string]string, wire int64, put, batched bool) {
+// comes from the object's own metadata, and the project from the object or,
+// failing that, from the request that moved it.
+func recordObject(agg *logAggregator, prov requestProvenance, meta map[string]string, wire int64, put, batched bool) {
 	if agg == nil {
 		return
 	}
 	raw, known := rawSizeOf(meta)
 	agg.Record(objectEvent{
-		put:      put,
-		batched:  batched,
-		wire:     wire,
-		raw:      raw,
-		rawKnown: known,
-		project:  projectOf(meta),
+		put:       put,
+		batched:   batched,
+		wire:      wire,
+		raw:       raw,
+		rawKnown:  known,
+		project:   projectOf(meta, prov),
+		lookAhead: prov.lookAhead,
 	})
 }
 
-// projectOf names the project an object belongs to. The client sends the
-// module path it built, which is the answer whenever it is there. Otherwise
-// the import path's first three segments are the closest thing to a project a
-// package path carries (host, owner, repo).
-func projectOf(meta map[string]string) string {
-	if meta == nil {
-		return ""
-	}
+// projectOf names the project an object belongs to. The object's own module
+// metadata is the answer whenever it is there. Otherwise the import path's
+// first three segments are the closest thing to a project a package path
+// carries (host, owner, repo). Failing both, the requesting client's own module
+// header answers: a served object may carry no metadata at all, and a build
+// asking for it is still a build belonging to some project.
+func projectOf(meta map[string]string, prov requestProvenance) string {
 	if module := meta["module"]; module != "" {
 		return module
 	}
-	pkg := meta["pkg"]
-	if pkg == "" {
-		return ""
+	if pkg := meta["pkg"]; pkg != "" {
+		parts := strings.Split(pkg, "/")
+		if len(parts) > 3 {
+			parts = parts[:3]
+		}
+		return strings.Join(parts, "/")
 	}
-	parts := strings.Split(pkg, "/")
-	if len(parts) > 3 {
-		parts = parts[:3]
-	}
-	return strings.Join(parts, "/")
+	return prov.module
 }
 
 // rawSizeOf reads the client's declared uncompressed size. The second result

@@ -17,6 +17,11 @@ import (
 type batchGetRequest struct {
 	Keys     []string `json:"keys"`
 	Prefetch bool     `json:"prefetch"` // include temporally related entries
+	// PrefetchOnly answers with the window around Keys and none of the Keys
+	// themselves. A look-ahead client names keys it already holds purely to say
+	// where in the store's time order to look, so streaming those bodies back
+	// would spend the whole request re-sending what the caller has.
+	PrefetchOnly bool `json:"prefetch_only"`
 }
 
 // batchGetManifestEntry describes one entry in the batch response manifest.
@@ -181,6 +186,7 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 	if a := auditFromContext(r.Context()); a != nil {
 		user = a.Username
 	}
+	prov := provenanceOf(r)
 
 	// Phase 1: collect metadata for the requested keys WITHOUT reading bodies.
 	// Stat is cheap (os.Stat + xattrs); the bodies are streamed later, one at a
@@ -254,7 +260,14 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 			sentKeys[i] = e.key
 		}
 		tracker.record(user, sentKeys)
-		entries = append(entries, prefetched...)
+		if req.PrefetchOnly {
+			// The requested keys were the anchor, not the ask. They still had to
+			// be stat'ed to find the window, and they still set it, but only the
+			// window is sent.
+			entries = prefetched
+		} else {
+			entries = append(entries, prefetched...)
+		}
 	}
 
 	// Build manifest from metadata only — no body bytes are held here.
@@ -320,7 +333,7 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 		// Counted where the bytes actually leave: an entry that vanished or
 		// failed above never reached the client and must not appear in the
 		// rate.
-		recordObject(agg, e.meta.Metadata, size, false, true)
+		recordObject(agg, prov, e.meta.Metadata, size, false, true)
 	}
 
 	batchRequestsTotal.Inc()
@@ -459,7 +472,7 @@ func handleBatchPut(w http.ResponseWriter, r *http.Request, storage *Storage, ma
 		switch status {
 		case storeStatusStored:
 			nStored++
-			recordObject(agg, p.entry.Metadata, hdr.Size, true, true)
+			recordObject(agg, provenanceOf(r), p.entry.Metadata, hdr.Size, true, true)
 		case storeStatusDropped:
 			nDropped++
 		case storeStatusConflict:

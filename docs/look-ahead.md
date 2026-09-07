@@ -26,18 +26,26 @@ A hit seeds the pool with the keys that answered, deduplicated. A key that misse
 
 `GO_TOOLCHAIN_CACHE_LOOKAHEAD` sets the worker count.
 
-## What it costs when it rides the blocking path
+## What the pool is worth
 
-`BenchmarkBuildShape` walks a 12-level graph, 4 keys wide, against a real HTTP server. `carried=32` is the old shape: 32 speculative bodies attached to every blocking response. `carried=0` is what the critical path asks for now.
+`BenchmarkBuildShape` walks a 12-level graph, 4 keys wide, against a real HTTP server. Three shapes. `none` is the critical path alone, with nothing fetched ahead of it. `blocking` is the old wire shape, where 32 speculative bodies ride the request the build is waiting on. `lookahead` is what ships: the pool fetches the same window off the critical path, into the local tier the build reads next.
+
+Every arm installs that tier. A run without one measures a client whose look-ahead is switched OFF, because `expand` returns at once when `OnBatchEntries` is nil. The benchmark used to omit it, so its old numbers described a shape nothing ships.
 
 | | wall | bytes | allocations |
 |---|---|---|---|
-| loopback, old (lz4, carried=32) | 32.3 ms | 13.9 MB | 33,318 |
-| loopback, new (zstd, carried=0) | 23.0 ms | 4.2 MB | 6,443 |
-| 5 ms RTT, old (lz4, carried=32) | 161.2 ms | 7.1 MB | 32,546 |
-| 5 ms RTT, new (zstd, carried=0) | 152.2 ms | 4.3 MB | 6,500 |
+| loopback, none | 23.96 ms | 4.2 MB | 6,592 |
+| loopback, blocking | 26.51 ms | 5.0 MB | 17,023 |
+| loopback, lookahead | 5.01 ms | 1.2 MB | 5,410 |
+| 5 ms RTT, none | 152.88 ms | 4.1 MB | 6,580 |
+| 5 ms RTT, blocking | 147.04 ms | 5.0 MB | 17,406 |
+| 5 ms RTT, lookahead | 36.13 ms | 1.2 MB | 5,379 |
 
-That is 29% off the wall time, 70% off the memory, and five times fewer allocations. Most of the remaining wall time is the round trips, which no client can remove. Most of what went was bodies nobody asked for. On a real link the byte column dominates: there the round trip is tens of milliseconds and the bandwidth is finite.
+Best of three runs each. The three runs of an arm never overlap another arm's.
+
+The pool is worth 4.8x on loopback and 4.2x on the link, against fetching nothing ahead. It is worth 5.3x and 4.1x against the old shape. It also moves the least memory of the three. A body the build goes on to read is not waste.
+
+The old shape is the row that explains the complaint the pool was built for. On loopback it is SLOWER than fetching nothing ahead at all. Its speculative bodies cost a real megabyte and buy the critical path nothing. The request they ride is the one the build is already blocked on. On the link its round trips hide that cost and it draws level. Neither is a cache worth having.
 
 ## The wire codec
 

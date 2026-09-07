@@ -32,8 +32,31 @@ const indexFetchRetries = 1
 // gbciKeyPrefix leads every cacheprog key; the wire format carries only the raw hash after it.
 const gbciKeyPrefix = "go-buildcache/v1"
 
-// gbciHashSize is the number of bytes per entry in the index body.
-const gbciHashSize = 32
+// hashSize is the number of bytes in an action ID, and so per entry in the
+// index body.
+const hashSize = 32
+
+// gbciHashSize is the size the wire header states. It must equal hashSize.
+const gbciHashSize = hashSize
+
+// actionHash is an action ID in the form the client indexes by: the raw 32
+// bytes, not the 64 hex characters behind a prefix that the wire uses. It is a
+// comparable array, so a set of them is one flat allocation rather than one
+// string per entry.
+type actionHash = [hashSize]byte
+
+// parseActionHash decodes a hex action ID. An ID of the wrong length or with a
+// non-hex digit is not an action ID, and no round trip is owed to it.
+func parseActionHash(actionID string) (actionHash, bool) {
+	var h actionHash
+	if len(actionID) != hashSize*2 {
+		return h, false
+	}
+	if _, err := hex.Decode(h[:], []byte(actionID)); err != nil {
+		return h, false
+	}
+	return h, true
+}
 
 // gbciHeaderSize is the fixed header size in bytes.
 const gbciHeaderSize = 24
@@ -61,7 +84,7 @@ func (b *WebBackend) indexCachePath() string {
 // NON-authoritative set (the stale disk copy, or empty): Get/Put still work,
 // and because absences from a non-authoritative set prove nothing, cold keys
 // are batch-probed instead of fast-missed (see WebBackend.Get).
-func (b *WebBackend) loadOrFetchIndex() (set.Set[string], bool) {
+func (b *WebBackend) loadOrFetchIndex() (set.Set[actionHash], bool) {
 	path := b.indexCachePath()
 	diskBlob, diskKeys, diskETag := b.readDiskIndex(path)
 
@@ -75,7 +98,7 @@ func (b *WebBackend) loadOrFetchIndex() (set.Set[string], bool) {
 		if diskBlob != nil {
 			return diskKeys, false
 		}
-		return set.New[string](), false
+		return set.New[actionHash](), false
 	}
 	if status == http.StatusNotModified {
 		if diskBlob != nil {
@@ -85,7 +108,7 @@ func (b *WebBackend) loadOrFetchIndex() (set.Set[string], bool) {
 		blob, _, err = b.fetchIndexBlob(ctx, "")
 		if err != nil {
 			logging.Warnf("cacheprog: web index refetch: %v", err)
-			return set.New[string](), false
+			return set.New[actionHash](), false
 		}
 	}
 	keys, _, err := parseIndexBlob(blob)
@@ -94,7 +117,7 @@ func (b *WebBackend) loadOrFetchIndex() (set.Set[string], bool) {
 		if diskBlob != nil {
 			return diskKeys, false
 		}
-		return set.New[string](), false
+		return set.New[actionHash](), false
 	}
 	b.writeIndexBlob(path, blob)
 	return keys, true
@@ -102,14 +125,14 @@ func (b *WebBackend) loadOrFetchIndex() (set.Set[string], bool) {
 
 // readDiskIndex returns (raw, parsed, etag) or (nil, empty, "") if the file
 // is missing or invalid.
-func (b *WebBackend) readDiskIndex(path string) ([]byte, set.Set[string], string) {
+func (b *WebBackend) readDiskIndex(path string) ([]byte, set.Set[actionHash], string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, set.New[string](), ""
+		return nil, set.New[actionHash](), ""
 	}
 	keys, etag, err := parseIndexBlob(data)
 	if err != nil {
-		return nil, set.New[string](), ""
+		return nil, set.New[actionHash](), ""
 	}
 	return data, keys, etag
 }
@@ -204,47 +227,47 @@ func (b *WebBackend) writeIndexBlob(path string, blob []byte) {
 //   - the reconstructed key set (full cache key strings)
 //   - the strong ETag (hex-encoded sha256 trailer, quoted per the HTTP spec)
 //   - or an error if magic, version, length, or trailer hash don't validate.
-func parseIndexBlob(blob []byte) (set.Set[string], string, error) {
+func parseIndexBlob(blob []byte) (set.Set[actionHash], string, error) {
 	if len(blob) < gbciHeaderSize+sha256.Size {
-		return set.Set[string]{}, "", fmt.Errorf("blob too small (%d bytes)", len(blob))
+		return set.Set[actionHash]{}, "", fmt.Errorf("blob too small (%d bytes)", len(blob))
 	}
 	if !bytes.Equal(blob[0:4], gbciMagic[:]) {
-		return set.Set[string]{}, "", fmt.Errorf("bad magic")
+		return set.Set[actionHash]{}, "", fmt.Errorf("bad magic")
 	}
 	if blob[4] != gbciVersion {
-		return set.Set[string]{}, "", fmt.Errorf("unsupported version %d", blob[4])
+		return set.Set[actionHash]{}, "", fmt.Errorf("unsupported version %d", blob[4])
 	}
 	if blob[5] != gbciHashSize {
-		return set.Set[string]{}, "", fmt.Errorf("unsupported hash size %d", blob[5])
+		return set.Set[actionHash]{}, "", fmt.Errorf("unsupported hash size %d", blob[5])
 	}
 	count := binary.LittleEndian.Uint64(blob[16:24])
 	bodyEnd := gbciHeaderSize + int(count)*gbciHashSize
 	if bodyEnd+sha256.Size != len(blob) {
-		return set.Set[string]{}, "", fmt.Errorf("length %d != header+%d*%d+trailer", len(blob), count, gbciHashSize)
+		return set.Set[actionHash]{}, "", fmt.Errorf("length %d != header+%d*%d+trailer", len(blob), count, gbciHashSize)
 	}
 	expected := sha256.Sum256(blob[:bodyEnd])
 	if !bytes.Equal(expected[:], blob[bodyEnd:]) {
-		return set.Set[string]{}, "", fmt.Errorf("trailer hash mismatch")
+		return set.Set[actionHash]{}, "", fmt.Errorf("trailer hash mismatch")
 	}
-	keys := set.New[string]()
-	hashHex := make([]byte, gbciHashSize*2)
+	// The body IS the hashes. Each entry is copied into the set as it stands,
+	// with no hex encode and no per-key allocation: on a cache of hundreds of
+	// thousands of entries that work all lands before the build starts.
+	keys := set.New[actionHash](int(count))
+	var h actionHash
 	for i := uint64(0); i < count; i++ {
 		off := gbciHeaderSize + int(i)*gbciHashSize
-		hex.Encode(hashHex, blob[off:off+gbciHashSize])
-		keys.Add(gbciKeyPrefix + string(hashHex))
+		copy(h[:], blob[off:off+gbciHashSize])
+		keys.Add(h)
 	}
 	etag := `"` + hex.EncodeToString(blob[bodyEnd:]) + `"`
 	return keys, etag, nil
 }
 
-// marshalIndex encodes the given key set as a GBCI v1 blob. Keys not matching
-// the cacheprog pattern are skipped. Used by tests.
-func marshalIndex(keys set.Set[string]) []byte {
-	hashes := make([][gbciHashSize]byte, 0, keys.Len())
-	for k := range keys.All() {
-		if h, ok := decodeActionHash(k); ok {
-			hashes = append(hashes, h)
-		}
+// marshalIndex encodes the given hash set as a GBCI v1 blob. Used by tests.
+func marshalIndex(keys set.Set[actionHash]) []byte {
+	hashes := make([]actionHash, 0, keys.Len())
+	for h := range keys.All() {
+		hashes = append(hashes, h)
 	}
 	sort.Slice(hashes, func(i, j int) bool {
 		return bytes.Compare(hashes[i][:], hashes[j][:]) < 0
@@ -267,18 +290,9 @@ func marshalIndex(keys set.Set[string]) []byte {
 }
 
 // decodeActionHash extracts the raw action ID from a cacheprog cache key.
-func decodeActionHash(key string) ([gbciHashSize]byte, bool) {
-	var zero [gbciHashSize]byte
+func decodeActionHash(key string) (actionHash, bool) {
 	if !strings.HasPrefix(key, gbciKeyPrefix) {
-		return zero, false
+		return actionHash{}, false
 	}
-	hex64 := key[len(gbciKeyPrefix):]
-	if len(hex64) != gbciHashSize*2 {
-		return zero, false
-	}
-	var h [gbciHashSize]byte
-	if _, err := hex.Decode(h[:], []byte(hex64)); err != nil {
-		return zero, false
-	}
-	return h, true
+	return parseActionHash(key[len(gbciKeyPrefix):])
 }

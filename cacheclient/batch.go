@@ -1,14 +1,13 @@
 package cacheclient
 
 import (
-	"github.com/wow-look-at-my/go-containers/set"
-
 	"archive/tar"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,6 +15,11 @@ import (
 type batchGetRequest struct {
 	Keys     []string `json:"keys"`
 	Prefetch bool     `json:"prefetch"`
+	// PrefetchOnly asks for the window around Keys without the bodies of Keys
+	// themselves. The look-ahead pool uses it: it names keys the build already
+	// has in order to say WHERE to look, and re-sending those bodies would
+	// throw away the point of the request.
+	PrefetchOnly bool `json:"prefetch_only,omitempty"`
 }
 
 // batchGetManifest is the manifest entry in the server's tar response.
@@ -30,13 +34,14 @@ type batchGetManifestEntry struct {
 	Prefetch bool              `json:"prefetch,omitempty"`
 }
 
-// BatchEntry holds a single cache entry from a batch GET response.
+// BatchEntry holds a single cache entry from a batch GET response. Data is the
+// stored (compressed) body: a consumer that wants only some of a look-ahead's
+// entries must not pay to decompress the rest.
 type BatchEntry struct {
-	Key        string
-	OutputID   string
-	Data       []byte
-	Prefetch   bool
-	Executable bool
+	Key      string
+	OutputID string
+	Data     []byte
+	Prefetch bool
 }
 
 // parseBatchResponse reads a tar stream from the server's /_batch/get
@@ -56,8 +61,10 @@ func parseBatchResponse(r io.Reader) ([]BatchEntry, error) {
 			return nil, fmt.Errorf("read tar: %w", err)
 		}
 
-		raw, err := io.ReadAll(tr)
-		if err != nil {
+		// The header states the size, so the body lands in one exactly-sized
+		// allocation rather than io.ReadAll's doubling.
+		raw := make([]byte, hdr.Size)
+		if _, err := io.ReadFull(tr, raw); err != nil {
 			return nil, fmt.Errorf("read entry %s: %w", hdr.Name, err)
 		}
 
@@ -73,26 +80,33 @@ func parseBatchResponse(r io.Reader) ([]BatchEntry, error) {
 		}
 	}
 
-	var entries []BatchEntry
+	entries := make([]BatchEntry, 0, len(manifest.Entries))
 	for _, me := range manifest.Entries {
 		data, ok := dataByKey[me.Key]
 		if !ok {
 			continue
 		}
 		entries = append(entries, BatchEntry{
-			Key:        me.Key,
-			OutputID:   me.Metadata["outputid"],
-			Data:       data,
-			Prefetch:   me.Prefetch,
-			Executable: me.Metadata["executable"] != "",
+			Key:      me.Key,
+			OutputID: me.Metadata["outputid"],
+			Data:     data,
+			Prefetch: me.Prefetch,
 		})
 	}
 	return entries, nil
 }
 
-// batchCoalescer collects incoming batchReqs on a short coalescing window
-// and dispatches each batch as a single HTTP request to the server's batch
-// endpoint. Up to batchMaxKeys keys per HTTP request.
+// batchCoalescer collects incoming batchReqs and dispatches each batch as a
+// single HTTP request to the server's batch endpoint.
+//
+// The window is Nagle's rule, not a fixed wait. A caller blocks on its own key,
+// and the build's parallelism decides how many keys are outstanding at once, so
+// sitting a fixed window out bought nothing: a four-way build never offered
+// more than four keys, and all four paid the wait for an answer the server
+// produces in a millisecond. Here the first batch leaves at once, and only what
+// arrives while a request is already in flight rides the next one. Load alone
+// widens a batch, which is the only condition under which a wider batch is
+// worth its latency.
 func (b *WebBackend) batchCoalescer() {
 	defer close(b.batchDone)
 
@@ -100,6 +114,8 @@ func (b *WebBackend) batchCoalescer() {
 	// When the batch's first key arrived. Every caller in the batch has been
 	// blocked since at least this instant, so it is what the window costs.
 	var firstQueued time.Time
+	var inFlight atomic.Int64
+	sent := make(chan struct{}, 1)
 	timer := time.NewTimer(time.Hour)
 	if !timer.Stop() {
 		<-timer.C
@@ -119,8 +135,16 @@ func (b *WebBackend) batchCoalescer() {
 			}
 		}
 		b.batchHTTPWG.Add(1)
+		inFlight.Add(1)
 		go func() {
-			defer b.batchHTTPWG.Done()
+			defer func() {
+				inFlight.Add(-1)
+				select {
+				case sent <- struct{}{}:
+				default:
+				}
+				b.batchHTTPWG.Done()
+			}()
 			b.sendBatch(batch)
 		}()
 	}
@@ -138,10 +162,16 @@ func (b *WebBackend) batchCoalescer() {
 				timer.Reset(batchCoalesceWait)
 			}
 			pending = append(pending, req)
-			if len(pending) >= batchMaxKeys {
+			if len(pending) >= batchMaxKeys || inFlight.Load() == 0 {
 				flush()
 			}
+		case <-sent:
+			// A request finished and freed the line. Whatever queued behind it
+			// goes now.
+			flush()
 		case <-timer.C:
+			// The safety net for a key that arrived behind a slow request, not
+			// the thing that forms a batch.
 			flush()
 		case <-b.batchStop:
 			flush()
@@ -151,9 +181,15 @@ func (b *WebBackend) batchCoalescer() {
 	}
 }
 
-// sendBatch issues a single HTTP request to /_batch/get for all keys in reqs,
-// distributes the matching entries back to the waiting callers via their
-// reply channels, and feeds prefetched entries to OnBatchEntries.
+// sendBatch issues a single HTTP request to /_batch/get for all keys in reqs
+// and distributes the entries back to the waiting callers via their reply
+// channels.
+//
+// It asks for the requested keys and nothing else. Every caller in this batch
+// is a build goroutine that cannot proceed until this answers, so a megabyte of
+// speculative bodies queued in front of theirs is latency charged straight to
+// the critical path. Look-ahead runs on its own pool over its own requests;
+// this request stays as small as the build made it.
 func (b *WebBackend) sendBatch(reqs []batchReq) {
 	start := time.Now()
 	keys := make([]string, len(reqs))
@@ -172,7 +208,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 		}
 	}
 
-	reqBody, _ := json.Marshal(batchGetRequest{Keys: keys, Prefetch: true})
+	reqBody, _ := json.Marshal(batchGetRequest{Keys: keys})
 	batchURL := b.endpoint + "/" + b.bucket + "/_batch/get"
 	// POST, not GET-with-body, since a body-carrying GET is proxy-hostile.
 	httpReq, err := http.NewRequest("POST", batchURL, bytes.NewReader(reqBody))
@@ -182,6 +218,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	b.signRequest(httpReq)
+	httpReq.Header.Set(HeaderKind, KindCritical)
 
 	b.Pool.Acquire()
 	resp, err := b.doRetryGET(httpReq)
@@ -199,8 +236,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 		// GETs for every caller in this batch.
 		if resp.StatusCode == 404 || resp.StatusCode == 405 {
 			for _, r := range reqs {
-				outputID, body, size, t, miss, executable, _ := b.getIndividual(r.actionID, r.key)
-				r.resp <- batchResp{outputID: outputID, body: body, size: size, t: t, miss: miss, executable: executable}
+				r.resp <- b.getIndividual(r.actionID, r.key)
 			}
 			return
 		}
@@ -224,15 +260,9 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 	// A run of empty batches stops probing after a threshold; any non-empty batch resets it.
 	b.noteBatchEntries(len(entries))
 
-	var nPrefetch int
-	for _, e := range entries {
-		if e.Prefetch {
-			nPrefetch++
-		}
-	}
 	trip := time.Since(start)
 	b.batchTiming.recordTrip(trip)
-	b.errLog.RecordBatchHTTP(len(reqs), len(entries), nPrefetch, trip)
+	b.errLog.RecordBatchHTTP(len(reqs), len(entries), 0, trip)
 
 	// Index returned entries by key for constant-time lookup.
 	entryByKey := make(map[string]*BatchEntry, len(entries))
@@ -240,11 +270,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 		entryByKey[entries[i].Key] = &entries[i]
 	}
 
-	// Distribute responses to the waiting compiler goroutines AHEAD of anything else; prefetch
-	// ingestion is housekeeping and runs asynchronously below. (It used to run
-	// inline before the reply loop, so every caller blocked on decompress +
-	// hash + pack-append work for entries nobody was waiting on.)
-	//
+	hit := make([]string, 0, len(reqs))
 	for _, r := range reqs {
 		e, ok := entryByKey[r.key]
 		if !ok {
@@ -256,86 +282,71 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 			r.resp <- batchResp{miss: true}
 			continue
 		}
-		// Missing outputid is a metadata gap, not a corrupt body — count it as
-		// no-outputid (mirroring getIndividual) rather than a misleading checksum mismatch below.
-		if e.OutputID == "" {
-			b.MissNoOutputID.Increment()
-			logging.Warnf("cacheprog: web batch get %s: missing outputid metadata", ShortID(r.actionID))
-			r.resp <- batchResp{miss: true}
-			continue
-		}
-		decompressed, err := Decompress(e.Data)
-		if err != nil {
-			logging.Warnf("cacheprog: web batch get %s: decompress: %v", ShortID(r.actionID), err)
-			r.resp <- batchResp{miss: true}
-			continue
-		}
-		// End-to-end integrity check (see OutputIDMatches): refuse to serve a
-		// body that does not hash to its advertised outputID. A corrupt remote
-		// object must never reach the go command as a "valid" cache hit. The
-		// key is absent from the in-memory index (that is why it took the batch
-		// path), so a subsequent recompute+Put re-uploads it clean on its own.
-		if got, ok := OutputIDMatches(e.OutputID, decompressed); !ok {
-			b.MissChecksum.Increment()
-			b.Stats.Corrupt.Increment()
-			logging.Warnf("cacheprog: web batch get %s: body checksum mismatch (want outputid=%s, got sha256=%s, len=%d); treating as miss",
-				ShortID(r.actionID), ShortID(e.OutputID), ShortID(got), len(decompressed))
-			r.resp <- batchResp{miss: true}
-			continue
-		}
-		// Cross-contamination guard (see BuildIDMatchesAction): refuse a compiled
-		// object whose build id belongs to a different action than requested. The
-		// hash check above only proves body<->outputID consistency, not that the
-		// object belongs under this action key.
-		if act, ok := BuildIDMatchesAction(r.actionID, decompressed); !ok {
-			b.MissBuildID.Increment()
-			b.Stats.Corrupt.Increment()
-			logging.Warnf("cacheprog: web batch get %s: build-id action mismatch (want action=%s, got action=%s, len=%d); treating as miss",
-				ShortID(r.actionID), ExpectedBuildIDAction(r.actionID), act, len(decompressed))
-			r.resp <- batchResp{miss: true}
-			continue
-		}
-		// Module-index guard (see IsGoModuleIndex): an index blob cannot be proven
-		// to belong under this key, and the wrong index is fatal at package load.
-		// Refuse it and let cmd/go recompute the index locally.
-		if IsGoModuleIndex(decompressed) {
-			b.MissModuleIndex.Increment()
-			logging.Warnf("cacheprog: web batch get %s: refusing module-index blob (unverifiable under this key, len=%d); treating as miss",
-				ShortID(r.actionID), len(decompressed))
+		data, ok := b.verify("web batch get", r.actionID, e.OutputID, e.Data)
+		if !ok {
 			r.resp <- batchResp{miss: true}
 			continue
 		}
 		b.Stats.Hits.Increment()
-		r.resp <- batchResp{
-			outputID:   e.OutputID,
-			body:       io.NopCloser(bytes.NewReader(decompressed)),
-			size:       int64(len(decompressed)),
-			t:          time.Now(),
-			executable: e.Executable,
-		}
+		hit = append(hit, r.key)
+		r.resp <- batchResp{outputID: e.OutputID, data: data, t: time.Now()}
 	}
 
-	// Hand only NON-requested (prefetch) entries to the populator, async so no
-	// caller waits: a requested entry is already verified and written by
-	// handleGet, so feeding it here too would double the verify work. The
-	// goroutine joins batchHTTPWG, so shutdown still waits for ingestion.
-	if b.OnBatchEntries != nil {
-		requested := set.New[string](len(reqs))
-		for _, r := range reqs {
-			requested.Add(r.key)
-		}
-		var extra []BatchEntry
-		for _, e := range entries {
-			if !requested.Contains(e.Key) {
-				extra = append(extra, e)
-			}
-		}
-		if len(extra) > 0 {
-			b.batchHTTPWG.Add(1)
-			go func() {
-				defer b.batchHTTPWG.Done()
-				b.OnBatchEntries(extra)
-			}()
-		}
+	// The keys that answered are where this build's objects sit in the store's
+	// time order, and that order is the only anchor the look-ahead has. A key
+	// that missed says nothing about where to look.
+	b.lookAhead.Seed(hit)
+}
+
+// verify decompresses a stored body and puts it through every gate before any
+// caller can see it. A body that fails one is a miss: the recompute that
+// follows re-uploads it clean.
+//
+// It is the one place the gates live, so a body reaching the build through the
+// look-ahead pool is checked exactly as hard as one the build asked for by
+// name. op names the path for the log line.
+func (b *WebBackend) verify(op, actionID, outputID string, stored []byte) ([]byte, bool) {
+	// A missing outputid is a metadata gap, not a corrupt body — count it as
+	// such rather than as the checksum mismatch it would become below.
+	if outputID == "" {
+		b.MissNoOutputID.Increment()
+		logging.Warnf("cacheprog: %s %s: missing outputid metadata", op, ShortID(actionID))
+		return nil, false
 	}
+	data, err := Decompress(stored)
+	if err != nil {
+		b.MissDecompress.Increment()
+		logging.Warnf("cacheprog: %s %s: decompress: %v", op, ShortID(actionID), err)
+		return nil, false
+	}
+	// The body must hash to its advertised outputID. A mismatch means the
+	// remote object is corrupt, and serving it would feed the compiler a
+	// damaged object under a key it trusts.
+	if got, ok := OutputIDMatches(outputID, data); !ok {
+		b.MissChecksum.Increment()
+		b.Stats.Corrupt.Increment()
+		logging.Warnf("cacheprog: %s %s: body checksum mismatch (want outputid=%s, got sha256=%s, len=%d); treating as miss",
+			op, ShortID(actionID), ShortID(outputID), ShortID(got), len(data))
+		return nil, false
+	}
+	// A compiled object self-certifies its action key in its build id. A body
+	// whose build id names another action is a poisoned mapping the hash check
+	// cannot catch, because both halves of the pair are internally consistent.
+	if act, ok := BuildIDMatchesAction(actionID, data); !ok {
+		b.MissBuildID.Increment()
+		b.Stats.Corrupt.Increment()
+		logging.Warnf("cacheprog: %s %s: build-id action mismatch (want action=%s, got action=%s, len=%d); treating as miss",
+			op, ShortID(actionID), ExpectedBuildIDAction(actionID), act, len(data))
+		return nil, false
+	}
+	// A module index certifies neither its outputID nor its build id, so a
+	// wrong one is silently fatal at package load. Recomputing it locally
+	// costs nothing.
+	if IsGoModuleIndex(data) {
+		b.MissModuleIndex.Increment()
+		logging.Warnf("cacheprog: %s %s: refusing module-index blob (unverifiable under this key, len=%d); treating as miss",
+			op, ShortID(actionID), len(data))
+		return nil, false
+	}
+	return data, true
 }

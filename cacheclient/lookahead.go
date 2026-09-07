@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // The look-ahead pool. A build asks for one key at a time, in dependency
@@ -41,10 +43,10 @@ type lookAhead struct {
 	stop  chan struct{}
 	wg    sync.WaitGroup
 
-	// once guards a key against being seeded twice. A seed is a request the
+	// seeded guards a key against being seeded twice. A seed is a request the
 	// build never made; making it more than once is pure cost.
 	mu     sync.Mutex
-	seeded map[string]struct{}
+	seeded set.Set[string]
 
 	Requests AtomicCounter // look-ahead round trips issued
 	Entries  AtomicCounter // entries they brought back
@@ -74,7 +76,7 @@ func newLookAhead(b *WebBackend) *lookAhead {
 		b:      b,
 		seeds:  make(chan []string, depth),
 		stop:   make(chan struct{}),
-		seeded: make(map[string]struct{}),
+		seeded: set.New[string](),
 	}
 	la.wg.Add(workers)
 	for range workers {
@@ -93,10 +95,10 @@ func (la *lookAhead) Seed(keys []string) {
 	fresh := keys[:0:0]
 	la.mu.Lock()
 	for _, k := range keys {
-		if _, ok := la.seeded[k]; ok {
+		if la.seeded.Contains(k) {
 			continue
 		}
-		la.seeded[k] = struct{}{}
+		la.seeded.Add(k)
 		fresh = append(fresh, k)
 	}
 	la.mu.Unlock()

@@ -102,7 +102,7 @@ func (p *prepPool) worker() {
 		select {
 		case j := <-p.jobs:
 			p.b.prepare(j)
-				p.pending.Done()
+			p.pending.Done()
 		case <-p.stop:
 			// Whatever is already queued was claimed and must still be shipped;
 			// dropping it here would leave the key claimed and never stored.
@@ -110,7 +110,7 @@ func (p *prepPool) worker() {
 				select {
 				case j := <-p.jobs:
 					p.b.prepare(j)
-				p.pending.Done()
+					p.pending.Done()
 				default:
 					return
 				}

@@ -52,9 +52,13 @@ func fakeBatchServer(t *testing.T, store map[string][]byte, meta map[string]map[
 
 			var entries []batchGetManifestEntry
 			dataMap := map[string][]byte{}
+			requested := map[string]bool{}
 			for _, key := range req.Keys {
+				requested[key] = true
 				d, ok := store[key]
-				if !ok {
+				// PrefetchOnly names its keys to say where to look, and wants
+				// none of their bodies back.
+				if !ok || req.PrefetchOnly {
 					continue
 				}
 				entries = append(entries, batchGetManifestEntry{
@@ -64,25 +68,20 @@ func fakeBatchServer(t *testing.T, store map[string][]byte, meta map[string]map[
 				})
 				dataMap[key] = d
 			}
-			// Add a prefetch entry if requested and there are extra entries.
+			// Everything else the store holds is what a real server would offer
+			// as the window around those keys.
 			if req.Prefetch {
 				for key, d := range store {
-					alreadyIncluded := false
-					for _, e := range entries {
-						if e.Key == key {
-							alreadyIncluded = true
-							break
-						}
+					if requested[key] {
+						continue
 					}
-					if !alreadyIncluded {
-						entries = append(entries, batchGetManifestEntry{
-							Key:      key,
-							Size:     int64(len(d)),
-							Metadata: meta[key],
-							Prefetch: true,
-						})
-						dataMap[key] = d
-					}
+					entries = append(entries, batchGetManifestEntry{
+						Key:      key,
+						Size:     int64(len(d)),
+						Metadata: meta[key],
+						Prefetch: true,
+					})
+					dataMap[key] = d
 				}
 			}
 
@@ -196,7 +195,10 @@ func TestGetBatch_MissingOutputIDNotCorrupt(t *testing.T) {
 	require.Equal(t, uint32(0), b.Stats.Corrupt.Load(), "missing outputid must not mark the entry corrupt")
 }
 
-func TestGetBatch_PrefetchCallsOnBatchEntries(t *testing.T) {
+// A hit seeds the look-ahead pool, and what the pool brings back reaches the
+// populator. The request the build was blocked on carries only what the build
+// asked for: the extra entry arrives on the pool's own request, afterwards.
+func TestGetBatch_SeedsLookAheadWhichFeedsThePopulator(t *testing.T) {
 	store := make(map[string][]byte)
 	meta := make(map[string]map[string]string)
 	srv := fakeBatchServer(t, store, meta)
@@ -208,7 +210,7 @@ func TestGetBatch_PrefetchCallsOnBatchEntries(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Store the requested entry and an extra entry (will be prefetched).
+	// The entry the build wants, and one more the server will offer alongside.
 	compressed1, _ := Compress([]byte("entry one"))
 	compressed2, _ := Compress([]byte("entry two"))
 	store["go-buildcache/v1aaaa000000000001"] = compressed1
@@ -216,12 +218,14 @@ func TestGetBatch_PrefetchCallsOnBatchEntries(t *testing.T) {
 	store["go-buildcache/v1aaaa000000000002"] = compressed2
 	meta["go-buildcache/v1aaaa000000000002"] = map[string]string{"outputid": testOutputID("entry two")}
 
-	var callbackEntries []BatchEntry
+	var mu sync.Mutex
+	var fetchedAhead []BatchEntry
 	b.OnBatchEntries = func(entries []BatchEntry) {
-		callbackEntries = append(callbackEntries, entries...)
+		mu.Lock()
+		defer mu.Unlock()
+		fetchedAhead = append(fetchedAhead, entries...)
 	}
 
-	// Request a single entry — server should also return the other as prefetch.
 	outputID, body, _, _, miss, _, err := b.getBatchTest("aaaa000000000001", "go-buildcache/v1aaaa000000000001")
 	require.NoError(t, err)
 	require.False(t, miss)
@@ -229,11 +233,16 @@ func TestGetBatch_PrefetchCallsOnBatchEntries(t *testing.T) {
 	data, _ := io.ReadAll(body)
 	require.Equal(t, "entry one", string(data))
 
-	// Callback gets only the prefetch entry; Close drains it race-free.
+	// Close drains the pool, so what it fetched has landed by the time this returns.
 	require.NoError(t, b.Close())
-	require.Len(t, callbackEntries, 1)
-	require.Equal(t, "go-buildcache/v1aaaa000000000002", callbackEntries[0].Key)
-	require.True(t, callbackEntries[0].Prefetch)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, fetchedAhead, "the hit must have seeded a look-ahead request")
+	for _, e := range fetchedAhead {
+		require.NotEqual(t, "go-buildcache/v1aaaa000000000001", e.Key,
+			"look-ahead must not re-fetch the body the caller already has")
+	}
 }
 
 func TestGetBatch_FallbackToIndividual(t *testing.T) {

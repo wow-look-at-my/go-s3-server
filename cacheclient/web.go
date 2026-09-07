@@ -53,10 +53,10 @@ type WebBackend struct {
 	// consumer often knows its endpoint before it knows which module it is
 	// building, and the requests in between still deserve an attribution.
 	moduleLate atomic.Pointer[string]
-	Stats     CacheStats
-	Pool      ConcurrencyTracker // HTTP connection pool usage (shared across all Servers)
-	Latency   *LatencyStats      // optional; set by Server for sub-operation tracking
-	keysMu    sync.RWMutex
+	Stats      CacheStats
+	Pool       ConcurrencyTracker // HTTP connection pool usage (shared across all Servers)
+	Latency    *LatencyStats      // optional; set by Server for sub-operation tracking
+	keysMu     sync.RWMutex
 	// keys holds RAW ACTION HASHES, not cache-key strings. A key string is the
 	// same 32-byte hash written as 64 hex characters behind a fixed prefix, so
 	// a string set costs about three times the memory and charges a hex encode

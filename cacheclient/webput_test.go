@@ -2,7 +2,6 @@ package cacheclient
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -166,14 +165,17 @@ func TestWebBackend_PutServerError(t *testing.T) {
 		AccessKey: "testkey", SecretKey: "testsecret",
 	})
 	require.NoError(t, err)
-	// Force the synchronous single-PUT path so the HTTP error (wrapped in ErrLogged) returns from Put directly.
+	// Force the single-PUT path, the floor a server without /_batch/put falls to.
 	b.batchPutUnsupported.Store(true)
 
 	payload := largePayload(1024)
-	err = b.putTest("aabbccdd11223344", "eeff0011aabbccdd", nopReader(payload), int64(len(payload)))
-	require.Error(t, err)
-	require.True(t, errors.Is(err, ErrLogged), "PUT HTTP error must wrap ErrLogged so cache.go suppresses the duplicate log")
+	// Put reports nothing about the upload: it returns as soon as the key is
+	// claimed, and the upload happens behind it. What a refused upload must do
+	// is leave no trace -- no stored count, and no claim, so the next run
+	// offers the object again instead of skipping it as already present.
+	require.NoError(t, b.putTest("aabbccdd11223344", "eeff0011aabbccdd", nopReader(payload), int64(len(payload))))
 	require.Equal(t, uint32(0), b.Stats.Puts.Load())
+	require.False(t, b.Present("aabbccdd11223344"), "a failed upload must not leave the key claimed")
 }
 
 func TestWebBackend_PutServerError_Coalesced(t *testing.T) {

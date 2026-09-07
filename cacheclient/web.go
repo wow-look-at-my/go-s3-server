@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -31,6 +30,7 @@ type WebConfig struct {
 	SecretKey string // Basic Auth password
 	Version   string // go-toolchain version, stored as object metadata
 	Module    string // main module path, stored as object metadata (provenance)
+	Target    string // GOOS/GOARCH this build is producing, sent as provenance
 }
 
 // WebBackend stores cache objects in a remote web server with LZ4 compression.
@@ -40,26 +40,37 @@ type WebConfig struct {
 // coalescer), falling back to individual PUTs against a server that does not
 // support it.
 type WebBackend struct {
-	client     *http.Client
-	bucket     string
-	prefix     string
-	endpoint   string
-	accessKey  string
-	secretKey  string
-	version    string // go-toolchain version for object metadata
-	module     string // main module path for object metadata (provenance)
+	client    *http.Client
+	bucket    string
+	prefix    string
+	endpoint  string
+	accessKey string
+	secretKey string
+	version   string // go-toolchain version for object metadata
+	module    string // main module path for object metadata (provenance)
+	target    string // GOOS/GOARCH this build produces, for request provenance
+	// moduleLate carries a module path learned after the backend was built. A
+	// consumer often knows its endpoint before it knows which module it is
+	// building, and the requests in between still deserve an attribution.
+	moduleLate atomic.Pointer[string]
 	Stats      CacheStats
 	Pool       ConcurrencyTracker // HTTP connection pool usage (shared across all Servers)
 	Latency    *LatencyStats      // optional; set by Server for sub-operation tracking
 	keysMu     sync.RWMutex
-	keys       set.Set[string] // known keys, from the startup index fetch + Put claims
-	indexEmpty bool            // remote index was empty at startup: nothing to batch-probe for
+	// keys holds RAW ACTION HASHES, not cache-key strings. A key string is the
+	// same 32-byte hash written as 64 hex characters behind a fixed prefix, so
+	// a string set costs about three times the memory and charges a hex encode
+	// and an allocation per entry to build. A large cache is hundreds of
+	// thousands of entries, and that set is built at startup before the build
+	// does anything at all.
+	keys       set.Set[actionHash] // known keys, from the startup index fetch + Put claims
+	indexEmpty bool                // remote index was empty at startup: nothing to batch-probe for
 	// indexAuthoritative marks a fresh, server-confirmed index: an absent key can then miss without a probe.
 	indexAuthoritative bool
 	// indexKeysAtStart is the key count from the startup index fetch, reported in WebSummary to flag a dead remote.
 	indexKeysAtStart int
 	missesMu         sync.RWMutex
-	knownMiss        set.Set[string] // keys confirmed absent from remote this session
+	knownMiss        set.Set[actionHash] // keys confirmed absent from remote this session
 
 	// emptyBatchBackoffThreshold: after this many empty batches in a row, stop probing for the run (an unset value disables).
 	emptyBatchBackoffThreshold int          // an unset value disables the backoff
@@ -67,7 +78,16 @@ type WebBackend struct {
 	batchProbingDisabled       atomic.Bool  // true after the backoff has tripped
 	batchBackoffLogOnce        sync.Once    // logs the disable notice a single time
 
-	// OnBatchEntries lets the caller populate the local cache from a batch GET's prefetch entries.
+	// OnBatchEntries receives the objects the look-ahead pool fetched ahead of
+	// the build. Leaving it nil turns look-ahead off entirely: with nowhere to
+	// put an object nobody has asked for yet, fetching it is pure cost. That is
+	// not hypothetical -- the pool's ancestor rode every batch response and its
+	// entries went straight to the garbage collector, because the one consumer
+	// never set this.
+	//
+	// Entries arrive on the pool's own goroutines, several at once, and carry
+	// COMPRESSED bodies: a consumer that already holds an object locally drops
+	// it without paying to decompress it. Verify anything kept with Verify.
 	OnBatchEntries func(entries []BatchEntry)
 
 	// Miss reason counters for diagnostics.
@@ -81,6 +101,12 @@ type WebBackend struct {
 	MissBuildID     AtomicCounter
 	MissModuleIndex AtomicCounter // module-index blobs refused: unverifiable under a key
 	MissNetwork     AtomicCounter
+
+	// RawBytes and CompressedBytes are what this process offered the store,
+	// before and after lz4. Their ratio is what compression actually bought on
+	// this build's objects, rather than on a benchmark corpus.
+	RawBytes        AtomicCounter
+	CompressedBytes AtomicCounter
 
 	// SkippedEmptyIndex counts clean misses skipped because the startup index was empty.
 	SkippedEmptyIndex AtomicCounter
@@ -117,21 +143,30 @@ type WebBackend struct {
 	putBatchDone        chan struct{}
 	putBatchHTTPWG      sync.WaitGroup
 	batchPutUnsupported atomic.Bool // sticky after the server refuses /_batch/put; Put then uses doRetryPUT
+
+	// lookAhead fetches objects the build has not asked for yet, on its own
+	// goroutines. See lookahead.go.
+	lookAhead *lookAhead
+	// prep runs a Put's compression off the build's goroutine. See webput.go.
+	prep *prepPool
 }
 
 type batchReq struct {
 	actionID string
 	key      string
+	hash     actionHash
 	resp     chan batchResp
 }
 
+// batchResp carries a decompressed, fully verified body. It is a []byte rather
+// than a reader because the client has the whole object in memory by the time
+// it can answer at all: handing back a reader only bought the consumer another
+// copy on its way to a file.
 type batchResp struct {
-	outputID   string
-	body       io.ReadCloser
-	size       int64
-	t          time.Time
-	miss       bool
-	executable bool
+	outputID string
+	data     []byte
+	t        time.Time
+	miss     bool
 }
 
 const (
@@ -176,8 +211,19 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		TLSClientConfig:       &tls.Config{},
-		ForceAttemptHTTP2:     true,
+		TLSClientConfig: &tls.Config{},
+		// HTTP/1.1, deliberately. HTTP/2 multiplexes every request onto ONE TCP
+		// connection, so MaxConnsPerHost below stops meaning anything: the pool
+		// holds one connection with one congestion window, and throughput ramps
+		// at whatever that single window opens at. This workload is many
+		// independent blobs and wants many independent windows, which is what
+		// the connection pool gives it once nothing collapses them.
+		//
+		// H2's advantages -- header compression, one handshake -- are worth
+		// little here: the requests are few and large, and the bodies dwarf the
+		// headers.
+		ForceAttemptHTTP2:     false,
+		TLSNextProto:          map[string]func(string, *tls.Conn) http.RoundTripper{},
 		MaxIdleConns:          MaxConnsPerHost,
 		MaxIdleConnsPerHost:   MaxConnsPerHost,
 		MaxConnsPerHost:       MaxConnsPerHost,
@@ -223,6 +269,7 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 		secretKey: secretKey,
 		version:   cfg.Version,
 		module:    cfg.Module,
+		target:    cfg.Target,
 	}
 
 	b.errLog = newHTTPErrLogger(loggerWriter{}, httpErrFlushInterval)
@@ -234,10 +281,12 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	b.putBatchStop = make(chan struct{})
 	b.putBatchDone = make(chan struct{})
 	go b.batchPutCoalescer()
+	b.prep = newPrepPool(b)
+	b.lookAhead = newLookAhead(b)
 	b.keys, b.indexAuthoritative = b.loadOrFetchIndex()
 	b.indexEmpty = b.keys.Len() == 0
 	b.indexKeysAtStart = b.keys.Len()
-	b.knownMiss = set.New[string]()
+	b.knownMiss = set.New[actionHash]()
 	if b.indexAuthoritative {
 		logging.Infof("cacheprog: web index: %d keys", b.keys.Len())
 	} else {
@@ -274,22 +323,26 @@ func (b *WebBackend) url(key string) string {
 //
 //   - Key absent but the index fetch FAILED: batch-probe the key (the recovery
 //     path), bounded by the consecutive-empty-batch backoff.
-func (b *WebBackend) Get(actionID string) (outputID string, body io.ReadCloser, size int64, t time.Time, miss bool, executable bool, err error) {
-	key := b.key(actionID)
-	if b.keyKnown(key) {
-		return b.getBatch(actionID, key)
+func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.Time, miss bool) {
+	h, ok := parseActionHash(actionID)
+	if !ok {
+		return "", nil, time.Time{}, true
 	}
-
-	// Key not in index — check if we already know it's absent.
-	b.missesMu.RLock()
-	alreadyMissed := b.knownMiss.Contains(key)
-	b.missesMu.RUnlock()
-	if alreadyMissed {
-		b.MissNotInIndex.Increment()
-		return "", nil, 0, time.Time{}, true, false, nil
+	if b.keyKnown(h) {
+		r := b.getBatch(actionID, b.key(actionID), h)
+		return r.outputID, r.data, r.t, r.miss
 	}
 
 	b.MissNotInIndex.Increment()
+
+	// Already proven absent this run: no round trip can change that answer.
+	b.missesMu.RLock()
+	alreadyMissed := b.knownMiss.Contains(h)
+	b.missesMu.RUnlock()
+	if alreadyMissed {
+		return "", nil, time.Time{}, true
+	}
+
 	if b.indexAuthoritative {
 		// Authoritative index already says the key is absent: miss without a probe.
 		if b.indexEmpty {
@@ -297,39 +350,62 @@ func (b *WebBackend) Get(actionID string) (outputID string, body io.ReadCloser, 
 		} else {
 			b.SkippedNotInIndex.Increment()
 		}
-		return "", nil, 0, time.Time{}, true, false, nil
+		return "", nil, time.Time{}, true
 	}
 	if b.batchProbingOff() {
 		// Backoff tripped: the remote has proven empty for this run. Miss without probing.
 		b.SkippedBatchBackoff.Increment()
-		return "", nil, 0, time.Time{}, true, false, nil
+		return "", nil, time.Time{}, true
 	}
-	return b.getBatch(actionID, key)
+	r := b.getBatch(actionID, b.key(actionID), h)
+	return r.outputID, r.data, r.t, r.miss
 }
 
-// keyKnown reports whether key is in the known-keys set (the startup index
-// plus optimistic Put claims).
-func (b *WebBackend) keyKnown(key string) bool {
+// Verify decompresses and checks a stored body from a look-ahead entry, under
+// exactly the gates a requested object passes. It answers the object's bytes,
+// or false for a body no consumer may see.
+func (b *WebBackend) Verify(e BatchEntry, actionID string) ([]byte, bool) {
+	return b.verify("look-ahead", actionID, e.OutputID, e.Data, e.RawSize)
+}
+
+// ActionIDFromKey recovers the action ID a cache key names, so a consumer
+// holding a look-ahead entry can find the action it belongs to without
+// rebuilding the client's key grammar.
+func (b *WebBackend) ActionIDFromKey(key string) (string, bool) {
+	prefix := b.KeyPrefix()
+	if len(key) != len(prefix)+2*hashSize || key[:len(prefix)] != prefix {
+		return "", false
+	}
+	id := key[len(prefix):]
+	if _, ok := parseActionHash(id); !ok {
+		return "", false
+	}
+	return id, true
+}
+
+// keyKnown reports whether the hash is in the known-keys set (the startup
+// index plus optimistic Put claims).
+func (b *WebBackend) keyKnown(h actionHash) bool {
 	b.keysMu.RLock()
 	defer b.keysMu.RUnlock()
-	return b.keys.Contains(key)
+	return b.keys.Contains(h)
 }
 
 // reclaimAbsent records an authoritative absent answer (a not-found, or missing from a batch
-// response) for key. It drops any stale index claim so Put re-uploads instead of
+// response) for a key. It drops any stale index claim so Put re-uploads instead of
 // skipping, and marks the key knownMiss so Gets stop re-asking this run.
-func (b *WebBackend) reclaimAbsent(key string) bool {
+func (b *WebBackend) reclaimAbsent(h actionHash) bool {
 	b.keysMu.Lock()
-	removed := b.keys.Contains(key)
+	removed := b.keys.Contains(h)
 	if removed {
-		b.keys.Remove(key)
+		b.keys.Remove(h)
 	}
 	b.keysMu.Unlock()
 	if removed {
 		b.Reclaimed404.Increment()
 	}
 	b.missesMu.Lock()
-	b.knownMiss.Add(key)
+	b.knownMiss.Add(h)
 	b.missesMu.Unlock()
 	return removed
 }
@@ -337,12 +413,19 @@ func (b *WebBackend) reclaimAbsent(key string) bool {
 // ForgetStale drops the index claim for actionID so the next Put re-uploads
 // instead of skipping as already known.
 func (b *WebBackend) ForgetStale(actionID string) {
-	b.removeClaimed(b.key(actionID))
+	if h, ok := parseActionHash(actionID); ok {
+		b.removeClaimed(h)
+	}
 }
 
 // Close drains the batch coalescer and flushes the HTTP error logger.
 
 func (b *WebBackend) Close() error {
+	// Look-ahead first: it is speculation, and nothing waits on it, so a
+	// shutdown must not hold for a round trip nobody asked for.
+	b.lookAhead.Close()
+	// Then the prep pool, which still owes the coalescer every object it holds.
+	b.prep.Close()
 	// Flush the PUT coalescer up front: an unflushed upload was claimed in the index but never stored.
 	if b.putBatchStop != nil {
 		close(b.putBatchStop)
@@ -360,7 +443,60 @@ func (b *WebBackend) Close() error {
 
 func (b *WebBackend) GetStats() *CacheStats { return &b.Stats }
 
-// signRequest authenticates an HTTP request using HTTP Basic Auth.
+// signRequest authenticates an HTTP request and stamps its provenance.
+//
+// The provenance is what turns the server's log from a stream of hashes into
+// something an operator can act on. A key says nothing about who wanted it; the
+// module says which project's build is running, the target says which port it
+// is building for, and the kind separates the requests a build is blocked on
+// from the ones the look-ahead pool made on its own. Without that last one a
+// server cannot tell a slow build from a busy one.
 func (b *WebBackend) signRequest(req *http.Request) {
 	req.SetBasicAuth(b.accessKey, b.secretKey)
+	if module := b.moduleName(); module != "" {
+		req.Header.Set(HeaderModule, module)
+	}
+	if b.version != "" {
+		req.Header.Set(HeaderToolchain, b.version)
+	}
+	if b.target != "" {
+		req.Header.Set(HeaderTarget, b.target)
+	}
+	req.Header.Set(HeaderClient, clientVersion)
 }
+
+// SetModule names the module whose build is running, for consumers that learn
+// it after the backend exists.
+func (b *WebBackend) SetModule(path string) {
+	if path != "" {
+		b.moduleLate.Store(&path)
+	}
+}
+
+// moduleName is the configured module path, or one set later.
+func (b *WebBackend) moduleName() string {
+	if p := b.moduleLate.Load(); p != nil {
+		return *p
+	}
+	return b.module
+}
+
+// The provenance headers a client stamps on every request.
+const (
+	HeaderModule    = "X-Cache-Module"    // the main module whose build is asking
+	HeaderToolchain = "X-Cache-Toolchain" // the toolchain version that produced or wants the object
+	HeaderTarget    = "X-Cache-Target"    // GOOS/GOARCH the build is producing
+	HeaderClient    = "X-Cache-Client"    // this client's wire version
+	HeaderKind      = "X-Cache-Kind"      // KindCritical or KindLookAhead
+)
+
+// Request kinds. A server that cannot tell these apart cannot tell a build
+// that is waiting from one that is merely reading ahead.
+const (
+	KindCritical  = "critical"
+	KindLookAhead = "look-ahead"
+)
+
+// clientVersion names the wire contract, so a server log can attribute a
+// request to the client that made it.
+const clientVersion = "cacheclient/2"

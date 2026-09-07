@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // fakeBatchServer returns an httptest.Server that mimics the /_batch/get
@@ -52,9 +53,13 @@ func fakeBatchServer(t *testing.T, store map[string][]byte, meta map[string]map[
 
 			var entries []batchGetManifestEntry
 			dataMap := map[string][]byte{}
+			requested := set.New[string]()
 			for _, key := range req.Keys {
+				requested.Add(key)
 				d, ok := store[key]
-				if !ok {
+				// PrefetchOnly names its keys to say where to look, and wants
+				// none of their bodies back.
+				if !ok || req.PrefetchOnly {
 					continue
 				}
 				entries = append(entries, batchGetManifestEntry{
@@ -64,25 +69,20 @@ func fakeBatchServer(t *testing.T, store map[string][]byte, meta map[string]map[
 				})
 				dataMap[key] = d
 			}
-			// Add a prefetch entry if requested and there are extra entries.
+			// Everything else the store holds is what a real server would offer
+			// as the window around those keys.
 			if req.Prefetch {
 				for key, d := range store {
-					alreadyIncluded := false
-					for _, e := range entries {
-						if e.Key == key {
-							alreadyIncluded = true
-							break
-						}
+					if requested.Contains(key) {
+						continue
 					}
-					if !alreadyIncluded {
-						entries = append(entries, batchGetManifestEntry{
-							Key:      key,
-							Size:     int64(len(d)),
-							Metadata: meta[key],
-							Prefetch: true,
-						})
-						dataMap[key] = d
-					}
+					entries = append(entries, batchGetManifestEntry{
+						Key:      key,
+						Size:     int64(len(d)),
+						Metadata: meta[key],
+						Prefetch: true,
+					})
+					dataMap[key] = d
 				}
 			}
 
@@ -131,7 +131,7 @@ func TestGetBatch_ReturnsRequestedEntry(t *testing.T) {
 	meta["go-buildcache/v1aabbccdd11223344"] = map[string]string{"outputid": testOutputID("hello world")}
 
 	// getBatch should find it via the batch endpoint.
-	outputID, body, size, _, miss, _, err := b.getBatch("aabbccdd11223344", "go-buildcache/v1aabbccdd11223344")
+	outputID, body, size, _, miss, _, err := b.getBatchTest("aabbccdd11223344", "go-buildcache/v1aabbccdd11223344")
 	require.NoError(t, err)
 	require.False(t, miss)
 	require.Equal(t, testOutputID("hello world"), outputID)
@@ -161,7 +161,7 @@ func TestGetBatch_RejectsCorruptEntry(t *testing.T) {
 	store["go-buildcache/v1aabbccdd11223344"] = compressed
 	meta["go-buildcache/v1aabbccdd11223344"] = map[string]string{"outputid": testOutputID("the correct body")}
 
-	_, _, _, _, miss, _, err := b.getBatch("aabbccdd11223344", "go-buildcache/v1aabbccdd11223344")
+	_, _, _, _, miss, _, err := b.getBatchTest("aabbccdd11223344", "go-buildcache/v1aabbccdd11223344")
 	require.NoError(t, err)
 	require.True(t, miss, "a batched entry failing the checksum must be a miss")
 	require.Equal(t, uint32(1), b.MissChecksum.Load())
@@ -188,7 +188,7 @@ func TestGetBatch_MissingOutputIDNotCorrupt(t *testing.T) {
 	store["go-buildcache/v1aabbccdd11223344"] = compressed
 	meta["go-buildcache/v1aabbccdd11223344"] = map[string]string{} // no outputid
 
-	_, _, _, _, miss, _, err := b.getBatch("aabbccdd11223344", "go-buildcache/v1aabbccdd11223344")
+	_, _, _, _, miss, _, err := b.getBatchTest("aabbccdd11223344", "go-buildcache/v1aabbccdd11223344")
 	require.NoError(t, err)
 	require.True(t, miss)
 	require.Equal(t, uint32(1), b.MissNoOutputID.Load())
@@ -196,7 +196,10 @@ func TestGetBatch_MissingOutputIDNotCorrupt(t *testing.T) {
 	require.Equal(t, uint32(0), b.Stats.Corrupt.Load(), "missing outputid must not mark the entry corrupt")
 }
 
-func TestGetBatch_PrefetchCallsOnBatchEntries(t *testing.T) {
+// A hit seeds the look-ahead pool, and what the pool brings back reaches the
+// populator. The request the build was blocked on carries only what the build
+// asked for: the extra entry arrives on the pool's own request, afterwards.
+func TestGetBatch_SeedsLookAheadWhichFeedsThePopulator(t *testing.T) {
 	store := make(map[string][]byte)
 	meta := make(map[string]map[string]string)
 	srv := fakeBatchServer(t, store, meta)
@@ -208,7 +211,7 @@ func TestGetBatch_PrefetchCallsOnBatchEntries(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Store the requested entry and an extra entry (will be prefetched).
+	// The entry the build wants, and one more the server will offer alongside.
 	compressed1, _ := Compress([]byte("entry one"))
 	compressed2, _ := Compress([]byte("entry two"))
 	store["go-buildcache/v1aaaa000000000001"] = compressed1
@@ -216,24 +219,31 @@ func TestGetBatch_PrefetchCallsOnBatchEntries(t *testing.T) {
 	store["go-buildcache/v1aaaa000000000002"] = compressed2
 	meta["go-buildcache/v1aaaa000000000002"] = map[string]string{"outputid": testOutputID("entry two")}
 
-	var callbackEntries []BatchEntry
+	var mu sync.Mutex
+	var fetchedAhead []BatchEntry
 	b.OnBatchEntries = func(entries []BatchEntry) {
-		callbackEntries = append(callbackEntries, entries...)
+		mu.Lock()
+		defer mu.Unlock()
+		fetchedAhead = append(fetchedAhead, entries...)
 	}
 
-	// Request a single entry — server should also return the other as prefetch.
-	outputID, body, _, _, miss, _, err := b.getBatch("aaaa000000000001", "go-buildcache/v1aaaa000000000001")
+	outputID, body, _, _, miss, _, err := b.getBatchTest("aaaa000000000001", "go-buildcache/v1aaaa000000000001")
 	require.NoError(t, err)
 	require.False(t, miss)
 	require.Equal(t, testOutputID("entry one"), outputID)
 	data, _ := io.ReadAll(body)
 	require.Equal(t, "entry one", string(data))
 
-	// Callback gets only the prefetch entry; Close drains it race-free.
+	// Close drains the pool, so what it fetched has landed by the time this returns.
 	require.NoError(t, b.Close())
-	require.Len(t, callbackEntries, 1)
-	require.Equal(t, "go-buildcache/v1aaaa000000000002", callbackEntries[0].Key)
-	require.True(t, callbackEntries[0].Prefetch)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, fetchedAhead, "the hit must have seeded a look-ahead request")
+	for _, e := range fetchedAhead {
+		require.NotEqual(t, "go-buildcache/v1aaaa000000000001", e.Key,
+			"look-ahead must not re-fetch the body the caller already has")
+	}
 }
 
 func TestGetBatch_FallbackToIndividual(t *testing.T) {
@@ -300,11 +310,11 @@ func TestGetBatch_FallbackToIndividual(t *testing.T) {
 
 	// Add to index so getIndividual works.
 	b.keysMu.Lock()
-	b.keys.Add("go-buildcache/v1aabbccdd11223344")
+	b.keys.Add(hashOfKey("go-buildcache/v1aabbccdd11223344"))
 	b.keysMu.Unlock()
 
 	// getBatch should fall back to getIndividual when batch is not found.
-	outputID, body, _, _, miss, _, err := b.getBatch("aabbccdd11223344", "go-buildcache/v1aabbccdd11223344")
+	outputID, body, _, _, miss, _, err := b.getBatchTest("aabbccdd11223344", "go-buildcache/v1aabbccdd11223344")
 	require.NoError(t, err)
 	require.False(t, miss)
 	require.Equal(t, testOutputID("fallback data"), outputID)
@@ -323,7 +333,7 @@ func TestGetBatch_Miss(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, _, _, _, miss, _, _ := b.getBatch("deadbeef00000000", "go-buildcache/v1deadbeef00000000")
+	_, _, _, _, miss, _, _ := b.getBatchTest("deadbeef00000000", "go-buildcache/v1deadbeef00000000")
 	require.True(t, miss)
 }
 
@@ -349,7 +359,7 @@ func TestGet_UsesBatchForUnknownKeys(t *testing.T) {
 	store["go-buildcache/v1aabbccdd11223344"] = compressed
 	meta["go-buildcache/v1aabbccdd11223344"] = map[string]string{"outputid": testOutputID("batch hit")}
 
-	outputID, body, _, _, miss, _, err := b.Get("aabbccdd11223344")
+	outputID, body, _, _, miss, _, err := b.getTest("aabbccdd11223344")
 	require.NoError(t, err)
 	require.False(t, miss)
 	require.Equal(t, testOutputID("batch hit"), outputID)
@@ -427,15 +437,23 @@ func TestGet_CoalescesConcurrentRequestsIntoOneHTTPRequest(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			id := fmt.Sprintf("%016x", i)
-			_, _, _, _, _, _, _ = b.Get(id)
+			_, _, _, _, _, _, _ = b.getTest(id)
 		}(i)
 	}
 	wg.Wait()
 
-	// batchMaxKeys plus coalescing should fit every caller into a couple of requests.
+	// Coalescing must still fold hundreds of callers into a handful of requests.
+	//
+	// The bound is 5 rather than 3 because the window is Nagle's rule now: the
+	// first batch leaves the moment it exists instead of sitting out a fixed
+	// 10ms, so it carries however many keys had arrived by then -- sometimes
+	// one. That costs an extra request under a 200-way burst and saves the
+	// whole 10ms on every lookup of an ordinary build, which never has more
+	// than its own -p keys outstanding. Batches still form under load, which
+	// is what the maximum below pins.
 	calls := atomic.LoadInt32(&batchHTTPCalls)
-	require.LessOrEqual(t, calls, int32(3),
-		"expected ≤3 HTTP requests for %d parallel Gets, got %d (no client-side batching)", N, calls)
+	require.LessOrEqual(t, calls, int32(5),
+		"expected ≤5 HTTP requests for %d parallel Gets, got %d (no client-side batching)", N, calls)
 	require.Greater(t, atomic.LoadInt32(&maxKeysInOneRequest), int32(1),
 		"expected at least one HTTP request to carry multiple keys; max was %d", atomic.LoadInt32(&maxKeysInOneRequest))
 }

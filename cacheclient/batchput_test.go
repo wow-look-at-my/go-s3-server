@@ -99,7 +99,7 @@ func newTestBackend(t *testing.T, url string) *WebBackend {
 func claimed(b *WebBackend, actionID string) bool {
 	b.keysMu.RLock()
 	defer b.keysMu.RUnlock()
-	return b.keys.Contains(b.key(actionID))
+	return b.keys.Contains(hashOf(actionID))
 }
 
 // TestBatchPut_CoalescesAllObjects is the core regression: many Put calls must
@@ -145,7 +145,7 @@ func TestBatchPut_CoalescesAllObjects(t *testing.T) {
 		a := "aabbccdd1122330" + strconv.Itoa(i)
 		actions = append(actions, a)
 		payload := largePayload(256 + i)
-		require.NoError(t, b.Put(a, testOutputID(payload), strings.NewReader(payload), int64(len(payload))))
+		require.NoError(t, b.putTest(a, testOutputID(payload), strings.NewReader(payload), int64(len(payload))))
 	}
 
 	// Close drains the coalescer synchronously: ships the buffer as a single batch and waits for the round-trip.
@@ -194,7 +194,7 @@ func TestBatchPut_PerObjectErrorRollsBackOnlyThatClaim(t *testing.T) {
 	actions := []string{"aabbccdd11223300", "aabbccdd11223301", "aabbccdd11223302"}
 	for _, a := range actions {
 		payload := largePayload(128)
-		require.NoError(t, b.Put(a, testOutputID(payload), strings.NewReader(payload), int64(len(payload))))
+		require.NoError(t, b.putTest(a, testOutputID(payload), strings.NewReader(payload), int64(len(payload))))
 	}
 
 	require.NoError(t, b.Close()) // drains the batch and applies per-object results
@@ -239,7 +239,7 @@ func TestBatchPut_FallsBackToSinglePUTsOn405(t *testing.T) {
 	first := []string{"aabbccdd11223300", "aabbccdd11223301"}
 	for _, a := range first {
 		payload := largePayload(128)
-		require.NoError(t, b.Put(a, testOutputID(payload), strings.NewReader(payload), int64(len(payload))))
+		require.NoError(t, b.putTest(a, testOutputID(payload), strings.NewReader(payload), int64(len(payload))))
 	}
 
 	require.Eventually(t, func() bool {
@@ -255,7 +255,7 @@ func TestBatchPut_FallsBackToSinglePUTsOn405(t *testing.T) {
 	// The wave after it: flag is set, so this goes straight to a single PUT.
 	second := "aabbccdd11223302"
 	payload := largePayload(128)
-	require.NoError(t, b.Put(second, testOutputID(payload), strings.NewReader(payload), int64(len(payload))))
+	require.NoError(t, b.putTest(second, testOutputID(payload), strings.NewReader(payload), int64(len(payload))))
 
 	require.Eventually(t, func() bool {
 		mu.Lock()
@@ -303,7 +303,7 @@ func TestBatchPut_DrainOnCloseFlushesPartialBuffer(t *testing.T) {
 
 	const a = "aabbccdd11223399"
 	payload := largePayload(64)
-	require.NoError(t, b.Put(a, testOutputID(payload), strings.NewReader(payload), int64(len(payload))))
+	require.NoError(t, b.putTest(a, testOutputID(payload), strings.NewReader(payload), int64(len(payload))))
 
 	// Close must flush the single buffered object before returning.
 	require.NoError(t, b.Close())
@@ -348,7 +348,7 @@ func TestBatchPut_WholeBatch503ThenSucceeds(t *testing.T) {
 	actions := []string{"aabbccdd11223300", "aabbccdd11223301"}
 	for _, a := range actions {
 		payload := largePayload(128)
-		require.NoError(t, b.Put(a, testOutputID(payload), strings.NewReader(payload), int64(len(payload))))
+		require.NoError(t, b.putTest(a, testOutputID(payload), strings.NewReader(payload), int64(len(payload))))
 	}
 
 	// Close drains synchronously and waits for the retried round-trip, so the assertions below are deterministic.
@@ -392,7 +392,7 @@ func TestBatchPut_ManifestMetadataMatchesHeaders(t *testing.T) {
 	const a = "aabbccdd11223300"
 	payload := largePayload(512)
 	out := testOutputID(payload)
-	require.NoError(t, b.Put(a, out, strings.NewReader(payload), int64(len(payload))))
+	require.NoError(t, b.putTest(a, out, strings.NewReader(payload), int64(len(payload))))
 
 	select {
 	case <-done:
@@ -401,7 +401,7 @@ func TestBatchPut_ManifestMetadataMatchesHeaders(t *testing.T) {
 	}
 
 	require.Equal(t, out, gotMeta["outputid"])
-	require.Equal(t, "lz4", gotMeta["compression"])
+	require.Equal(t, "zstd", gotMeta["compression"])
 	require.Equal(t, strconv.Itoa(len(payload)), gotMeta["body-size"])
 	require.NotEmpty(t, gotMeta["object-type"])
 	require.NotEmpty(t, gotMeta["created"])

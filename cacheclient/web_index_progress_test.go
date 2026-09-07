@@ -32,7 +32,7 @@ func testIndexBlob(n int) []byte {
 		h[2] = byte(i >> 16)
 		keys.Add(gbciKeyPrefix + hex.EncodeToString(h))
 	}
-	return marshalIndex(keys)
+	return marshalIndex(keySetToHashes(keys))
 }
 
 // TestLoadOrFetchIndex_SlowButSteadyBodySucceeds is the regression test for

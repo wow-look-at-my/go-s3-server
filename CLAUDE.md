@@ -19,6 +19,7 @@ Do NOT use `go build`, `go test`, or any bare `go` commands. Always use `go-tool
 - `docs/memory-limits.md` — how the server stays inside its memory budget: byte-bounded caches, the compact key representation, and the GC ceiling.
 - `docs/eviction.md` — the disk cache is an LRU bounded by size: what "last used" means, the two-walk sweep, and the sweep schedule.
 - `docs/module-index-guard.md` — why a Go module index is refused, how the verdict is reached, and what it costs.
+- `docs/look-ahead.md` — why the blocking path carries only what the build asked for, where the speculative fetching runs instead, and the zstd wire codec.
 
 ## Project layout
 

@@ -113,7 +113,7 @@ func requireProvenanceMeta(t *testing.T, md map[string]string, outputID string) 
 	t.Helper()
 	require.Equal(t, outputID, md["outputid"])
 	require.Equal(t, "go-archive", md["object-type"])
-	require.Equal(t, "lz4", md["compression"])
+	require.Equal(t, "zstd", md["compression"])
 	require.Equal(t, "example.com/provpkg", md["pkg"])
 	require.Equal(t, "alpha.go beta.go", md["src"])
 	require.Equal(t, "go1.25.0", md["go-version"])
@@ -164,7 +164,7 @@ func TestPutProvenance_BatchManifestMetadata(t *testing.T) {
 	raw := provenanceArchive(action)
 	sum := sha256.Sum256(raw)
 	outputID := hex.EncodeToString(sum[:])
-	require.NoError(t, b.Put(actionHex, outputID, bytes.NewReader(raw), int64(len(raw))))
+	require.NoError(t, b.putTest(actionHex, outputID, bytes.NewReader(raw), int64(len(raw))))
 	require.NoError(t, b.Close()) // drains the coalescer: ships the batch
 
 	mu.Lock()
@@ -205,7 +205,7 @@ func TestPutProvenance_SinglePutHeaders(t *testing.T) {
 	raw := provenanceArchive(action)
 	sum := sha256.Sum256(raw)
 	outputID := hex.EncodeToString(sum[:])
-	require.NoError(t, b.Put(actionHex, outputID, bytes.NewReader(raw), int64(len(raw))))
+	require.NoError(t, b.putTest(actionHex, outputID, bytes.NewReader(raw), int64(len(raw))))
 
 	require.Eventually(t, func() bool {
 		mu.Lock()

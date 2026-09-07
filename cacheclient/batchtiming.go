@@ -25,6 +25,19 @@ type batchTiming struct {
 	keys      atomic.Uint64
 	waitNanos atomic.Uint64 // first key queued -> batch dispatched
 	tripNanos atomic.Uint64 // request issued -> response consumed
+
+	// Look-ahead's own round trips. They are counted apart from the ones above
+	// because nothing blocks on them: adding their latency to the critical
+	// path's would report a build as slower the harder the cache worked for it.
+	lookAheadReqs    atomic.Uint64
+	lookAheadEntries atomic.Uint64
+	lookAheadNanos   atomic.Uint64
+}
+
+func (t *batchTiming) recordLookAhead(entries int, d time.Duration) {
+	t.lookAheadReqs.Add(1)
+	t.lookAheadEntries.Add(uint64(entries))
+	t.lookAheadNanos.Add(uint64(d))
 }
 
 func (t *batchTiming) recordWait(keys int, d time.Duration) {
@@ -44,6 +57,13 @@ type BatchTimings struct {
 	WaitMillis float64 `json:"wait_ms"`
 	// RoundTripMillis is the total time spent on the HTTP requests themselves.
 	RoundTripMillis float64 `json:"round_trip_ms"`
+
+	// The look-ahead pool's own traffic. Entries here are objects fetched
+	// before any caller asked for them, so a build that never blocks on a
+	// network fetch shows a large LookAheadEntries and a small Keys.
+	LookAheadRequests  uint64  `json:"look_ahead_requests"`
+	LookAheadEntries   uint64  `json:"look_ahead_entries"`
+	LookAheadTripMilli float64 `json:"look_ahead_ms"`
 }
 
 // KeysPerBatch reports the average batch size. A value pinned just under the
@@ -73,5 +93,9 @@ func (t *batchTiming) snapshot() BatchTimings {
 		Keys:            t.keys.Load(),
 		WaitMillis:      float64(t.waitNanos.Load()) / float64(time.Millisecond),
 		RoundTripMillis: float64(t.tripNanos.Load()) / float64(time.Millisecond),
+
+		LookAheadRequests:  t.lookAheadReqs.Load(),
+		LookAheadEntries:   t.lookAheadEntries.Load(),
+		LookAheadTripMilli: float64(t.lookAheadNanos.Load()) / float64(time.Millisecond),
 	}
 }

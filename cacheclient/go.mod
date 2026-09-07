@@ -3,6 +3,7 @@ module github.com/wow-look-at-my/go-s3-server/cacheclient
 go 1.26
 
 require (
+	github.com/klauspost/compress v1.20.0
 	github.com/pierrec/lz4/v4 v4.1.27
 	github.com/stretchr/testify v1.11.1
 )

@@ -23,9 +23,34 @@ func Compress(data []byte) ([]byte, error) {
 }
 
 func Decompress(data []byte) ([]byte, error) {
-	r := lz4.NewReader(bytes.NewReader(data))
-	return io.ReadAll(r)
+	return DecompressSized(data, 0)
 }
+
+// DecompressSized is Decompress when the uncompressed length is already known,
+// which it is for anything the cache stores: the uploader records it as
+// body-size metadata and every read path carries it back.
+//
+// io.ReadAll cannot know the answer, so it grows a buffer by repeated
+// reallocation and copies the whole object several times on the way. A
+// multi-megabyte archive is the common case here, and the copies are pure
+// waste when the size was on the wire all along. A wrong size costs nothing
+// but the old behavior: the buffer is a starting capacity, not a promise.
+func DecompressSized(data []byte, size int64) ([]byte, error) {
+	r := lz4.NewReader(bytes.NewReader(data))
+	if size <= 0 || size > maxPresizedBody {
+		return io.ReadAll(r)
+	}
+	buf := bytes.NewBuffer(make([]byte, 0, size))
+	if _, err := buf.ReadFrom(r); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// maxPresizedBody bounds what a declared size may allocate up front. The size
+// comes off the wire, so a corrupt or hostile value must not turn one response
+// into an out-of-memory kill; past this the reader grows as it always did.
+const maxPresizedBody = 1 << 30
 
 // detectObjectType identifies the type of a cache entry from its magic bytes.
 func detectObjectType(data []byte) string {

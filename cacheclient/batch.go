@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"sync/atomic"
 	"time"
 )
@@ -42,6 +43,10 @@ type BatchEntry struct {
 	OutputID string
 	Data     []byte
 	Prefetch bool
+	// RawSize is the body's uncompressed length, as the uploader recorded it.
+	// It lets a reader allocate once instead of growing a buffer. Zero when the
+	// object predates the metadata or carries a value that will not parse.
+	RawSize int64
 }
 
 // parseBatchResponse reads a tar stream from the server's /_batch/get
@@ -86,11 +91,13 @@ func parseBatchResponse(r io.Reader) ([]BatchEntry, error) {
 		if !ok {
 			continue
 		}
+		rawSize, _ := strconv.ParseInt(me.Metadata["body-size"], 10, 64)
 		entries = append(entries, BatchEntry{
 			Key:      me.Key,
 			OutputID: me.Metadata["outputid"],
 			Data:     data,
 			Prefetch: me.Prefetch,
+			RawSize:  rawSize,
 		})
 	}
 	return entries, nil
@@ -282,7 +289,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 			r.resp <- batchResp{miss: true}
 			continue
 		}
-		data, ok := b.verify("web batch get", r.actionID, e.OutputID, e.Data)
+		data, ok := b.verify("web batch get", r.actionID, e.OutputID, e.Data, e.RawSize)
 		if !ok {
 			r.resp <- batchResp{miss: true}
 			continue
@@ -305,7 +312,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 // It is the one place the gates live, so a body reaching the build through the
 // look-ahead pool is checked exactly as hard as one the build asked for by
 // name. op names the path for the log line.
-func (b *WebBackend) verify(op, actionID, outputID string, stored []byte) ([]byte, bool) {
+func (b *WebBackend) verify(op, actionID, outputID string, stored []byte, rawSize int64) ([]byte, bool) {
 	// A missing outputid is a metadata gap, not a corrupt body — count it as
 	// such rather than as the checksum mismatch it would become below.
 	if outputID == "" {
@@ -313,7 +320,7 @@ func (b *WebBackend) verify(op, actionID, outputID string, stored []byte) ([]byt
 		logging.Warnf("cacheprog: %s %s: missing outputid metadata", op, ShortID(actionID))
 		return nil, false
 	}
-	data, err := Decompress(stored)
+	data, err := DecompressSized(stored, rawSize)
 	if err != nil {
 		b.MissDecompress.Increment()
 		logging.Warnf("cacheprog: %s %s: decompress: %v", op, ShortID(actionID), err)

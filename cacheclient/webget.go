@@ -3,6 +3,7 @@ package cacheclient
 import (
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -47,6 +48,7 @@ func (b *WebBackend) getIndividual(actionID, key string, h actionHash) batchResp
 	if outputID == "" {
 		outputID = resp.Header.Get("X-Amz-Meta-Outputid")
 	}
+	rawSize, _ := strconv.ParseInt(resp.Header.Get("X-Cache-Meta-Body-Size"), 10, 64)
 
 	// The header states the length, so the body lands in one exactly-sized
 	// allocation instead of io.ReadAll's doubling.
@@ -69,7 +71,7 @@ func (b *WebBackend) getIndividual(actionID, key string, h actionHash) batchResp
 	}
 
 	decompressStart := time.Now()
-	data, ok := b.verify("web get", actionID, outputID, compressed)
+	data, ok := b.verify("web get", actionID, outputID, compressed, rawSize)
 	if b.Latency != nil {
 		b.Latency.Decompress.Record(time.Since(decompressStart))
 	}

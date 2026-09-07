@@ -23,10 +23,18 @@ const (
 )
 
 // buildShapeServer answers /_batch/get with the requested bodies plus
-// prefetchPer speculative ones, after latency. The latency stands in for a WAN
-// round trip, which is where the difference shows: on loopback a wasted
-// megabyte is nearly free, and on a real link it is the whole cost.
-func buildShapeServer(tb testing.TB, body []byte, prefetchPer int, latency time.Duration) *httptest.Server {
+// carried speculative ones, after latency.
+//
+// It attaches those extras to a blocking request WITHOUT being asked, which is
+// what the old wire shape did: the client set prefetch on every critical-path
+// batch, so a request four keys wide came back carrying dozens of bodies
+// nobody was waiting for. Reproducing it here rather than reintroducing the
+// flag is what makes the two shapes comparable.
+//
+// The latency stands in for a WAN round trip, which is where the difference
+// shows: on loopback a wasted megabyte is nearly free, and on a real link it is
+// the whole cost.
+func buildShapeServer(tb testing.TB, body []byte, carried int, latency time.Duration) *httptest.Server {
 	tb.Helper()
 	compressed, err := Compress(body)
 	if err != nil {
@@ -55,9 +63,10 @@ func buildShapeServer(tb testing.TB, body []byte, prefetchPer int, latency time.
 			}
 		}
 		// The speculative half. A real server picks these by store locality; what
-		// matters here is only that they are bodies nobody asked for.
-		if req.Prefetch {
-			for i := range prefetchPer {
+		// matters here is only that they are bodies nobody asked for, riding the
+		// request the build is blocked on.
+		if !req.PrefetchOnly {
+			for i := range carried {
 				entries = append(entries, batchGetManifestEntry{
 					Key: fmt.Sprintf("go-buildcache/v1%064x", 1<<40|i), Size: int64(len(compressed)),
 					Metadata: map[string]string{"outputid": outputID}, Prefetch: true,
@@ -112,18 +121,20 @@ func BenchmarkBuildShape(bench *testing.B) {
 		body[i] = byte(i * 7)
 	}
 
+	// carried=0 is what the critical path asks for now. carried=32 is the shape
+	// it used to get: the same four keys, plus 32 bodies for nobody.
 	for _, tc := range []struct {
-		name        string
-		prefetchPer int
-		latency     time.Duration
+		name    string
+		carried int
+		latency time.Duration
 	}{
-		{"lan/prefetch=0", 0, 0},
-		{"lan/prefetch=32", 32, 0},
-		{"wan/prefetch=0", 0, 5 * time.Millisecond},
-		{"wan/prefetch=32", 32, 5 * time.Millisecond},
+		{"lan/carried=0", 0, 0},
+		{"lan/carried=32", 32, 0},
+		{"wan/carried=0", 0, 5 * time.Millisecond},
+		{"wan/carried=32", 32, 5 * time.Millisecond},
 	} {
 		bench.Run(tc.name, func(bench *testing.B) {
-			srv := buildShapeServer(bench, body, tc.prefetchPer, tc.latency)
+			srv := buildShapeServer(bench, body, tc.carried, tc.latency)
 			for range bench.N {
 				b, err := NewWebBackend(WebConfig{
 					Bucket: "testbucket", Endpoint: srv.URL,

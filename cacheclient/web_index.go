@@ -102,10 +102,13 @@ func (b *WebBackend) loadOrFetchIndex() (*hashSet, bool) {
 
 	blob, status, err := b.fetchIndexBlob(ctx, diskETag)
 	if err != nil {
-		logging.Warnf("cacheprog: web index fetch: %v", err)
 		if diskBlob != nil {
+			// A failed refresh over a disk copy is routine: the build keeps a
+			// key set, and every go command reports it on a busy host.
+			logging.Infof("cacheprog: web index refresh: %v", err)
 			return diskKeys, false
 		}
+		logging.Warnf("cacheprog: web index fetch: %v", err)
 		return newHashSet(0), false
 	}
 	if status == http.StatusNotModified {

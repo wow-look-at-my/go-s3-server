@@ -2,8 +2,11 @@ package cacheclient
 
 import (
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -129,4 +132,74 @@ func TestLoadOrFetchIndex_StalledBodyAbandoned(t *testing.T) {
 	require.False(t, b.indexAuthoritative,
 		"an abandoned index fetch must leave the key set non-authoritative so batch probing stays enabled")
 	require.Equal(t, 0, b.keys.Len())
+}
+
+// levelLogger keeps Infof and Warnf apart, so a test can assert on the level
+// a message went out at.
+type levelLogger struct{ info, warn *[]string }
+
+func (l levelLogger) Infof(format string, args ...any) {
+	*l.info = append(*l.info, fmt.Sprintf(format, args...))
+}
+
+func (l levelLogger) Warnf(format string, args ...any) {
+	*l.warn = append(*l.warn, fmt.Sprintf(format, args...))
+}
+
+func (levelLogger) Debugf(string, ...any) {}
+
+// TestLoadOrFetchIndex_StalledRefreshOverDiskCopyIsRoutine pins the level of
+// a refresh that stalls while a disk copy exists. Every go command on a busy
+// host can hit that stall, and the build keeps its key set, so the report is
+// routine rather than a warning on the build's stderr.
+func TestLoadOrFetchIndex_StalledRefreshOverDiskCopyIsRoutine(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+
+	blob := testIndexBlob(64)
+	release := make(chan struct{})
+	var served atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/_index") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if served.Add(1) == 1 {
+			w.Header().Set("ETag", `"v1"`)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(blob)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			_, _ = w.Write(blob[:16])
+			f.Flush()
+		}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	cfg := WebConfig{Bucket: "bk", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s"}
+	first, err := NewWebBackend(cfg)
+	require.NoError(t, err)
+	first.Close()
+	require.True(t, first.indexAuthoritative, "the first load must persist a disk copy for the second to refresh")
+
+	defer shrinkIndexBudgets(2*time.Second, 150*time.Millisecond, 10*time.Second)()
+	var info, warn []string
+	SetLogger(levelLogger{&info, &warn})
+	t.Cleanup(func() { SetLogger(nil) })
+
+	b, err := NewWebBackend(cfg)
+	require.NoError(t, err)
+	defer b.Close()
+
+	require.False(t, b.indexAuthoritative)
+	require.Equal(t, 64, b.keys.Len(), "a stalled refresh keeps the disk copy's keys")
+	require.Empty(t, warn, "a stalled refresh over a disk copy is not a warning")
+	require.Contains(t, strings.Join(info, "\n"), "web index refresh: abandoned")
+	require.Contains(t, strings.Join(info, "\n"), "using 64 cached keys")
 }

@@ -287,10 +287,13 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	b.indexEmpty = b.keys.Len() == 0
 	b.indexKeysAtStart = b.keys.Len()
 	b.knownMiss = newHashSet(0)
-	if b.indexAuthoritative {
+	switch {
+	case b.indexAuthoritative:
 		logging.Infof("cacheprog: web index: %d keys", b.keys.Len())
-	} else {
-		logging.Warnf("cacheprog: web index: fetch failed; using %d cached keys (batch probing enabled)", b.keys.Len())
+	case b.keys.Len() > 0:
+		logging.Infof("cacheprog: web index: refresh failed; using %d cached keys (batch probing enabled)", b.keys.Len())
+	default:
+		logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
 	}
 	return b, nil
 }

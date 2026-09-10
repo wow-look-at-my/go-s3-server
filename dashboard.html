@@ -4,9 +4,13 @@
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>go build cache</title>
-	<!-- An empty icon: the page ships no favicon, and without this the browser
-	     asks for one on every load and logs a 404. -->
-	<link rel="icon" href="data:,">
+	<!-- The page is dark by design. This stops Dark Reader from restyling it. -->
+	<meta name="darkreader-lock">
+	<meta name="color-scheme" content="dark">
+	<!-- The icon follows scratch.pazer.site: a dark rounded tile with an amber Material Symbols glyph. -->
+	<link rel="icon" href="/icon.svg" type="image/svg+xml">
+	<link rel="apple-touch-icon" href="/icon.svg">
+	<link rel="mask-icon" href="/icon-monochrome.svg" color="#f0a500">
 	<!-- The org design language, Scratch Proto, from its always-latest deploy.
 	     The stylesheet puts the tokens on :root. The module registers the
 	     components and adopts the same sheet inside each shadow root. Both
@@ -34,23 +38,20 @@
 	<main>
 		<section class="row" id="tiles"></section>
 
-		<section class="panel">
+		<section class="panel reads">
 			<h2>READS</h2>
-			<div class="split">
-				<div>
-					<h3>single GET outcomes</h3>
-					<div class="bars" id="get-outcomes"></div>
-				</div>
-				<div>
-					<h3>batch keys</h3>
-					<div class="bars" id="batch-kinds"></div>
-				</div>
+			<h3>batch keys</h3>
+			<div class="bars" id="batch-kinds"></div>
+			<!-- Only an older client makes a single-object GET; the block stays hidden until one does. -->
+			<div id="single-gets" hidden>
+				<h3>single GET outcomes</h3>
+				<div class="bars" id="get-outcomes"></div>
 			</div>
 		</section>
 
-		<section class="panel">
+		<section class="panel traffic">
 			<h2>TRAFFIC</h2>
-			<div class="split">
+			<div class="stack">
 				<div>
 					<h3>requests by route</h3>
 					<div class="bars" id="routes"></div>
@@ -64,18 +65,18 @@
 			</div>
 		</section>
 
-		<section class="panel">
+		<section class="panel tripwires">
 			<h2>TRIPWIRES</h2>
 			<p class="muted note">Each of these sits at zero, or falls towards it. A rising one is a bug, not load.</p>
 			<table id="tripwires"><tbody></tbody></table>
 		</section>
 
-		<section class="panel">
+		<section class="panel memory">
 			<h2>MEMORY</h2>
 			<div class="bars" id="memory"></div>
 		</section>
 
-		<section class="panel">
+		<section class="panel config">
 			<h2>CONFIGURATION</h2>
 			<table id="config"><tbody></tbody></table>
 		</section>

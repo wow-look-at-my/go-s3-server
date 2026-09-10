@@ -169,6 +169,7 @@ func TestWebBackend_BackoffResetsOnNonEmptyBatch(t *testing.T) {
 // A build with new code trips the threshold on its own misses, and a consumer
 // that compares stderr must not see a warning for that.
 func TestEmptyBatchBackoffNoticeIsRoutine(t *testing.T) {
+	t.Serial() // the logger is package state
 	t.Setenv("TMPDIR", t.TempDir())
 	t.Setenv("GO_TOOLCHAIN_CACHE_EMPTY_BATCH_BACKOFF", "2")
 	var batchGets, puts atomic.Int64

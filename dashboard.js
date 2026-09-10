@@ -145,10 +145,23 @@ function setState(text, led) {
 	el.toggleAttribute("live", led !== "bad");
 }
 
-function drawTiles(stats) {
+// hitRateTile reports the batch path, which is where every read of the current
+// client goes; a single-object GET is an older client, and it counts only when
+// there is no batch traffic to report.
+function hitRateTile(stats) {
+	const kinds = series(stats, "s3_batch_keys_total");
+	const requested = kinds.requested || 0;
+	if (requested) {
+		const found = kinds.found || 0;
+		return tile("hit rate", percent(found, requested), `${count(found)} of ${count(requested)} keys asked for in batches`);
+	}
 	const outcomes = series(stats, "s3_get_requests_total");
 	const reads = sum(outcomes);
 	const hits = outcomes.hit || 0;
+	return tile("hit rate", reads ? percent(hits, reads) : "--", `${count(hits)} of ${count(reads)} single GETs`);
+}
+
+function drawTiles(stats) {
 	const cacheBytes = value(stats, "s3_cache_bytes");
 	const budget = stats.eviction.max_bytes;
 	const inFlight = value(stats, "cache_http_in_flight_requests");
@@ -157,7 +170,7 @@ function drawTiles(stats) {
 	const rejected = value(stats, "s3_http_rejected_total");
 
 	fill($("tiles"), [
-		tile("hit rate", reads ? percent(hits, reads) : "--", `${count(hits)} of ${count(reads)} single GETs`),
+		hitRateTile(stats),
 		cacheSizeTile(cacheBytes, budget, indexed),
 		tile("keys advertised", count(indexed), "action hashes in /_index"),
 		tile("in flight", `${count(inFlight)} / ${count(limit)}`, rejected ? `${count(rejected)} shed with 503` : "nothing shed", rejected ? "warn" : ""),
@@ -176,9 +189,7 @@ function drawReads(stats) {
 			.sort((a, b) => b[1] - a[1])
 			.map(([k, v]) => bar(k, v, total, tone(k), `${count(v)}  ${percent(v, total)}`)),
 	);
-	if (!Object.keys(outcomes).length) {
-		fill($("get-outcomes"), [para("no single-object GETs yet")]);
-	}
+	$("single-gets").hidden = !Object.keys(outcomes).length;
 
 	const kinds = series(stats, "s3_batch_keys_total");
 	const requested = kinds.requested || 0;

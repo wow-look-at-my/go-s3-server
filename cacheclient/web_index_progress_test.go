@@ -157,6 +157,7 @@ func (levelLogger) Debugf(string, ...any) {}
 // host can hit that stall, and the build keeps its key set, so the report is
 // routine rather than a warning on the build's stderr.
 func TestLoadOrFetchIndex_StalledRefreshOverDiskCopyIsRoutine(t *testing.T) {
+	t.Serial() // the logger is package state
 	t.Setenv("TMPDIR", t.TempDir())
 
 	blob := testIndexBlob(64)

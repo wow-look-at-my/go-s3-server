@@ -40,6 +40,7 @@ var captureMu sync.Mutex
 
 func newCaptureLogger(t *testing.T) *captureLogger {
 	t.Helper()
+	t.Serial() // the logger is package state
 	captureMu.Lock()
 	c := &captureLogger{prev: logging}
 	SetLogger(c)
@@ -247,6 +248,7 @@ func TestHTTPErrLogger_NilReceiver(t *testing.T) {
 // which is the package contract, and which the summaries used to sidestep by
 // holding os.Stderr directly.
 func TestLoggerWriter_SummariesGoToTheInstalledLogger(t *testing.T) {
+	t.Serial() // the logger is package state
 	var got []string
 	SetLogger(recordingLogger{&got})
 	t.Cleanup(func() { SetLogger(nil) })
@@ -263,6 +265,7 @@ func TestLoggerWriter_SummariesGoToTheInstalledLogger(t *testing.T) {
 
 // With no Logger installed the same summaries go nowhere at all.
 func TestLoggerWriter_SilentWithNoLogger(t *testing.T) {
+	t.Serial() // the logger is package state
 	SetLogger(nil)
 	l := newHTTPErrLogger(loggerWriter{}, time.Hour)
 	require.NotPanics(t, func() {

@@ -1,4 +1,4 @@
-return !idx.dirty.Load() || time.Since(idx.builtAt) < idx.BlobInterval()package main
+package main
 
 import (
 	"bytes"

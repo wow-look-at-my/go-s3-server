@@ -49,6 +49,7 @@ func testSetupWithAuth(t *testing.T) (*httptest.Server, *Config) {
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
 	require.Nil(t, err)
+	storage.Index.SetBlobInterval(0) // a GET after a PUT sees the PUT
 	t.Cleanup(func() { storage.Close() })
 
 	srv := NewServer(cfg, storage)

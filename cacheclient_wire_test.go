@@ -67,6 +67,9 @@ func TestCacheClientColdGetIsServedOverTheWire(t *testing.T) {
 		Endpoint:  ts.URL,
 		AccessKey: "anyone",
 		SecretKey: "unchecked",
+		// The reader starts inside the writer's minute. This test is about the
+		// wire, so the reader revalidates rather than trusting the writer's copy.
+		IndexMaxAge: -1,
 	}
 	objs := makeWireObjects(8)
 

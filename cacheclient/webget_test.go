@@ -46,6 +46,7 @@ func TestWebBackend_GetMissingMetadata(t *testing.T) {
 
 // primeIndex test-only: forces a key into the index so Gets take getIndividual instead of batch GET.
 func primeIndex(b *WebBackend, actionID string) {
+	b.ensureIndex()
 	b.keysMu.Lock()
 	b.keys.Add(hashOf(actionID))
 	b.keysMu.Unlock()
@@ -132,6 +133,7 @@ func TestWebBackend_GetRejectsCorruptBody(t *testing.T) {
 	primeIndex(b, actionID)
 
 	contains := func() bool {
+		b.ensureIndex()
 		b.keysMu.RLock()
 		defer b.keysMu.RUnlock()
 		return b.keys.Contains(hashOf(actionID))

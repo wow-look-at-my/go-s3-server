@@ -72,7 +72,24 @@ type Index struct {
 	// under mu.RLock on the fast path when dirty is false.
 	cachedBlob []byte
 	cachedETag string
+	// builtAt is when cachedBlob was serialized. Blob serves the cached blob
+	// for blobMinInterval after it, dirty or not.
+	builtAt time.Time
+	// blobMinInterval is the least time between two serializations, in
+	// nanoseconds. It is per index, not a package variable, so a test sets
+	// its own without a race against the tests beside it.
+	blobMinInterval atomic.Int64
 }
+
+// defaultIndexBlobInterval is the least time between two serializations of
+// the index unless the config says otherwise. A serialization sorts every hash under the lock and produces a new
+// ETag, so a client downloads the whole blob again. During a CI run PUTs
+// never stop, and without this bound every /_index GET rebuilt and every
+// conditional GET downloaded 40 MB. Inside the interval a GET answers 304
+// and the writers do not wait on the sort. A key stored inside the interval
+// is advertised by the next serialization; until then a client treats it as
+// a miss and stores it again, which the store answers as a duplicate.
+const defaultIndexBlobInterval = 15 * time.Second
 
 // indexEntry is one indexed object. The key is held as a compactKey so a
 // million-object index costs no per-entry allocation; see compactkey.go.
@@ -117,9 +134,17 @@ func extractActionHash(key string) ([gbciHashSize]byte, bool) {
 // NewIndex builds the index by scanning the filesystem.
 func NewIndex(storage *Storage) *Index {
 	idx := &Index{}
+	idx.blobMinInterval.Store(int64(defaultIndexBlobInterval))
 	idx.rebuild(storage)
 	return idx
 }
+
+// SetBlobInterval sets the least time between two serializations. Zero
+// serializes every PUT on the next read.
+func (idx *Index) SetBlobInterval(d time.Duration) { idx.blobMinInterval.Store(int64(d)) }
+
+// BlobInterval reports the least time between two serializations.
+func (idx *Index) BlobInterval() time.Duration { return time.Duration(idx.blobMinInterval.Load()) }
 
 // Put records a key with the current time and queues its action-ID hash
 // (if the key is well-formed) for inclusion in the next /_index serialization.
@@ -198,6 +223,7 @@ func (idx *Index) Remove(key string) {
 		idx.pending = removeHash(idx.pending, hash)
 		idx.hashes = removeHash(idx.hashes, hash)
 		idx.dirty.Store(true)
+		idx.builtAt = time.Time{} // a removed key is not advertised for the interval
 	}
 	idx.updateGaugesLocked()
 }
@@ -243,6 +269,7 @@ func (idx *Index) RemoveKeys(keys []string) {
 		idx.hashes = filterHashes(idx.hashes, victimHashes)
 		idx.pending = filterHashes(idx.pending, victimHashes)
 		idx.dirty.Store(true)
+		idx.builtAt = time.Time{} // removed keys are not advertised for the interval
 	}
 	idx.updateGaugesLocked()
 }
@@ -299,6 +326,32 @@ func sortDedupeHashes(s [][gbciHashSize]byte) [][gbciHashSize]byte {
 		}
 	}
 	return s[:w]
+}
+
+// mergeSortedHashes returns the union of two sorted, deduplicated hash lists,
+// sorted and deduplicated, in one pass.
+func mergeSortedHashes(a, b [][gbciHashSize]byte) [][gbciHashSize]byte {
+	if len(b) == 0 {
+		return a
+	}
+	out := make([][gbciHashSize]byte, 0, len(a)+len(b))
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		switch c := bytes.Compare(a[i][:], b[j][:]); {
+		case c < 0:
+			out = append(out, a[i])
+			i++
+		case c > 0:
+			out = append(out, b[j])
+			j++
+		default:
+			out = append(out, a[i])
+			i++
+			j++
+		}
+	}
+	out = append(out, a[i:]...)
+	return append(out, b[j:]...)
 }
 
 // removeHash returns s with every occurrence of h filtered out, reusing s's
@@ -436,20 +489,30 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded
 	return keys
 }
 
+// blobServableLocked reports whether the cached blob answers a GET as it is:
+// there is one, and it is either current or younger than the interval.
+func (idx *Index) blobServableLocked() bool {
+	if idx.cachedBlob == nil {
+		return false
+	}
+	return !idx.dirty.Load() || time.Since(idx.builtAt) < idx.BlobInterval()
+}
+
 // Blob returns the precomputed GBCI v1 binary index and its strong ETag
 // (hex-encoded SHA-256 of the blob, surrounded by quotes per RFC 7232).
 //
-// Fast path: if the cached blob is up-to-date (dirty == false), return it
-// under a read lock. Slow path: drain pending into hashes, re-sort, dedupe,
-// serialize header + body + trailer, cache the result, clear dirty.
+// Fast path: if the cached blob is servable (current, or younger than
+// the blob interval), return it under a read lock. Slow path: merge
+// pending into hashes, serialize header + body + trailer, cache the result,
+// clear dirty. Callers arriving during a serialization wait on the read lock
+// and all receive the blob it produces, so a burst of GETs costs one
+// serialization.
 func (idx *Index) Blob() ([]byte, string) {
-	if !idx.dirty.Load() {
-		idx.mu.RLock()
-		blob, etag := idx.cachedBlob, idx.cachedETag
-		idx.mu.RUnlock()
-		if blob != nil {
-			return blob, etag
-		}
+	idx.mu.RLock()
+	cached, etag, fresh := idx.cachedBlob, idx.cachedETag, idx.blobServableLocked()
+	idx.mu.RUnlock()
+	if fresh {
+		return cached, etag
 	}
 
 	idx.mu.Lock()
@@ -457,15 +520,23 @@ func (idx *Index) Blob() ([]byte, string) {
 
 	// Re-check: another caller may have rebuilt the blob while we were
 	// waiting on the lock.
-	if !idx.dirty.Load() && idx.cachedBlob != nil {
+	if idx.blobServableLocked() {
 		return idx.cachedBlob, idx.cachedETag
 	}
 
-	if len(idx.pending) > 0 {
-		idx.hashes = append(idx.hashes, idx.pending...)
+	lockedAt := time.Now()
+	pendingCount := len(idx.pending)
+	log.Printf("index: serialize locked (hashes=%d pending=%d)", len(idx.hashes), pendingCount)
+	defer func() {
+		log.Printf("index: serialize unlocked after %v (hashes=%d)", time.Since(lockedAt), len(idx.hashes))
+	}()
+
+	// hashes is sorted and deduplicated already. The pending buffer is small
+	// next to it, so a merge costs O(n) where a re-sort cost O(n log n).
+	if pendingCount > 0 {
+		idx.hashes = mergeSortedHashes(idx.hashes, sortDedupeHashes(idx.pending))
 		idx.pending = resetPending(idx.pending)
 	}
-	idx.hashes = sortDedupeHashes(idx.hashes)
 
 	count := uint64(len(idx.hashes))
 
@@ -500,6 +571,7 @@ func (idx *Index) Blob() ([]byte, string) {
 
 	idx.cachedBlob = blob
 	idx.cachedETag = `"` + hex.EncodeToString(digest[:]) + `"`
+	idx.builtAt = time.Now()
 	idx.dirty.Store(false)
 	idx.updateGaugesLocked()
 	return idx.cachedBlob, idx.cachedETag

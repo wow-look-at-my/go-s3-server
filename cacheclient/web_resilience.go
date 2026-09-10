@@ -33,6 +33,11 @@ const (
 // (logged a single time). Any non-empty batch resets the streak — the remote IS serving.
 // An empty-but-healthy response is not a backend failure: the backoff is purely a
 // "nothing here to fetch" optimization, orthogonal to the per-op retry path.
+//
+// The notice is routine, so it is Info. A build with new code misses on every
+// one of its own packages, and a disk copy of the index served as
+// non-authoritative probes each of them: the threshold trips on most builds.
+// A consumer whose stderr is compared, as go test does, must not see it.
 func (b *WebBackend) noteBatchEntries(n int) {
 	if b.emptyBatchBackoffThreshold <= 0 || b.batchProbingDisabled.Load() {
 		return
@@ -44,7 +49,7 @@ func (b *WebBackend) noteBatchEntries(n int) {
 	if b.consecutiveEmptyBatches.Add(1) >= int64(b.emptyBatchBackoffThreshold) {
 		if b.batchProbingDisabled.CompareAndSwap(false, true) {
 			b.batchBackoffLogOnce.Do(func() {
-				logging.Warnf("cacheprog: remote returned %d empty batches; "+
+				logging.Infof("cacheprog: remote returned %d empty batches; "+
 					"disabling further batch probes for this run (endpoint=%s)",
 					b.emptyBatchBackoffThreshold, b.endpoint)
 			})

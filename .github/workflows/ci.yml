@@ -33,7 +33,18 @@ jobs:
       # Builds, tests, runs dats/*.dats, and autoreleases the binary buildhost serves as an image.
       - uses: wow-look-at-my/go-toolchain@master
 
-      # cacheclient is its own module: without this step its tests never run.
+  # cacheclient is its own module, so go-toolchain must run in it too; beside the server's job, not after it.
+  cacheclient:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      actions: read
+      checks: read
+      deployments: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@v4
       - uses: wow-look-at-my/go-toolchain@master
         with:
           working-directory: cacheclient

@@ -26,6 +26,7 @@ func (b *WebBackend) MarkPresent(actionID string) {
 	if !ok {
 		return
 	}
+	b.ensureIndex()
 	b.keysMu.Lock()
 	b.keys.Add(h)
 	b.keysMu.Unlock()

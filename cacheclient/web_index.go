@@ -79,7 +79,11 @@ var gbciMagic = [4]byte{'G', 'B', 'C', 'I'}
 func (b *WebBackend) indexCachePath() string {
 	h := sha256.Sum256([]byte(b.endpoint + "/" + b.bucket + "/" + b.prefix))
 	name := "gocache-web-index-" + hex.EncodeToString(h[:8]) + ".bin"
-	return filepath.Join(os.TempDir(), name)
+	dir := b.indexDir
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, name)
 }
 
 // loadOrFetchIndex returns the set of known cache keys for this backend and
@@ -92,9 +96,25 @@ func (b *WebBackend) indexCachePath() string {
 // NON-authoritative set (the stale disk copy, or empty): Get/Put still work,
 // and because absences from a non-authoritative set prove nothing, cold keys
 // are batch-probed instead of fast-missed (see WebBackend.Get).
+//
+// A disk copy younger than the backend's index max age is served with no
+// request at all, and it is AUTHORITATIVE. A test suite starts thousands of
+// go commands a minute, and the blob is tens of megabytes that the server
+// rebuilds as keys arrive, so a copy validated within the last minute is what
+// a revalidation would download again. A key another machine uploaded inside
+// that minute misses here and is rebuilt. A probe for it would cost a request
+// per cold key, and a build of new code has thousands the server holds for
+// nobody.
+//
+// Each outcome logs once here. The consumer's stderr carries only the Warnf
+// lines unless it asks for the routine ones.
 func (b *WebBackend) loadOrFetchIndex() (*hashSet, bool) {
 	path := b.indexCachePath()
-	diskBlob, diskKeys, diskETag := b.readDiskIndex(path)
+	diskBlob, diskKeys, diskETag, diskAge := b.readDiskIndex(path)
+	if diskBlob != nil && b.indexMaxAge > 0 && diskAge < b.indexMaxAge {
+		logging.Infof("cacheprog: web index: %d keys from a copy %v old", diskKeys.Len(), diskAge.Round(time.Second))
+		return diskKeys, true
+	}
 
 	// The absolute ceiling covers the whole load; each fetch also enforces the header and stall budgets above.
 	ctx, cancel := context.WithTimeout(context.Background(), indexFetchCeiling)
@@ -102,20 +122,30 @@ func (b *WebBackend) loadOrFetchIndex() (*hashSet, bool) {
 
 	blob, status, err := b.fetchIndexBlob(ctx, diskETag)
 	if err != nil {
-		logging.Warnf("cacheprog: web index fetch: %v", err)
 		if diskBlob != nil {
+			// A failed refresh over a disk copy is routine: the build keeps a
+			// key set, and every go command reports it on a busy host.
+			logging.Infof("cacheprog: web index refresh: %v", err)
+			logging.Infof("cacheprog: web index: refresh failed; using %d cached keys (batch probing enabled)", diskKeys.Len())
 			return diskKeys, false
 		}
+		logging.Warnf("cacheprog: web index fetch: %v", err)
+		logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
 		return newHashSet(0), false
 	}
 	if status == http.StatusNotModified {
 		if diskBlob != nil {
-			return diskKeys, true // server confirmed our disk copy is current
+			// The copy's age is the time since the server last confirmed it.
+			now := time.Now()
+			_ = os.Chtimes(path, now, now)
+			logging.Infof("cacheprog: web index: %d keys", diskKeys.Len())
+			return diskKeys, true
 		}
 		// No disk copy despite a not-modified answer (likely a cleared /tmp); refetch unconditionally.
 		blob, _, err = b.fetchIndexBlob(ctx, "")
 		if err != nil {
 			logging.Warnf("cacheprog: web index refetch: %v", err)
+			logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
 			return newHashSet(0), false
 		}
 	}
@@ -123,26 +153,34 @@ func (b *WebBackend) loadOrFetchIndex() (*hashSet, bool) {
 	if err != nil {
 		logging.Warnf("cacheprog: web index parse: %v", err)
 		if diskBlob != nil {
+			logging.Infof("cacheprog: web index: refresh failed; using %d cached keys (batch probing enabled)", diskKeys.Len())
 			return diskKeys, false
 		}
+		logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
 		return newHashSet(0), false
 	}
 	b.writeIndexBlob(path, blob)
+	logging.Infof("cacheprog: web index: %d keys", keys.Len())
 	return keys, true
 }
 
-// readDiskIndex returns (raw, parsed, etag) or (nil, empty, "") if the file
-// is missing or invalid.
-func (b *WebBackend) readDiskIndex(path string) ([]byte, *hashSet, string) {
+// readDiskIndex returns (raw, parsed, etag, age) or (nil, empty, "", 0) if
+// the file is missing or invalid. The age is the time since the copy was
+// written or last confirmed current.
+func (b *WebBackend) readDiskIndex(path string) ([]byte, *hashSet, string, time.Duration) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, newHashSet(0), ""
+		return nil, newHashSet(0), "", 0
 	}
 	keys, etag, err := parseIndexBlob(data)
 	if err != nil {
-		return nil, newHashSet(0), ""
+		return nil, newHashSet(0), "", 0
 	}
-	return data, keys, etag
+	var age time.Duration
+	if st, err := os.Stat(path); err == nil {
+		age = time.Since(st.ModTime())
+	}
+	return data, keys, etag, age
 }
 
 // fetchIndexBlob does a conditional GET <endpoint>/<bucket>/_index within

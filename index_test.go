@@ -322,6 +322,7 @@ func TestIndexBlobRoundtrip(t *testing.T) {
 	dir := t.TempDir()
 	s, err := NewStorage(dir, WriteOnceConfig{Action: "allow"})
 	require.NoError(t, err)
+	s.Index.SetBlobInterval(0) // the PUT below must show in the very next read
 	defer s.Close()
 
 	for i := 0; i < 5; i++ {
@@ -462,4 +463,50 @@ func TestRebuildConcurrentPutStress(t *testing.T) {
 		binary.LittleEndian.PutUint64(h[:], uint64(i+1))
 		require.True(t, idx.Contains(h), "put %d must survive concurrent rebuilds", i)
 	}
+}
+
+// TestIndexBlobHoldsForInterval pins the bound on serializations: inside the
+// interval a GET after a PUT serves the previous blob and its ETag, so a
+// conditional GET answers 304 and no client downloads the whole index again.
+// Once the interval passes the next GET serializes the PUT.
+func TestIndexBlobHoldsForInterval(t *testing.T) {
+	ts, storage := testSetupWithStorage(t)
+	storage.Index.SetBlobInterval(time.Hour)
+
+	var h1, h2 [32]byte
+	h1[0], h2[0] = 1, 2
+	putKey(t, ts, keyForHash(h1), []byte("one"))
+	status, body, etag1 := getIndex(t, ts, "")
+	require.Equal(t, 200, status)
+	require.Equal(t, uint64(1), parseGBCI(t, body).Count)
+
+	putKey(t, ts, keyForHash(h2), []byte("two"))
+	status, body, etag2 := getIndex(t, ts, "")
+	require.Equal(t, 200, status)
+	require.Equal(t, etag1, etag2, "inside the interval the blob is the one already built")
+	require.Equal(t, uint64(1), parseGBCI(t, body).Count)
+	status, _, _ = getIndex(t, ts, etag1)
+	require.Equal(t, 304, status, "a conditional GET inside the interval answers not modified")
+
+	storage.Index.SetBlobInterval(0)
+	status, body, etag3 := getIndex(t, ts, "")
+	require.Equal(t, 200, status)
+	require.NotEqual(t, etag1, etag3, "past the interval the PUT is serialized")
+	require.Equal(t, uint64(2), parseGBCI(t, body).Count)
+}
+
+// TestMergeSortedHashes pins the merge a serialization uses in place of a
+// re-sort: sorted, deduplicated across both inputs, and nothing lost.
+func TestMergeSortedHashes(t *testing.T) {
+	mk := func(bs ...byte) [][32]byte {
+		out := make([][32]byte, len(bs))
+		for i, b := range bs {
+			out[i][0] = b
+		}
+		return out
+	}
+	got := mergeSortedHashes(mk(1, 3, 5, 7), mk(2, 3, 6, 9, 10))
+	require.Equal(t, mk(1, 2, 3, 5, 6, 7, 9, 10), got)
+	require.Equal(t, mk(1, 2), mergeSortedHashes(nil, mk(1, 2)))
+	require.Equal(t, mk(4), mergeSortedHashes(mk(4), nil))
 }

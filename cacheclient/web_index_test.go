@@ -335,7 +335,6 @@ func TestLoadOrFetchIndex_DiskBlobBeatsServerError(t *testing.T) {
 	broken.Store(true)
 
 	// Same endpoint URL → same disk path. Server now 500s, but the disk
-	b.ensureIndex()
 	// blob from the earlier run must still populate b.keys.
 	b2, err := NewWebBackend(WebConfig{
 		Bucket: "bk", Endpoint: srv.URL,
@@ -367,7 +366,7 @@ func TestWriteAndReadIndexBlob(t *testing.T) {
 	blob := marshalIndex(keySetToHashes(keys))
 	b.writeIndexBlob(path, blob)
 
-	got, gotKeys, etag := b.readDiskIndex(path)
+	got, gotKeys, etag, _ := b.readDiskIndex(path)
 	require.Equal(t, blob, got)
 	require.Equal(t, 1, gotKeys.Len())
 	require.NotEqual(t, "", etag)

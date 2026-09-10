@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -162,4 +163,36 @@ func TestWebBackend_BackoffResetsOnNonEmptyBatch(t *testing.T) {
 		"a non-empty batch every few requests must keep the streak below threshold")
 	require.Equal(t, uint32(0), b.SkippedBatchBackoff.Load(),
 		"batch probing must stay enabled, so no backoff skips")
+}
+
+// TestEmptyBatchBackoffNoticeIsRoutine pins the level of the backoff notice.
+// A build with new code trips the threshold on its own misses, and a consumer
+// that compares stderr must not see a warning for that.
+func TestEmptyBatchBackoffNoticeIsRoutine(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("GO_TOOLCHAIN_CACHE_EMPTY_BATCH_BACKOFF", "2")
+	var batchGets, puts atomic.Int64
+	srv := emptyIndexServer(t, &batchGets, &puts, nil)
+	defer srv.Close()
+
+	var info, warn []string
+	SetLogger(levelLogger{&info, &warn})
+	t.Cleanup(func() { SetLogger(nil) })
+
+	b, err := NewWebBackend(WebConfig{
+		Bucket: "testbucket", Endpoint: srv.URL,
+		AccessKey: "key", SecretKey: "secret",
+	})
+	require.NoError(t, err)
+	defer b.Close()
+
+	for i := 0; i < 4; i++ {
+		_, _, _, _, _, _, err := b.getTest(fmt.Sprintf("%016x", 0xb0120000+i))
+		require.NoError(t, err)
+	}
+	require.True(t, b.batchProbingDisabled.Load())
+	require.Contains(t, strings.Join(info, "\n"), "empty batches", "the notice is routine, so it is Info")
+	for _, w := range warn {
+		require.NotContains(t, w, "empty batches", "the notice must not reach a compared stderr")
+	}
 }

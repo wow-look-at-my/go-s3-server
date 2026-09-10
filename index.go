@@ -314,6 +314,32 @@ func sortDedupeHashes(s [][gbciHashSize]byte) [][gbciHashSize]byte {
 	return s[:w]
 }
 
+// mergeSortedHashes returns the union of two sorted, deduplicated hash lists,
+// sorted and deduplicated, in one pass.
+func mergeSortedHashes(a, b [][gbciHashSize]byte) [][gbciHashSize]byte {
+	if len(b) == 0 {
+		return a
+	}
+	out := make([][gbciHashSize]byte, 0, len(a)+len(b))
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		switch c := bytes.Compare(a[i][:], b[j][:]); {
+		case c < 0:
+			out = append(out, a[i])
+			i++
+		case c > 0:
+			out = append(out, b[j])
+			j++
+		default:
+			out = append(out, a[i])
+			i++
+			j++
+		}
+	}
+	out = append(out, a[i:]...)
+	return append(out, b[j:]...)
+}
+
 // removeHash returns s with every occurrence of h filtered out, reusing s's
 // backing array (the result is always a prefix of s). The action-ID hash is a
 // 1:1 function of the key, so at most one entry matches.
@@ -481,11 +507,19 @@ func (idx *Index) Blob() ([]byte, string) {
 		return idx.cachedBlob, idx.cachedETag
 	}
 
-	if len(idx.pending) > 0 {
-		idx.hashes = append(idx.hashes, idx.pending...)
+	lockedAt := time.Now()
+	pendingCount := len(idx.pending)
+	log.Printf("index: serialize locked (hashes=%d pending=%d)", len(idx.hashes), pendingCount)
+	defer func() {
+		log.Printf("index: serialize unlocked after %v (hashes=%d)", time.Since(lockedAt), len(idx.hashes))
+	}()
+
+	// hashes is sorted and deduplicated already. The pending buffer is small
+	// next to it, so a merge costs O(n) where a re-sort cost O(n log n).
+	if pendingCount > 0 {
+		idx.hashes = mergeSortedHashes(idx.hashes, sortDedupeHashes(idx.pending))
 		idx.pending = resetPending(idx.pending)
 	}
-	idx.hashes = sortDedupeHashes(idx.hashes)
 
 	count := uint64(len(idx.hashes))
 

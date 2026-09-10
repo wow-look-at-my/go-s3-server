@@ -503,3 +503,19 @@ func TestIndexBlobHoldsForInterval(t *testing.T) {
 	require.NotEqual(t, etag1, etag3, "past the interval the PUT is serialized")
 	require.Equal(t, uint64(2), parseGBCI(t, body).Count)
 }
+
+// TestMergeSortedHashes pins the merge a serialization uses in place of a
+// re-sort: sorted, deduplicated across both inputs, and nothing lost.
+func TestMergeSortedHashes(t *testing.T) {
+	mk := func(bs ...byte) [][32]byte {
+		out := make([][32]byte, len(bs))
+		for i, b := range bs {
+			out[i][0] = b
+		}
+		return out
+	}
+	got := mergeSortedHashes(mk(1, 3, 5, 7), mk(2, 3, 6, 9, 10))
+	require.Equal(t, mk(1, 2, 3, 5, 6, 7, 9, 10), got)
+	require.Equal(t, mk(1, 2), mergeSortedHashes(nil, mk(1, 2)))
+	require.Equal(t, mk(4), mergeSortedHashes(mk(4), nil))
+}

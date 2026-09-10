@@ -319,6 +319,7 @@ func TestIndexMethodNotAllowed(t *testing.T) {
 
 // Direct unit test for the in-memory Index.Blob path, bypassing HTTP.
 func TestIndexBlobRoundtrip(t *testing.T) {
+	holdIndexBlob(t, 0) // the PUT below must show in the very next read
 	dir := t.TempDir()
 	s, err := NewStorage(dir, WriteOnceConfig{Action: "allow"})
 	require.NoError(t, err)

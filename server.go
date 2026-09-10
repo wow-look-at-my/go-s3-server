@@ -180,6 +180,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// What build is serving, answered before the auth gate for the same
+	// reasons as the probe. It never drains: a version is true either way.
+	if r.URL.Path == versionPath {
+		handleVersion(w)
+		return
+	}
+
 	// "May I be replaced right now?" -- answered here for the same reasons as
 	// the probe above, and 200 unless already draining. A cache miss costs a
 	// rebuild, never data: nothing this server holds is unrecoverable, and an

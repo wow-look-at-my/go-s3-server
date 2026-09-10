@@ -211,6 +211,25 @@ tests:
 			- "status 200"
 			- "body ok"
 
+	- desc: the version probe answers before the auth gate with the build's own information
+	  exit: 0
+	  inputs:
+		files:
+			config.json: '{"listen":"127.0.0.1:19019","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			check.sh: |
+				set -euo pipefail
+				body="$(mktemp)"
+				code=$(curl -s -o "$body" -w '%{http_code}' http://127.0.0.1:19019/_version)
+				echo "status $code"
+				echo "keys $(jq -r 'keys | join(",")' "$body")"
+				echo "go $(jq -r '.go' "$body")"
+	  cmd: bash {shared.serve.sh} {inputs.config.json} 19019 {inputs.check.sh}
+	  outputs:
+		stdout:
+			- "status 200"
+			- "keys go,modified,revision,time,version"
+			- "^go go1\\."
+
 	- desc: a wrong password, an unknown user and no credentials at all are each refused
 	  exit: 0
 	  inputs:

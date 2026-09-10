@@ -18,6 +18,7 @@ import (
 
 func testSetup(t *testing.T) *httptest.Server {
 	t.Helper()
+	holdIndexBlob(t, 0)
 	dir := t.TempDir()
 
 	cfg := &Config{

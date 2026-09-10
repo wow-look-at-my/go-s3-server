@@ -463,3 +463,43 @@ func TestRebuildConcurrentPutStress(t *testing.T) {
 		require.True(t, idx.Contains(h), "put %d must survive concurrent rebuilds", i)
 	}
 }
+
+// holdIndexBlob sets the least time between two index serializations for the
+// test and restores it after. Most tests want 0, so a GET after a PUT sees the
+// PUT.
+func holdIndexBlob(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := indexBlobMinInterval
+	indexBlobMinInterval = d
+	t.Cleanup(func() { indexBlobMinInterval = old })
+}
+
+// TestIndexBlobHoldsForInterval pins the bound on serializations: inside the
+// interval a GET after a PUT serves the previous blob and its ETag, so a
+// conditional GET answers 304 and no client downloads the whole index again.
+// Once the interval passes the next GET serializes the PUT.
+func TestIndexBlobHoldsForInterval(t *testing.T) {
+	ts := testSetup(t)
+	holdIndexBlob(t, time.Hour)
+
+	var h1, h2 [32]byte
+	h1[0], h2[0] = 1, 2
+	putKey(t, ts, keyForHash(h1), []byte("one"))
+	status, body, etag1 := getIndex(t, ts, "")
+	require.Equal(t, 200, status)
+	require.Equal(t, uint64(1), parseGBCI(t, body).Count)
+
+	putKey(t, ts, keyForHash(h2), []byte("two"))
+	status, body, etag2 := getIndex(t, ts, "")
+	require.Equal(t, 200, status)
+	require.Equal(t, etag1, etag2, "inside the interval the blob is the one already built")
+	require.Equal(t, uint64(1), parseGBCI(t, body).Count)
+	status, _, _ = getIndex(t, ts, etag1)
+	require.Equal(t, 304, status, "a conditional GET inside the interval answers not modified")
+
+	holdIndexBlob(t, 0)
+	status, body, etag3 := getIndex(t, ts, "")
+	require.Equal(t, 200, status)
+	require.NotEqual(t, etag1, etag3, "past the interval the PUT is serialized")
+	require.Equal(t, uint64(2), parseGBCI(t, body).Count)
+}

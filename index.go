@@ -72,7 +72,20 @@ type Index struct {
 	// under mu.RLock on the fast path when dirty is false.
 	cachedBlob []byte
 	cachedETag string
+	// builtAt is when cachedBlob was serialized. Blob serves the cached blob
+	// for indexBlobMinInterval after it, dirty or not.
+	builtAt time.Time
 }
+
+// indexBlobMinInterval is the least time between two serializations of the
+// index. A serialization sorts every hash under the lock and produces a new
+// ETag, so a client downloads the whole blob again. During a CI run PUTs
+// never stop, and without this bound every /_index GET rebuilt and every
+// conditional GET downloaded 40 MB. Inside the interval a GET answers 304
+// and the writers do not wait on the sort. A key stored inside the interval
+// is advertised by the next serialization; until then a client treats it as
+// a miss and stores it again, which the store answers as a duplicate.
+var indexBlobMinInterval = 15 * time.Second
 
 // indexEntry is one indexed object. The key is held as a compactKey so a
 // million-object index costs no per-entry allocation; see compactkey.go.
@@ -436,6 +449,15 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded
 	return keys
 }
 
+// blobServableLocked reports whether the cached blob answers a GET as it is:
+// there is one, and it is either current or younger than the interval.
+func (idx *Index) blobServableLocked() bool {
+	if idx.cachedBlob == nil {
+		return false
+	}
+	return !idx.dirty.Load() || time.Since(idx.builtAt) < indexBlobMinInterval
+}
+
 // Blob returns the precomputed GBCI v1 binary index and its strong ETag
 // (hex-encoded SHA-256 of the blob, surrounded by quotes per RFC 7232).
 //
@@ -443,13 +465,11 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded
 // under a read lock. Slow path: drain pending into hashes, re-sort, dedupe,
 // serialize header + body + trailer, cache the result, clear dirty.
 func (idx *Index) Blob() ([]byte, string) {
-	if !idx.dirty.Load() {
-		idx.mu.RLock()
-		blob, etag := idx.cachedBlob, idx.cachedETag
-		idx.mu.RUnlock()
-		if blob != nil {
-			return blob, etag
-		}
+	idx.mu.RLock()
+	blob, etag, fresh := idx.cachedBlob, idx.cachedETag, idx.blobServableLocked()
+	idx.mu.RUnlock()
+	if fresh {
+		return blob, etag
 	}
 
 	idx.mu.Lock()
@@ -457,7 +477,7 @@ func (idx *Index) Blob() ([]byte, string) {
 
 	// Re-check: another caller may have rebuilt the blob while we were
 	// waiting on the lock.
-	if !idx.dirty.Load() && idx.cachedBlob != nil {
+	if idx.blobServableLocked() {
 		return idx.cachedBlob, idx.cachedETag
 	}
 
@@ -500,6 +520,7 @@ func (idx *Index) Blob() ([]byte, string) {
 
 	idx.cachedBlob = blob
 	idx.cachedETag = `"` + hex.EncodeToString(digest[:]) + `"`
+	idx.builtAt = time.Now()
 	idx.dirty.Store(false)
 	idx.updateGaugesLocked()
 	return idx.cachedBlob, idx.cachedETag

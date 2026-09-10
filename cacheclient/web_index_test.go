@@ -171,6 +171,7 @@ func TestLoadOrFetchIndex_ColdStart(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	b.ensureIndex()
 	require.Equal(t, want.Len(), b.keys.Len())
 	for k := range want.All() {
 		require.True(t, b.keys.Contains(hashOfKey(k)), "missing %q", k)
@@ -196,6 +197,7 @@ func TestLoadOrFetchIndex_WarmCache304(t *testing.T) {
 		AccessKey: "k", SecretKey: "s",
 	})
 	require.NoError(t, err)
+	b.ensureIndex()
 	require.Equal(t, 1, b.keys.Len())
 	require.Equal(t, int32(1), f.hits200.Load())
 
@@ -209,6 +211,7 @@ func TestLoadOrFetchIndex_WarmCache304(t *testing.T) {
 		AccessKey: "k", SecretKey: "s",
 	})
 	require.NoError(t, err)
+	b2.ensureIndex()
 	require.Equal(t, 1, b2.keys.Len())
 	require.True(t, b2.keys.Contains(hashOfKey(gbciKeyPrefix+hex.EncodeToString(h[:]))))
 	require.Equal(t, int32(1), f.hits304.Load(), "expected one 304 on warm restart")
@@ -248,6 +251,7 @@ func TestLoadOrFetchIndex_SlowServerBounded(t *testing.T) {
 
 	require.Less(t, elapsed, 2*time.Second,
 		"the index fetch must be abandoned within its budget, not the 30s client timeout")
+	b.ensureIndex()
 	require.Equal(t, 0, b.keys.Len())
 	require.False(t, b.indexAuthoritative,
 		"an abandoned index fetch must leave the key set non-authoritative so batch probing stays enabled")
@@ -266,6 +270,7 @@ func TestLoadOrFetchIndex_ServerError(t *testing.T) {
 		AccessKey: "k", SecretKey: "s",
 	})
 	require.NoError(t, err)
+	b.ensureIndex()
 	require.Equal(t, 0, b.keys.Len(), "fetch failure should yield empty index")
 }
 
@@ -288,6 +293,7 @@ func TestLoadOrFetchIndex_GarbageBody(t *testing.T) {
 		AccessKey: "k", SecretKey: "s",
 	})
 	require.NoError(t, err)
+	b.ensureIndex()
 	require.Equal(t, 0, b.keys.Len(), "garbage body should yield empty index")
 }
 
@@ -329,12 +335,14 @@ func TestLoadOrFetchIndex_DiskBlobBeatsServerError(t *testing.T) {
 	broken.Store(true)
 
 	// Same endpoint URL → same disk path. Server now 500s, but the disk
+	b.ensureIndex()
 	// blob from the earlier run must still populate b.keys.
 	b2, err := NewWebBackend(WebConfig{
 		Bucket: "bk", Endpoint: srv.URL,
 		AccessKey: "k", SecretKey: "s",
 	})
 	require.NoError(t, err)
+	b2.ensureIndex()
 	require.Equal(t, 1, b2.keys.Len(), "fallback should populate from disk blob")
 }
 

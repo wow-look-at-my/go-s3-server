@@ -141,6 +141,7 @@ func TestWebBackend_GetRejectsBuildIDMismatch(t *testing.T) {
 	primeIndex(b, actionID)
 
 	contains := func() bool {
+		b.ensureIndex()
 		b.keysMu.RLock()
 		defer b.keysMu.RUnlock()
 		return b.keys.Contains(hashOf(actionID))
@@ -195,6 +196,7 @@ func TestWebBackend_GetRejectsStrippedBuildID(t *testing.T) {
 	require.Equal(t, uint32(1), b.MissBuildID.Load())
 	require.Equal(t, uint32(0), b.Stats.Hits.Load())
 
+	b.ensureIndex()
 	b.keysMu.RLock()
 	stillKnown := b.keys.Contains(hashOf(actionID))
 	b.keysMu.RUnlock()
@@ -303,6 +305,7 @@ func TestWebBackend_PutRefusesBuildIDMismatch(t *testing.T) {
 	require.Equal(t, 0, putHits, "poison must never be uploaded to the shared cache")
 	require.Equal(t, uint32(0), b.Stats.Puts.Load())
 
+	b.ensureIndex()
 	b.keysMu.RLock()
 	claimed := b.keys.Contains(hashOf(actionID))
 	b.keysMu.RUnlock()

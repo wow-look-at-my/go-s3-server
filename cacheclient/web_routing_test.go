@@ -40,6 +40,7 @@ func TestWebBackend_EmptyIndexSkipsBatch(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer b.Close()
+	b.ensureIndex()
 	require.True(t, b.indexEmpty, "a zero-key blob must mark the remote index empty")
 	require.True(t, b.indexAuthoritative, "a parsed 200 blob is authoritative")
 
@@ -80,6 +81,7 @@ func TestWebBackend_AuthoritativeIndexSkipsAbsentKeys(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer b.Close()
+	b.ensureIndex()
 	require.False(t, b.indexEmpty)
 	require.True(t, b.indexAuthoritative)
 
@@ -110,6 +112,7 @@ func TestWebBackend_IndexFetchFailureStillProbes(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer b.Close()
+	b.ensureIndex()
 	require.False(t, b.indexAuthoritative, "a 404 /_index is a fetch failure, not an empty index")
 
 	_, _, _, _, miss, _, err := b.getTest("bbbbbbbbbbbbbbbb")
@@ -135,6 +138,7 @@ func TestWebBackend_EmptyIndexStillPuts(t *testing.T) {
 		AccessKey: "key", SecretKey: "secret",
 	})
 	require.NoError(t, err)
+	b.ensureIndex()
 	require.True(t, b.indexEmpty)
 
 	body := []byte("a freshly compiled object")

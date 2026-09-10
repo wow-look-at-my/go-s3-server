@@ -96,9 +96,18 @@ func (b *WebBackend) indexCachePath() string {
 // NON-authoritative set (the stale disk copy, or empty): Get/Put still work,
 // and because absences from a non-authoritative set prove nothing, cold keys
 // are batch-probed instead of fast-missed (see WebBackend.Get).
+//
+// A disk copy younger than the backend's index max age is served as current
+// with no request at all. A test suite starts thousands of go commands a
+// minute, and the blob is tens of megabytes that the server rebuilds as keys
+// arrive, so a copy validated within the last minute is what a revalidation
+// would download again.
 func (b *WebBackend) loadOrFetchIndex() (*hashSet, bool) {
 	path := b.indexCachePath()
-	diskBlob, diskKeys, diskETag := b.readDiskIndex(path)
+	diskBlob, diskKeys, diskETag, diskAge := b.readDiskIndex(path)
+	if diskBlob != nil && b.indexMaxAge > 0 && diskAge < b.indexMaxAge {
+		return diskKeys, true
+	}
 
 	// The absolute ceiling covers the whole load; each fetch also enforces the header and stall budgets above.
 	ctx, cancel := context.WithTimeout(context.Background(), indexFetchCeiling)
@@ -117,7 +126,10 @@ func (b *WebBackend) loadOrFetchIndex() (*hashSet, bool) {
 	}
 	if status == http.StatusNotModified {
 		if diskBlob != nil {
-			return diskKeys, true // server confirmed our disk copy is current
+			// The copy's age is the time since the server last confirmed it.
+			now := time.Now()
+			_ = os.Chtimes(path, now, now)
+			return diskKeys, true
 		}
 		// No disk copy despite a not-modified answer (likely a cleared /tmp); refetch unconditionally.
 		blob, _, err = b.fetchIndexBlob(ctx, "")
@@ -138,18 +150,23 @@ func (b *WebBackend) loadOrFetchIndex() (*hashSet, bool) {
 	return keys, true
 }
 
-// readDiskIndex returns (raw, parsed, etag) or (nil, empty, "") if the file
-// is missing or invalid.
-func (b *WebBackend) readDiskIndex(path string) ([]byte, *hashSet, string) {
+// readDiskIndex returns (raw, parsed, etag, age) or (nil, empty, "", 0) if
+// the file is missing or invalid. The age is the time since the copy was
+// written or last confirmed current.
+func (b *WebBackend) readDiskIndex(path string) ([]byte, *hashSet, string, time.Duration) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, newHashSet(0), ""
+		return nil, newHashSet(0), "", 0
 	}
 	keys, etag, err := parseIndexBlob(data)
 	if err != nil {
-		return nil, newHashSet(0), ""
+		return nil, newHashSet(0), "", 0
 	}
-	return data, keys, etag
+	var age time.Duration
+	if st, err := os.Stat(path); err == nil {
+		age = time.Since(st.ModTime())
+	}
+	return data, keys, etag, age
 }
 
 // fetchIndexBlob does a conditional GET <endpoint>/<bucket>/_index within

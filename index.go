@@ -487,15 +487,18 @@ func (idx *Index) blobServableLocked() bool {
 // Blob returns the precomputed GBCI v1 binary index and its strong ETag
 // (hex-encoded SHA-256 of the blob, surrounded by quotes per RFC 7232).
 //
-// Fast path: if the cached blob is up-to-date (dirty == false), return it
-// under a read lock. Slow path: drain pending into hashes, re-sort, dedupe,
-// serialize header + body + trailer, cache the result, clear dirty.
+// Fast path: if the cached blob is servable (current, or younger than
+// indexBlobMinInterval), return it under a read lock. Slow path: merge
+// pending into hashes, serialize header + body + trailer, cache the result,
+// clear dirty. Callers arriving during a serialization wait on the read lock
+// and all receive the blob it produces, so a burst of GETs costs one
+// serialization.
 func (idx *Index) Blob() ([]byte, string) {
 	idx.mu.RLock()
-	blob, etag, fresh := idx.cachedBlob, idx.cachedETag, idx.blobServableLocked()
+	cached, etag, fresh := idx.cachedBlob, idx.cachedETag, idx.blobServableLocked()
 	idx.mu.RUnlock()
 	if fresh {
-		return blob, etag
+		return cached, etag
 	}
 
 	idx.mu.Lock()

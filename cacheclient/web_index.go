@@ -97,16 +97,22 @@ func (b *WebBackend) indexCachePath() string {
 // and because absences from a non-authoritative set prove nothing, cold keys
 // are batch-probed instead of fast-missed (see WebBackend.Get).
 //
-// A disk copy younger than the backend's index max age is served as current
-// with no request at all. A test suite starts thousands of go commands a
-// minute, and the blob is tens of megabytes that the server rebuilds as keys
-// arrive, so a copy validated within the last minute is what a revalidation
-// would download again.
+// A disk copy younger than the backend's index max age is served with no
+// request at all, as a NON-authoritative set. A test suite starts thousands
+// of go commands a minute, and the blob is tens of megabytes that the server
+// rebuilds as keys arrive, so a copy validated within the last minute is what
+// a revalidation would download again. It is not authoritative, because a
+// process that started a moment ago can have uploaded keys the copy predates.
+// Those keys cost a probe, never a rebuild.
+//
+// Each outcome logs once here. The consumer's stderr carries only the Warnf
+// lines unless it asks for the routine ones.
 func (b *WebBackend) loadOrFetchIndex() (*hashSet, bool) {
 	path := b.indexCachePath()
 	diskBlob, diskKeys, diskETag, diskAge := b.readDiskIndex(path)
 	if diskBlob != nil && b.indexMaxAge > 0 && diskAge < b.indexMaxAge {
-		return diskKeys, true
+		logging.Infof("cacheprog: web index: %d keys from a copy %v old (absences are probed)", diskKeys.Len(), diskAge.Round(time.Second))
+		return diskKeys, false
 	}
 
 	// The absolute ceiling covers the whole load; each fetch also enforces the header and stall budgets above.
@@ -119,9 +125,11 @@ func (b *WebBackend) loadOrFetchIndex() (*hashSet, bool) {
 			// A failed refresh over a disk copy is routine: the build keeps a
 			// key set, and every go command reports it on a busy host.
 			logging.Infof("cacheprog: web index refresh: %v", err)
+			logging.Infof("cacheprog: web index: refresh failed; using %d cached keys (batch probing enabled)", diskKeys.Len())
 			return diskKeys, false
 		}
 		logging.Warnf("cacheprog: web index fetch: %v", err)
+		logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
 		return newHashSet(0), false
 	}
 	if status == http.StatusNotModified {
@@ -129,12 +137,14 @@ func (b *WebBackend) loadOrFetchIndex() (*hashSet, bool) {
 			// The copy's age is the time since the server last confirmed it.
 			now := time.Now()
 			_ = os.Chtimes(path, now, now)
+			logging.Infof("cacheprog: web index: %d keys", diskKeys.Len())
 			return diskKeys, true
 		}
 		// No disk copy despite a not-modified answer (likely a cleared /tmp); refetch unconditionally.
 		blob, _, err = b.fetchIndexBlob(ctx, "")
 		if err != nil {
 			logging.Warnf("cacheprog: web index refetch: %v", err)
+			logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
 			return newHashSet(0), false
 		}
 	}
@@ -142,11 +152,14 @@ func (b *WebBackend) loadOrFetchIndex() (*hashSet, bool) {
 	if err != nil {
 		logging.Warnf("cacheprog: web index parse: %v", err)
 		if diskBlob != nil {
+			logging.Infof("cacheprog: web index: refresh failed; using %d cached keys (batch probing enabled)", diskKeys.Len())
 			return diskKeys, false
 		}
+		logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
 		return newHashSet(0), false
 	}
 	b.writeIndexBlob(path, blob)
+	logging.Infof("cacheprog: web index: %d keys", keys.Len())
 	return keys, true
 }
 

@@ -324,14 +324,6 @@ func (b *WebBackend) ensureIndex() {
 		b.indexEmpty = keys.Len() == 0
 		b.indexKeysAtStart = keys.Len()
 		b.keysMu.Unlock()
-		switch {
-		case authoritative:
-			logging.Infof("cacheprog: web index: %d keys", keys.Len())
-		case keys.Len() > 0:
-			logging.Infof("cacheprog: web index: refresh failed; using %d cached keys (batch probing enabled)", keys.Len())
-		default:
-			logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
-		}
 	})
 }
 

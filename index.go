@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // gbciKeyPrefix is the constant leading portion of every cacheprog cache key.
@@ -70,11 +72,44 @@ type Index struct {
 	// under mu.RLock on the fast path when dirty is false.
 	cachedBlob []byte
 	cachedETag string
+	// builtAt is when cachedBlob was serialized. Blob serves the cached blob
+	// for blobMinInterval after it, dirty or not.
+	builtAt time.Time
+	// blobMinInterval is the least time between two serializations, in
+	// nanoseconds. It is per index, not a package variable, so a test sets
+	// its own without a race against the tests beside it.
+	blobMinInterval atomic.Int64
 }
 
+// defaultIndexBlobInterval is the least time between two serializations of
+// the index unless the config says otherwise. A serialization sorts every hash under the lock and produces a new
+// ETag, so a client downloads the whole blob again. During a CI run PUTs
+// never stop, and without this bound every /_index GET rebuilt and every
+// conditional GET downloaded 40 MB. Inside the interval a GET answers 304
+// and the writers do not wait on the sort. A key stored inside the interval
+// is advertised by the next serialization; until then a client treats it as
+// a miss and stores it again, which the store answers as a duplicate.
+const defaultIndexBlobInterval = 15 * time.Second
+
+// indexEntry is one indexed object. The key is held as a compactKey so a
+// million-object index costs no per-entry allocation; see compactkey.go.
 type indexEntry struct {
-	key       string
+	compactKey
 	mtimeUnix int64
+}
+
+// maxRetainedPending caps how much pending-buffer capacity survives a drain. A
+// rebuild or a PUT burst can grow these to the size of the whole cache, and
+// reslicing to [:0] holds that array for the life of the process; re-growing a
+// small buffer on the next burst is cheaper than keeping tens of megabytes
+// permanently.
+const maxRetainedPending = 4096
+
+func resetPending[T any](s []T) []T {
+	if cap(s) > maxRetainedPending {
+		return nil
+	}
+	return s[:0]
 }
 
 // extractActionHash decodes the 32-byte action ID from a cacheprog cache key.
@@ -99,9 +134,17 @@ func extractActionHash(key string) ([gbciHashSize]byte, bool) {
 // NewIndex builds the index by scanning the filesystem.
 func NewIndex(storage *Storage) *Index {
 	idx := &Index{}
+	idx.blobMinInterval.Store(int64(defaultIndexBlobInterval))
 	idx.rebuild(storage)
 	return idx
 }
+
+// SetBlobInterval sets the least time between two serializations. Zero
+// serializes every PUT on the next read.
+func (idx *Index) SetBlobInterval(d time.Duration) { idx.blobMinInterval.Store(int64(d)) }
+
+// BlobInterval reports the least time between two serializations.
+func (idx *Index) BlobInterval() time.Duration { return time.Duration(idx.blobMinInterval.Load()) }
 
 // Put records a key with the current time and queues its action-ID hash
 // (if the key is well-formed) for inclusion in the next /_index serialization.
@@ -111,7 +154,8 @@ func NewIndex(storage *Storage) *Index {
 // the next Blob() call.
 func (idx *Index) Put(key string, size int64) {
 	now := time.Now().Unix()
-	hash, hashOK := extractActionHash(key)
+	ck := newCompactKey(key)
+	hash, hashOK := ck.actionHash()
 
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
@@ -119,7 +163,7 @@ func (idx *Index) Put(key string, size int64) {
 	// Append to the unsorted pending buffer only — O(1). The merge+sort into the
 	// mtime-ordered list is deferred to the next reader (see drainEntriesLocked),
 	// so a burst of concurrent PUTs no longer convoys behind a full re-sort.
-	idx.pendingEntries = append(idx.pendingEntries, indexEntry{key: key, mtimeUnix: now})
+	idx.pendingEntries = append(idx.pendingEntries, indexEntry{compactKey: ck, mtimeUnix: now})
 
 	if hashOK {
 		idx.pending = append(idx.pending, hash)
@@ -144,9 +188,13 @@ func (idx *Index) drainEntriesLocked() {
 		return
 	}
 	idx.entries = append(idx.entries, idx.pendingEntries...)
-	idx.pendingEntries = idx.pendingEntries[:0]
-	sort.Slice(idx.entries, func(i, j int) bool {
-		return idx.entries[i].mtimeUnix < idx.entries[j].mtimeUnix
+	idx.pendingEntries = resetPending(idx.pendingEntries)
+	sortEntriesByMtime(idx.entries)
+}
+
+func sortEntriesByMtime(entries []indexEntry) {
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].mtimeUnix < entries[j].mtimeUnix
 	})
 }
 
@@ -156,7 +204,8 @@ func (idx *Index) drainEntriesLocked() {
 // has. Best-effort and O(n) in the index size; deletes are rare (operator
 // eviction of a poisoned entry), so the linear scan is not on any hot path.
 func (idx *Index) Remove(key string) {
-	hash, hashOK := extractActionHash(key)
+	ck := newCompactKey(key)
+	hash, hashOK := ck.actionHash()
 
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
@@ -164,7 +213,7 @@ func (idx *Index) Remove(key string) {
 	// Drain first so a key still sitting in pendingEntries is removable too.
 	idx.drainEntriesLocked()
 	for i := range idx.entries {
-		if idx.entries[i].key == key {
+		if idx.entries[i].compactKey == ck {
 			idx.entries = append(idx.entries[:i], idx.entries[i+1:]...)
 			break
 		}
@@ -174,6 +223,7 @@ func (idx *Index) Remove(key string) {
 		idx.pending = removeHash(idx.pending, hash)
 		idx.hashes = removeHash(idx.hashes, hash)
 		idx.dirty.Store(true)
+		idx.builtAt = time.Time{} // a removed key is not advertised for the interval
 	}
 	idx.updateGaugesLocked()
 }
@@ -191,11 +241,12 @@ func (idx *Index) RemoveKeys(keys []string) {
 	if len(keys) == 0 {
 		return
 	}
-	victimKeys := make(map[string]bool, len(keys))
+	victimKeys := set.New[compactKey](len(keys))
 	victimHashes := make(map[[gbciHashSize]byte]bool, len(keys))
 	for _, k := range keys {
-		victimKeys[k] = true
-		if h, ok := extractActionHash(k); ok {
+		ck := newCompactKey(k)
+		victimKeys.Add(ck)
+		if h, ok := ck.actionHash(); ok {
 			victimHashes[h] = true
 		}
 	}
@@ -207,7 +258,7 @@ func (idx *Index) RemoveKeys(keys []string) {
 	idx.drainEntriesLocked()
 	w := 0
 	for _, e := range idx.entries {
-		if !victimKeys[e.key] {
+		if !victimKeys.Contains(e.compactKey) {
 			idx.entries[w] = e
 			w++
 		}
@@ -218,6 +269,7 @@ func (idx *Index) RemoveKeys(keys []string) {
 		idx.hashes = filterHashes(idx.hashes, victimHashes)
 		idx.pending = filterHashes(idx.pending, victimHashes)
 		idx.dirty.Store(true)
+		idx.builtAt = time.Time{} // removed keys are not advertised for the interval
 	}
 	idx.updateGaugesLocked()
 }
@@ -260,6 +312,48 @@ func (idx *Index) Contains(h [gbciHashSize]byte) bool {
 	return false
 }
 
+// sortDedupeHashes sorts s ascending and drops duplicates in place, which is
+// what Contains's binary search and the serialized blob both require.
+func sortDedupeHashes(s [][gbciHashSize]byte) [][gbciHashSize]byte {
+	sort.Slice(s, func(i, j int) bool {
+		return bytes.Compare(s[i][:], s[j][:]) < 0
+	})
+	w := 0
+	for r := 0; r < len(s); r++ {
+		if w == 0 || s[r] != s[w-1] {
+			s[w] = s[r]
+			w++
+		}
+	}
+	return s[:w]
+}
+
+// mergeSortedHashes returns the union of two sorted, deduplicated hash lists,
+// sorted and deduplicated, in one pass.
+func mergeSortedHashes(a, b [][gbciHashSize]byte) [][gbciHashSize]byte {
+	if len(b) == 0 {
+		return a
+	}
+	out := make([][gbciHashSize]byte, 0, len(a)+len(b))
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		switch c := bytes.Compare(a[i][:], b[j][:]); {
+		case c < 0:
+			out = append(out, a[i])
+			i++
+		case c > 0:
+			out = append(out, b[j])
+			j++
+		default:
+			out = append(out, a[i])
+			i++
+			j++
+		}
+	}
+	out = append(out, a[i:]...)
+	return append(out, b[j:]...)
+}
+
 // removeHash returns s with every occurrence of h filtered out, reusing s's
 // backing array (the result is always a prefix of s). The action-ID hash is a
 // 1:1 function of the key, so at most one entry matches.
@@ -274,15 +368,33 @@ func removeHash(s [][gbciHashSize]byte, h [gbciHashSize]byte) [][gbciHashSize]by
 }
 
 // NearbyKeys returns up to limit keys whose modification time falls within
-// [startUnix, endUnix], sorted by distance from the midpoint, excluding
-// keys in the exclude set.
-func (idx *Index) NearbyKeys(startUnix, endUnix int64, limit int, exclude map[string]bool) []string {
+// [startUnix, endUnix], sorted by distance from the midpoint, excluding keys in
+// the exclude set and any key skip reports as unwanted.
+//
+// skip is applied DURING selection, not after it. A caller that filters the
+// result instead gets the same keys proposed on every request: once the nearest
+// limit candidates have all been rejected, the window never advances and the
+// caller receives an empty set forever. That is exactly what happened to
+// prefetch, where a client got one pool of entries and then nothing at all for
+// the rest of its build. skip may be nil.
+func (idx *Index) NearbyKeys(startUnix, endUnix int64, limit int, exclude map[string]bool, skip func(string) bool) []string {
+	// The exclusion set arrives keyed by key string; convert it once (it is
+	// bounded by the batch request that produced it) so the scan below can
+	// compare compact keys instead of rebuilding a string per candidate.
+	var excluded map[compactKey]bool
+	if len(exclude) > 0 {
+		excluded = make(map[compactKey]bool, len(exclude))
+		for k := range exclude {
+			excluded[newCompactKey(k)] = true
+		}
+	}
+
 	// Fast path: nothing pending means the sorted list is current — a read lock
 	// lets concurrent batch GETs run in parallel. Slow path takes the write lock
 	// once to drain+sort, then searches.
 	idx.mu.RLock()
 	if len(idx.pendingEntries) == 0 {
-		keys := idx.nearbyKeysLocked(startUnix, endUnix, limit, exclude)
+		keys := idx.nearbyKeysLocked(startUnix, endUnix, limit, excluded, skip)
 		idx.mu.RUnlock()
 		return keys
 	}
@@ -291,12 +403,24 @@ func (idx *Index) NearbyKeys(startUnix, endUnix int64, limit int, exclude map[st
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	idx.drainEntriesLocked()
-	return idx.nearbyKeysLocked(startUnix, endUnix, limit, exclude)
+	return idx.nearbyKeysLocked(startUnix, endUnix, limit, excluded, skip)
 }
+
+// nearbyScanFactor bounds how many candidates a skip-heavy scan examines,
+// as a multiple of the limit. A client deep into a build has been sent most of
+// the window already, so the scan walks past a lot of skipped keys to fill the
+// limit. Materializing a key string per examined candidate is the cost, and
+// this cap keeps one request's worth of that work bounded. Hitting the cap is
+// counted, never silent.
+const nearbyScanFactor = 8
 
 // nearbyKeysLocked is the search itself. The caller must hold idx.mu (read or
 // write) and must have ensured idx.entries is drained and mtime-sorted.
-func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, exclude map[string]bool) []string {
+//
+// Candidates are carried as positions in idx.entries, not as keys: the window
+// can hold far more entries than the limit, and only the survivors are worth
+// rebuilding a key string for.
+func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded map[compactKey]bool, skip func(string) bool) []string {
 	// Binary search for the start of the time window.
 	lo := sort.Search(len(idx.entries), func(i int) bool {
 		return idx.entries[i].mtimeUnix >= startUnix
@@ -305,20 +429,20 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, exclude 
 	// Collect candidates within the window.
 	mid := (startUnix + endUnix) / 2
 	type candidate struct {
-		key  string
+		pos  int
 		dist int64
 	}
 	var candidates []candidate
 	for i := lo; i < len(idx.entries) && idx.entries[i].mtimeUnix <= endUnix; i++ {
 		e := idx.entries[i]
-		if exclude[e.key] {
+		if excluded[e.compactKey] {
 			continue
 		}
 		d := e.mtimeUnix - mid
 		if d < 0 {
 			d = -d
 		}
-		candidates = append(candidates, candidate{key: e.key, dist: d})
+		candidates = append(candidates, candidate{pos: i, dist: d})
 	}
 
 	// Sort by distance from center.
@@ -326,31 +450,69 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, exclude 
 		return candidates[i].dist < candidates[j].dist
 	})
 
-	if len(candidates) > limit {
-		candidates = candidates[:limit]
+	// Take the nearest candidates the caller still wants. Without skip this is
+	// the first limit of them. With it, the walk continues past the rejects, so
+	// the window advances instead of re-proposing the same nearest keys on
+	// every request.
+	if skip == nil {
+		if len(candidates) > limit {
+			candidates = candidates[:limit]
+		}
+		keys := make([]string, len(candidates))
+		for i, c := range candidates {
+			keys[i] = idx.entries[c.pos].Key()
+		}
+		return keys
 	}
 
-	keys := make([]string, len(candidates))
-	for i, c := range candidates {
-		keys[i] = c.key
+	keys := make([]string, 0, limit)
+	examined := 0
+	budget := limit * nearbyScanFactor
+	for _, c := range candidates {
+		if len(keys) == limit {
+			break
+		}
+		if examined == budget {
+			// Out of scan budget with the limit unfilled. Say so: a rate that
+			// keeps climbing means the window is nearly all skipped, and the
+			// caller is asking for keys that are no longer there to give.
+			nearbyScanExhaustedTotal.Inc()
+			break
+		}
+		examined++
+		key := idx.entries[c.pos].Key()
+		if skip(key) {
+			continue
+		}
+		keys = append(keys, key)
 	}
 	return keys
+}
+
+// blobServableLocked reports whether the cached blob answers a GET as it is:
+// there is one, and it is either current or younger than the interval.
+func (idx *Index) blobServableLocked() bool {
+	if idx.cachedBlob == nil {
+		return false
+	}
+	return !idx.dirty.Load() || time.Since(idx.builtAt) < idx.BlobInterval()
 }
 
 // Blob returns the precomputed GBCI v1 binary index and its strong ETag
 // (hex-encoded SHA-256 of the blob, surrounded by quotes per RFC 7232).
 //
-// Fast path: if the cached blob is up-to-date (dirty == false), return it
-// under a read lock. Slow path: drain pending into hashes, re-sort, dedupe,
-// serialize header + body + trailer, cache the result, clear dirty.
+// Fast path: if the cached blob is servable (current, or younger than
+// the blob interval), return it under a read lock. Slow path: merge
+// pending into hashes, serialize header + body + trailer, cache the result,
+// clear dirty. Callers arriving during a serialization wait on the read lock
+// and all receive the blob it produces, so a burst of GETs costs one
+// serialization.
 func (idx *Index) Blob() ([]byte, string) {
-	if !idx.dirty.Load() {
-		idx.mu.RLock()
-		blob, etag := idx.cachedBlob, idx.cachedETag
-		idx.mu.RUnlock()
-		if blob != nil {
-			return blob, etag
-		}
+	idx.mu.RLock()
+	cached, etag, fresh := idx.cachedBlob, idx.cachedETag, idx.blobServableLocked()
+	idx.mu.RUnlock()
+	if fresh {
+		return cached, etag
 	}
 
 	idx.mu.Lock()
@@ -358,26 +520,23 @@ func (idx *Index) Blob() ([]byte, string) {
 
 	// Re-check: another caller may have rebuilt the blob while we were
 	// waiting on the lock.
-	if !idx.dirty.Load() && idx.cachedBlob != nil {
+	if idx.blobServableLocked() {
 		return idx.cachedBlob, idx.cachedETag
 	}
 
-	if len(idx.pending) > 0 {
-		idx.hashes = append(idx.hashes, idx.pending...)
-		idx.pending = idx.pending[:0]
+	lockedAt := time.Now()
+	pendingCount := len(idx.pending)
+	log.Printf("index: serialize locked (hashes=%d pending=%d)", len(idx.hashes), pendingCount)
+	defer func() {
+		log.Printf("index: serialize unlocked after %v (hashes=%d)", time.Since(lockedAt), len(idx.hashes))
+	}()
+
+	// hashes is sorted and deduplicated already. The pending buffer is small
+	// next to it, so a merge costs O(n) where a re-sort cost O(n log n).
+	if pendingCount > 0 {
+		idx.hashes = mergeSortedHashes(idx.hashes, sortDedupeHashes(idx.pending))
+		idx.pending = resetPending(idx.pending)
 	}
-	sort.Slice(idx.hashes, func(i, j int) bool {
-		return bytes.Compare(idx.hashes[i][:], idx.hashes[j][:]) < 0
-	})
-	// Dedupe sorted slice in place.
-	w := 0
-	for r := 0; r < len(idx.hashes); r++ {
-		if w == 0 || idx.hashes[r] != idx.hashes[w-1] {
-			idx.hashes[w] = idx.hashes[r]
-			w++
-		}
-	}
-	idx.hashes = idx.hashes[:w]
 
 	count := uint64(len(idx.hashes))
 
@@ -412,6 +571,7 @@ func (idx *Index) Blob() ([]byte, string) {
 
 	idx.cachedBlob = blob
 	idx.cachedETag = `"` + hex.EncodeToString(digest[:]) + `"`
+	idx.builtAt = time.Now()
 	idx.dirty.Store(false)
 	idx.updateGaugesLocked()
 	return idx.cachedBlob, idx.cachedETag
@@ -419,19 +579,66 @@ func (idx *Index) Blob() ([]byte, string) {
 
 func (idx *Index) rebuild(storage *Storage) {
 	start := time.Now()
-	result, err := storage.List("", 1000000, "")
-	if err != nil {
+	b := newIndexBuild(idx.entryCount())
+	if err := storage.Walk(b.add); err != nil {
 		log.Printf("index: rebuild failed: %v", err)
 		return
 	}
-	entries, hashes := idx.applyRebuild(result.Objects)
+	b.finish()
+	entries, hashes := idx.applyRebuild(b)
 	indexRebuildDuration.Observe(time.Since(start).Seconds())
 	log.Printf("index: built %d entries (%d hashes) in %v",
 		entries, hashes, time.Since(start).Round(time.Millisecond))
 }
 
-// applyRebuild replaces the index's master state with a filesystem snapshot
-// while PRESERVING the pending buffers. The snapshot walk (storage.List) runs
+// entryCount is the current number of indexed objects, used to size the next
+// rebuild's buffers: a cache does not change size much between rebuilds, and
+// growing a million-element slice by doubling costs an extra copy of itself.
+func (idx *Index) entryCount() int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return len(idx.entries) + len(idx.pendingEntries)
+}
+
+// indexBuild accumulates a rebuild's state as the data_dir walk produces it, so
+// a rebuild never materializes a second full copy of the cache's keys the way
+// walking into a []ListObject did.
+type indexBuild struct {
+	entries []indexEntry
+	hashes  [][gbciHashSize]byte
+	sorted  bool
+}
+
+func newIndexBuild(sizeHint int) *indexBuild {
+	return &indexBuild{
+		entries: make([]indexEntry, 0, sizeHint),
+		hashes:  make([][gbciHashSize]byte, 0, sizeHint),
+	}
+}
+
+func (b *indexBuild) add(obj ListObject) {
+	ck := newCompactKey(obj.Key)
+	b.entries = append(b.entries, indexEntry{compactKey: ck, mtimeUnix: obj.LastModified.Unix()})
+	if h, ok := ck.actionHash(); ok {
+		b.hashes = append(b.hashes, h)
+	}
+}
+
+// finish orders what the walk collected: entries by mtime for NearbyKeys, and
+// hashes sorted+deduped so Contains can binary-search the master list the
+// instant it is installed. Sorting here, off the index lock, is what keeps a
+// million-element sort out of the critical section every rebuild.
+func (b *indexBuild) finish() {
+	if b.sorted {
+		return
+	}
+	sortEntriesByMtime(b.entries)
+	b.hashes = sortDedupeHashes(b.hashes)
+	b.sorted = true
+}
+
+// applyRebuild replaces the index's master state with a filesystem walk's
+// result while PRESERVING the pending buffers. The walk (Storage.Walk) runs
 // with no index lock held and takes seconds on a large cache, so PUTs complete
 // concurrently; each lives only in pending/pendingEntries until drained. The
 // old code nil'd both buffers here, silently dropping every PUT that finished
@@ -439,41 +646,34 @@ func (idx *Index) rebuild(storage *Storage) {
 // from prefetch) until the NEXT rebuild, i.e. the next eviction sweep, forcing
 // misses and duplicate re-uploads right after every sweep.
 //
-// Instead the walked hashes are prepended to the surviving pending buffer
-// (Blob() sorts + dedupes, so a PUT the walk also saw costs nothing) and
-// pendingEntries is left alone (drainEntriesLocked merges + sorts it into the
-// fresh entries on the next read; a duplicate mtime entry is the same benign
-// shape an overwrite PUT already produces). A PUT can therefore never be lost
-// to a rebuild: it either lands in pending before the lock (merged here) or
-// after (normal append path).
+// Instead the walked state replaces only the master lists: the surviving
+// pending buffers are left alone (Blob() sorts + dedupes pending into the
+// hashes, and drainEntriesLocked merges + sorts pendingEntries into the fresh
+// entries on the next read; a duplicate is the same benign shape an overwrite
+// PUT already produces). A PUT can therefore never be lost to a rebuild: it
+// either lands in pending before the lock (kept here) or after (normal append
+// path).
+//
+// The walked hashes go straight into the sorted master list rather than through
+// pending, which is both one full-size copy cheaper and immediately searchable
+// by Contains -- b.finish() has already sorted and deduped them.
 //
 // Returns the entry and hash counts for logging.
-func (idx *Index) applyRebuild(objects []ListObject) (int, int) {
-	entries := make([]indexEntry, 0, len(objects))
-	walked := make([][gbciHashSize]byte, 0, len(objects))
-	for _, obj := range objects {
-		entries = append(entries, indexEntry{
-			key:       obj.Key,
-			mtimeUnix: obj.LastModified.Unix(),
-		})
-		if h, ok := extractActionHash(obj.Key); ok {
-			walked = append(walked, h)
-		}
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].mtimeUnix < entries[j].mtimeUnix
-	})
+func (idx *Index) applyRebuild(b *indexBuild) (int, int) {
+	// Contains binary-searches the master list the moment it is installed, so an
+	// unsorted build would answer wrongly. finish() is a no-op if the caller
+	// already did it off-lock, which is where it belongs.
+	b.finish()
 
 	idx.mu.Lock()
-	idx.entries = entries
-	// pendingEntries intentionally survives (see doc comment above).
-	idx.hashes = idx.hashes[:0]
-	idx.pending = append(walked, idx.pending...)
+	idx.entries = b.entries
+	idx.hashes = b.hashes
+	// pending and pendingEntries intentionally survive (see doc comment above).
 	idx.cachedBlob = nil
 	idx.cachedETag = ""
 	idx.dirty.Store(true)
-	hashCount := len(idx.pending)
+	hashCount := len(idx.hashes) + len(idx.pending)
 	idx.updateGaugesLocked()
 	idx.mu.Unlock()
-	return len(objects), hashCount
+	return len(b.entries), hashCount
 }

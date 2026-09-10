@@ -7,8 +7,6 @@ import (
 	"io"
 	"log"
 	"os"
-
-	"github.com/pierrec/lz4/v4"
 )
 
 // outputIDMetaKey is the metadata field holding the GOCACHEPROG outputID -- the
@@ -71,7 +69,7 @@ func ensureOutputID(storage *Storage, key string, meta *ObjectMeta, f *os.File) 
 	}
 	outputID, err := reconstructOutputID(storage, key, f)
 	if err != nil {
-		// The body is unusable (most often: cannot be lz4-decompressed) and the
+		// The body is unusable (most often: cannot be decompressed) and the
 		// outputid cannot be reconstructed, so this key can NEVER serve a hit.
 		// Leaving it advertised in /_index would wedge it permanently: every
 		// client is told to skip re-uploading an indexed key, yet every fetch is
@@ -98,9 +96,9 @@ func ensureOutputID(storage *Storage, key string, meta *ObjectMeta, f *os.File) 
 }
 
 // reconstructOutputID recomputes a stored object's outputID from its body and
-// persists it as metadata, returning the value. The body is stored as an lz4
-// frame (the client compresses every PUT and lz4-decompresses every GET), so the
-// outputID is hex(sha256(lz4-decompressed body)). Decompression is streamed
+// persists it as metadata, returning the value. The body is stored compressed
+// (the client compresses every PUT and decompresses every GET), so the
+// outputID is hex(sha256(decompressed body)). Decompression is streamed
 // straight into the hash, so even this rare repair path never buffers a whole
 // object in memory. Only the outputid xattr is written; the body and every other
 // xattr (audit included) are left exactly as they were.
@@ -136,12 +134,21 @@ func reconstructOutputID(storage *Storage, key string, f *os.File) (string, erro
 	}
 
 	h := sha256.New()
-	zr := lz4.NewReader(f)
+	// The codec comes off the body's own frame magic, so a store holding both
+	// zstd and lz4 objects heals either one.
+	zr, release, codec, decErr := decompressingReader(f)
+	if decErr != nil {
+		return "", fmt.Errorf("decompress body: %w", decErr)
+	}
+	if codec == "" {
+		// The body opens with neither frame magic, so it is not something this
+		// cache stored. Hashing it as it stands would mint a confident, wrong
+		// content address and wedge the key for good.
+		release()
+		return "", fmt.Errorf("decompress body: not a compressed frame")
+	}
 	_, copyErr := io.Copy(h, zr)
-	// Return the reader's pooled buffers. io.Copy-to-EOF already released them
-	// (the reader self-releases on EOF); Reset covers the error path and is a
-	// no-op after EOF.
-	zr.Reset(nil)
+	release()
 	if callerOwned {
 		// Rewind the caller's handle so the serve path streams from byte 0. If
 		// the rewind fails the stream is poisoned, so the repair fails (the
@@ -168,5 +175,9 @@ func reconstructOutputID(storage *Storage, key string, f *os.File) (string, erro
 	if err := setMetadataFd(f, map[string]string{outputIDMetaKey: outputID}); err != nil {
 		return "", fmt.Errorf("persist reconstructed outputid: %w", err)
 	}
+	// An fsetxattr leaves the inode's mtime and size alone, so the metadata
+	// cache cannot notice this write on its own -- drop the entry so the next
+	// reader sees the repaired outputid rather than the absence that got us here.
+	storage.forgetMeta(key)
 	return outputID, nil
 }

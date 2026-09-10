@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>go build cache</title>
+	<!-- The page is dark by design. This stops Dark Reader from restyling it. -->
+	<meta name="darkreader-lock">
+	<meta name="color-scheme" content="dark">
+	<!-- The icon follows scratch.pazer.site: a dark rounded tile with an amber Material Symbols glyph. -->
+	<link rel="icon" href="/icon.svg" type="image/svg+xml">
+	<link rel="apple-touch-icon" href="/icon.svg">
+	<link rel="mask-icon" href="/icon-monochrome.svg" color="#f0a500">
+	<!-- The org design language, Scratch Proto, from its always-latest deploy.
+	     The stylesheet puts the tokens on :root. The module registers the
+	     components and adopts the same sheet inside each shadow root. Both
+	     files are required, and the page needs no build step of its own.
+	     These are the CANONICAL paths. The /branch/master/ spelling answers
+	     302, and a cross-origin redirect has to carry CORS on every hop for a
+	     module script to load. -->
+	<link rel="stylesheet" href="https://sites.pazer.build/scratch_ui/scratch-ui.css">
+	<script type="module" src="https://sites.pazer.build/scratch_ui/scratch-ui.js"></script>
+	<link rel="stylesheet" href="/dashboard.css">
+</head>
+<body>
+	<header>
+		<h1>GO BUILD CACHE <span id="bucket" class="muted"></span></h1>
+		<div class="head-right">
+			<!-- The LED reports the state, which is the Proto idiom. The chip
+			     around it is the neutral "off" variant, because a badge variant
+			     carries colour only. -->
+			<scratch-badge variant="off"><scratch-led id="state-led" state="accent" live></scratch-led><span id="state-text">connecting</span></scratch-badge>
+			<span id="uptime" class="muted"></span>
+			<scratch-toggle id="autorefresh" checked>live</scratch-toggle>
+		</div>
+	</header>
+
+	<main>
+		<section class="row" id="tiles"></section>
+
+		<section class="panel reads">
+			<h2>READS</h2>
+			<h3>batch keys</h3>
+			<div class="bars" id="batch-kinds"></div>
+			<!-- Only an older client makes a single-object GET; the block stays hidden until one does. -->
+			<div id="single-gets" hidden>
+				<h3>single GET outcomes</h3>
+				<div class="bars" id="get-outcomes"></div>
+			</div>
+		</section>
+
+		<section class="panel traffic">
+			<h2>TRAFFIC</h2>
+			<div class="stack">
+				<div>
+					<h3>requests by route</h3>
+					<div class="bars" id="routes"></div>
+				</div>
+				<div>
+					<h3>request rate</h3>
+					<svg id="rate-chart" viewBox="0 0 320 90" preserveAspectRatio="none" role="img"
+						aria-label="requests per second over the last few minutes"></svg>
+					<p class="muted" id="rate-label">waiting for a second sample</p>
+				</div>
+			</div>
+		</section>
+
+		<section class="panel tripwires">
+			<h2>TRIPWIRES</h2>
+			<p class="muted note">Each of these sits at zero, or falls towards it. A rising one is a bug, not load.</p>
+			<table id="tripwires"><tbody></tbody></table>
+		</section>
+
+		<section class="panel memory">
+			<h2>MEMORY</h2>
+			<div class="bars" id="memory"></div>
+		</section>
+
+		<section class="panel config">
+			<h2>CONFIGURATION</h2>
+			<table id="config"><tbody></tbody></table>
+		</section>
+	</main>
+
+	<footer class="muted">
+		<span id="footer-note"></span>
+		Numbers come from the same registry <code>/metrics</code> serves.
+	</footer>
+
+	<script src="/dashboard.js"></script>
+</body>
+</html>

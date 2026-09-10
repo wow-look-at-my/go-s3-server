@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -30,6 +32,19 @@ func TestHealthEndpointOK(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, "ok\n", rec.Body.String())
+}
+
+func TestVersionEndpointAnswersWithoutCredentials(t *testing.T) {
+	s := newHealthTestServer()
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, versionPath, nil))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	var got buildVersion
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, runtime.Version(), got.Go, "the toolchain is known to every build, stamped or not")
 }
 
 func TestHealthEndpointReportsDraining(t *testing.T) {
@@ -68,4 +83,45 @@ func TestHealthEndpointBypassesAdmissionControl(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, healthPath, nil))
 	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+// docker-updater discovers these two paths on its own, reads only the status
+// code, and carries no credential. They sit alongside /_health so they clear
+// the same three gates: auth, admission control, and the access log.
+func TestWellKnownUpdateChecksAnswerUnauthenticated(t *testing.T) {
+	s := newHealthTestServer()
+
+	for _, path := range []string{wellKnownHealthPath, wellKnownPreUpdatePath} {
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		require.Equal(t, http.StatusOK, rec.Code, path)
+	}
+}
+
+// Both report the drain: a container already shutting down is neither healthy
+// nor a safe thing to replace out from under its in-flight requests.
+func TestWellKnownUpdateChecksReportDraining(t *testing.T) {
+	s := newHealthTestServer()
+	s.BeginShutdown()
+
+	for _, path := range []string{wellKnownHealthPath, wellKnownPreUpdatePath} {
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		require.Equal(t, http.StatusServiceUnavailable, rec.Code, path)
+		require.NotEmpty(t, rec.Header().Get("Retry-After"), path)
+	}
+}
+
+// The probes must not consume a concurrency slot, or a saturated server would
+// look dead to the updater and have its update rolled back.
+func TestWellKnownUpdateChecksBypassAdmissionControl(t *testing.T) {
+	cfg := &Config{Bucket: "testbucket", DisableAuth: true, MaxConcurrentRequests: 1}
+	s := NewServer(cfg, nil)
+	s.sem <- struct{}{}
+
+	for _, path := range []string{wellKnownHealthPath, wellKnownPreUpdatePath} {
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		require.Equal(t, http.StatusOK, rec.Code, path)
+	}
 }

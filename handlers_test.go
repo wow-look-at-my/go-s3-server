@@ -30,6 +30,7 @@ func testSetup(t *testing.T) *httptest.Server {
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
 	require.Nil(t, err)
+	storage.Index.SetBlobInterval(0) // a GET after a PUT sees the PUT
 
 	t.Cleanup(func() { storage.Close() })
 
@@ -330,17 +331,19 @@ func TestLoadConfig(t *testing.T) {
 	_, err = LoadConfig(badPath)
 	require.NotNil(t, err)
 
-	cred := `"credentials": [{"username": "admin", "password": "secret"}]`
+	cred := testCredentials("admin", "secret")
 
 	// Missing bucket
-	noBucketPath := dir + "/nobucket.json"
-	os.WriteFile(noBucketPath, []byte(`{"data_dir": "/tmp", `+cred+`}`), 0644)
+	noBucketPath := writeConfigFile(t, dir, "nobucket.json", map[string]any{
+		"data_dir": "/tmp", "credentials": cred,
+	})
 	_, err = LoadConfig(noBucketPath)
 	require.NotNil(t, err)
 
 	// Missing data_dir
-	noDirPath := dir + "/nodir.json"
-	os.WriteFile(noDirPath, []byte(`{"bucket": "b", `+cred+`}`), 0644)
+	noDirPath := writeConfigFile(t, dir, "nodir.json", map[string]any{
+		"bucket": "b", "credentials": cred,
+	})
 	_, err = LoadConfig(noDirPath)
 	require.NotNil(t, err)
 
@@ -357,22 +360,27 @@ func TestLoadConfig(t *testing.T) {
 	require.NotNil(t, err)
 
 	// write_once defaults
-	woDefaultPath := dir + "/wo_default.json"
-	os.WriteFile(woDefaultPath, []byte(`{"bucket": "b", "data_dir": "/tmp", `+cred+`}`), 0644)
+	woDefaultPath := writeConfigFile(t, dir, "wo_default.json", map[string]any{
+		"bucket": "b", "data_dir": "/tmp", "credentials": cred,
+	})
 	cfg, err = LoadConfig(woDefaultPath)
 	require.Nil(t, err)
 	require.Equal(t, "allow", cfg.WriteOnce.Action)
 	require.Equal(t, "never", cfg.WriteOnce.Notification)
 
 	// Invalid write_once.action
-	woInvalidAction := dir + "/wo_bad_action.json"
-	os.WriteFile(woInvalidAction, []byte(`{"bucket": "b", "data_dir": "/tmp", "write_once": {"action": "invalid"}, `+cred+`}`), 0644)
+	woInvalidAction := writeConfigFile(t, dir, "wo_bad_action.json", map[string]any{
+		"bucket": "b", "data_dir": "/tmp", "credentials": cred,
+		"write_once": map[string]any{"action": "invalid"},
+	})
 	_, err = LoadConfig(woInvalidAction)
 	require.NotNil(t, err)
 
 	// Invalid write_once.notification
-	woInvalidNotif := dir + "/wo_bad_notif.json"
-	os.WriteFile(woInvalidNotif, []byte(`{"bucket": "b", "data_dir": "/tmp", "write_once": {"action": "deny", "notification": "invalid"}, `+cred+`}`), 0644)
+	woInvalidNotif := writeConfigFile(t, dir, "wo_bad_notif.json", map[string]any{
+		"bucket": "b", "data_dir": "/tmp", "credentials": cred,
+		"write_once": map[string]any{"action": "deny", "notification": "invalid"},
+	})
 	_, err = LoadConfig(woInvalidNotif)
 	require.NotNil(t, err)
 
@@ -423,6 +431,10 @@ func TestMetadataRoundTrip(t *testing.T) {
 // it back under both the native and legacy header names. The deprecation counter
 // is bumped so the lingering S3 traffic stays observable.
 func TestLegacyAmzMetaCompat(t *testing.T) {
+	if !inOwnProcess(t) {
+		return
+	}
+
 	ts := testSetup(t)
 
 	before := testutil.ToFloat64(deprecatedRequestsTotal.WithLabelValues(featureAmzMeta))
@@ -505,6 +517,10 @@ func TestDeleteObject(t *testing.T) {
 // /_index (so clients keep hitting it instead of re-uploading), and the repair is
 // one-time. No eviction, no re-upload, no churn.
 func TestSelfHealRepairsOutputIDInPlace(t *testing.T) {
+	if !inOwnProcess(t) {
+		return
+	}
+
 	ts := testSetup(t)
 
 	const actionHex = "a1b2c3d4e5f6071829304a5b6c7d8e9f0011223344556677889900aabbccddee"
@@ -568,6 +584,10 @@ func TestSelfHealRepairsOutputIDInPlace(t *testing.T) {
 // permanent forced miss (clients skip re-uploading indexed keys), so the server
 // de-advertises it and lets the next consumer re-upload a good body.
 func TestSelfHealLeavesUnrepairableObjectInPlace(t *testing.T) {
+	if !inOwnProcess(t) {
+		return
+	}
+
 	ts, storage := testSetupWithStorage(t)
 
 	const actionHex = "ffeeddccbbaa00998877665544332211ffeeddccbbaa00998877665544332211"

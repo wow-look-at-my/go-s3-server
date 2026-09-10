@@ -231,6 +231,7 @@ func TestIndexDirHoldsTheDiskCopy(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer b.Close()
+	b.ensureIndex()
 
 	require.Equal(t, dir, filepath.Dir(b.indexCachePath()))
 	_, err = os.Stat(b.indexCachePath())

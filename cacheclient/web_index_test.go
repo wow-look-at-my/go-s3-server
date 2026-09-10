@@ -325,11 +325,12 @@ func TestLoadOrFetchIndex_DiskBlobBeatsServerError(t *testing.T) {
 	defer srv.Close()
 
 	// Cold start: server is healthy, disk cache gets populated.
-	_, err := NewWebBackend(WebConfig{
+	first, err := NewWebBackend(WebConfig{
 		Bucket: "bk", Endpoint: srv.URL,
 		AccessKey: "k", SecretKey: "s",
 	})
 	require.NoError(t, err)
+	first.ensureIndex()
 
 	// Break the server.
 	broken.Store(true)

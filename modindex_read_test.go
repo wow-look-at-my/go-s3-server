@@ -22,6 +22,7 @@ import (
 // guard existed" is to bypass the handler and write it straight to storage.
 func testSetupWithStorage(t *testing.T) (*httptest.Server, *Storage) {
 	t.Helper()
+	holdIndexBlob(t, 0)
 	dir := t.TempDir()
 
 	cfg := &Config{

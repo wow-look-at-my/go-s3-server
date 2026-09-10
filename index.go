@@ -211,6 +211,7 @@ func (idx *Index) Remove(key string) {
 		idx.pending = removeHash(idx.pending, hash)
 		idx.hashes = removeHash(idx.hashes, hash)
 		idx.dirty.Store(true)
+		idx.builtAt = time.Time{} // a removed key is not advertised for the interval
 	}
 	idx.updateGaugesLocked()
 }
@@ -256,6 +257,7 @@ func (idx *Index) RemoveKeys(keys []string) {
 		idx.hashes = filterHashes(idx.hashes, victimHashes)
 		idx.pending = filterHashes(idx.pending, victimHashes)
 		idx.dirty.Store(true)
+		idx.builtAt = time.Time{} // removed keys are not advertised for the interval
 	}
 	idx.updateGaugesLocked()
 }

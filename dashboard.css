@@ -86,7 +86,7 @@ main {
 .tripwires { grid-area: tripwires; }
 .memory { grid-area: memory; }
 .config { grid-area: config; }
-@media (max-width: 1400px) {
+@media (max-width: 1100px) {
 	main {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 		grid-template-areas:
@@ -164,6 +164,8 @@ td {
 }
 tr:last-child td { border-bottom: 0; }
 td:first-child { color: var(--text-muted); width: 46%; }
+/* A tripwire's name is the long part; its count is one digit wide. */
+.tripwires td:first-child { width: 78%; }
 td.n { color: var(--text-bright); }
 /* A tripwire that is not zero is the one thing here worth an alarm. */
 td.alert { color: var(--danger); }

@@ -45,6 +45,8 @@ func TestDashboardServesPageAndAssets(t *testing.T) {
 		"/":              "text/html; charset=utf-8",
 		"/dashboard.css": "text/css; charset=utf-8",
 		"/dashboard.js":  "text/javascript; charset=utf-8",
+		"/icon.svg":      "image/svg+xml",
+		"/icon-monochrome.svg": "image/svg+xml",
 	} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))

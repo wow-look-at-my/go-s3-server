@@ -13,11 +13,11 @@ import (
 	dto "github.com/prometheus/client_model/go"
 )
 
-// The dashboard is one page and its two assets. They are embedded so the
+// The dashboard is one page, its two assets and its icon. They are embedded so the
 // binary stays the whole deployment: no asset directory to mount, and no way
 // for the page to disagree with the server that serves it.
 //
-//go:embed dashboard.html dashboard.css dashboard.js
+//go:embed dashboard.html dashboard.css dashboard.js icon.svg icon-monochrome.svg
 var dashboardAssets embed.FS
 
 // defaultDashboardListen is the address the dashboard binds when the config
@@ -107,6 +107,10 @@ func (d *dashboard) servePage(w http.ResponseWriter, r *http.Request) {
 		name, contentType = "dashboard.css", "text/css; charset=utf-8"
 	case "/dashboard.js":
 		name, contentType = "dashboard.js", "text/javascript; charset=utf-8"
+	case "/icon.svg":
+		name, contentType = "icon.svg", "image/svg+xml"
+	case "/icon-monochrome.svg":
+		name, contentType = "icon-monochrome.svg", "image/svg+xml"
 	default:
 		http.NotFound(w, r)
 		return

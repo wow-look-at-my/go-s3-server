@@ -7,9 +7,10 @@
 	<!-- The page is dark by design. This stops Dark Reader from restyling it. -->
 	<meta name="darkreader-lock">
 	<meta name="color-scheme" content="dark">
-	<!-- An empty icon: the page ships no favicon, and without this the browser
-	     asks for one on every load and logs a 404. -->
-	<link rel="icon" href="data:,">
+	<!-- The icon follows scratch.pazer.site: a dark rounded tile with an amber Material Symbols glyph. -->
+	<link rel="icon" href="/icon.svg" type="image/svg+xml">
+	<link rel="apple-touch-icon" href="/icon.svg">
+	<link rel="mask-icon" href="/icon-monochrome.svg" color="#f0a500">
 	<!-- The org design language, Scratch Proto, from its always-latest deploy.
 	     The stylesheet puts the tokens on :root. The module registers the
 	     components and adopts the same sheet inside each shadow root. Both

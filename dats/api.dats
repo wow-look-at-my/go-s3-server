@@ -228,7 +228,7 @@ tests:
 		stdout:
 			- "status 200"
 			- "keys go,modified,revision,time,version"
-			- "^go go1\\."
+			- "go go1."
 
 	- desc: a wrong password, an unknown user and no credentials at all are each refused
 	  exit: 0

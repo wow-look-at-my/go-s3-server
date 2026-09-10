@@ -35,7 +35,18 @@ type WebConfig struct {
 	// process temporary directory. A consumer whose builds share a cache
 	// directory but not a temporary directory points it at the cache.
 	IndexDir string
+	// IndexMaxAge is how long a disk copy of the index is served with no
+	// request to the server. Zero takes IndexMaxAgeDefault. A negative value
+	// revalidates on every load.
+	IndexMaxAge time.Duration
 }
+
+// IndexMaxAgeDefault is the index max age a zero WebConfig.IndexMaxAge takes.
+const IndexMaxAgeDefault = time.Minute
+
+// defaultIndexMaxAge is what a zero IndexMaxAge resolves to. The package's
+// tests set it negative, so a test of the revalidation path sees a request.
+var defaultIndexMaxAge time.Duration = IndexMaxAgeDefault
 
 // WebBackend stores cache objects in a remote web server with LZ4 compression.
 // GETs use the server's batch endpoint to fetch entries with prefetch support,
@@ -54,6 +65,11 @@ type WebBackend struct {
 	module    string // main module path for object metadata (provenance)
 	target    string // GOOS/GOARCH this build produces, for request provenance
 	indexDir  string // where the key index's disk copy lives; empty is os.TempDir
+	// indexMaxAge is how long the disk copy is served with no request. The
+	// index loads on the first Get or Put, under indexOnce, so a go command
+	// that never touches the cache never pays for it.
+	indexMaxAge time.Duration
+	indexOnce   sync.Once
 	// moduleLate carries a module path learned after the backend was built. A
 	// consumer often knows its endpoint before it knows which module it is
 	// building, and the requests in between still deserve an attribution.
@@ -289,19 +305,26 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	go b.batchPutCoalescer()
 	b.prep = newPrepPool(b)
 	b.lookAhead = newLookAhead(b)
-	b.keys, b.indexAuthoritative = b.loadOrFetchIndex()
-	b.indexEmpty = b.keys.Len() == 0
-	b.indexKeysAtStart = b.keys.Len()
 	b.knownMiss = newHashSet(0)
-	switch {
-	case b.indexAuthoritative:
-		logging.Infof("cacheprog: web index: %d keys", b.keys.Len())
-	case b.keys.Len() > 0:
-		logging.Infof("cacheprog: web index: refresh failed; using %d cached keys (batch probing enabled)", b.keys.Len())
-	default:
-		logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
+	b.indexMaxAge = cfg.IndexMaxAge
+	if b.indexMaxAge == 0 {
+		b.indexMaxAge = defaultIndexMaxAge
 	}
 	return b, nil
+}
+
+// ensureIndex loads the key index the first time the cache is used. Every
+// path that reads or claims a key calls it first.
+func (b *WebBackend) ensureIndex() {
+	b.indexOnce.Do(func() {
+		keys, authoritative := b.loadOrFetchIndex()
+		b.keysMu.Lock()
+		b.keys = keys
+		b.indexAuthoritative = authoritative
+		b.indexEmpty = keys.Len() == 0
+		b.indexKeysAtStart = keys.Len()
+		b.keysMu.Unlock()
+	})
 }
 
 // KeyPrefix returns what a cache key carries ahead of its action ID. The
@@ -337,6 +360,7 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 	if !ok {
 		return "", nil, time.Time{}, true
 	}
+	b.ensureIndex()
 	if b.keyKnown(h) {
 		r := b.getBatch(actionID, b.key(actionID), h)
 		return r.outputID, r.data, r.t, r.miss
@@ -392,9 +416,10 @@ func (b *WebBackend) ActionIDFromKey(key string) (string, bool) {
 	return id, true
 }
 
-// keyKnown reports whether the hash is in the known-keys set (the startup
-// index plus optimistic Put claims).
+// keyKnown reports whether the hash is in the known-keys set (the index plus
+// optimistic Put claims).
 func (b *WebBackend) keyKnown(h actionHash) bool {
+	b.ensureIndex()
 	b.keysMu.RLock()
 	defer b.keysMu.RUnlock()
 	return b.keys.Contains(h)
@@ -404,6 +429,7 @@ func (b *WebBackend) keyKnown(h actionHash) bool {
 // response) for a key. It drops any stale index claim so Put re-uploads instead of
 // skipping, and marks the key knownMiss so Gets stop re-asking this run.
 func (b *WebBackend) reclaimAbsent(h actionHash) bool {
+	b.ensureIndex()
 	b.keysMu.Lock()
 	removed := b.keys.Contains(h)
 	if removed {

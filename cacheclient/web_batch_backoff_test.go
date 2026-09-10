@@ -79,6 +79,7 @@ func TestWebBackend_EmptyBatchBackoffStopsProbing(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer b.Close()
+	b.ensureIndex()
 	require.False(t, b.indexAuthoritative, "fetch failure => non-authoritative => probing enabled")
 	require.Equal(t, 4, b.emptyBatchBackoffThreshold)
 
@@ -135,6 +136,7 @@ func TestWebBackend_BackoffResetsOnNonEmptyBatch(t *testing.T) {
 	require.NoError(t, err)
 	defer b.Close()
 	// fakeBatchServer 404s on /_index, so cold keys take the batch-probe path this test exercises.
+	b.ensureIndex()
 	require.False(t, b.indexAuthoritative)
 
 	// Interleave: a few cold (empty-batch) keys, then a hot key that resets the

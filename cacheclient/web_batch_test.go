@@ -309,6 +309,7 @@ func TestGetBatch_FallbackToIndividual(t *testing.T) {
 	meta["go-buildcache/v1aabbccdd11223344"] = map[string]string{"outputid": testOutputID("fallback data")}
 
 	// Add to index so getIndividual works.
+	b.ensureIndex()
 	b.keysMu.Lock()
 	b.keys.Add(hashOfKey("go-buildcache/v1aabbccdd11223344"))
 	b.keysMu.Unlock()
@@ -352,6 +353,7 @@ func TestGet_UsesBatchForUnknownKeys(t *testing.T) {
 	require.NoError(t, err)
 
 	// Index fetch 404s, so unknown keys must be batch-probed, not fast-missed.
+	b.ensureIndex()
 	require.False(t, b.indexAuthoritative)
 
 	// Key is NOT in b.keys index (simulating a fresh cache).
@@ -428,6 +430,7 @@ func TestGet_CoalescesConcurrentRequestsIntoOneHTTPRequest(t *testing.T) {
 	require.NoError(t, err)
 
 	// Index 404s, so unknown keys take the batch-probe path this test exercises.
+	b.ensureIndex()
 	require.False(t, b.indexAuthoritative)
 
 	// Fire N parallel Get calls for unknown keys.

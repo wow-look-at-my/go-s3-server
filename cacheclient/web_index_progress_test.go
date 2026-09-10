@@ -86,6 +86,7 @@ func TestLoadOrFetchIndex_SlowButSteadyBodySucceeds(t *testing.T) {
 	require.NoError(t, err)
 	defer b.Close()
 
+	b.ensureIndex()
 	require.True(t, b.indexAuthoritative,
 		"a healthy server that keeps streaming must yield an AUTHORITATIVE index — "+
 			"a non-authoritative set disables index routing and costs the run its remote hits")
@@ -131,6 +132,7 @@ func TestLoadOrFetchIndex_StalledBodyAbandoned(t *testing.T) {
 
 	require.Less(t, elapsed, 5*time.Second,
 		"a stalled body must be abandoned on the stall window, not on the 30s client timeout")
+	b.ensureIndex()
 	require.False(t, b.indexAuthoritative,
 		"an abandoned index fetch must leave the key set non-authoritative so batch probing stays enabled")
 	require.Equal(t, 0, b.keys.Len())
@@ -188,6 +190,7 @@ func TestLoadOrFetchIndex_StalledRefreshOverDiskCopyIsRoutine(t *testing.T) {
 	first, err := NewWebBackend(cfg)
 	require.NoError(t, err)
 	first.Close()
+	first.ensureIndex()
 	require.True(t, first.indexAuthoritative, "the first load must persist a disk copy for the second to refresh")
 
 	defer shrinkIndexBudgets(2*time.Second, 150*time.Millisecond, 10*time.Second)()
@@ -199,6 +202,7 @@ func TestLoadOrFetchIndex_StalledRefreshOverDiskCopyIsRoutine(t *testing.T) {
 	require.NoError(t, err)
 	defer b.Close()
 
+	b.ensureIndex()
 	require.False(t, b.indexAuthoritative)
 	require.Equal(t, 64, b.keys.Len(), "a stalled refresh keeps the disk copy's keys")
 	require.Empty(t, warn, "a stalled refresh over a disk copy is not a warning")
@@ -227,6 +231,7 @@ func TestIndexDirHoldsTheDiskCopy(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer b.Close()
+	b.ensureIndex()
 
 	require.Equal(t, dir, filepath.Dir(b.indexCachePath()))
 	_, err = os.Stat(b.indexCachePath())

@@ -140,9 +140,9 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	if cfg.IndexBlobInterval != nil {
-		indexBlobMinInterval = time.Duration(*cfg.IndexBlobInterval)
+		storage.Index.SetBlobInterval(time.Duration(*cfg.IndexBlobInterval))
 	}
-	log.Printf("limits: max_concurrent_requests=%d max_object_bytes=%d index_blob_interval=%v", cfg.MaxConcurrentRequests, cfg.MaxObjectBytes, indexBlobMinInterval)
+	log.Printf("limits: max_concurrent_requests=%d max_object_bytes=%d index_blob_interval=%v", cfg.MaxConcurrentRequests, cfg.MaxObjectBytes, storage.Index.BlobInterval())
 
 	// Memory: the in-memory caches are already sized from this budget; starting
 	// the controller adds the feedback half, shrinking them when memory gets

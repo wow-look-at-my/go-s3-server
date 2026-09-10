@@ -174,7 +174,7 @@ type Config struct {
 	// a fronting proxy then surfaces as a 502). 0 → default.
 	MaxConcurrentRequests int `json:"max_concurrent_requests"`
 	// IndexBlobInterval is the least time between two serializations of the
-	// /_index blob. Absent means indexBlobMinInterval's default. "0s" serializes
+	// /_index blob. Absent means the 15s default. "0s" serializes
 	// on every GET after a PUT, which the executable spec uses.
 	IndexBlobInterval *Duration `json:"index_blob_interval"`
 	// MaxObjectBytes caps a single PUT body. 0 → default. The body is streamed

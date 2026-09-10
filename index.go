@@ -1,4 +1,4 @@
-package main
+return !idx.dirty.Load() || time.Since(idx.builtAt) < idx.BlobInterval()package main
 
 import (
 	"bytes"
@@ -73,19 +73,23 @@ type Index struct {
 	cachedBlob []byte
 	cachedETag string
 	// builtAt is when cachedBlob was serialized. Blob serves the cached blob
-	// for indexBlobMinInterval after it, dirty or not.
+	// for blobMinInterval after it, dirty or not.
 	builtAt time.Time
+	// blobMinInterval is the least time between two serializations, in
+	// nanoseconds. It is per index, not a package variable, so a test sets
+	// its own without a race against the tests beside it.
+	blobMinInterval atomic.Int64
 }
 
-// indexBlobMinInterval is the least time between two serializations of the
-// index. A serialization sorts every hash under the lock and produces a new
+// defaultIndexBlobInterval is the least time between two serializations of
+// the index unless the config says otherwise. A serialization sorts every hash under the lock and produces a new
 // ETag, so a client downloads the whole blob again. During a CI run PUTs
 // never stop, and without this bound every /_index GET rebuilt and every
 // conditional GET downloaded 40 MB. Inside the interval a GET answers 304
 // and the writers do not wait on the sort. A key stored inside the interval
 // is advertised by the next serialization; until then a client treats it as
 // a miss and stores it again, which the store answers as a duplicate.
-var indexBlobMinInterval = 15 * time.Second
+const defaultIndexBlobInterval = 15 * time.Second
 
 // indexEntry is one indexed object. The key is held as a compactKey so a
 // million-object index costs no per-entry allocation; see compactkey.go.
@@ -130,9 +134,17 @@ func extractActionHash(key string) ([gbciHashSize]byte, bool) {
 // NewIndex builds the index by scanning the filesystem.
 func NewIndex(storage *Storage) *Index {
 	idx := &Index{}
+	idx.blobMinInterval.Store(int64(defaultIndexBlobInterval))
 	idx.rebuild(storage)
 	return idx
 }
+
+// SetBlobInterval sets the least time between two serializations. Zero
+// serializes every PUT on the next read.
+func (idx *Index) SetBlobInterval(d time.Duration) { idx.blobMinInterval.Store(int64(d)) }
+
+// BlobInterval reports the least time between two serializations.
+func (idx *Index) BlobInterval() time.Duration { return time.Duration(idx.blobMinInterval.Load()) }
 
 // Put records a key with the current time and queues its action-ID hash
 // (if the key is well-formed) for inclusion in the next /_index serialization.
@@ -483,14 +495,14 @@ func (idx *Index) blobServableLocked() bool {
 	if idx.cachedBlob == nil {
 		return false
 	}
-	return !idx.dirty.Load() || time.Since(idx.builtAt) < indexBlobMinInterval
+	return !idx.dirty.Load() || time.Since(idx.builtAt) < idx.BlobInterval()
 }
 
 // Blob returns the precomputed GBCI v1 binary index and its strong ETag
 // (hex-encoded SHA-256 of the blob, surrounded by quotes per RFC 7232).
 //
 // Fast path: if the cached blob is servable (current, or younger than
-// indexBlobMinInterval), return it under a read lock. Slow path: merge
+// the blob interval), return it under a read lock. Slow path: merge
 // pending into hashes, serialize header + body + trailer, cache the result,
 // clear dirty. Callers arriving during a serialization wait on the read lock
 // and all receive the blob it produces, so a burst of GETs costs one

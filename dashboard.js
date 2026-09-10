@@ -189,9 +189,7 @@ function drawReads(stats) {
 			.sort((a, b) => b[1] - a[1])
 			.map(([k, v]) => bar(k, v, total, tone(k), `${count(v)}  ${percent(v, total)}`)),
 	);
-	if (!Object.keys(outcomes).length) {
-		fill($("get-outcomes"), [para("no single-object GETs yet")]);
-	}
+	$("single-gets").hidden = !Object.keys(outcomes).length;
 
 	const kinds = series(stats, "s3_batch_keys_total");
 	const requested = kinds.requested || 0;

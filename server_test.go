@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -30,6 +32,19 @@ func TestHealthEndpointOK(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, "ok\n", rec.Body.String())
+}
+
+func TestVersionEndpointAnswersWithoutCredentials(t *testing.T) {
+	s := newHealthTestServer()
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, versionPath, nil))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	var got buildVersion
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, runtime.Version(), got.Go, "the toolchain is known to every build, stamped or not")
 }
 
 func TestHealthEndpointReportsDraining(t *testing.T) {

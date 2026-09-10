@@ -11,7 +11,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -41,10 +40,22 @@ var (
 // module-index blobs, but that only protects clients that have updated; this
 // purge removes the already-stored poison so EVERY client -- updated or not --
 // is repaired at once (a missing index key is simply recomputed locally).
-const currentCacheVersion = 3
+//
+// Version 4 purges an entry that the retired executable-cache path stored as a
+// DIRECTORY holding a file named for the binary. Every entry is one plain file
+// now, so such an entry is unreadable. A missing key is simply rebuilt.
+const currentCacheVersion = 4
 
 const cacheVersionFile = ".cache_version"
 const lockFileName = ".lock"
+
+// sweepMarkerFile records when the last eviction sweep finished, so a restart
+// does not reset the sweep schedule. See eviction.go.
+const sweepMarkerFile = ".last_sweep"
+
+// tempFilePrefix names PutStream's in-progress uploads. Files carrying it are
+// invisible to every walk of the data_dir and are swept at startup.
+const tempFilePrefix = ".tmp-"
 
 // fsyncThresholdBytes: PutStream fsyncs temp files at or above this size
 // before renaming them into place (see the comment at the call site).
@@ -68,11 +79,16 @@ type Storage struct {
 	// not the whole cache. The type and methods live in eviction.go.
 	accessShards []*accessShard
 
+	// metaCache remembers each key's user metadata against the mtime+size it
+	// was read under, so a warm Stat/Open skips the listxattr + per-attribute
+	// getxattr syscalls. Byte-bounded with LRU eviction; see metacache.go.
+	metaCache *lruCache[string, metaEntry]
+
 	// cleanKeys memoizes indexed cacheprog keys whose stored body already
 	// passed the read-path module-index probe, so warm keys skip the per-GET
-	// lz4 decode. Invalidated on overwrite PUT, DELETE, and eviction. See
-	// cleanmemo.go.
-	cleanKeys *cleanKeyMemo
+	// probe. Invalidated on overwrite PUT, DELETE, and eviction. Byte-bounded
+	// with LRU eviction; see cleanmemo.go.
+	cleanKeys *lruCache[cleanKey, struct{}]
 }
 
 type ObjectMeta struct {
@@ -81,16 +97,15 @@ type ObjectMeta struct {
 	Size     int64
 }
 
-type ListResult struct {
-	Objects               []ListObject
-	IsTruncated           bool
-	NextContinuationToken string
-}
-
+// ListObject is one stored object as reported by Walk: metadata only, never a
+// body. LastAccess is the filesystem's access time, which the kernel advances
+// when a body is read (see atime.go); it is the zero time when the platform or
+// the mount does not record one.
 type ListObject struct {
 	Key          string
 	Size         int64
 	LastModified time.Time
+	LastAccess   time.Time
 }
 
 func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
@@ -126,100 +141,12 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 		dataDir:   dataDir,
 		writeOnce: writeOnce,
 		lockFile:  lockFile,
-		cleanKeys: newCleanKeyMemo(maxCleanMemoEntries),
+		cleanKeys: newCleanKeyMemo(cacheBudget(cleanMemoBudgetFraction, defaultCleanMemoBytes)),
+		metaCache: newMetaCache(cacheBudget(metaCacheBudgetFraction, defaultMetaCacheBytes)),
 	}
 
 	s.Index = NewIndex(s)
 	return s, nil
-}
-
-// ensureCacheVersion reads the data_dir's version marker. If missing, it is
-// treated as version 1. If the stored version does not match
-// currentCacheVersion, every entry in the data_dir (except the lock file) is
-// removed and a new version marker is written. This forces the operator to
-// rebuild the cache from trusted inputs whenever we bump the version, e.g.
-// after fixing a vulnerability that could have let an attacker populate the
-// cache.
-func ensureCacheVersion(dataDir string) error {
-	stored, err := readCacheVersion(dataDir)
-	if err != nil {
-		return err
-	}
-	if stored == currentCacheVersion {
-		return nil
-	}
-	log.Printf("cache: stored version %d != current %d; purging data_dir=%s", stored, currentCacheVersion, dataDir)
-	if err := purgeDataDir(dataDir); err != nil {
-		return fmt.Errorf("purge data dir: %w", err)
-	}
-	if err := writeCacheVersion(dataDir, currentCacheVersion); err != nil {
-		return fmt.Errorf("write cache version: %w", err)
-	}
-	log.Printf("cache: purged and marked as version %d", currentCacheVersion)
-	return nil
-}
-
-func readCacheVersion(dataDir string) (int, error) {
-	data, err := os.ReadFile(filepath.Join(dataDir, cacheVersionFile))
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			// No marker: treat as version 1 (any cache predating this feature).
-			return 1, nil
-		}
-		return 0, fmt.Errorf("read cache version: %w", err)
-	}
-	s := strings.TrimSpace(string(data))
-	v, err := strconv.Atoi(s)
-	if err != nil {
-		return 0, fmt.Errorf("cache version file %s is corrupt (%q): %w", cacheVersionFile, s, err)
-	}
-	return v, nil
-}
-
-func writeCacheVersion(dataDir string, v int) error {
-	return os.WriteFile(filepath.Join(dataDir, cacheVersionFile), []byte(strconv.Itoa(v)+"\n"), 0644)
-}
-
-// purgeDataDir removes every entry in dataDir except the lock file. Used when
-// the cache version is incompatible.
-func purgeDataDir(dataDir string) error {
-	entries, err := os.ReadDir(dataDir)
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if e.Name() == lockFileName {
-			continue
-		}
-		p := filepath.Join(dataDir, e.Name())
-		if err := os.RemoveAll(p); err != nil {
-			return fmt.Errorf("remove %s: %w", p, err)
-		}
-	}
-	return nil
-}
-
-// sweepTempFiles removes leftover PutStream temp files (".tmp-*"). Only call
-// while holding the data_dir's exclusive lock and before serving begins, when
-// no temp file can be legitimately in flight.
-func sweepTempFiles(dataDir string) {
-	var removed int
-	filepath.WalkDir(dataDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if strings.HasPrefix(d.Name(), ".tmp-") {
-			if rmErr := os.Remove(path); rmErr == nil {
-				removed++
-			} else {
-				log.Printf("startup: cannot remove orphaned temp file %s: %v", path, rmErr)
-			}
-		}
-		return nil
-	})
-	if removed > 0 {
-		log.Printf("startup: removed %d orphaned .tmp-* file(s) left by interrupted uploads", removed)
-	}
 }
 
 func (s *Storage) Close() error {
@@ -353,7 +280,7 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 		return fmt.Errorf("create dirs: %w", err)
 	}
 
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	tmp, err := os.CreateTemp(dir, tempFilePrefix+"*")
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}
@@ -442,8 +369,10 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 		return fmt.Errorf("finalize sidecars: %w", err)
 	}
 	// The body under this key just changed: the next read must re-probe it
-	// rather than trust a stale known-clean verdict for the previous body.
+	// rather than trust a stale known-clean verdict for the previous body, and
+	// must not be described by the previous body's metadata.
 	s.forgetClean(key)
+	s.forgetMeta(key)
 	if s.Index != nil {
 		s.Index.Put(key, n)
 	}
@@ -518,7 +447,7 @@ func (s *Storage) Get(key string) (_ []byte, _ *ObjectMeta, err error) {
 		Size:     info.Size(),
 	}
 
-	getMetadata(path, meta)
+	s.loadMetadata(key, path, info, meta)
 	s.recordAccess(key)
 
 	return data, meta, nil
@@ -539,6 +468,9 @@ func (s *Storage) SetMeta(key string, kv map[string]string) error {
 		}
 		return err
 	}
+	// An xattr write does not move the file's mtime, so the cached metadata
+	// cannot be invalidated by the stat comparison -- drop it explicitly.
+	s.forgetMeta(key)
 	return setMetadata(path, kv)
 }
 
@@ -560,7 +492,7 @@ func (s *Storage) Stat(key string) (*ObjectMeta, error) {
 		ModTime:  info.ModTime(),
 		Size:     info.Size(),
 	}
-	getMetadata(path, meta)
+	s.loadMetadata(key, path, info, meta)
 	return meta, nil
 }
 
@@ -597,9 +529,43 @@ func (s *Storage) Open(key string) (_ *os.File, _ *ObjectMeta, err error) {
 		ModTime:  info.ModTime(),
 		Size:     info.Size(),
 	}
-	getMetadata(path, meta)
+	s.loadMetadata(key, path, info, meta)
 	s.recordAccess(key)
 	return f, meta, nil
+}
+
+// OpenBody opens an object's body for streaming and reports its size, WITHOUT
+// reading its user metadata. It is Open minus the metadata read, for the batch
+// GET's streaming phase: that phase already published every entry's metadata in
+// the manifest it built during phase 1.
+//
+// It is otherwise Open exactly: same "get" storage op, same last-access record,
+// same size-from-the-open-fd guarantee (so the tar header always matches the
+// bytes about to be copied). Callers that need the metadata still call Open.
+func (s *Storage) OpenBody(key string) (_ *os.File, _ int64, err error) {
+	start := time.Now()
+	defer func() {
+		status := "ok"
+		if err != nil {
+			status = "error"
+		}
+		storageOpsTotal.WithLabelValues("get", status).Inc()
+		storageOpDuration.WithLabelValues("get").Observe(time.Since(start).Seconds())
+	}()
+	f, err := os.Open(s.keyToPath(key))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, 0, ErrNotFound
+		}
+		return nil, 0, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, 0, err
+	}
+	s.recordAccess(key)
+	return f, info.Size(), nil
 }
 
 // openRaw opens an object's body WITHOUT the storage-op metric or the
@@ -650,10 +616,47 @@ func (s *Storage) Delete(key string) (err error) {
 	}
 	s.forgetAccess(key)
 	s.forgetClean(key)
+	s.forgetMeta(key)
 	return nil
 }
 
-func (s *Storage) List(prefix string, maxKeys int, continuationToken string) (_ *ListResult, err error) {
+// isReservedFile reports whether a name in the data_dir is server bookkeeping
+// rather than a stored object. Every walk of the data_dir must skip these:
+// listing one would advertise a phantom key in the index and let eviction
+// delete the server's own state.
+func isReservedFile(name string) bool {
+	return name == lockFileName ||
+		name == cacheVersionFile ||
+		name == sweepMarkerFile ||
+		strings.HasPrefix(name, tempFilePrefix) ||
+		// Metadata sidecars (Windows) are companions of an object, not objects.
+		isSidecarName(name)
+}
+
+// Walk enumerates every stored object with its size, mtime and access time,
+// reading metadata only -- no bodies. It is the ground truth the in-memory
+// Index is rebuilt from and the candidate set the eviction sweeper works over,
+// and it is not on any request path.
+//
+// It hands each object to fn as the directory walk finds it, rather than
+// returning a slice: at a million objects, materializing the listing cost more
+// (a heap-allocated key string apiece, plus the slice) than either caller's
+// own compact representation of the same data, and it was allocated afresh on
+// every index rebuild and every eviction sweep.
+//
+// It used to be List(prefix, maxKeys, continuationToken): a paginated,
+// key-sorted, S3-shaped listing serving GET /{bucket}/?list-type=2. That
+// endpoint is gone -- clients populate their index from the precomputed
+// /_index blob in one request -- and what the two remaining callers want is
+// "everything, unordered". What was left was a walk that sorted 100k+ keys
+// nobody read in order, plus pagination nobody called, plus a maxKeys cap both
+// callers faked with an arbitrary huge number (1<<30 and 1000000). The cap was
+// not free: a cache with more than a million objects would rebuild its index
+// from a TRUNCATED snapshot and silently stop advertising the remainder.
+//
+// Cost is one directory walk plus one stat per file, which is inherent to
+// enumerating a directory tree, and now nothing on top of it.
+func (s *Storage) Walk(fn func(ListObject)) (err error) {
 	metricsStart := time.Now()
 	defer func() {
 		status := "ok"
@@ -663,28 +666,20 @@ func (s *Storage) List(prefix string, maxKeys int, continuationToken string) (_ 
 		storageOpsTotal.WithLabelValues("list", status).Inc()
 		storageOpDuration.WithLabelValues("list").Observe(time.Since(metricsStart).Seconds())
 	}()
-	var allKeys []ListObject
 
-	err = filepath.WalkDir(s.dataDir, func(path string, d fs.DirEntry, err error) error {
+	return filepath.WalkDir(s.dataDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // skip errors
 		}
 		if d.IsDir() {
 			return nil
 		}
-		name := d.Name()
-		if name == lockFileName || name == cacheVersionFile || strings.HasPrefix(name, ".tmp-") {
-			return nil
-		}
-		// Metadata sidecars (Windows) are companions of an object, not objects:
-		// listing them would advertise phantom keys in the index and let
-		// eviction delete metadata out from under live bodies.
-		if isSidecarName(name) {
+		if isReservedFile(d.Name()) {
 			return nil
 		}
 
 		key := s.pathToKey(path)
-		if key == "" || !strings.HasPrefix(key, prefix) {
+		if key == "" {
 			return nil
 		}
 
@@ -693,44 +688,12 @@ func (s *Storage) List(prefix string, maxKeys int, continuationToken string) (_ 
 			return nil
 		}
 
-		allKeys = append(allKeys, ListObject{
+		fn(ListObject{
 			Key:          key,
 			Size:         info.Size(),
 			LastModified: info.ModTime(),
+			LastAccess:   fileAccessTime(info),
 		})
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-
-	sort.Slice(allKeys, func(i, j int) bool {
-		return allKeys[i].Key < allKeys[j].Key
-	})
-
-	start := 0
-	if continuationToken != "" {
-		for i, obj := range allKeys {
-			if obj.Key > continuationToken {
-				start = i
-				break
-			}
-			if i == len(allKeys)-1 {
-				start = len(allKeys)
-			}
-		}
-	}
-
-	remaining := allKeys[start:]
-	result := &ListResult{}
-
-	if len(remaining) > maxKeys {
-		result.Objects = remaining[:maxKeys]
-		result.IsTruncated = true
-		result.NextContinuationToken = remaining[maxKeys-1].Key
-	} else {
-		result.Objects = remaining
-	}
-
-	return result, nil
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // parsedIndex is the test-side decoded form of a GBCI v1 blob.
@@ -126,12 +127,12 @@ func TestIndexAfterPuts(t *testing.T) {
 	}
 
 	// Every PUT hash must appear exactly once.
-	seen := make(map[[32]byte]bool, len(hashes))
+	seen := set.New[[32]byte](len(hashes))
 	for _, h := range p.Hashes {
-		seen[h] = true
+		seen.Add(h)
 	}
 	for _, h := range hashes {
-		require.True(t, seen[h], "missing hash %x", h)
+		require.True(t, seen.Contains(h), "missing hash %x", h)
 	}
 }
 
@@ -321,6 +322,7 @@ func TestIndexBlobRoundtrip(t *testing.T) {
 	dir := t.TempDir()
 	s, err := NewStorage(dir, WriteOnceConfig{Action: "allow"})
 	require.NoError(t, err)
+	s.Index.SetBlobInterval(0) // the PUT below must show in the very next read
 	defer s.Close()
 
 	for i := 0; i < 5; i++ {
@@ -383,6 +385,18 @@ func TestIndexHTTPMatchesInProcess(t *testing.T) {
 // snapshot instead. The interleaving is reproduced deterministically: the
 // "walk" snapshot is taken first, the concurrent Put lands after it, then the
 // snapshot is applied.
+
+// buildFrom is what Storage.Walk feeds applyRebuild in production, assembled
+// here from a fixed object list so a rebuild can be tested without a data_dir.
+func buildFrom(objects []ListObject) *indexBuild {
+	b := newIndexBuild(len(objects))
+	for _, o := range objects {
+		b.add(o)
+	}
+	b.finish()
+	return b
+}
+
 func TestRebuildPreservesConcurrentPuts(t *testing.T) {
 	idx := &Index{}
 
@@ -396,7 +410,7 @@ func TestRebuildPreservesConcurrentPuts(t *testing.T) {
 	// rebuild takes the lock.
 	idx.Put(keyB, 1)
 
-	idx.applyRebuild(snapshot)
+	idx.applyRebuild(buildFrom(snapshot))
 
 	require.True(t, idx.Contains(hA), "the walked key must be indexed")
 	require.True(t, idx.Contains(hB), "a PUT concurrent with the walk must survive the rebuild")
@@ -406,14 +420,14 @@ func TestRebuildPreservesConcurrentPuts(t *testing.T) {
 	require.Contains(t, string(blob), string(hB[:]))
 
 	// The mtime entry survives too (prefetch relies on it).
-	keys := idx.NearbyKeys(0, 1<<62, 10, nil)
+	keys := idx.NearbyKeys(0, 1<<62, 10, nil, nil)
 	require.ElementsMatch(t, []string{keyA, keyB}, keys)
 
 	// A key present in BOTH the snapshot and pending (a PUT the walk also saw)
 	// is deduped, not double-counted.
 	idx2 := &Index{}
 	idx2.Put(keyA, 1)
-	idx2.applyRebuild(snapshot)
+	idx2.applyRebuild(buildFrom(snapshot))
 	blob2, _ := idx2.Blob()
 	p := parseGBCI(t, blob2)
 	require.Equal(t, uint64(1), p.Count, "a key in both the snapshot and pending must dedupe")
@@ -439,7 +453,7 @@ func TestRebuildConcurrentPutStress(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 20; i++ {
-			idx.applyRebuild(nil) // empty disk snapshot: worst case for clobbering
+			idx.applyRebuild(buildFrom(nil)) // empty disk snapshot: worst case for clobbering
 		}
 	}()
 	wg.Wait()
@@ -449,4 +463,50 @@ func TestRebuildConcurrentPutStress(t *testing.T) {
 		binary.LittleEndian.PutUint64(h[:], uint64(i+1))
 		require.True(t, idx.Contains(h), "put %d must survive concurrent rebuilds", i)
 	}
+}
+
+// TestIndexBlobHoldsForInterval pins the bound on serializations: inside the
+// interval a GET after a PUT serves the previous blob and its ETag, so a
+// conditional GET answers 304 and no client downloads the whole index again.
+// Once the interval passes the next GET serializes the PUT.
+func TestIndexBlobHoldsForInterval(t *testing.T) {
+	ts, storage := testSetupWithStorage(t)
+	storage.Index.SetBlobInterval(time.Hour)
+
+	var h1, h2 [32]byte
+	h1[0], h2[0] = 1, 2
+	putKey(t, ts, keyForHash(h1), []byte("one"))
+	status, body, etag1 := getIndex(t, ts, "")
+	require.Equal(t, 200, status)
+	require.Equal(t, uint64(1), parseGBCI(t, body).Count)
+
+	putKey(t, ts, keyForHash(h2), []byte("two"))
+	status, body, etag2 := getIndex(t, ts, "")
+	require.Equal(t, 200, status)
+	require.Equal(t, etag1, etag2, "inside the interval the blob is the one already built")
+	require.Equal(t, uint64(1), parseGBCI(t, body).Count)
+	status, _, _ = getIndex(t, ts, etag1)
+	require.Equal(t, 304, status, "a conditional GET inside the interval answers not modified")
+
+	storage.Index.SetBlobInterval(0)
+	status, body, etag3 := getIndex(t, ts, "")
+	require.Equal(t, 200, status)
+	require.NotEqual(t, etag1, etag3, "past the interval the PUT is serialized")
+	require.Equal(t, uint64(2), parseGBCI(t, body).Count)
+}
+
+// TestMergeSortedHashes pins the merge a serialization uses in place of a
+// re-sort: sorted, deduplicated across both inputs, and nothing lost.
+func TestMergeSortedHashes(t *testing.T) {
+	mk := func(bs ...byte) [][32]byte {
+		out := make([][32]byte, len(bs))
+		for i, b := range bs {
+			out[i][0] = b
+		}
+		return out
+	}
+	got := mergeSortedHashes(mk(1, 3, 5, 7), mk(2, 3, 6, 9, 10))
+	require.Equal(t, mk(1, 2, 3, 5, 6, 7, 9, 10), got)
+	require.Equal(t, mk(1, 2), mergeSortedHashes(nil, mk(1, 2)))
+	require.Equal(t, mk(4), mergeSortedHashes(mk(4), nil))
 }

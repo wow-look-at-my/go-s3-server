@@ -16,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 func putObject(t *testing.T, ts *http.Client, url, key string, data []byte, meta map[string]string) {
@@ -31,11 +32,20 @@ func putObject(t *testing.T, ts *http.Client, url, key string, data []byte, meta
 }
 
 func doBatchGet(client *http.Client, url string, body []byte) (*http.Response, error) {
+	return doBatchGetAs(client, url, body, "")
+}
+
+// doBatchGetAs issues a batch GET as one named build. An empty build sends no
+// header, which is the older client the scope has to keep working for.
+func doBatchGetAs(client *http.Client, url string, body []byte, build string) (*http.Response, error) {
 	req, err := http.NewRequest("GET", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if build != "" {
+		req.Header.Set(headerBuild, build)
+	}
 	return client.Do(req)
 }
 
@@ -103,6 +113,10 @@ func TestBatchGet_Basic(t *testing.T) {
 // reconstructed from the body and is returned in the manifest with that outputid
 // (not evicted, not skipped), while well-formed entries are unaffected.
 func TestBatchGet_SelfHealRepairsMissingOutputID(t *testing.T) {
+	if !inOwnProcess(t) {
+		return
+	}
+
 	ts := testSetup(t)
 	client := ts.Client()
 
@@ -231,6 +245,99 @@ func TestBatchGet_PrefetchSuppression(t *testing.T) {
 	}
 }
 
+// Suppression ends with the build that earned it. It was scoped to the user
+// for five minutes, and one user runs several builds in five minutes: the
+// first build was handed the window and every build after it was handed an
+// empty one, so a second build in a row fetched every object on its critical
+// path and finished slower than a build with no cache at all.
+func TestBatchGet_PrefetchSuppressionIsPerBuild(t *testing.T) {
+	ts := testSetup(t)
+	client := ts.Client()
+
+	putObject(t, client, ts.URL, "cache/v1b1", []byte("data1"), map[string]string{"Outputid": "o1"})
+	putObject(t, client, ts.URL, "cache/v1b2", []byte("data2"), map[string]string{"Outputid": "o2"})
+	putObject(t, client, ts.URL, "cache/v1b3", []byte("data3"), map[string]string{"Outputid": "o3"})
+
+	batchURL := ts.URL + "/testbucket/_batch/get"
+	body, _ := json.Marshal(batchGetRequest{Keys: []string{"cache/v1b1"}, Prefetch: true})
+
+	prefetchedBy := func(build string) map[string]bool {
+		resp, err := doBatchGetAs(client, batchURL, body, build)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Equal(t, 200, resp.StatusCode)
+		manifest, _ := parseBatchResponse(t, resp.Body)
+		got := map[string]bool{}
+		for _, e := range manifest.Entries {
+			if e.Prefetch {
+				got[e.Key] = true
+			}
+		}
+		return got
+	}
+
+	first := prefetchedBy("build-one")
+	require.NotEmpty(t, first, "the first build must be given a window")
+
+	// Same user, same keys, same instant: only the build differs.
+	second := prefetchedBy("build-two")
+	assert.Equal(t, first, second, "a second build must be given the same window, not an empty one")
+
+	// Within one build, suppression still holds, or a build receives the same
+	// pool on every look-ahead request for its whole run.
+	assert.Empty(t, prefetchedBy("build-one"), "a repeat request from one build stays suppressed")
+}
+
+// Suppression must not stop prefetch. Selection skips already-sent keys as it
+// walks the window, so a client keeps being handed NEW neighbours. Filtering
+// the result afterwards instead re-proposed the same nearest pool on every
+// request: a real deployment showed prefetched=0 and suppressed=200 on every
+// batch after a client's first one, for the rest of its build.
+func TestBatchGet_PrefetchKeepsAdvancingPastSuppressedKeys(t *testing.T) {
+	ts := testSetup(t)
+	client := ts.Client()
+
+	// The window has to hold enough unsent keys for every round to have
+	// something to advance to. Each round can carry maxPrefetchEntries.
+	const rounds = 3
+	const total = rounds*maxPrefetchEntries + 10
+	for i := range total {
+		key := fmt.Sprintf("cache/v1adv%05d", i)
+		putObject(t, client, ts.URL, key, []byte(key), map[string]string{"Outputid": fmt.Sprintf("o%d", i)})
+	}
+
+	batchURL := ts.URL + "/testbucket/_batch/get"
+	seen := set.New[string]()
+	fresh := make([]int, 0, rounds)
+
+	for round := range rounds {
+		body, err := json.Marshal(batchGetRequest{
+			Keys:     []string{fmt.Sprintf("cache/v1adv%05d", round)},
+			Prefetch: true,
+		})
+		require.NoError(t, err)
+		resp, err := doBatchGet(client, batchURL, body)
+		require.NoError(t, err)
+		manifest, _ := parseBatchResponse(t, resp.Body)
+		resp.Body.Close()
+
+		n := 0
+		for _, e := range manifest.Entries {
+			if !e.Prefetch {
+				continue
+			}
+			assert.False(t, seen.Contains(e.Key), "round %d re-sent %q, which suppression should have skipped", round, e.Key)
+			seen.Add(e.Key)
+			n++
+		}
+		fresh = append(fresh, n)
+	}
+
+	assert.Positive(t, fresh[0], "the first request must prefetch")
+	assert.Positive(t, fresh[1], "the second request must still prefetch: selection has to walk past the suppressed keys, not stop at them")
+	assert.Positive(t, fresh[2], "prefetch must keep advancing while the window holds unsent keys")
+}
+
 func TestBatchGet_Prefetch(t *testing.T) {
 	ts := testSetup(t)
 	client := ts.Client()
@@ -308,6 +415,10 @@ func TestBatchGet_AcceptsPOST(t *testing.T) {
 // neither counted as ops nor recorded as access, so they no longer double
 // every key's metrics or stamp last-access onto keys that are never served.
 func TestBatchGet_SingleOpenPerServedKey(t *testing.T) {
+	if !inOwnProcess(t) {
+		return
+	}
+
 	ts, storage := testSetupWithStorage(t)
 	client := ts.Client()
 	storage.EnableAccessTracking()

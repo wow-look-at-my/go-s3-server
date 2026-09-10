@@ -146,7 +146,7 @@ func BenchmarkPutObjectPeek(b *testing.B) {
 		req.Header = hdr
 		req.ContentLength = int64(len(payload))
 		rec := httptest.NewRecorder()
-		handlePutObject(rec, req, storage, key, defaultMaxObjectBytes)
+		handlePutObject(rec, req, storage, key, defaultMaxObjectBytes, nil)
 		require.Equal(b, 200, rec.Code)
 
 	}

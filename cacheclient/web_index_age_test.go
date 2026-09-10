@@ -48,8 +48,8 @@ func TestIndexLoadsOnFirstUse(t *testing.T) {
 }
 
 // TestYoungDiskCopyIsServedWithoutARequest pins the max age. A second process
-// over a copy younger than it asks the server for nothing. The copy is not
-// authoritative: a key the copy predates costs a probe, never a rebuild.
+// over a copy younger than it asks the server for nothing, and the copy is
+// authoritative: an absent key misses with no probe.
 func TestYoungDiskCopyIsServedWithoutARequest(t *testing.T) {
 	dir := t.TempDir()
 	f := newIndexFixture(t, "bk", sevenKeys())
@@ -65,7 +65,7 @@ func TestYoungDiskCopyIsServedWithoutARequest(t *testing.T) {
 	require.NoError(t, err)
 	b.ensureIndex()
 	require.Equal(t, int32(1), f.hitsAny.Load(), "a young copy costs no request")
-	require.False(t, b.indexAuthoritative, "a key the copy predates must be probed, not fast-missed")
+	require.True(t, b.indexAuthoritative, "a young copy answers absences without a probe")
 	require.Equal(t, 7, b.keys.Len())
 }
 

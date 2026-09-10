@@ -319,10 +319,10 @@ func TestIndexMethodNotAllowed(t *testing.T) {
 
 // Direct unit test for the in-memory Index.Blob path, bypassing HTTP.
 func TestIndexBlobRoundtrip(t *testing.T) {
-	holdIndexBlob(t, 0) // the PUT below must show in the very next read
 	dir := t.TempDir()
 	s, err := NewStorage(dir, WriteOnceConfig{Action: "allow"})
 	require.NoError(t, err)
+	s.Index.SetBlobInterval(0) // the PUT below must show in the very next read
 	defer s.Close()
 
 	for i := 0; i < 5; i++ {
@@ -465,23 +465,13 @@ func TestRebuildConcurrentPutStress(t *testing.T) {
 	}
 }
 
-// holdIndexBlob sets the least time between two index serializations for the
-// test and restores it after. Most tests want 0, so a GET after a PUT sees the
-// PUT.
-func holdIndexBlob(t *testing.T, d time.Duration) {
-	t.Helper()
-	old := indexBlobMinInterval
-	indexBlobMinInterval = d
-	t.Cleanup(func() { indexBlobMinInterval = old })
-}
-
 // TestIndexBlobHoldsForInterval pins the bound on serializations: inside the
 // interval a GET after a PUT serves the previous blob and its ETag, so a
 // conditional GET answers 304 and no client downloads the whole index again.
 // Once the interval passes the next GET serializes the PUT.
 func TestIndexBlobHoldsForInterval(t *testing.T) {
-	ts := testSetup(t)
-	holdIndexBlob(t, time.Hour)
+	ts, storage := testSetupWithStorage(t)
+	storage.Index.SetBlobInterval(time.Hour)
 
 	var h1, h2 [32]byte
 	h1[0], h2[0] = 1, 2
@@ -498,7 +488,7 @@ func TestIndexBlobHoldsForInterval(t *testing.T) {
 	status, _, _ = getIndex(t, ts, etag1)
 	require.Equal(t, 304, status, "a conditional GET inside the interval answers not modified")
 
-	holdIndexBlob(t, 0)
+	storage.Index.SetBlobInterval(0)
 	status, body, etag3 := getIndex(t, ts, "")
 	require.Equal(t, 200, status)
 	require.NotEqual(t, etag1, etag3, "past the interval the PUT is serialized")

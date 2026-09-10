@@ -98,12 +98,13 @@ func (b *WebBackend) indexCachePath() string {
 // are batch-probed instead of fast-missed (see WebBackend.Get).
 //
 // A disk copy younger than the backend's index max age is served with no
-// request at all, as a NON-authoritative set. A test suite starts thousands
-// of go commands a minute, and the blob is tens of megabytes that the server
+// request at all, and it is AUTHORITATIVE. A test suite starts thousands of
+// go commands a minute, and the blob is tens of megabytes that the server
 // rebuilds as keys arrive, so a copy validated within the last minute is what
-// a revalidation would download again. It is not authoritative, because a
-// process that started a moment ago can have uploaded keys the copy predates.
-// Those keys cost a probe, never a rebuild.
+// a revalidation would download again. A key another machine uploaded inside
+// that minute misses here and is rebuilt. A probe for it would cost a request
+// per cold key, and a build of new code has thousands the server holds for
+// nobody.
 //
 // Each outcome logs once here. The consumer's stderr carries only the Warnf
 // lines unless it asks for the routine ones.
@@ -111,8 +112,8 @@ func (b *WebBackend) loadOrFetchIndex() (*hashSet, bool) {
 	path := b.indexCachePath()
 	diskBlob, diskKeys, diskETag, diskAge := b.readDiskIndex(path)
 	if diskBlob != nil && b.indexMaxAge > 0 && diskAge < b.indexMaxAge {
-		logging.Infof("cacheprog: web index: %d keys from a copy %v old (absences are probed)", diskKeys.Len(), diskAge.Round(time.Second))
-		return diskKeys, false
+		logging.Infof("cacheprog: web index: %d keys from a copy %v old", diskKeys.Len(), diskAge.Round(time.Second))
+		return diskKeys, true
 	}
 
 	// The absolute ceiling covers the whole load; each fetch also enforces the header and stall budgets above.

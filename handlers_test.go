@@ -18,7 +18,6 @@ import (
 
 func testSetup(t *testing.T) *httptest.Server {
 	t.Helper()
-	holdIndexBlob(t, 0)
 	dir := t.TempDir()
 
 	cfg := &Config{
@@ -31,6 +30,7 @@ func testSetup(t *testing.T) *httptest.Server {
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
 	require.Nil(t, err)
+	storage.Index.SetBlobInterval(0) // a GET after a PUT sees the PUT
 
 	t.Cleanup(func() { storage.Close() })
 

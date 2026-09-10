@@ -1,0 +1,188 @@
+/* Page layout only. Every colour, font and space is a Scratch Proto token from
+   scratch-ui.css, so this file never names a colour and the page re-themes
+   with the design language. The components (badge, LED, progress, toggle) come
+   from the same bundle. There is no light theme: the substrate is dark, and a
+   pale variant washes out every bar on the page. */
+
+* { box-sizing: border-box; }
+
+body {
+	margin: 0;
+	background: var(--bg-deep);
+	background-image: radial-gradient(var(--grid-dot) 1px, transparent 1px);
+	background-size: var(--grid-size) var(--grid-size);
+	color: var(--text);
+	font-family: var(--font-body);
+	font-size: var(--fs-body);
+	line-height: 1.45;
+}
+
+/* Set once here instead of on every descendant. */
+table { color: inherit; font: inherit; }
+
+a { color: var(--accent); }
+
+h1 {
+	font-family: var(--font-display);
+	font-size: var(--fs-lg);
+	margin: 0;
+	letter-spacing: .06em;
+	color: var(--text-bright);
+}
+h2 {
+	font-family: var(--font-mono);
+	font-size: var(--fs-tiny);
+	margin: 0 0 var(--sp-3);
+	letter-spacing: .16em;
+	color: var(--accent);
+}
+h3 {
+	font-family: var(--font-mono);
+	font-size: var(--fs-micro);
+	margin: 0 0 var(--sp-3);
+	letter-spacing: .1em;
+	text-transform: uppercase;
+	color: var(--text-muted);
+}
+
+code, .n, .value, td.n { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+.muted { color: var(--text-muted); }
+.note { font-size: var(--fs-tiny); margin: calc(var(--sp-2) * -1) 0 var(--sp-3); }
+
+header {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--sp-3);
+	align-items: center;
+	justify-content: space-between;
+	padding: var(--sp-3) var(--sp-5);
+	background: var(--bg);
+	border-bottom: 1px solid var(--border);
+	position: sticky;
+	top: 0;
+	z-index: 1;
+}
+
+.head-right { display: flex; align-items: center; gap: var(--sp-4); font-size: var(--fs-small); }
+
+/* One screen. The tiles take the top row; four columns hold the panels, with
+   reads over memory in the first. Narrower screens fold to two columns, then
+   one, and only then does the page scroll. */
+main {
+	padding: var(--sp-4) var(--sp-5);
+	display: grid;
+	gap: var(--sp-3);
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	grid-template-areas:
+		"tiles tiles tiles tiles"
+		"reads traffic tripwires config"
+		"memory traffic tripwires config";
+	align-items: start;
+}
+#tiles { grid-area: tiles; }
+.reads { grid-area: reads; }
+.traffic { grid-area: traffic; }
+.tripwires { grid-area: tripwires; }
+.memory { grid-area: memory; }
+.config { grid-area: config; }
+@media (max-width: 1100px) {
+	main {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		grid-template-areas:
+			"tiles tiles"
+			"reads traffic"
+			"tripwires memory"
+			"config config";
+	}
+}
+@media (max-width: 720px) {
+	main {
+		grid-template-columns: minmax(0, 1fr);
+		grid-template-areas: "tiles" "reads" "traffic" "tripwires" "memory" "config";
+	}
+}
+
+/* The one surface treatment. Corner registration marks are the Proto idiom:
+   an outer border plus an amber tick at the top-left. */
+.panel, .tile {
+	background: var(--bg-surface);
+	border: 1px solid var(--border);
+	position: relative;
+}
+.panel::before, .tile::before {
+	content: "";
+	position: absolute;
+	top: -1px;
+	left: -1px;
+	width: 10px;
+	height: 10px;
+	border-top: 1px solid var(--accent);
+	border-left: 1px solid var(--accent);
+}
+
+.panel { padding: var(--sp-4); }
+
+.row { display: grid; gap: var(--sp-3); grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+
+.tile { padding: var(--sp-3) var(--sp-4); }
+.tile .label {
+	color: var(--text-muted);
+	font-family: var(--font-mono);
+	font-size: var(--fs-micro);
+	text-transform: uppercase;
+	letter-spacing: .12em;
+}
+.tile .value {
+	font-family: var(--font-display);
+	font-size: var(--fs-h2);
+	line-height: 1.1;
+	margin-top: var(--sp-2);
+	color: var(--text-bright);
+}
+.tile .sub { color: var(--text-muted); font-size: var(--fs-tiny); margin-top: var(--sp-1); }
+.tile.warn .value { color: var(--accent); }
+.tile.warn::before { border-color: var(--accent); }
+.tile.bad .value { color: var(--danger); }
+.tile.bad::before { border-color: var(--danger); }
+
+.stack { display: grid; gap: var(--sp-4); }
+
+/* A labelled row over a <scratch-progress>. One rule for every bar here. */
+.bars { display: grid; gap: var(--sp-2); }
+.bar { display: grid; grid-template-columns: 1fr auto; gap: var(--sp-1) var(--sp-3); align-items: baseline; }
+.bar .name { font-size: var(--fs-small); color: var(--text); }
+.bar .n { font-size: var(--fs-small); color: var(--text-muted); }
+.bar scratch-progress { grid-column: 1 / -1; display: block; }
+
+table { border-collapse: collapse; width: 100%; }
+td {
+	padding: var(--sp-1) var(--sp-2);
+	border-bottom: 1px solid var(--border-light);
+	vertical-align: top;
+	font-size: var(--fs-small);
+	/* A path or a URL has no break opportunity, and one must not widen its column past the grid track. */
+	overflow-wrap: anywhere;
+}
+tr:last-child td { border-bottom: 0; }
+td:first-child { color: var(--text-muted); width: 46%; }
+/* A tripwire's name is the long part; its count is one digit wide. */
+.tripwires td:first-child { width: 78%; }
+td.n { color: var(--text-bright); }
+/* A tripwire that is not zero is the one thing here worth an alarm. */
+td.alert { color: var(--danger); }
+
+#rate-chart {
+	width: 100%;
+	height: 90px;
+	border: 1px solid var(--border);
+	background: var(--bg-elevated);
+}
+#rate-chart path { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+#rate-label { margin: var(--sp-2) 0 0; font-family: var(--font-mono); font-size: var(--fs-tiny); }
+
+footer {
+	padding: 0 var(--sp-5) var(--sp-3);
+	text-align: center;
+	font-size: var(--fs-tiny);
+}

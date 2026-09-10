@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -25,6 +26,15 @@ const retryAfterSeconds = 2
 // itself does not depend on the probe being watched.
 const healthPath = "/_health"
 
+// The same contract at the paths docker-updater discovers by itself, with no
+// label to configure -- RFC 8615 reserves /.well-known/ for exactly that. Only
+// the status code is read, so health is an alias of /_health rather than a
+// second implementation of "is it up" that could disagree with the first.
+const (
+	wellKnownHealthPath    = "/.well-known/docker-updater/health"
+	wellKnownPreUpdatePath = "/.well-known/docker-updater/pre-update"
+)
+
 type Server struct {
 	config          *Config
 	storage         *Storage
@@ -34,6 +44,16 @@ type Server struct {
 	// than queued until memory is exhausted (the OOM a fronting proxy reports as
 	// a 502). Buffered to MaxConcurrentRequests.
 	sem chan struct{}
+	// mem scales the in-memory caches to fit the process's memory budget. It is
+	// deliberately NOT consulted on the request path: memory pressure changes
+	// how much the server remembers, never whether it answers.
+	mem *memController
+	// verboseLog prints one line per request. In normal mode the per-second
+	// aggregator below is the access log instead.
+	verboseLog bool
+	// logAgg counts objects into per-second lines. It is nil in verbose mode,
+	// where every request already prints itself.
+	logAgg *logAggregator
 	// shuttingDown is set by BeginShutdown when a termination signal is received.
 	// While set, the health endpoint reports 503 so an orchestrator or reverse
 	// proxy stops routing new requests here as http.Server.Shutdown drains the
@@ -51,12 +71,30 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 	if cfg.MaxObjectBytes <= 0 {
 		cfg.MaxObjectBytes = defaultMaxObjectBytes
 	}
-	return &Server{
+	s := &Server{
 		config:          cfg,
 		storage:         storage,
 		prefetchTracker: newPrefetchTracker(),
 		sem:             make(chan struct{}, cfg.MaxConcurrentRequests),
+		mem:             newMemController(memoryBudget),
+		verboseLog:      cfg.LogMode == logModeVerbose,
 	}
+	if !s.verboseLog {
+		s.logAgg = newLogAggregator()
+	}
+	// Everything registered here is rebuildable from disk, so the controller's
+	// only power is to make the server remember less. (Storage is nil in the
+	// health-endpoint tests, which construct a server with no backing store.)
+	if storage != nil {
+		if storage.metaCache != nil {
+			s.mem.Register(metaCacheKind, storage.metaCache.Budget(), storage.metaCache)
+		}
+		if storage.cleanKeys != nil {
+			s.mem.Register(cleanMemoKind, storage.cleanKeys.Budget(), storage.cleanKeys)
+		}
+	}
+	s.mem.Register(prefetchTrackerKind, s.prefetchTracker.sent.Budget(), s.prefetchTracker.sent)
+	return s
 }
 
 // BeginShutdown marks the server as draining, so the health endpoint starts
@@ -75,6 +113,20 @@ type auditInfo struct {
 	UserAgent string
 	Timestamp time.Time
 	Label     string // decoded object description (type, package, go version, target)
+	// Detail is what the handler wants said about this request, appended to
+	// the request's own verbose line. A handler that logs its own summary line
+	// prints the same request twice under two spellings, which is what made
+	// the verbose log unreadable.
+	Detail string
+}
+
+// note attaches handler detail to the request's log line. It is safe on a nil
+// audit, which is what a directly-invoked handler in a test has.
+func (a *auditInfo) note(format string, v ...any) {
+	if a == nil {
+		return
+	}
+	a.Detail = fmt.Sprintf(format, v...)
 }
 
 type auditKey struct{}
@@ -117,7 +169,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// slot. While draining it returns 503 so a health-checking proxy/LB in front
 	// (if any) stops routing here; in-flight requests finish either way because
 	// Shutdown closes the listener.
-	if r.URL.Path == healthPath {
+	if r.URL.Path == healthPath || r.URL.Path == wellKnownHealthPath {
 		if s.shuttingDown.Load() {
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
 			http.Error(w, "draining", http.StatusServiceUnavailable)
@@ -125,6 +177,28 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("ok\n"))
+		return
+	}
+
+	// What build is serving, answered before the auth gate for the same
+	// reasons as the probe. It never drains: a version is true either way.
+	if r.URL.Path == versionPath {
+		handleVersion(w)
+		return
+	}
+
+	// "May I be replaced right now?" -- answered here for the same reasons as
+	// the probe above, and 200 unless already draining. A cache miss costs a
+	// rebuild, never data: nothing this server holds is unrecoverable, and an
+	// upload interrupted mid-flight is retried by the client. Holding updates
+	// back for in-flight requests would be pure downside, so it does not.
+	if r.URL.Path == wellKnownPreUpdatePath {
+		if s.shuttingDown.Load() {
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
+			http.Error(w, "draining", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 
@@ -139,13 +213,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	username := anonymousUser
 	defer func() {
 		duration := time.Since(start)
-		label := ""
-		if a := auditFromContext(r.Context()); a != nil && a.Label != "" {
-			label = " [" + a.Label + "]"
+		// Verbose prints this request, once, with whatever the handler had to
+		// add. Normal prints nothing here: the second-by-second lines from the
+		// aggregator are the access log in that mode.
+		if s.verboseLog {
+			label, detail := "", ""
+			if a := auditFromContext(r.Context()); a != nil {
+				if a.Label != "" {
+					label = " [" + a.Label + "]"
+				}
+				if a.Detail != "" {
+					detail = " " + a.Detail
+				}
+			}
+			log.Printf("req method=%s path=%s%s client_ip=%s user=%s user_agent=%q status=%d bytes=%d duration_ms=%d%s",
+				r.Method, r.URL.Path, label, ip, username, ua,
+				rec.statusCode, rec.bytesWritten, duration.Milliseconds(), detail)
 		}
-		log.Printf("req method=%s path=%s%s client_ip=%s user=%s user_agent=%q status=%d bytes=%d duration_ms=%d",
-			r.Method, r.URL.Path, label, ip, username, ua,
-			rec.statusCode, rec.bytesWritten, duration.Milliseconds())
 		httpRequestsTotal.WithLabelValues(r.Method, route, statusStr(rec.statusCode)).Inc()
 		httpRequestDuration.WithLabelValues(r.Method, route).Observe(duration.Seconds())
 		httpResponseSize.WithLabelValues(r.Method, route).Observe(float64(rec.bytesWritten))
@@ -212,19 +296,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// lookup (GET-with-a-body is proxy-hostile); GET stays accepted for
 		// existing clients.
 		route = "BatchGet"
-		handleBatchGet(rec, r, s.storage, s.prefetchTracker)
+		handleBatchGet(rec, r, s.storage, s.prefetchTracker, s.logAgg)
 	case r.Method == "GET" && key != "":
 		route = "GetObject"
-		handleGetObject(rec, r, s.storage, key)
+		handleGetObject(rec, r, s.storage, key, s.logAgg)
 	case r.Method == "HEAD" && key != "":
 		route = "HeadObject"
 		handleHeadObject(rec, r, s.storage, key)
 	case r.Method == "PUT" && key == "_batch/put":
 		route = "BatchPut"
-		handleBatchPut(rec, r, s.storage, s.config.MaxObjectBytes)
+		handleBatchPut(rec, r, s.storage, s.config.MaxObjectBytes, s.logAgg)
 	case r.Method == "PUT" && key != "":
 		route = "PutObject"
-		handlePutObject(rec, r, s.storage, key, s.config.MaxObjectBytes)
+		handlePutObject(rec, r, s.storage, key, s.config.MaxObjectBytes, s.logAgg)
 	case r.Method == "DELETE" && key != "":
 		route = "DeleteObject"
 		handleDeleteObject(rec, r, s.storage, key)

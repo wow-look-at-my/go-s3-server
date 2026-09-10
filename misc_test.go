@@ -100,6 +100,10 @@ func (c *countingReaderFrom) ReadFrom(src io.Reader) (int64, error) {
 // protected keys store and serve normally. A protected key hitting the same
 // limit still fails the PUT.
 func TestMetadataOverflowDropsOptionalKey(t *testing.T) {
+	if !inOwnProcess(t) {
+		return
+	}
+
 	_, storage := testSetupWithStorage(t)
 
 	huge := strings.Repeat("s", 70_000) // > XATTR_SIZE_MAX (64 KiB) => E2BIG

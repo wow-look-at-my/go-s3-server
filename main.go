@@ -139,7 +139,10 @@ func run(cmd *cobra.Command, args []string) error {
 		log.Printf("WARNING: authentication is DISABLED (disable_auth=true). All requests will be accepted without credentials. Only use this behind a trusted reverse proxy.")
 	}
 
-	log.Printf("limits: max_concurrent_requests=%d max_object_bytes=%d", cfg.MaxConcurrentRequests, cfg.MaxObjectBytes)
+	if cfg.IndexBlobInterval != nil {
+		indexBlobMinInterval = time.Duration(*cfg.IndexBlobInterval)
+	}
+	log.Printf("limits: max_concurrent_requests=%d max_object_bytes=%d index_blob_interval=%v", cfg.MaxConcurrentRequests, cfg.MaxObjectBytes, indexBlobMinInterval)
 
 	// Memory: the in-memory caches are already sized from this budget; starting
 	// the controller adds the feedback half, shrinking them when memory gets

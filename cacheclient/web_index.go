@@ -79,7 +79,11 @@ var gbciMagic = [4]byte{'G', 'B', 'C', 'I'}
 func (b *WebBackend) indexCachePath() string {
 	h := sha256.Sum256([]byte(b.endpoint + "/" + b.bucket + "/" + b.prefix))
 	name := "gocache-web-index-" + hex.EncodeToString(h[:8]) + ".bin"
-	return filepath.Join(os.TempDir(), name)
+	dir := b.indexDir
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, name)
 }
 
 // loadOrFetchIndex returns the set of known cache keys for this backend and

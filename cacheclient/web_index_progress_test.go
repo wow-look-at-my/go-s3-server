@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -202,4 +204,36 @@ func TestLoadOrFetchIndex_StalledRefreshOverDiskCopyIsRoutine(t *testing.T) {
 	require.Empty(t, warn, "a stalled refresh over a disk copy is not a warning")
 	require.Contains(t, strings.Join(info, "\n"), "web index refresh: abandoned")
 	require.Contains(t, strings.Join(info, "\n"), "using 64 cached keys")
+}
+
+// TestIndexDirHoldsTheDiskCopy pins where the index lands when a consumer
+// names a directory: there, and not in the temporary directory.
+func TestIndexDirHoldsTheDiskCopy(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	blob := testIndexBlob(8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/_index") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("ETag", `"v1"`)
+		_, _ = w.Write(blob)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	b, err := NewWebBackend(WebConfig{
+		Bucket: "bk", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: dir,
+	})
+	require.NoError(t, err)
+	defer b.Close()
+
+	require.Equal(t, dir, filepath.Dir(b.indexCachePath()))
+	_, err = os.Stat(b.indexCachePath())
+	require.NoError(t, err, "the index disk copy is written under IndexDir")
+	entries, err := os.ReadDir(os.TempDir())
+	require.NoError(t, err)
+	for _, e := range entries {
+		require.NotContains(t, e.Name(), "gocache-web-index-", "nothing lands in the temporary directory")
+	}
 }

@@ -34,6 +34,7 @@ func skipIfNoXattr(t *testing.T, dir string) {
 
 func testSetupWithAuth(t *testing.T) (*httptest.Server, *Config) {
 	t.Helper()
+	holdIndexBlob(t, 0)
 	dir := t.TempDir()
 
 	cfg := &Config{

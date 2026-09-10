@@ -31,6 +31,10 @@ type WebConfig struct {
 	Version   string // go-toolchain version, stored as object metadata
 	Module    string // main module path, stored as object metadata (provenance)
 	Target    string // GOOS/GOARCH this build is producing, sent as provenance
+	// IndexDir is where the key index's disk copy lives. Empty means the
+	// process temporary directory. A consumer whose builds share a cache
+	// directory but not a temporary directory points it at the cache.
+	IndexDir string
 }
 
 // WebBackend stores cache objects in a remote web server with LZ4 compression.
@@ -49,6 +53,7 @@ type WebBackend struct {
 	version   string // go-toolchain version for object metadata
 	module    string // main module path for object metadata (provenance)
 	target    string // GOOS/GOARCH this build produces, for request provenance
+	indexDir  string // where the key index's disk copy lives; empty is os.TempDir
 	// moduleLate carries a module path learned after the backend was built. A
 	// consumer often knows its endpoint before it knows which module it is
 	// building, and the requests in between still deserve an attribution.
@@ -270,6 +275,7 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 		version:   cfg.Version,
 		module:    cfg.Module,
 		target:    cfg.Target,
+		indexDir:  cfg.IndexDir,
 	}
 
 	b.errLog = newHTTPErrLogger(loggerWriter{}, httpErrFlushInterval)
@@ -287,10 +293,13 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	b.indexEmpty = b.keys.Len() == 0
 	b.indexKeysAtStart = b.keys.Len()
 	b.knownMiss = newHashSet(0)
-	if b.indexAuthoritative {
+	switch {
+	case b.indexAuthoritative:
 		logging.Infof("cacheprog: web index: %d keys", b.keys.Len())
-	} else {
-		logging.Warnf("cacheprog: web index: fetch failed; using %d cached keys (batch probing enabled)", b.keys.Len())
+	case b.keys.Len() > 0:
+		logging.Infof("cacheprog: web index: refresh failed; using %d cached keys (batch probing enabled)", b.keys.Len())
+	default:
+		logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
 	}
 	return b, nil
 }

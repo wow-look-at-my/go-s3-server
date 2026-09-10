@@ -79,7 +79,11 @@ var gbciMagic = [4]byte{'G', 'B', 'C', 'I'}
 func (b *WebBackend) indexCachePath() string {
 	h := sha256.Sum256([]byte(b.endpoint + "/" + b.bucket + "/" + b.prefix))
 	name := "gocache-web-index-" + hex.EncodeToString(h[:8]) + ".bin"
-	return filepath.Join(os.TempDir(), name)
+	dir := b.indexDir
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, name)
 }
 
 // loadOrFetchIndex returns the set of known cache keys for this backend and
@@ -102,10 +106,13 @@ func (b *WebBackend) loadOrFetchIndex() (*hashSet, bool) {
 
 	blob, status, err := b.fetchIndexBlob(ctx, diskETag)
 	if err != nil {
-		logging.Warnf("cacheprog: web index fetch: %v", err)
 		if diskBlob != nil {
+			// A failed refresh over a disk copy is routine: the build keeps a
+			// key set, and every go command reports it on a busy host.
+			logging.Infof("cacheprog: web index refresh: %v", err)
 			return diskKeys, false
 		}
+		logging.Warnf("cacheprog: web index fetch: %v", err)
 		return newHashSet(0), false
 	}
 	if status == http.StatusNotModified {

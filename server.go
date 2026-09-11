@@ -207,6 +207,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer httpInFlightRequests.Dec()
 
 	rec := &statusRecorder{ResponseWriter: w, statusCode: 200}
+	defer guardStall(w, r, rec)()
 	route := "Other"
 	ip := clientIP(r)
 	ua := r.UserAgent()
@@ -228,11 +229,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			log.Printf("req method=%s path=%s%s client_ip=%s user=%s user_agent=%q status=%d bytes=%d duration_ms=%d%s",
 				r.Method, r.URL.Path, label, ip, username, ua,
-				rec.statusCode, rec.bytesWritten, duration.Milliseconds(), detail)
+				rec.statusCode, rec.bytesWritten.Load(), duration.Milliseconds(), detail)
 		}
 		httpRequestsTotal.WithLabelValues(r.Method, route, statusStr(rec.statusCode)).Inc()
 		httpRequestDuration.WithLabelValues(r.Method, route).Observe(duration.Seconds())
-		httpResponseSize.WithLabelValues(r.Method, route).Observe(float64(rec.bytesWritten))
+		httpResponseSize.WithLabelValues(r.Method, route).Observe(float64(rec.bytesWritten.Load()))
 		if r.ContentLength > 0 {
 			httpRequestSize.WithLabelValues(r.Method, route).Observe(float64(r.ContentLength))
 		}

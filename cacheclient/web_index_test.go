@@ -238,7 +238,7 @@ func TestLoadOrFetchIndex_SlowServerBounded(t *testing.T) {
 	defer srv.Close()
 	defer close(release)
 
-	defer shrinkIndexBudgets(150*time.Millisecond, 150*time.Millisecond, 5*time.Second)()
+	defer shrinkIndexBudgets(150*time.Millisecond, 150*time.Millisecond)()
 
 	start := time.Now()
 	b, err := NewWebBackend(WebConfig{

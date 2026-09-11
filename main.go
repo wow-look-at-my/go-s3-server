@@ -13,15 +13,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// HTTP server timeouts. ReadHeaderTimeout is the important slowloris guard
-// (request lines/headers must arrive promptly); Read/Write are generous
-// backstops so a stuck connection cannot pin a concurrency slot forever, while
-// still allowing CI-sized object uploads and batch streams to complete. Idle
-// reaps unused keep-alive connections from many CI runners.
+// HTTP server timeouts. ReadHeaderTimeout is the slowloris guard: a request
+// line and its headers must arrive promptly. Idle reaps an unused keep-alive
+// connection from one of many CI runners.
+//
+// There is deliberately no ReadTimeout and no WriteTimeout. Both cap a whole
+// request, so both measure how BIG a transfer is rather than whether it is
+// healthy, and this server's transfers are bulk. guardStall bounds the silence
+// instead, per request. See stallguard.go.
 const (
 	httpReadHeaderTimeout = 15 * time.Second
-	httpReadTimeout       = 5 * time.Minute
-	httpWriteTimeout      = 5 * time.Minute
 	httpIdleTimeout       = 120 * time.Second
 
 	// shutdownTimeout bounds how long graceful shutdown waits for in-flight
@@ -168,8 +169,6 @@ func run(cmd *cobra.Command, args []string) error {
 		Addr:              cfg.Listen,
 		Handler:           srv,
 		ReadHeaderTimeout: httpReadHeaderTimeout,
-		ReadTimeout:       httpReadTimeout,
-		WriteTimeout:      httpWriteTimeout,
 		IdleTimeout:       httpIdleTimeout,
 	}
 

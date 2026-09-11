@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -325,19 +326,33 @@ var (
 // statusRecorder wraps http.ResponseWriter to capture status code and bytes written.
 type statusRecorder struct {
 	http.ResponseWriter
-	statusCode   int
-	bytesWritten int64
+	statusCode int
+	// Atomic because the stall guard samples them from a timer goroutine while
+	// the handler is still writing. bytesWritten is the response size the
+	// metrics want. progress is what the guard watches, and it counts a header
+	// too: a header-only answer, such as a 304, is the handler making progress
+	// even though it adds no bytes to the body.
+	bytesWritten atomic.Int64
+	progress     atomic.Int64
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
 	r.statusCode = code
+	r.progress.Add(1)
 	r.ResponseWriter.WriteHeader(code)
 }
 
 func (r *statusRecorder) Write(b []byte) (int, error) {
 	n, err := r.ResponseWriter.Write(b)
-	r.bytesWritten += int64(n)
+	r.bytesWritten.Add(int64(n))
+	r.progress.Add(int64(n))
 	return n, err
+}
+
+// Unwrap gives http.ResponseController the real writer underneath, which is
+// what carries the connection deadlines the stall guard moves.
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
 }
 
 // ReadFrom forwards to the wrapped ResponseWriter's io.ReaderFrom when it has
@@ -350,7 +365,8 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 func (r *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
 	if rf, ok := r.ResponseWriter.(io.ReaderFrom); ok {
 		n, err := rf.ReadFrom(src)
-		r.bytesWritten += n
+		r.bytesWritten.Add(n)
+		r.progress.Add(n)
 		return n, err
 	}
 	return io.Copy(writerOnly{r}, src)

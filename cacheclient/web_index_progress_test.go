@@ -19,11 +19,11 @@ import (
 // shrinkIndexBudgets temporarily replaces the index-fetch budgets and
 // returns a restore func. Tests use it instead of poking the vars directly so
 // no test can leave a shortened budget behind for the tests after it.
-func shrinkIndexBudgets(header, stall, ceiling time.Duration) func() {
-	oh, os, oc := indexHeaderBudget, indexStallTimeout, indexFetchCeiling
-	indexHeaderBudget, indexStallTimeout, indexFetchCeiling = header, stall, ceiling
+func shrinkIndexBudgets(header, stall time.Duration) func() {
+	oh, os := indexHeaderBudget, indexStallTimeout
+	indexHeaderBudget, indexStallTimeout = header, stall
 	return func() {
-		indexHeaderBudget, indexStallTimeout, indexFetchCeiling = oh, os, oc
+		indexHeaderBudget, indexStallTimeout = oh, os
 	}
 }
 
@@ -77,7 +77,7 @@ func TestLoadOrFetchIndex_SlowButSteadyBodySucceeds(t *testing.T) {
 	defer srv.Close()
 
 	// A single deadline over the whole transfer would kill it mid-stream; only a per-chunk bound finishes it.
-	defer shrinkIndexBudgets(200*time.Millisecond, 200*time.Millisecond, 30*time.Second)()
+	defer shrinkIndexBudgets(200*time.Millisecond, 200*time.Millisecond)()
 
 	b, err := NewWebBackend(WebConfig{
 		Bucket: "bk", Endpoint: srv.URL,
@@ -119,7 +119,7 @@ func TestLoadOrFetchIndex_StalledBodyAbandoned(t *testing.T) {
 	defer srv.Close()
 	defer close(release)
 
-	defer shrinkIndexBudgets(2*time.Second, 150*time.Millisecond, 10*time.Second)()
+	defer shrinkIndexBudgets(2*time.Second, 150*time.Millisecond)()
 
 	start := time.Now()
 	b, err := NewWebBackend(WebConfig{
@@ -194,7 +194,7 @@ func TestLoadOrFetchIndex_StalledRefreshOverDiskCopyIsRoutine(t *testing.T) {
 	first.ensureIndex()
 	require.True(t, first.indexAuthoritative, "the first load must persist a disk copy for the second to refresh")
 
-	defer shrinkIndexBudgets(2*time.Second, 150*time.Millisecond, 10*time.Second)()
+	defer shrinkIndexBudgets(2*time.Second, 150*time.Millisecond)()
 	var info, warn []string
 	SetLogger(levelLogger{&info, &warn})
 	t.Cleanup(func() { SetLogger(nil) })
@@ -209,6 +209,61 @@ func TestLoadOrFetchIndex_StalledRefreshOverDiskCopyIsRoutine(t *testing.T) {
 	require.Empty(t, warn, "a stalled refresh over a disk copy is not a warning")
 	require.Contains(t, strings.Join(info, "\n"), "web index refresh: abandoned")
 	require.Contains(t, strings.Join(info, "\n"), "using 64 cached keys")
+}
+
+// deadlineSpy records whether the request it forwards carried an absolute
+// deadline.
+type deadlineSpy struct {
+	rt          http.RoundTripper
+	hadDeadline atomic.Bool
+	seen        atomic.Bool
+}
+
+func (d *deadlineSpy) RoundTrip(req *http.Request) (*http.Response, error) {
+	_, ok := req.Context().Deadline()
+	d.hadDeadline.Store(ok)
+	d.seen.Store(true)
+	return d.rt.RoundTrip(req)
+}
+
+// TestLoadOrFetchIndex_RequestCarriesNoDeadline pins the absence of a
+// wall-clock ceiling over the index load. A real index is tens of megabytes
+// and a remote runner pulls it at a few hundred kilobytes a second, so any
+// ceiling short enough to be useful against a hung server is also short enough
+// to kill a healthy transfer. The stall and header budgets bound a hung server
+// instead, and they are what this asserts is the ONLY bound: a deadline on the
+// request is one this test cannot wait out, so it checks for the deadline
+// rather than for the timeout it would cause.
+func TestLoadOrFetchIndex_RequestCarriesNoDeadline(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+
+	blob := testIndexBlob(8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/_index") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("ETag", `"v1"`)
+		_, _ = w.Write(blob)
+	}))
+	defer srv.Close()
+
+	b, err := NewWebBackend(WebConfig{
+		Bucket: "bk", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s",
+	})
+	require.NoError(t, err)
+	defer b.Close()
+
+	spy := &deadlineSpy{rt: b.client.Transport}
+	b.client.Transport = spy
+
+	b.ensureIndex()
+	require.True(t, spy.seen.Load(), "the index fetch must actually have gone out")
+	require.False(t, spy.hadDeadline.Load(),
+		"the index request must carry no absolute deadline -- a slow but steady "+
+			"multi-megabyte index would die on it however healthy the server is")
+	require.True(t, b.indexAuthoritative)
+	require.Equal(t, 8, b.keys.Len())
 }
 
 // TestIndexDirHoldsTheDiskCopy pins where the index lands when a consumer

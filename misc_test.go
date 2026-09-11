@@ -67,7 +67,7 @@ func TestStatusRecorderReadFrom(t *testing.T) {
 	n, err := io.Copy(rec, source())
 	require.NoError(t, err)
 	require.Equal(t, int64(len(payload)), n)
-	require.Equal(t, int64(len(payload)), rec.bytesWritten, "fallback path must count bytes exactly once")
+	require.Equal(t, int64(len(payload)), rec.bytesWritten.Load(), "fallback path must count bytes exactly once")
 	require.Equal(t, payload, plain.Body.String())
 
 	// Passthrough: a ReaderFrom-capable writer receives the call directly.
@@ -77,7 +77,7 @@ func TestStatusRecorderReadFrom(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(len(payload)), n)
 	require.True(t, rf.readFromCalled, "the wrapped writer's ReadFrom must be used")
-	require.Equal(t, int64(len(payload)), rec2.bytesWritten, "passthrough path must count bytes")
+	require.Equal(t, int64(len(payload)), rec2.bytesWritten.Load(), "passthrough path must count bytes")
 }
 
 // countingReaderFrom is a minimal ResponseWriter with a ReadFrom fast path.

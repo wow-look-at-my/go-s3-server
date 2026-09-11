@@ -60,6 +60,29 @@ func TestDashboardServesPageAndAssets(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+// dashboard.js reads `checked` off a scratch-toggle, which is a property the
+// element only has once the browser has upgraded it. A classic script runs
+// before the deferred module that defines the components, so it read undefined,
+// took "live" for off, and polled exactly once. The page then sat on one
+// snapshot forever. A module script runs after that definition, in document
+// order, which is what keeps the poll loop alive.
+func TestDashboardLoadsItsScriptAsAModule(t *testing.T) {
+	page, err := dashboardAssets.ReadFile("dashboard.html")
+	require.NoError(t, err)
+	assert.Contains(t, string(page), `<script type="module" src="/dashboard.js">`)
+	assert.NotContains(t, string(page), `<script src="/dashboard.js">`)
+}
+
+// The graphs come from the org library at runtime, never vendored, so an
+// upstream fix reaches this page with no change here. sites.pazer.build is the
+// canonical origin; the github.io one is dead and fails CORS with no status.
+func TestDashboardImportsTheGraphFromTheLibrarySite(t *testing.T) {
+	script, err := dashboardAssets.ReadFile("dashboard.js")
+	require.NoError(t, err)
+	assert.Contains(t, string(script), `import "https://sites.pazer.build/js-snippets/branch/library/ui/perf-graph.js"`)
+	assert.NotContains(t, string(script), "wow-look-at-my.github.io")
+}
+
 // The stats endpoint must answer with no credentials: the dashboard port is
 // published through an access proxy, which is where identity is checked.
 func TestDashboardStatsNeedNoCredentials(t *testing.T) {

@@ -58,8 +58,10 @@
 				</div>
 				<div>
 					<h3>request rate</h3>
-					<svg id="rate-chart" viewBox="0 0 320 90" preserveAspectRatio="none" role="img"
-						aria-label="requests per second over the last few minutes"></svg>
+					<!-- perf-graph draws itself on a canvas and pauses while hidden. -->
+					<perf-graph id="rate-chart" label="requests" unit="/s" min="0" height="90"></perf-graph>
+					<perf-graph id="hit-chart" label="hit rate" unit="%" min="0" max="100" height="64"></perf-graph>
+					<perf-graph id="inflight-chart" label="in flight" unit="" min="0" height="64"></perf-graph>
 					<p class="muted" id="rate-label">waiting for a second sample</p>
 				</div>
 			</div>
@@ -87,6 +89,7 @@
 		Numbers come from the same registry <code>/metrics</code> serves.
 	</footer>
 
-	<script src="/dashboard.js"></script>
+	<!-- A module, so it runs after scratch-ui.js has defined the components it reads. -->
+	<script type="module" src="/dashboard.js"></script>
 </body>
 </html>

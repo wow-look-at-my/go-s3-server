@@ -2,6 +2,9 @@
 // server: a rate is the difference between two samples this page took, so a
 // reload starts the rate over and nothing else.
 
+// Registers <perf-graph>. The library site serves it with CORS for any origin.
+import "https://sites.pazer.build/js-snippets/branch/library/ui/perf-graph.js";
+
 const POLL_MS = 5000;
 const HISTORY = 60;
 
@@ -239,19 +242,19 @@ function drawRate(stats) {
 	const now = state.rates[state.rates.length - 1];
 	$("rate-label").textContent = `${now.toFixed(1)} req/s now, peak ${peak.toFixed(1)} over the last ${Math.round((state.rates.length * POLL_MS) / 1000)}s`;
 
-	// One rate is a number, not a line. The chart starts at two.
-	const svg = $("rate-chart");
-	if (state.rates.length < 2) return;
-	const step = 320 / (HISTORY - 1);
-	const d = state.rates
-		.map((r, i) => {
-			const x = (i + (HISTORY - state.rates.length)) * step;
-			const y = 85 - (r / peak) * 80;
-			return `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`;
-		})
-		.join(" ");
-	const path = svg.querySelector("path") || svg.appendChild(document.createElementNS("http://www.w3.org/2000/svg", "path"));
-	path.setAttribute("d", d);
+	// perf-graph owns the history, the scale and the redraw. It is fed the
+	// newest sample and nothing else.
+	$("rate-chart").push(now);
+}
+
+// The two gauges beside the rate. Both read straight off the snapshot, so
+// neither needs a previous sample and both start drawing on the first poll.
+// The batch series is the same one hitRateTile reads, for the same reason.
+function drawGauges(stats) {
+	const kinds = series(stats, "s3_batch_keys_total");
+	const requested = kinds.requested || 0;
+	if (requested) $("hit-chart").push(((kinds.found || 0) / requested) * 100);
+	$("inflight-chart").push(value(stats, "cache_http_in_flight_requests"));
 }
 
 // Every entry here is a number that should be zero, or should be falling. The
@@ -327,6 +330,7 @@ function draw(stats) {
 	drawTiles(stats);
 	drawReads(stats);
 	drawTraffic(stats);
+	drawGauges(stats);
 	drawTripwires(stats);
 	drawMemory(stats);
 	drawConfig(stats);
@@ -358,5 +362,10 @@ $("autorefresh").addEventListener("change", () => {
 	if ($("autorefresh").checked) poll();
 });
 
+// `checked` is a property scratch-toggle only has once it is upgraded. Read it
+// before that and the answer is undefined, which reads as "live is off": the
+// page then draws one snapshot and never polls again. Waiting makes the poll
+// loop independent of which script the browser ran first.
 poll();
+await customElements.whenDefined("scratch-toggle");
 schedule();

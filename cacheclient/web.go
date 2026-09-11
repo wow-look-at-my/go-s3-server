@@ -256,8 +256,18 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	b := &WebBackend{
 		maxRetries:                 envInt("GO_TOOLCHAIN_CACHE_MAX_RETRIES", defaultMaxRetries),
 		emptyBatchBackoffThreshold: envInt("GO_TOOLCHAIN_CACHE_EMPTY_BATCH_BACKOFF", defaultEmptyBatchBackoff),
+		// NO absolute Timeout. http.Client.Timeout is a deadline over the WHOLE
+		// request, body included, so it kills a transfer that is making perfect
+		// progress purely for being big. This client's responses are bulk: a
+		// batch get is tens of megabytes and the key index is larger still. At
+		// the bandwidth a remote CI runner actually gets, anything past about
+		// ten megabytes could not finish inside the old deadline, and every one
+		// of them died mid-body and was retried from the start.
+		//
+		// Liveness is the transport's job instead: ResponseHeaderTimeout above
+		// bounds a server that never answers, which is what a deadline here was
+		// reaching for. The index fetch adds its own stall guard on top.
 		client: &http.Client{
-			Timeout:   30 * time.Second,
 			Transport: transport,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {

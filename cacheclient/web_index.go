@@ -17,12 +17,13 @@ import (
 	"time"
 )
 
-// Progress-bounded via header/stall/ceiling budgets. Exhaustion falls back
-// to a non-authoritative key set; batch-probing stays on.
+// Bounded by SILENCE, never by total duration. The index is tens of megabytes
+// and a remote runner streams it at a few hundred kilobytes a second, so any
+// wall-clock ceiling kills a healthy transfer for being big. Exhaustion falls
+// back to a non-authoritative key set; batch-probing stays on.
 var (
 	indexHeaderBudget = 10 * time.Second
 	indexStallTimeout = 10 * time.Second
-	indexFetchCeiling = 60 * time.Second
 )
 
 const indexFetchRetries = 1
@@ -116,9 +117,9 @@ func (b *WebBackend) loadOrFetchIndex() (*hashSet, bool) {
 		return diskKeys, true
 	}
 
-	// The absolute ceiling covers the whole load; each fetch also enforces the header and stall budgets above.
-	ctx, cancel := context.WithTimeout(context.Background(), indexFetchCeiling)
-	defer cancel()
+	// No deadline here. Each fetch carries the header and stall budgets above,
+	// and those are what a hung server trips.
+	ctx := context.Background()
 
 	blob, status, err := b.fetchIndexBlob(ctx, diskETag)
 	if err != nil {
@@ -183,9 +184,9 @@ func (b *WebBackend) readDiskIndex(path string) ([]byte, *hashSet, string, time.
 	return data, keys, etag, age
 }
 
-// fetchIndexBlob does a conditional GET <endpoint>/<bucket>/_index within
-// ctx's deadline, with at most indexFetchRetries retries (further capped by
-// the configured retry policy). Returns:
+// fetchIndexBlob does a conditional GET <endpoint>/<bucket>/_index under ctx,
+// with at most indexFetchRetries retries (further capped by the configured
+// retry policy). Returns:
 //
 //	body, http.StatusOK, nil          for a served blob
 //	nil,  http.StatusNotModified, nil for a validated disk copy

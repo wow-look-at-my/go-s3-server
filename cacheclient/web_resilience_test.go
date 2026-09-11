@@ -2,6 +2,7 @@ package cacheclient
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -194,4 +195,101 @@ func TestBatchGetRequest_JSONShape(t *testing.T) {
 	data, err := json.Marshal(batchGetRequest{Keys: []string{"a", "b"}, Prefetch: true})
 	require.NoError(t, err)
 	require.JSONEq(t, `{"keys":["a","b"],"prefetch":true}`, string(data))
+}
+
+// A bulk-transfer client must not carry an absolute request deadline.
+// http.Client.Timeout spans the whole request INCLUDING the body read, so it
+// kills a transfer that is making perfect progress purely for being large. A
+// batch get is tens of megabytes and the key index is larger, and at the
+// bandwidth a remote CI runner gets, those died mid-body every time. Liveness
+// belongs to the transport's ResponseHeaderTimeout, which bounds a server that
+// never answers without bounding one that answers slowly.
+func TestWebBackend_NoAbsoluteRequestDeadline(t *testing.T) {
+	b, err := NewWebBackend(WebConfig{
+		Bucket: "testbucket", Endpoint: "http://127.0.0.1:1",
+		AccessKey: "k", SecretKey: "s",
+	})
+	require.NoError(t, err)
+	defer b.Close()
+
+	require.Zero(t, b.client.Timeout,
+		"an absolute deadline truncates a healthy bulk transfer; bound the headers, never the body")
+
+	tr, ok := b.client.Transport.(*http.Transport)
+	require.True(t, ok, "the transport is what carries the liveness bounds")
+	require.NotZero(t, tr.ResponseHeaderTimeout,
+		"a server that never answers must still be bounded")
+}
+
+// The bound is on SILENCE, not on duration: a body that keeps delivering bytes
+// must complete however long it runs. This one runs well past the window in
+// total while never pausing longer than it.
+func TestWebBackend_SlowButProgressingBodyCompletes(t *testing.T) {
+	old := stallTimeout
+	stallTimeout = 150 * time.Millisecond
+	defer func() { stallTimeout = old }()
+
+	const chunks, chunkSize = 12, 32 << 10
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		for i := 0; i < chunks; i++ {
+			w.Write(make([]byte, chunkSize))
+			w.(http.Flusher).Flush()
+			time.Sleep(40 * time.Millisecond) // under the window, every time
+		}
+	}))
+	defer srv.Close()
+
+	b := testBackend(t, srv.URL)
+	defer b.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/slow", nil)
+	require.NoError(t, err)
+	resp, err := b.doRetryGET(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	n, err := io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err, "steady progress must never expire, whatever the total")
+	require.Equal(t, int64(chunks*chunkSize), n)
+	require.Greater(t, chunks*40*time.Millisecond, stallTimeout,
+		"the transfer has to outlast the window for this to prove anything")
+}
+
+// A body that goes quiet for longer than the window is abandoned, and the error
+// says why rather than surfacing a bare context cancellation.
+func TestWebBackend_StalledBodyIsAbandoned(t *testing.T) {
+	old := stallTimeout
+	stallTimeout = 150 * time.Millisecond
+	defer func() { stallTimeout = old }()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write(make([]byte, 1024))
+		w.(http.Flusher).Flush()
+		time.Sleep(2 * time.Second) // silence, well past the window
+	}))
+	defer srv.Close()
+
+	b := testBackend(t, srv.URL)
+	defer b.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/stall", nil)
+	require.NoError(t, err)
+	resp, err := b.doRetryGET(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	_, err = io.Copy(io.Discard, resp.Body)
+	require.Error(t, err, "silence past the window must not hang forever")
+	require.Contains(t, err.Error(), "no progress", "the error names the cause")
+}
+
+func testBackend(t *testing.T, endpoint string) *WebBackend {
+	t.Helper()
+	b, err := NewWebBackend(WebConfig{
+		Bucket: "testbucket", Endpoint: endpoint, AccessKey: "k", SecretKey: "s",
+	})
+	require.NoError(t, err)
+	return b
 }

@@ -2,11 +2,14 @@ package cacheclient
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"net/http"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,6 +28,39 @@ const (
 	retryBaseDelay = 100 * time.Millisecond
 	retryMaxDelay  = 2 * time.Second
 )
+
+// stallTimeout bounds SILENCE, never total duration. Responses here are bulk: a
+// batch get runs to tens of megabytes and the key index further still. One that
+// keeps delivering bytes is healthy however long it takes, and one that stops
+// delivering is not, so the clock measures the gap between reads instead of the
+// whole transfer. A var, so a test can shorten it like the index budgets.
+var stallTimeout = 30 * time.Second
+
+// guardedBody re-arms a watchdog on every read, so a body that keeps flowing
+// never expires while one that goes quiet is cancelled. Close stops the
+// watchdog and releases the request context that carries it.
+type guardedBody struct {
+	io.ReadCloser
+	watchdog *time.Timer
+	cancel   context.CancelFunc
+	stalled  *atomic.Bool
+}
+
+func (g *guardedBody) Read(p []byte) (int, error) {
+	g.watchdog.Reset(stallTimeout)
+	n, err := g.ReadCloser.Read(p)
+	if err != nil && err != io.EOF && g.stalled.Load() {
+		return n, fmt.Errorf("no progress for %v: %w", stallTimeout, err)
+	}
+	return n, err
+}
+
+func (g *guardedBody) Close() error {
+	g.watchdog.Stop()
+	err := g.ReadCloser.Close()
+	g.cancel()
+	return err
+}
 
 // noteBatchEntries feeds the entry count of a served /_batch/get response to the
 // consecutive-empty-batch backoff. An empty batch is a healthy remote that
@@ -161,10 +197,22 @@ func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response,
 				req.Body = body
 			}
 		}
-		resp, err = b.client.Do(req)
+		// One watchdog per attempt, armed on the context the attempt runs
+		// under. It survives past this function only on the success path, where
+		// the returned body owns it and the reads re-arm it.
+		ctx, cancel := context.WithCancel(req.Context())
+		stalled := &atomic.Bool{}
+		watchdog := time.AfterFunc(stallTimeout, func() {
+			stalled.Store(true)
+			cancel()
+		})
+		resp, err = b.client.Do(req.WithContext(ctx))
 		if err == nil && !transientStatus(resp.StatusCode) {
+			resp.Body = &guardedBody{ReadCloser: resp.Body, watchdog: watchdog, cancel: cancel, stalled: stalled}
 			return resp, nil
 		}
+		watchdog.Stop()
+		cancel()
 		if attempt >= maxRetries {
 			return resp, err
 		}

@@ -56,3 +56,25 @@ jobs:
           working-directory: cacheclient
           autorelease: 'false'
 
+  # Publishes oci.pazer.build/go-s3-server via GHA OIDC (no stored registry secret) -- the image the deployment pulls and docker-updater tracks; :latest moves only on the default branch. Restores the job #65 removed, which had neither a working action nor a Dockerfile.
+  docker:
+    needs: test
+    # ubuntu-latest ON PURPOSE: the self-hosted runner has a registered APE binfmt handler (/proc/sys/fs/binfmt_misc/APE) that runs an APE through a shell, masking the exact defect this Dockerfile prevents -- a hosted runner has none, so a regression to a bare-APE entrypoint fails the build instead of shipping an image that cannot start.
+    runs-on: ubuntu-latest
+    # A job-level block REPLACES the workflow-level one, so every grant the publish needs is listed here -- id-token: write is what the OIDC login uses.
+    permissions:
+      id-token: write
+      contents: read
+      actions: read
+      checks: read
+      deployments: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@v4
+      # go-toolchain hands build/ over through the org cache rather than upload-artifact, so restore it before the image copies the binary out.
+      - uses: wow-look-at-my/actions@cache-download#latest
+        with:
+          name: go-build-test.broot
+          path: build/
+      - run: chmod +x build/go-s3-server
+      - uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-docker@master

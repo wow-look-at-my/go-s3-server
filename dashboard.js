@@ -2,12 +2,11 @@
 // server: a rate is the difference between two samples this page took, so a
 // reload starts the rate over and nothing else.
 
-const POLL_MS = 5000;
-const HISTORY = 60;
+const POLL_MS = 1000;
 
 const state = {
 	previous: null, // the last snapshot, for rates
-	rates: [], // requests per second, newest last
+	peak: 0, // the highest rate this page has seen
 	timer: null,
 };
 
@@ -217,41 +216,41 @@ function drawTraffic(stats) {
 	drawRate(stats);
 }
 
+// push feeds one sample to a <perf-graph>. The element is defined by a module
+// fetched at run time, so an early poll can land before it upgrades; a plain
+// element has no push and the sample is dropped rather than throwing.
+function push(id, v) {
+	const el = $(id);
+	if (el && typeof el.push === "function") el.push(v);
+}
+
+// The graphs are gauges over time, so each one takes the value as it stands.
+// The rate is the exception: the server reports a counter, and a rate is the
+// difference between two samples this page took.
 function drawRate(stats) {
+	push("g-inflight", value(stats, "cache_http_in_flight_requests"));
+	push("g-memory", value(stats, "s3_memory_in_use_bytes") / 1024 ** 2);
+
 	const total = sum(series(stats, "cache_http_requests_total"));
 	const prev = state.previous;
-	if (prev) {
-		const dt = (new Date(stats.generated_at) - new Date(prev.generated_at)) / 1000;
-		const dv = total - prev.total;
-		// A counter that went backwards means the server restarted between
-		// samples. Drop the point rather than draw a negative rate.
-		if (dt > 0 && dv >= 0) {
-			state.rates.push(dv / dt);
-			if (state.rates.length > HISTORY) state.rates.shift();
-		} else if (dv < 0) {
-			state.rates = [];
-		}
-	}
 	state.previous = { total, generated_at: stats.generated_at };
+	if (!prev) return;
 
-	if (!state.rates.length) return;
-	const peak = Math.max(...state.rates, 0.001);
-	const now = state.rates[state.rates.length - 1];
-	$("rate-label").textContent = `${now.toFixed(1)} req/s now, peak ${peak.toFixed(1)} over the last ${Math.round((state.rates.length * POLL_MS) / 1000)}s`;
+	const dt = (new Date(stats.generated_at) - new Date(prev.generated_at)) / 1000;
+	const dv = total - prev.total;
+	// A counter that went backwards means the server restarted between
+	// samples. Drop the point rather than draw a negative rate.
+	if (dv < 0) {
+		state.peak = 0;
+		$("g-rate").clear?.();
+		return;
+	}
+	if (dt <= 0) return;
 
-	// One rate is a number, not a line. The chart starts at two.
-	const svg = $("rate-chart");
-	if (state.rates.length < 2) return;
-	const step = 320 / (HISTORY - 1);
-	const d = state.rates
-		.map((r, i) => {
-			const x = (i + (HISTORY - state.rates.length)) * step;
-			const y = 85 - (r / peak) * 80;
-			return `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`;
-		})
-		.join(" ");
-	const path = svg.querySelector("path") || svg.appendChild(document.createElementNS("http://www.w3.org/2000/svg", "path"));
-	path.setAttribute("d", d);
+	const now = dv / dt;
+	state.peak = Math.max(state.peak, now);
+	push("g-rate", now);
+	$("rate-label").textContent = `${now.toFixed(1)} req/s now, peak ${state.peak.toFixed(1)} since this page loaded`;
 }
 
 // Every entry here is a number that should be zero, or should be falling. The
@@ -348,15 +347,27 @@ async function poll() {
 	}
 }
 
+// The toggle is a custom element whose module is deferred, and this script is
+// a classic one at the end of the body, so it runs first. Until the element
+// upgrades it carries the attribute and no property, and reading the property
+// alone reports "off" and stops the page polling at all.
+function live() {
+	const el = $("autorefresh");
+	return typeof el.checked === "boolean" ? el.checked : el.hasAttribute("checked");
+}
+
 function schedule() {
 	clearInterval(state.timer);
-	if ($("autorefresh").checked) state.timer = setInterval(poll, POLL_MS);
+	if (live()) state.timer = setInterval(poll, POLL_MS);
 }
 
 $("autorefresh").addEventListener("change", () => {
 	schedule();
-	if ($("autorefresh").checked) poll();
+	if (live()) poll();
 });
 
 poll();
 schedule();
+// Once the element upgrades its property is authoritative; re-read it in case
+// it disagrees with the attribute this started on.
+customElements.whenDefined("scratch-toggle").then(schedule);

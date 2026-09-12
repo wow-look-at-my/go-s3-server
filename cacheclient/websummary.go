@@ -11,6 +11,14 @@ type WebSummary struct {
 	Hits uint32 `json:"hits"`
 	Puts uint32 `json:"puts"`
 
+	// Wire bytes moved, which is what a transfer budget is spent on: a body
+	// travels compressed, so a count of objects says nothing about its cost.
+	HitBytes uint64 `json:"hit_bytes"`
+	PutBytes uint64 `json:"put_bytes"`
+	// IndexBytes is what the startup index cost. Every process pays it before
+	// it can tell a hit from a miss, so it is not part of either total above.
+	IndexBytes uint64 `json:"index_bytes"`
+
 	// GET miss reasons; miss_checksum/miss_buildid/miss_modindex are the poison tripwires (a served object a guard refused).
 	MissNotInIndex  uint32 `json:"miss_not_in_index"`
 	MissHTTP404     uint32 `json:"miss_http_404"`
@@ -60,6 +68,9 @@ func (b *WebBackend) SummarySnapshot() WebSummary {
 	return WebSummary{
 		Hits:                b.Stats.Hits.Load(),
 		Puts:                b.Stats.Puts.Load(),
+		HitBytes:            b.Stats.HitBytes.Load(),
+		PutBytes:            b.Stats.PutBytes.Load(),
+		IndexBytes:          b.indexBytes.Load(),
 		MissNotInIndex:      b.MissNotInIndex.Load(),
 		MissHTTP404:         b.MissHTTP404.Load(),
 		MissHTTPError:       b.MissHTTPError.Load(),

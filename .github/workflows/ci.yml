@@ -32,6 +32,9 @@ jobs:
 
       # Builds, tests, runs dats/*.dats, and autoreleases the binary buildhost serves as an image.
       - uses: wow-look-at-my/go-toolchain@master
+        env:
+          # TEMPORARY: drop this once a go-toolchain built by gosmopolitan v500 or newer is published.
+          GO_TOOLCHAIN_COSMO_VERSION: "476"
 
   # cacheclient is its own module, so go-toolchain must run in it too; beside the server's job, not after it.
   cacheclient:
@@ -46,6 +49,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: wow-look-at-my/go-toolchain@master
+        env:
+          # TEMPORARY: drop this once a go-toolchain built by gosmopolitan v500 or newer is published.
+          GO_TOOLCHAIN_COSMO_VERSION: "476"
         with:
           working-directory: cacheclient
           autorelease: 'false'

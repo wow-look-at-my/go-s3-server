@@ -320,6 +320,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 			return
 		}
 		b.Stats.Hits.Increment()
+		b.Stats.HitBytes.Add(uint64(len(e.Data)))
 		hit = append(hit, r.key)
 		r.resp <- batchResp{outputID: e.OutputID, data: data, t: time.Now()}
 	})

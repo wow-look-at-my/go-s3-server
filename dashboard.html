@@ -20,6 +20,11 @@
 	     module script to load. -->
 	<link rel="stylesheet" href="https://sites.pazer.build/scratch_ui/scratch-ui.css">
 	<script type="module" src="https://sites.pazer.build/scratch_ui/scratch-ui.js"></script>
+	<!-- The org's graph element, imported at run time from the library site.
+	     Importing it registers <perf-graph>. This is the CANONICAL path, for
+	     the same reason the two above are: the /branch/library/ spelling
+	     answers 302, and a module script has to clear CORS on every hop. -->
+	<script type="module" src="https://sites.pazer.build/js-snippets/@library/ui/perf-graph.js"></script>
 	<link rel="stylesheet" href="/dashboard.css">
 </head>
 <body>
@@ -57,9 +62,12 @@
 					<div class="bars" id="routes"></div>
 				</div>
 				<div>
-					<h3>request rate</h3>
-					<svg id="rate-chart" viewBox="0 0 320 90" preserveAspectRatio="none" role="img"
-						aria-label="requests per second over the last few minutes"></svg>
+					<h3>live</h3>
+					<!-- One sample a second, so the default history of 240 is the
+					     last four minutes. Each element owns its own scale. -->
+					<perf-graph id="g-rate" label="requests" unit="/s" height="72"></perf-graph>
+					<perf-graph id="g-inflight" label="in flight" unit="" min="0" compact></perf-graph>
+					<perf-graph id="g-memory" label="heap" unit="MiB" min="0" compact></perf-graph>
 					<p class="muted" id="rate-label">waiting for a second sample</p>
 				</div>
 			</div>

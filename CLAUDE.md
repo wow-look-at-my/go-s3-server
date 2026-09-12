@@ -20,6 +20,7 @@ Do NOT use `go build`, `go test`, or any bare `go` commands. Always use `go-tool
 - `docs/eviction.md` — the disk cache is an LRU bounded by size: what "last used" means, the two-walk sweep, and the sweep schedule.
 - `docs/module-index-guard.md` — why a Go module index is refused, how the verdict is reached, and what it costs.
 - `docs/look-ahead.md` — why the blocking path carries only what the build asked for, where the speculative fetching runs instead, and the zstd wire codec.
+- `docs/index-wire-size.md` — what can shrink /_index: why compressing the hashes cannot, and what the two approaches that can would cost.
 
 ## Project layout
 

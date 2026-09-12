@@ -8,7 +8,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	github.com/wow-look-at-my/go-containers v0.0.0-20260826161058-40a3d1ef3d41 // go-toolchain:auto-branch
-	github.com/wow-look-at-my/go-s3-server/cacheclient v0.0.0-20260911210245-00f6b5d658c0 // go-toolchain:auto-branch
+	github.com/wow-look-at-my/go-s3-server/cacheclient v0.0.0-20260912002528-8d18df8e48f1 // go-toolchain:auto-branch
 	golang.org/x/sys v0.35.0
 )
 

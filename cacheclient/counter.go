@@ -27,11 +27,34 @@ func (c *AtomicCounter) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// CacheStats tracks get/put counters for a single cache layer.
+// AtomicBytes is a byte total with atomic access and JSON support. A build
+// moves more than a uint32 holds, so this counter is wider than the others.
+type AtomicBytes struct{ v atomic.Uint64 }
+
+func (c *AtomicBytes) Add(delta uint64) { c.v.Add(delta) }
+func (c *AtomicBytes) Load() uint64     { return c.v.Load() }
+func (c *AtomicBytes) Store(val uint64) { c.v.Store(val) }
+
+func (c *AtomicBytes) MarshalJSON() ([]byte, error) { return json.Marshal(c.v.Load()) }
+
+func (c *AtomicBytes) UnmarshalJSON(data []byte) error {
+	var v uint64
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	c.v.Store(v)
+	return nil
+}
+
+// CacheStats tracks get/put counters for a single cache layer. The byte totals
+// are WIRE bytes, which is what a transfer budget is spent on: a body arrives
+// compressed and the count of objects says nothing about what that cost.
 type CacheStats struct {
-	Hits    AtomicCounter `json:"hits"`
-	Puts    AtomicCounter `json:"puts"`
-	Corrupt AtomicCounter `json:"corrupt,omitempty"` // entries evicted on a CRC mismatch
+	Hits     AtomicCounter `json:"hits"`
+	Puts     AtomicCounter `json:"puts"`
+	HitBytes AtomicBytes   `json:"hit_bytes"`
+	PutBytes AtomicBytes   `json:"put_bytes"`
+	Corrupt  AtomicCounter `json:"corrupt,omitempty"` // entries evicted on a CRC mismatch
 }
 
 // LatencyTracker records min/max/sum/count for a single operation type

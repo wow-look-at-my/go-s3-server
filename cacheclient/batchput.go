@@ -262,6 +262,7 @@ func (b *WebBackend) sendBatchPut(reqs []putReq) {
 		case ok && (res.Status == "stored" || res.Status == "conflict"):
 			// Success: keep the optimistic claim.
 			b.Stats.Puts.Increment()
+			b.Stats.PutBytes.Add(uint64(len(r.compressed)))
 			stored++
 		case ok && res.Status == "dropped":
 			// Server refused (module index); keep the claim, do NOT retry — the
@@ -319,6 +320,7 @@ func (b *WebBackend) putSingle(pr putReq) error {
 	}
 
 	b.Stats.Puts.Increment()
+	b.Stats.PutBytes.Add(uint64(len(pr.compressed)))
 	return nil
 }
 

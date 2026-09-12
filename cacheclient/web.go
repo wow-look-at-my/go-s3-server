@@ -90,8 +90,10 @@ type WebBackend struct {
 	indexAuthoritative bool
 	// indexKeysAtStart is the key count from the startup index fetch, reported in WebSummary to flag a dead remote.
 	indexKeysAtStart int
-	missesMu         sync.RWMutex
-	knownMiss        *hashSet // keys confirmed absent from remote this session
+	// indexBytes is what that fetch cost on the wire, which no hit or put total covers.
+	indexBytes AtomicBytes
+	missesMu   sync.RWMutex
+	knownMiss  *hashSet // keys confirmed absent from remote this session
 
 	// emptyBatchBackoffThreshold: after this many empty batches in a row, stop probing for the run (an unset value disables).
 	emptyBatchBackoffThreshold int          // an unset value disables the backoff

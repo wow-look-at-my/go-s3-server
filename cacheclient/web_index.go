@@ -237,6 +237,8 @@ func (b *WebBackend) fetchIndexBlob(ctx context.Context, ifNoneMatch string) ([]
 		if err != nil {
 			return nil, 0, wrapErr(err)
 		}
+		// Every process pays this before it can tell a hit from a miss.
+		b.indexBytes.Add(uint64(len(body)))
 		return body, http.StatusOK, nil
 	case http.StatusNotModified:
 		return nil, http.StatusNotModified, nil

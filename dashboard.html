@@ -20,6 +20,11 @@
 	     module script to load. -->
 	<link rel="stylesheet" href="https://sites.pazer.build/scratch_ui/scratch-ui.css">
 	<script type="module" src="https://sites.pazer.build/scratch_ui/scratch-ui.js"></script>
+	<!-- The org's graph element, imported at run time from the library site.
+	     Importing it registers <perf-graph>. This is the CANONICAL path, for
+	     the same reason the two above are: the /branch/library/ spelling
+	     answers 302, and a module script has to clear CORS on every hop. -->
+	<script type="module" src="https://sites.pazer.build/js-snippets/@library/ui/perf-graph.js"></script>
 	<link rel="stylesheet" href="/dashboard.css">
 </head>
 <body>

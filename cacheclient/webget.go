@@ -90,6 +90,7 @@ func (b *WebBackend) getIndividual(actionID, key string, h actionHash) batchResp
 	}
 
 	b.Stats.Hits.Increment()
+	b.Stats.HitBytes.Add(uint64(len(compressed)))
 	return batchResp{outputID: outputID, data: data, t: t}
 }
 

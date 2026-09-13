@@ -62,12 +62,11 @@
 					<div class="bars" id="routes"></div>
 				</div>
 				<div>
-					<h3>live</h3>
-					<!-- One sample a second, so the default history of 240 is the
-					     last four minutes. Each element owns its own scale. -->
-					<perf-graph id="g-rate" label="requests" unit="/s" height="72"></perf-graph>
-					<perf-graph id="g-inflight" label="in flight" unit="" min="0" compact></perf-graph>
-					<perf-graph id="g-memory" label="heap" unit="MiB" min="0" compact></perf-graph>
+					<h3>request rate</h3>
+					<!-- perf-graph draws itself on a canvas and pauses while hidden. -->
+					<perf-graph id="rate-chart" label="requests" unit="/s" min="0" height="90"></perf-graph>
+					<perf-graph id="hit-chart" label="hit rate" unit="%" min="0" max="100" height="64"></perf-graph>
+					<perf-graph id="inflight-chart" label="in flight" unit="" min="0" height="64"></perf-graph>
 					<p class="muted" id="rate-label">waiting for a second sample</p>
 				</div>
 			</div>
@@ -95,6 +94,7 @@
 		Numbers come from the same registry <code>/metrics</code> serves.
 	</footer>
 
-	<script src="/dashboard.js"></script>
+	<!-- A module, so it runs after scratch-ui.js has defined the components it reads. -->
+	<script type="module" src="/dashboard.js"></script>
 </body>
 </html>

@@ -85,7 +85,8 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		a.Label = objectLabel(meta.Metadata)
 	}
 	getRequestsTotal.WithLabelValues("hit").Inc()
-	recordObject(agg, provenanceOf(r), meta.Metadata, meta.Size, false, false)
+	prov := provenanceOf(r)
+	recordObject(agg, prov, meta.Metadata, meta.Size, false, false)
 
 	emitObjectHeaders(w, meta)
 	w.WriteHeader(200)
@@ -100,12 +101,21 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	// *fs.PathError; anything else is the peer going away mid-download, which
 	// is normal and not logged. (f stays the direct copy source so the
 	// ResponseWriter's ReadFrom/sendfile fast path remains available.)
-	if _, err := io.Copy(w, f); err != nil {
+	n, err := io.Copy(w, f)
+	if err != nil {
 		var pathErr *fs.PathError
 		if errors.As(err, &pathErr) {
 			log.Printf("get %q: body read failed mid-copy (truncated response; check storage health): %v", key, err)
 		}
 	}
+	// The bandwidth chart is a record of what crossed the wire, so it is
+	// counted from the copy and not from the object's size on disk: a download a
+	// client abandons half way sent half the bytes, and the build that fetches
+	// the object again pays for the rest.
+	bandwidthFromContext(r.Context()).record(bandwidthSample{
+		module: projectOf(meta.Metadata, prov),
+		bytes:  n,
+	})
 }
 
 // emitObjectHeaders writes an object's user metadata under both the native
@@ -302,6 +312,27 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("ETag", etag)
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(blob))
+	// An index fetch is a series of its own: the blob belongs to no module (a
+	// whole fleet reads the same one), so its bytes are accounted for on their
+	// own and never against the module of the key that asked for it. A
+	// conditional request answered 304 puts no body on the wire, so there is
+	// nothing to count for it.
+	bandwidthFromContext(r.Context()).record(bandwidthSample{
+		index: true,
+		bytes: servedBodyBytes(w, int64(len(blob))),
+	})
+}
+
+// servedBodyBytes is what the response body actually carried, when the writer
+// kept count of it: the server's own statusRecorder always does, which is what
+// tells a full index download apart from a 304 that carried none. A writer that
+// keeps no count (a handler driven directly in a test) is taken to have sent the
+// body it was handed.
+func servedBodyBytes(w http.ResponseWriter, body int64) int64 {
+	if rec, ok := w.(*statusRecorder); ok {
+		return rec.bytesWritten.Load()
+	}
+	return body
 }
 
 // objectLabel builds a short human-readable description of a cache entry from its stored

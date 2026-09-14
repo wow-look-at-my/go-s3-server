@@ -12,18 +12,17 @@ import (
 // outputIDMetaKey is the metadata field holding the GOCACHEPROG outputID -- the
 // content address of a cached object. The go-toolchain client sends it on every
 // PUT (as X-Cache-Meta-Outputid) and requires it on every GET: without it the
-// client cannot verify the body, so it discards the download and rebuilds. Every
-// legitimately stored object therefore carries one.
+// client cannot verify the body, so it discards the download and rebuilds.
 const outputIDMetaKey = "outputid"
 
 // missingOutputID reports whether a stored object lacks a usable outputID.
 //
-// Such an object is a relic of an earlier cache-data iteration, or one whose
-// xattrs were stripped by a data-dir copy/restore that did not preserve them. It
-// can never satisfy a client (the outputID is mandatory), yet its key stays
-// advertised in /_index, so every client skips re-uploading it -- turning each
-// build that needs the action into a permanent cache miss. The fix is to repair
-// it, not evict it; see ensureOutputID.
+// Such an object is a relic of an earlier cache-data iteration, or a single
+// whose xattrs were stripped by a data-dir copy/restore that did not preserve
+// them. It can never satisfy a client (the outputID is mandatory), yet its key
+// stays advertised in /_index, so every client skips re-uploading it -- turning
+// each build that needs the action into a permanent cache miss. The fix is to
+// repair it, not evict it; see ensureOutputID.
 func missingOutputID(meta *ObjectMeta) bool {
 	return meta == nil || meta.Metadata[outputIDMetaKey] == ""
 }
@@ -33,9 +32,6 @@ func missingOutputID(meta *ObjectMeta) bool {
 // usable as a cache hit. On success meta is updated to carry the outputid so the
 // caller can serve it.
 //
-// f, when non-nil, is the caller's already-open serve handle (the GET path):
-// the repair hashes and stamps THAT descriptor and rewinds it to byte 0, so the
-// outputid the caller emits always describes the exact bytes it then streams.
 // Callers without an open handle (the batch paths) pass nil and a private
 // handle is used — hashed and stamped through the same fd.
 //
@@ -46,8 +42,7 @@ func missingOutputID(meta *ObjectMeta) bool {
 // good body, discard its audit xattrs (uploader/when/where), drop the key from
 // /_index, and force a re-upload: an unauditable churn pipeline. Reconstructing
 // the outputid in place keeps the bytes and the forensic trail, leaves the key
-// indexed, and makes the object an immediate hit. The repair is one-time -- the
-// next read sees the outputid and skips this path.
+// indexed, and makes the object an immediate hit.
 //
 // If the body cannot be decompressed (genuinely corrupt or non-conforming, and
 // unusable by the client regardless), it returns false WITHOUT deleting
@@ -73,12 +68,9 @@ func ensureOutputID(storage *Storage, key string, meta *ObjectMeta, f *os.File) 
 		// outputid cannot be reconstructed, so this key can NEVER serve a hit.
 		// Leaving it advertised in /_index would wedge it permanently: every
 		// client is told to skip re-uploading an indexed key, yet every fetch is
-		// a forced miss. Drop the key from the index (the FILE stays on disk for
-		// forensics and the normal eviction policy) so the next consumer that
-		// computes this action re-uploads a good body, overwriting the bad one.
-		// Note the startup/sweep-end index rebuild re-advertises it from disk;
-		// the next read then de-advertises it again — bounded churn, strictly
-		// better than a permanent forced miss.
+		// a forced miss. Note the startup/sweep-end index rebuild re-advertises
+		// it from disk; the next read then de-advertises it again — bounded
+		// churn, strictly better than a permanent forced miss.
 		if storage.Index != nil {
 			storage.Index.Remove(key)
 		}
@@ -114,10 +106,7 @@ func ensureOutputID(storage *Storage, key string, meta *ObjectMeta, f *os.File) 
 // forced-miss wedge. Stamping the hashed fd is correct by construction — worst
 // case the stamp lands on a just-unlinked inode and dies with it.
 //
-// f, when non-nil, is the caller's serve handle: it is hashed from byte 0 and
-// rewound to byte 0 before returning (a failed rewind is an error, since the
-// caller would otherwise stream a consumed fd). When nil, a private handle is
-// opened and closed here.
+// When nil, a private handle is opened and closed here.
 func reconstructOutputID(storage *Storage, key string, f *os.File) (string, error) {
 	callerOwned := f != nil
 	if !callerOwned {
@@ -134,8 +123,6 @@ func reconstructOutputID(storage *Storage, key string, f *os.File) (string, erro
 	}
 
 	h := sha256.New()
-	// The codec comes off the body's own frame magic, so a store holding both
-	// zstd and lz4 objects heals either one.
 	zr, release, codec, decErr := decompressingReader(f)
 	if decErr != nil {
 		return "", fmt.Errorf("decompress body: %w", decErr)
@@ -150,8 +137,7 @@ func reconstructOutputID(storage *Storage, key string, f *os.File) (string, erro
 	_, copyErr := io.Copy(h, zr)
 	release()
 	if callerOwned {
-		// Rewind the caller's handle so the serve path streams from byte 0. If
-		// the rewind fails the stream is poisoned, so the repair fails (the
+		// If the rewind fails the stream is poisoned, so the repair fails (the
 		// caller reports a miss rather than serving a consumed fd).
 		if _, seekErr := f.Seek(0, io.SeekStart); seekErr != nil {
 			return "", fmt.Errorf("rewind after hash: %w", seekErr)
@@ -163,10 +149,10 @@ func reconstructOutputID(storage *Storage, key string, f *os.File) (string, erro
 	outputID := hex.EncodeToString(h.Sum(nil))
 
 	// Mismatch tripwire: this repair only runs when the metadata read reported
-	// no outputid, so finding a DIFFERENT one on the inode now means someone
-	// stamped a value that disagrees with the body hash — the historical
-	// stale-stamp corruption replaying. Count it (and repair it: the computed
-	// value is correct for this inode by construction).
+	// no outputid, so finding a DIFFERENT a single on the inode now means
+	// someone stamped a value that disagrees with the body hash — the
+	// historical stale-stamp corruption replaying. Count it (and repair it:
+	// the computed value is correct for this inode by construction).
 	if current := getMetadataValueFd(f, outputIDMetaKey); current != "" && current != outputID {
 		outputIDMismatchTotal.Inc()
 		log.Printf("self-heal: outputid on %q disagrees with its body hash (found %.8s..., recomputed %.8s...); repairing", key, current, outputID)

@@ -22,8 +22,8 @@ func writeConfigFile(t *testing.T, dir, name string, cfg map[string]any) string 
 	return path
 }
 
-// testCredentials is the one credential every config fixture needs to pass
-// validation, as the value writeConfigFile marshals.
+// testCredentials is the a single credential every config fixture needs to
+// pass validation, as the value writeConfigFile marshals.
 func testCredentials(username, password any) []any {
 	return []any{map[string]any{"username": username, "password": password}}
 }

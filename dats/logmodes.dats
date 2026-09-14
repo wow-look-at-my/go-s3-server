@@ -3,9 +3,9 @@ $schema: https://github.com/wow-look-at-my/dats/schema.json
 shared:
 	files:
 		serve.sh: |
-			# Runs one check script against a server this starts, then prints the
-			# server's own log so the test can assert on what it wrote.
-			# usage: serve.sh <config.json> <port> <check.sh>
+			# Runs a single check script against a server this starts, then
+			# prints the server's own log so the test can assert on what it
+			# wrote. usage: serve.sh <config.json> <port> <check.sh>
 			set -euo pipefail
 			config="$1"
 			port="$2"
@@ -27,16 +27,16 @@ shared:
 			fi
 			# This suite asserts on what the server wrote, so the log goes to
 			# stdout either way. A dead server is still named: a check that
-			# cannot reach one which HAD answered otherwise reports only its
-			# own exit status.
+			# cannot reach a single which HAD answered otherwise reports only
+			# its own exit status.
 			status=0
 			bash "$check" || status=$?
 			if [ "$status" -ne 0 ]; then
 				echo "the check exited $status" >&2
 				kill -0 "$server" 2>/dev/null || echo "the server had already exited" >&2
 			fi
-			# The aggregator emits a second once it has ended, so give the
-			# ticker a beat before reading the log.
+			# The aggregator emits another a single time it has ended, so
+			# give the ticker a beat before reading the log.
 			sleep 1.5
 			sed 's/^/log /' "$log"
 			exit "$status"
@@ -51,8 +51,8 @@ tests:
 				set -euo pipefail
 				base=http://127.0.0.1:19050/test-cache
 				auth=testuser:testpass
-				# Two stores and two reads of a plain key, carrying the metadata a
-				# real client sends: the module it built and the uncompressed size.
+				# Stores and reads of a plain key, carrying the metadata a real
+				# client sends: the module it built and the uncompressed size.
 				curl -sf -u "$auth" -X PUT --data-binary '0123456789' \
 					-H 'X-Cache-Meta-Module: example.com/alpha' \
 					-H 'X-Cache-Meta-Body-Size: 40' \
@@ -95,7 +95,7 @@ tests:
 			- "req method=PUT path=/test-cache/log/v1verbose00000001"
 			- "batch_get requested=1"
 		"!stdout":
-			# The batch summary rides the request line. A second line about the
+			# The batch summary rides the request line. another line about the
 			# same request is the duplication this mode had.
 			- "batch get: requested"
 			- "cache 1s:"

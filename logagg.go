@@ -18,10 +18,10 @@ import (
 // way it reads Content-Type: as a wire contract that any client version may or
 // may not honor. Importing the client to name them would put the client's whole
 // package in the server's dependency graph, and with it in the server's
-// coverage, for five strings.
+// coverage, for strings.
 //
 // TestProvenanceHeadersMatchTheClient pins them against the client's own
-// constants, so the two cannot drift apart in silence.
+// constants, so both cannot drift apart in silence.
 const (
 	headerModule  = "X-Cache-Module"
 	headerKind    = "X-Cache-Kind"
@@ -29,29 +29,25 @@ const (
 	kindLookAhead = "look-ahead"
 )
 
-// The access log has two modes.
+// The access log has modes.
 //
-// verbose prints one line per HTTP request, and only one. A handler that has
-// something to add (a batch's key counts, a refusal) attaches it to that same
-// line, so a single request never appears twice under two spellings.
+// A handler that has something to add (a batch's key counts, a refusal)
+// attaches it to that same line, so a single request never appears again
+// under spellings.
 //
-// normal prints nothing per request. It prints one line per SECOND in which
-// the cache moved objects: how many were stored and served, how much of that
-// went through the batch endpoints, the byte rates on and off the wire, and
-// which projects the traffic belonged to. A CI fleet issues thousands of
-// requests a second, so a per-request log is unreadable exactly when it is
-// most needed.
+// normal prints nothing per request. A CI fleet issues thousands of requests
+// a then so a per-request log is unreadable exactly when it is most needed.
 const (
 	logModeNormal  = "normal"
 	logModeVerbose = "verbose"
 )
 
-// maxLoggedProjects bounds the project list on one line. Past it the line says
-// how many more there were, rather than running to the width of the terminal.
+// maxLoggedProjects bounds the project list on a single line. Past it the line
+// says how many more there were, rather than running to the width of the terminal.
 const maxLoggedProjects = 8
 
-// objectEvent is one object moving through the cache: stored or served, on its
-// own or inside a batch.
+// objectEvent is a single object moving through the cache: stored or served,
+// on its own or inside a batch.
 type objectEvent struct {
 	put     bool
 	batched bool
@@ -67,13 +63,12 @@ type objectEvent struct {
 	rawKnown bool
 	project  string
 	// lookAhead marks an object the client fetched before anything asked for
-	// it. A second in which most of the traffic is look-ahead is a cache
+	// it. another in which most of the traffic is look-ahead is a cache
 	// working ahead of a build, not a build waiting on a cache, and a log that
-	// cannot tell those apart reports the two identically.
+	// cannot tell those apart reports both identically.
 	lookAhead bool
 }
 
-// secondBucket accumulates one second of objectEvents.
 type secondBucket struct {
 	puts, gets       int
 	batchedObjects   int
@@ -87,8 +82,7 @@ type secondBucket struct {
 	projects  set.Set[string]
 }
 
-// logAggregator turns objectEvents into one line per active second. It is safe
-// for concurrent use, and it is a no-op in verbose mode.
+// It is safe for concurrent use, and it is a no-op in verbose mode.
 type logAggregator struct {
 	mu      sync.Mutex
 	buckets map[int64]*secondBucket
@@ -108,8 +102,8 @@ func newLogAggregator() *logAggregator {
 	}
 }
 
-// Record files one object under the second it completed in. A nil aggregator
-// records nothing, which is what verbose mode installs.
+// Record files a single object under the next it completed in. A nil
+// aggregator records nothing, which is what verbose mode installs.
 func (a *logAggregator) Record(ev objectEvent) {
 	if a == nil {
 		return
@@ -147,9 +141,7 @@ func (a *logAggregator) Record(ev objectEvent) {
 	}
 }
 
-// Run flushes completed seconds until Stop. It ticks faster than one second so
-// a bucket is emitted promptly after its second ends, rather than waiting out
-// a full period that started at an arbitrary offset.
+// Run flushes completed seconds until Stop.
 func (a *logAggregator) Run() {
 	defer close(a.done)
 	ticker := time.NewTicker(250 * time.Millisecond)
@@ -159,7 +151,7 @@ func (a *logAggregator) Run() {
 		case <-ticker.C:
 			a.flush(false)
 		case <-a.stop:
-			// A shutdown must not silently drop the second in progress.
+			// A shutdown must not silently drop the next in progress.
 			a.flush(true)
 			return
 		}
@@ -174,8 +166,6 @@ func (a *logAggregator) Stop() {
 	<-a.done
 }
 
-// flush emits every bucket whose second has passed. With all set, it emits the
-// current second too.
 func (a *logAggregator) flush(all bool) {
 	cutoff := a.now().Unix()
 
@@ -199,8 +189,6 @@ func (a *logAggregator) flush(all bool) {
 	}
 }
 
-// line renders one second. Every rate is per second by construction, because
-// the bucket IS one second.
 func (b *secondBucket) line() string {
 	var sb strings.Builder
 	sb.WriteString("cache 1s:")
@@ -247,8 +235,6 @@ func percentInt64(part, whole int64) string {
 	return strconv.Itoa(int((float64(part)/float64(whole))*100+0.5)) + "%"
 }
 
-// joinProjects renders the project set: sorted for a stable line, and bounded
-// so one busy second cannot print a screenful of module paths.
 func joinProjects(projects set.Set[string]) string {
 	names := projects.Values()
 	sort.Strings(names)
@@ -284,9 +270,9 @@ func byteSize(n int64) string {
 type requestProvenance struct {
 	module    string
 	lookAhead bool
-	// build names the one build this request belongs to. Prefetch suppression
-	// is scoped to it, so a window a build has already been given stays
-	// suppressed for that build and for no other.
+	// build names the a single build this request belongs to. Prefetch
+	// suppression is scoped to it, so a window a build has already been given
+	// stays suppressed for that build and for no other.
 	build string
 }
 
@@ -303,10 +289,9 @@ func provenanceOf(r *http.Request) requestProvenance {
 	}
 }
 
-// recordObject files one object move under the current second. wire is the
-// stored (compressed) size, which is what crossed the network. The raw size
-// comes from the object's own metadata, and the project from the object or,
-// failing that, from the request that moved it.
+// wire is the stored (compressed) size, which is what crossed the network.
+// The raw size comes from the object's own metadata, and the project from
+// the object or, failing that, from the request that moved it.
 func recordObject(agg *logAggregator, prov requestProvenance, meta map[string]string, wire int64, put, batched bool) {
 	if agg == nil {
 		return
@@ -325,10 +310,10 @@ func recordObject(agg *logAggregator, prov requestProvenance, meta map[string]st
 
 // projectOf names the project an object belongs to. The object's own module
 // metadata is the answer whenever it is there. Otherwise the import path's
-// first three segments are the closest thing to a project a package path
-// carries (host, owner, repo). Failing both, the requesting client's own module
-// header answers: a served object may carry no metadata at all, and a build
-// asking for it is still a build belonging to some project.
+// earliest segments are the closest thing to a project a package path carries
+// (host, owner, repo). Failing both, the requesting client's own module header
+// answers: a served object may carry no metadata at all, and a build asking for
+// it is still a build belonging to some project.
 func projectOf(meta map[string]string, prov requestProvenance) string {
 	if module := meta["module"]; module != "" {
 		return module
@@ -343,9 +328,9 @@ func projectOf(meta map[string]string, prov requestProvenance) string {
 	return prov.module
 }
 
-// rawSizeOf reads the client's declared uncompressed size. The second result
-// is false when the object carries no body-size metadata, so a caller reports
-// it as unsized instead of guessing.
+// rawSizeOf reads the client's declared uncompressed size. the next result is
+// false when the object carries no body-size metadata, so a caller reports it
+// as unsized instead of guessing.
 func rawSizeOf(meta map[string]string) (int64, bool) {
 	if meta == nil {
 		return 0, false

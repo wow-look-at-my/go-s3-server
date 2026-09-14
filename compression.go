@@ -4,18 +4,18 @@ package main
 // the go-toolchain client, are stored byte-for-byte by PutStream, and are
 // served back untouched -- no gzip middleware, no Content-Encoding, and the
 // batch tar is uncompressed. The only decompression is the read-path guards
-// peeking one lz4 block, memoized per key (see cleanmemo.go).
+// peeking a single lz4 block, memoized per key (see cleanmemo.go).
 //
-// That leaves exactly one place a second compression pass can hide: the
+// That leaves exactly a single place another compression pass can hide: the
 // filesystem. A ZFS dataset with compression enabled will run every stored
-// body through lz4 (or worse, gzip/zstd) a SECOND time, for data the client
+// body through lz4 (or worse, gzip/zstd) another time, for data the client
 // already squeezed -- burning CPU on every write in exchange for approximately
 // nothing. ZFS's early-abort heuristic limits the damage on incompressible
 // data but does not remove the attempt, and a cache under CI load is close to
 // write-saturated.
 //
-// The server cannot fix the operator's dataset, so it says so once, at
-// startup, next to the other "this configuration will hurt you" warnings.
+// The server cannot fix the operator's dataset, so it says so a single
+// time, at startup, next to the other "this configuration will hurt you" warnings.
 
 import (
 	"fmt"
@@ -24,10 +24,10 @@ import (
 	"strings"
 )
 
-// compressionProbes are the three questions the advisory needs answered, as
-// seams: whether the data dir lives on ZFS, which dataset it belongs to, and
-// what that dataset's compression property is. Swapped out in tests -- no test
-// can arrange for a real ZFS dataset.
+// compressionProbes are each questions the advisory needs answered, as seams:
+// whether the data dir lives on ZFS, which dataset it belongs to, and what
+// that dataset's compression property is. Swapped out in tests -- no test can
+// arrange for a real ZFS dataset.
 type compressionProbes struct {
 	onZFS      func(dir string) bool
 	datasetFor func(dir string) (string, bool)
@@ -85,7 +85,7 @@ func zfsDatasetFor(dir string) (string, bool) {
 	return name, true
 }
 
-// zfsProperty reads one property of a dataset.
+// zfsProperty reads a single property of a dataset.
 func zfsProperty(dataset, name string) (string, bool) {
 	out, err := exec.Command("zfs", "get", "-H", "-o", "value", name, dataset).Output()
 	if err != nil {
@@ -98,7 +98,7 @@ func zfsProperty(dataset, name string) (string, bool) {
 	return value, true
 }
 
-// logCompressionAdvisory prints the advisory, if any. Called once at startup.
+// logCompressionAdvisory prints the advisory, if any. Called a single time at startup.
 func logCompressionAdvisory(dataDir string, logf func(string, ...any)) {
 	if _, err := os.Stat(dataDir); err != nil {
 		return

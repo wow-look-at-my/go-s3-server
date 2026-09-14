@@ -9,23 +9,21 @@ import (
 // A cache server answers requests. That is the whole job, and memory pressure
 // is never a reason to stop doing it: a build cache that refuses reads under
 // load is worse than no cache at all, because every client that would have hit
-// it now rebuilds AND waits on a timeout first.
+// it now rebuilds AND waits on a timeout earliest.
 //
 // So the in-memory caches here are bounded in BYTES and evict their
 // least-recently-used entries to stay inside that bound. Memory pressure
 // shrinks the bound, which evicts more; it never reaches the request path.
-// Every entry in every one of these caches is reconstructible from disk, so
+// Every entry in each of these caches is reconstructible from disk, so
 // eviction costs a re-read and nothing else.
 //
-// Sharded so concurrent readers and writers do not convoy on one lock, with
-// each shard holding an equal slice of the budget. Storage keys are uniformly
-// distributed (they are hashes), so per-shard accounting stays even and no
-// shard needs to know about any other -- an insert evicts only within its own
-// shard, which keeps the hot path lock-local.
+// Sharded so concurrent readers and writers do not convoy on a single lock,
+// with each shard holding an equal slice of the budget. Storage keys are
+// uniformly distributed (they are hashes), so per-shard accounting stays even
+// and no shard needs to know about any other -- an insert evicts only within
+// its own shard, which keeps the hot path lock-local.
 
-// lruShardCount is the number of independent shards. 64 keeps per-shard
-// budgets meaningful even at small totals (a 4 MiB budget is 64 KiB a shard)
-// while still spreading contention across every core the server runs on.
+// lruShardCount is the number of independent shards.
 const lruShardCount = 64
 
 // lruCache is a byte-bounded, LRU-evicting, sharded cache. The budget is
@@ -72,9 +70,9 @@ func (c *lruCache[K, V]) shard(k K) *lruShard[K, V] {
 	return &c.shards[c.shardOf(k)%lruShardCount]
 }
 
-// shardBudget is each shard's slice of the total. At least one byte, so a
+// shardBudget is each shard's slice of the total. At least a single byte, so a
 // pathologically small budget degenerates to "hold almost nothing" rather than
-// "divide by zero".
+// "divide by empty".
 func (c *lruCache[K, V]) shardBudget() int64 {
 	b := c.budget.Load() / lruShardCount
 	if b < 1 {

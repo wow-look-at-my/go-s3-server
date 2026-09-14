@@ -27,6 +27,7 @@ func withBudget(t *testing.T, budget int64, f func()) {
 // guard installed -- so the server and the GC agree on one number instead of
 // computing two.
 func TestDetectMemoryBudget_UsesRuntimeLimit(t *testing.T) {
+	t.Serial() // the memory limit and cgroupMemoryLimitPaths are process state
 	prev := debug.SetMemoryLimit(-1)
 	t.Cleanup(func() { debug.SetMemoryLimit(prev) })
 
@@ -49,6 +50,7 @@ func TestDetectMemoryBudget_UsesRuntimeLimit(t *testing.T) {
 // injected guard, including both spellings of "no limit": v2's literal "max"
 // and v1's saturated sentinel.
 func TestReadCgroupMemoryLimit(t *testing.T) {
+	t.Serial() // cgroupMemoryLimitPaths is package state
 	for _, tc := range []struct {
 		name    string
 		content string
@@ -285,6 +287,7 @@ func TestMemController_ShrinkEvictsRealCaches(t *testing.T) {
 // cgroup number -- a ceiling nothing enforced, which reads as "GOMEMLIMIT is
 // not set" to anyone diagnosing an OOM from the metric.
 func TestMemoryBudgetIsTheEnforcedCeiling(t *testing.T) {
+	t.Serial() // the memory limit and memoryBudget are process state
 	prev := debug.SetMemoryLimit(-1)
 	t.Cleanup(func() { debug.SetMemoryLimit(prev) })
 

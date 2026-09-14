@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -176,8 +175,8 @@ func TestEmptyBatchBackoffNoticeIsRoutine(t *testing.T) {
 	srv := emptyIndexServer(t, &batchGets, &puts, nil)
 	defer srv.Close()
 
-	var info, warn []string
-	SetLogger(levelLogger{&info, &warn})
+	logs := &levelLogger{}
+	SetLogger(logs)
 	t.Cleanup(func() { SetLogger(nil) })
 
 	b, err := NewWebBackend(WebConfig{
@@ -192,8 +191,6 @@ func TestEmptyBatchBackoffNoticeIsRoutine(t *testing.T) {
 		require.NoError(t, err)
 	}
 	require.True(t, b.batchProbingDisabled.Load())
-	require.Contains(t, strings.Join(info, "\n"), "empty batches", "the notice is routine, so it is Info")
-	for _, w := range warn {
-		require.NotContains(t, w, "empty batches", "the notice must not reach a compared stderr")
-	}
+	require.Contains(t, logs.Info(), "empty batches", "the notice is routine, so it is Info")
+	require.NotContains(t, logs.Warn(), "empty batches", "the notice must not reach a compared stderr")
 }

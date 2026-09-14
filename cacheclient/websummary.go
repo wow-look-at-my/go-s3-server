@@ -65,6 +65,9 @@ func (ws WebSummary) MissTotal() uint32 {
 // individually from live atomics, so a snapshot taken while operations are in
 // flight is approximate; taken after Close it is exact.
 func (b *WebBackend) SummarySnapshot() WebSummary {
+	b.keysMu.RLock()
+	indexKeys, authoritative := b.indexKeysAtStart, b.indexAuthoritative
+	b.keysMu.RUnlock()
 	return WebSummary{
 		Hits:                b.Stats.Hits.Load(),
 		Puts:                b.Stats.Puts.Load(),
@@ -88,8 +91,8 @@ func (b *WebBackend) SummarySnapshot() WebSummary {
 		PutSkippedKnown:     b.PutSkippedKnown.Load(),
 		PutRefusedModIndex:  b.PutRefusedModIndex.Load(),
 		PutRefusedBuildID:   b.PutRefusedBuildID.Load(),
-		IndexKeys:           b.indexKeysAtStart,
-		IndexAuthoritative:  b.indexAuthoritative,
+		IndexKeys:           indexKeys,
+		IndexAuthoritative:  authoritative,
 		Batch:               b.batchTiming.snapshot(),
 	}
 }

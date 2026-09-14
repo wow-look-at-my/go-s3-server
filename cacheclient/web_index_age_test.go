@@ -87,7 +87,7 @@ func TestOldDiskCopyIsRevalidatedAndTouched(t *testing.T) {
 
 	b, err := NewWebBackend(cfg)
 	require.NoError(t, err)
-	b.ensureIndex()
+	b.awaitIndex()
 	require.Equal(t, int32(1), f.hits304.Load(), "a copy past the max age is revalidated")
 	require.True(t, b.indexAuthoritative)
 	st, err := os.Stat(path)
@@ -96,13 +96,13 @@ func TestOldDiskCopyIsRevalidatedAndTouched(t *testing.T) {
 
 	third, err := NewWebBackend(cfg)
 	require.NoError(t, err)
-	third.ensureIndex()
+	third.awaitIndex()
 	require.Equal(t, int32(2), f.hitsAny.Load(), "the touched copy is served with no request")
 }
 
 // TestIndexMaxAgeDefault pins what a consumer gets without setting it.
 func TestIndexMaxAgeDefault(t *testing.T) {
-	require.Equal(t, time.Minute, IndexMaxAgeDefault)
+	require.Equal(t, 10*time.Minute, IndexMaxAgeDefault)
 	b, err := NewWebBackend(WebConfig{Bucket: "bk", Endpoint: "http://127.0.0.1:1", AccessKey: "k", SecretKey: "s", IndexMaxAge: IndexMaxAgeDefault})
 	require.NoError(t, err)
 	require.Equal(t, IndexMaxAgeDefault, b.indexMaxAge)

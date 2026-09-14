@@ -12,11 +12,15 @@ func NewBareBackend(prefix string) *WebBackend {
 	if prefix == "" {
 		prefix = "go-buildcache/"
 	}
-	return &WebBackend{
-		prefix:    prefix,
-		keys:      newHashSet(0),
-		knownMiss: newHashSet(0),
+	b := &WebBackend{
+		prefix:      prefix,
+		keys:        newHashSet(0),
+		knownMiss:   newHashSet(0),
+		indexTiming: defaultIndexTiming(),
 	}
+	// The index is spent up front: there is no remote to load one from.
+	b.indexOnce.Do(func() {})
+	return b
 }
 
 // MarkPresent records that the remote holds actionID, the same claim a Put
@@ -28,7 +32,7 @@ func (b *WebBackend) MarkPresent(actionID string) {
 	}
 	b.ensureIndex()
 	b.keysMu.Lock()
-	b.keys.Add(h)
+	b.addKeyLocked(h)
 	b.keysMu.Unlock()
 }
 

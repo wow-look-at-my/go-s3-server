@@ -77,7 +77,8 @@ main {
 	grid-template-areas:
 		"tiles tiles tiles tiles"
 		"reads traffic tripwires config"
-		"memory traffic tripwires config";
+		"memory traffic tripwires config"
+		"bandwidth bandwidth bandwidth bandwidth";
 	align-items: start;
 }
 #tiles { grid-area: tiles; }
@@ -86,6 +87,9 @@ main {
 .tripwires { grid-area: tripwires; }
 .memory { grid-area: memory; }
 .config { grid-area: config; }
+/* The bandwidth chart gets the full width: it is the one panel whose subject is
+   a shape rather than a number, and a stack of modules needs the room. */
+.bandwidth { grid-area: bandwidth; }
 @media (max-width: 1100px) {
 	main {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -93,13 +97,14 @@ main {
 			"tiles tiles"
 			"reads traffic"
 			"tripwires memory"
-			"config config";
+			"config config"
+			"bandwidth bandwidth";
 	}
 }
 @media (max-width: 720px) {
 	main {
 		grid-template-columns: minmax(0, 1fr);
-		grid-template-areas: "tiles" "reads" "traffic" "tripwires" "memory" "config";
+		grid-template-areas: "tiles" "reads" "traffic" "tripwires" "memory" "config" "bandwidth";
 	}
 }
 
@@ -185,7 +190,24 @@ perf-graph {
 	--perf-graph-font: var(--font-mono);
 }
 perf-graph + perf-graph { border-top: 0; }
-#rate-label { margin: var(--sp-2) 0 0; font-family: var(--font-mono); font-size: var(--fs-tiny); }
+
+/* The bandwidth chart draws on the page's own canvas, so it is laid out here
+   and coloured by the script from these same tokens: --accent for the module
+   stack, --text-muted for the index series, which is the one series that is not
+   a module. No colour is named in this file, here as everywhere above. */
+#bandwidth-chart {
+	display: block;
+	width: 100%;
+	height: 140px;
+	border: 1px solid var(--border);
+}
+/* A stack needs a key. Each entry carries the swatch the canvas drew that band
+   in, so the legend and the plot cannot disagree about which band is which. */
+.legend { display: flex; flex-wrap: wrap; gap: var(--sp-1) var(--sp-4); margin-top: var(--sp-2); }
+.legend .item { display: flex; align-items: center; gap: var(--sp-1); font-size: var(--fs-tiny); color: var(--text-muted); }
+.legend .swatch { width: 9px; height: 9px; flex: none; border: 1px solid var(--border); }
+.legend .n { color: var(--text); }
+#rate-label, #bandwidth-note { margin: var(--sp-2) 0 0; font-family: var(--font-mono); font-size: var(--fs-tiny); }
 
 footer {
 	padding: 0 var(--sp-5) var(--sp-3);

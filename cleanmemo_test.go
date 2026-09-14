@@ -17,12 +17,8 @@ import (
 // TestCleanMemo_SkipsReprobeUntilInvalidated proves the known-clean memo does
 // what it claims on the live GET path:
 //
-//  1. the first GET of a clean lz4 object probes it and memoizes the verdict;
-//  2. a subsequent GET SKIPS the probe entirely -- demonstrated by swapping the
-//     on-disk body for a module index behind storage's back (no PutStream, so
-//     no invalidation) and observing the guard NOT fire;
-//  3. an overwrite through PutStream invalidates the memo, so the next GET
-//     re-probes the new body and the guard fires again.
+//	an overwrite through PutStream invalidates the memo, so the next GET
+//	re-probes the new body and the guard fires again.
 func TestCleanMemo_SkipsReprobeUntilInvalidated(t *testing.T) {
 	if !inOwnProcess(t) {
 		return
@@ -45,7 +41,7 @@ func TestCleanMemo_SkipsReprobeUntilInvalidated(t *testing.T) {
 	require.NoError(t, storage.PutStream(key, bytes.NewReader(lz4Compress(t, raw)), meta, nil))
 	require.False(t, storage.keyKnownClean(hash), "a fresh PUT must not be pre-memoized")
 
-	// First GET probes and memoizes.
+	// Earliest GET probes and memoizes.
 	resp := doRequest(t, ts, "GET", "/testbucket/"+key, nil, nil)
 	require.Equal(t, 200, resp.StatusCode)
 	resp.Body.Close()
@@ -118,11 +114,11 @@ func TestCleanMemo_ForgetOnEviction(t *testing.T) {
 	require.False(t, storage.keyKnownClean(hash), "eviction must drop the memo entry")
 }
 
-// BenchmarkGetObjectWarmLz4 measures a repeated GET of one warm lz4 cacheprog
-// key, with and without the known-clean memo. Without the memo every GET pays
-// the module-index guard's first-block lz4 decode; with it, only the first GET
-// does. The nomemo variant simulates the old behavior by nil-ing the memo
-// (nil-safe accessors make that the exact pre-memo code path).
+// BenchmarkGetObjectWarmLz4 measures a repeated GET of a single warm lz4
+// cacheprog key, with and without the known-clean memo. Without the memo every
+// GET pays the module-index guard's earliest-block lz4 decode; with it, only
+// the earliest GET does. The nomemo variant simulates the old behavior by
+// nil-ing the memo (nil-safe accessors make that the exact pre-memo code path).
 func BenchmarkGetObjectWarmLz4(b *testing.B) {
 	for _, variant := range []string{"memo", "nomemo"} {
 		b.Run(variant, func(b *testing.B) {
@@ -157,7 +153,7 @@ func BenchmarkGetObjectWarmLz4(b *testing.B) {
 // TestCleanMemo_Bound: exceeding the limit clears the memo wholesale instead of
 // growing without bound; subsequent adds start repopulating it.
 func TestCleanMemo_Bound(t *testing.T) {
-	// A budget of four entries' worth of bytes.
+	// A budget of entries' worth of bytes.
 	memo := newCleanKeyMemo(4 * cleanEntryBytes * lruShardCount)
 
 	var hashes [6][gbciHashSize]byte
@@ -178,10 +174,9 @@ func TestCleanMemo_Bound(t *testing.T) {
 	// Shrinking the budget evicts rather than clearing: the most recently used
 	// entries survive, which is the whole point of holding less instead of
 	// holding nothing.
-	memo.SetBudget(cleanEntryBytes) // one entry per shard, still one shard each
+	memo.SetBudget(cleanEntryBytes) // a single entry per shard, still a single
 	require.LessOrEqual(t, memo.Bytes(), int64(len(hashes))*cleanEntryBytes)
 
-	// Forget removes exactly one.
 	before := memo.Len()
 	memo.Forget(hashes[5])
 	_, ok = memo.Get(hashes[5])
@@ -189,12 +184,12 @@ func TestCleanMemo_Bound(t *testing.T) {
 	require.Equal(t, before-1, memo.Len())
 }
 
-// TestCleanMemo_EvictsLeastRecentlyUsed: within one shard the memo must give up
-// the entry nobody has looked at, not the one being used every build.
+// TestCleanMemo_EvictsLeastRecentlyUsed: within a single shard the memo must
+// give up the entry nobody has looked at, not the a single being used every build.
 func TestCleanMemo_EvictsLeastRecentlyUsed(t *testing.T) {
 	memo := newCleanKeyMemo(2 * cleanEntryBytes * lruShardCount)
 
-	// Same first four bytes => same shard, so these three compete directly.
+	// Same earliest bytes => same shard, so these compete directly.
 	var a, b, c [gbciHashSize]byte
 	a[4], b[4], c[4] = 1, 2, 3
 

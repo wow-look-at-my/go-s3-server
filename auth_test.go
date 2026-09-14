@@ -258,11 +258,11 @@ func TestDisableAuth(t *testing.T) {
 }
 
 // TestAuthNotBypassedByEmptyCredential is a regression for the auth-bypass
-// bug where authenticate() short-circuited to success on the first credential
-// entry with an empty username and password. Even if someone bypasses
-// LoadConfig and constructs a Config directly with an empty credential,
-// authenticate() MUST still require valid Basic Auth when DisableAuth is
-// false.
+// bug where authenticate() short-circuited to success on the earliest
+// credential entry with an empty username and password. Even if someone
+// bypasses LoadConfig and constructs a Config directly with an empty
+// credential, authenticate() MUST still require valid Basic Auth when
+// DisableAuth is false.
 func TestAuthNotBypassedByEmptyCredential(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{

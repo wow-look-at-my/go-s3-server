@@ -88,9 +88,6 @@ func TestSelfHealCountsOutputIDMismatch(t *testing.T) {
 	require.Equal(t, got, meta.Metadata["outputid"], "the corrupted stamp must be repaired in place")
 }
 
-// TestSelfHealRewindsServeHandle: when the GET path hands its own serve handle
-// to the repair, the handle must come back rewound to byte 0 so the response
-// body is complete (the repair consumed it while hashing).
 func TestSelfHealRewindsServeHandle(t *testing.T) {
 	_, storage := testSetupWithStorage(t)
 
@@ -106,7 +103,6 @@ func TestSelfHealRewindsServeHandle(t *testing.T) {
 
 	require.True(t, ensureOutputID(storage, key, meta, f))
 
-	// The handle streams the whole body from byte 0.
 	var out bytes.Buffer
 	_, err = out.ReadFrom(f)
 	require.NoError(t, err)

@@ -15,7 +15,7 @@ func newTestLRU(budget int64) *lruCache[string, string] {
 }
 
 // oneShardKeys returns n keys that all land in the same shard, so a test can
-// exercise eviction inside one shard deterministically.
+// exercise eviction inside a single shard deterministically.
 func oneShardKeys(t *testing.T, n int) []string {
 	t.Helper()
 	// Fixed-width keys so every entry costs the same, which lets a test reason
@@ -36,7 +36,7 @@ func oneShardKeys(t *testing.T, n int) []string {
 // the cache holds what it is allowed to hold and not more, no matter how much
 // is put into it.
 func TestLRU_StaysWithinBudget(t *testing.T) {
-	const budget = 64 * lruShardCount // one 64-byte entry per shard
+	const budget = 64 * lruShardCount
 	c := newTestLRU(budget)
 
 	for i := 0; i < 10000; i++ {
@@ -44,23 +44,23 @@ func TestLRU_StaysWithinBudget(t *testing.T) {
 	}
 	// Each shard may exceed its slice by at most the single entry it just made
 	// (evictLocked never drops the newest), so the bound is per-shard budget
-	// plus one entry, times shards.
+	// plus a single entry, times shards.
 	require.LessOrEqual(t, c.Bytes(), int64(budget)+int64(lruShardCount)*128,
 		"a cache that can exceed its budget is not a bound")
 	require.Positive(t, c.Evictions(), "the load must actually have evicted")
 	require.Positive(t, c.Len(), "and it must still be holding something useful")
 }
 
-// TestLRU_EvictsLeastRecentlyUsed: the entry given up is the one nobody is
-// using, which is what makes eviction cheap -- a warm working set survives.
+// TestLRU_EvictsLeastRecentlyUsed: the entry given up is the a single
+// nobody is using, which is what makes eviction cheap -- a warm working set survives.
 func TestLRU_EvictsLeastRecentlyUsed(t *testing.T) {
 	keys := oneShardKeys(t, 3)
-	// Room for two of these entries in the shard they share.
+	// Room for of these entries in the shard they share.
 	c := newTestLRU(int64(2*(len(keys[0])+1)) * lruShardCount)
 
 	c.Put(keys[0], "a")
 	c.Put(keys[1], "b")
-	_, ok := c.Get(keys[0]) // keys[0] is now the most recently used
+	_, ok := c.Get(keys[0])
 	require.True(t, ok)
 
 	c.Put(keys[2], "c")
@@ -99,17 +99,17 @@ func TestLRU_SetBudgetEvictsImmediately(t *testing.T) {
 
 // TestLRU_OversizedEntryIsStillHeld: an entry larger than its shard's whole
 // budget is kept rather than dropped on arrival. A cache that refuses to hold
-// anything has a permanent miss rate, and the overshoot is bounded by the one
-// entry.
+// anything has a permanent miss rate, and the overshoot is bounded by the a
+// single entry.
 func TestLRU_OversizedEntryIsStillHeld(t *testing.T) {
-	c := newTestLRU(lruShardCount) // one byte per shard
+	c := newTestLRU(lruShardCount) // a single byte per
 	c.Put("k", "a value far larger than the budget")
 	v, ok := c.Get("k")
 	require.True(t, ok)
 	require.Equal(t, "a value far larger than the budget", v)
 }
 
-// TestLRU_ForgetAndClear cover the two invalidation paths callers use.
+// TestLRU_ForgetAndClear cover both invalidation paths callers use.
 func TestLRU_ForgetAndClear(t *testing.T) {
 	c := newTestLRU(1 << 20)
 	c.Put("a", "1")
@@ -145,8 +145,8 @@ func TestLRU_UpdateReplacesRatherThanAccumulates(t *testing.T) {
 }
 
 // TestLRU_ConcurrentUse exercises the shards under the race detector: readers,
-// writers, invalidations and a budget change all at once, which is exactly what
-// a batch handler plus the memory controller do.
+// writers, invalidations and a budget change together, which is exactly what a
+// batch handler plus the memory controller do.
 func TestLRU_ConcurrentUse(t *testing.T) {
 	c := newTestLRU(64 << 10)
 	var wg sync.WaitGroup

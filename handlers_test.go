@@ -516,13 +516,11 @@ func TestDeleteObject(t *testing.T) {
 }
 
 // TestSelfHealRepairsOutputIDInPlace covers the self-healing path: an object
-// stored without outputid metadata -- a relic of an earlier cache-data
-// iteration, or one whose xattrs were stripped by a data-dir move -- is repaired
-// in place on the first read rather than evicted. The server reconstructs the
+// stored without outputid metadata -- a relic of an earlier cache-data iteration,
+// or a single whose xattrs were stripped by a data-dir move -- is repaired in
+// place on the earliest read rather than evicted. The server reconstructs the
 // outputid from the body (it IS sha256 of the decompressed body), writes it back,
-// and serves the object as a hit. The body is untouched, the key stays in
-// /_index (so clients keep hitting it instead of re-uploading), and the repair is
-// one-time. No eviction, no re-upload, no churn.
+// and serves the object as a hit. No eviction, no re-upload, no churn.
 func TestSelfHealRepairsOutputIDInPlace(t *testing.T) {
 	if !inOwnProcess(t) {
 		return
@@ -549,8 +547,6 @@ func TestSelfHealRepairsOutputIDInPlace(t *testing.T) {
 
 	repairsBefore := testutil.ToFloat64(selfHealRepairsTotal)
 
-	// First GET repairs in place and serves a hit -- 200 with the reconstructed
-	// outputid and the body byte-for-byte, NOT a 404.
 	resp = doRequest(t, ts, "GET", key, nil, nil)
 	require.Equal(t, 200, resp.StatusCode)
 	body, _ := io.ReadAll(resp.Body)
@@ -570,7 +566,6 @@ func TestSelfHealRepairsOutputIDInPlace(t *testing.T) {
 	resp.Body.Close()
 	require.True(t, bytes.Contains(idx, hashBytes), "repaired key must remain in the index")
 
-	// Second GET is a normal hit with no further repair (the outputid now persists).
 	repairsAfterFirst := testutil.ToFloat64(selfHealRepairsTotal)
 	resp = doRequest(t, ts, "GET", key, nil, nil)
 	require.Equal(t, 200, resp.StatusCode)

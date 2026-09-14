@@ -8,7 +8,7 @@ import (
 )
 
 // versionPath answers what build is serving. It sits with /_health, before
-// the auth gate, so an operator checks a deploy with one unauthenticated GET.
+// the auth gate, so an operator checks a deploy with a single unauthenticated GET.
 const versionPath = "/_version"
 
 // buildVersion is what /_version reports. Every field comes from the binary's
@@ -16,7 +16,7 @@ const versionPath = "/_version"
 type buildVersion struct {
 	Version  string `json:"version"`  // the main module's version, or (devel)
 	Revision string `json:"revision"` // the VCS commit the build came from
-	Time     string `json:"time"`     // that commit's time, RFC 3339
+	Time     string `json:"time"`
 	Modified bool   `json:"modified"` // the tree had uncommitted changes
 	Go       string `json:"go"`       // the Go toolchain that built it
 }

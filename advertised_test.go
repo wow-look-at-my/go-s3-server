@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// getOutcome reads the s3_get_requests_total counter for one outcome label.
+// getOutcome reads the s3_get_requests_total counter for a single outcome label.
 func getOutcome(outcome string) float64 {
 	return testutil.ToFloat64(getRequestsTotal.WithLabelValues(outcome))
 }
@@ -66,11 +66,6 @@ func TestPutObject_RefusedIndexNotAdvertised(t *testing.T) {
 	require.Equal(t, divergedBefore, getOutcome("miss_advertised_unservable"))
 }
 
-// TestGetOutcome_AdvertisedUnservable proves the item-of-record counter: when a
-// key IS advertised in /_index but its object is gone from disk (index/store
-// divergence, planted here by unlinking the file behind storage's back), the
-// GET 404 is counted as miss_advertised_unservable — distinguishable from a
-// plain miss.
 func TestGetOutcome_AdvertisedUnservable(t *testing.T) {
 	if !inOwnProcess(t) {
 		return
@@ -106,11 +101,6 @@ func TestGetOutcome_AdvertisedUnservable(t *testing.T) {
 	require.Equal(t, hitBefore+1, getOutcome("hit"))
 }
 
-// TestSelfhealFailure_DeadvertisesKey: an object whose outputid cannot be
-// reconstructed (garbage body that does not lz4-decompress) is unservable
-// forever; the GET must 404 (counted miss_selfheal_failed), DROP the key from
-// /_index so consumers re-upload a good body, and leave the file on disk for
-// forensics/eviction.
 func TestSelfhealFailure_DeadvertisesKey(t *testing.T) {
 	ts, storage := testSetupWithStorage(t)
 
@@ -118,8 +108,6 @@ func TestSelfhealFailure_DeadvertisesKey(t *testing.T) {
 	hash, ok := extractActionHash(key)
 	require.True(t, ok)
 
-	// Garbage body tagged lz4, with NO outputid: the read guard fails open (not
-	// an index), then the self-heal cannot decompress it to reconstruct one.
 	garbage := []byte("definitely not a valid lz4 frame ................")
 	require.NoError(t, storage.PutStream(key, bytes.NewReader(garbage),
 		map[string]string{"compression": "lz4"}, nil))
@@ -155,8 +143,8 @@ func TestSelfhealFailure_DeadvertisesKey(t *testing.T) {
 }
 
 // TestIndexRemoveKeys: the batch removal used by the eviction sweeper drops
-// mtime entries, master hashes, and pending hashes in one pass, and marks the
-// blob dirty so /_index stops advertising the victims immediately.
+// mtime entries, master hashes, and pending hashes in a single pass, and
+// marks the blob dirty so /_index stops advertising the victims immediately.
 func TestIndexRemoveKeys(t *testing.T) {
 	idx := &Index{}
 

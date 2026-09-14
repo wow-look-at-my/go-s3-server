@@ -51,10 +51,9 @@ var (
 		Help: "Requests currently holding an admission-control slot (bounded by max_concurrent_requests).",
 	})
 
-	// httpRejectedTotal counts requests shed by admission control (503 +
-	// Retry-After) because the server was at MaxConcurrentRequests. A nonzero,
-	// rising value is the direct signal that the server is saturated and load
-	// should be reduced or capacity added — the observable backpressure metric.
+	// A nonzero, rising value is the direct signal that the server is saturated
+	// and load should be reduced or capacity added — the observable
+	// backpressure metric.
 	httpRejectedTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "s3_http_rejected_total",
 		Help: "Total number of requests rejected with 503 due to the concurrency limit.",
@@ -63,9 +62,9 @@ var (
 	// deprecatedRequestsTotal counts requests that used a deprecated
 	// S3-compatibility feature (e.g. X-Amz-Meta-* metadata headers). A nonzero
 	// value means not-yet-upgraded clients are still relying on the S3 shims; it
-	// should trend to zero once every client speaks the native protocol, at
-	// which point the shims can be removed. (The metric name keeps the s3_
-	// prefix for consistency with the others until the repository rename.)
+	// should trend to empty a single time every client speaks the native
+	// protocol, at which point the shims can be removed. (The metric name keeps
+	// the s3_ prefix for consistency with the others until the repository rename.)
 	deprecatedRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "s3_deprecated_requests_total",
 		Help: "Total requests that used a deprecated S3-compatibility feature.",
@@ -74,15 +73,10 @@ var (
 
 // PUT-refusal metrics
 var (
-	// putRefusalsTotal counts uploads the server accepted on the wire (200)
-	// but deliberately did not store, by reason. reason="module_index" is the
-	// PutObject guard dropping a Go module-index blob. This guard was
-	// previously completely invisible — no metric, no log — which is exactly
-	// the blind spot that let the 512-byte-peek bug go unnoticed for weeks: a
-	// broken guard is indistinguishable from a quiet one. Clients build module
-	// indexes constantly, so during CI activity this counter being
-	// occasionally nonzero is PROOF the guard fires; a flat zero across busy
-	// periods means the guard is broken again.
+	// reason="module_index" is the PutObject guard dropping a Go module-index
+	// blob. Clients build module indexes constantly, so during CI activity this
+	// counter being occasionally nonzero is PROOF the guard fires; a flat empty
+	// across busy periods means the guard is broken again.
 	putRefusalsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "s3_put_refusals_total",
 		Help: "Uploads accepted on the wire but refused storage, by reason (e.g. module_index).",
@@ -107,7 +101,7 @@ var (
 	// window had already been sent to that client. It is the visible edge of
 	// the suppression system: a rising rate means clients are asking for
 	// neighbours that no longer exist to give, and the window or the TTL wants
-	// revisiting. Zero is the normal reading.
+	// revisiting. empty is the normal reading.
 	nearbyScanExhaustedTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "s3_prefetch_scan_exhausted_total",
 		Help: "Prefetch selections that hit the scan budget before filling their limit (window mostly already sent).",
@@ -165,9 +159,7 @@ var (
 	// metadataXattrsDroppedTotal counts OPTIONAL user-metadata xattrs dropped
 	// because the filesystem ran out of extended-attribute space (E2BIG /
 	// ENOSPC / EDQUOT) while storing an object. The object still stores and
-	// serves; only the provenance field is lost. A rising rate usually means
-	// the client is sending an oversized Src list or the data_dir filesystem
-	// has a tight per-inode EA budget (ext4 without ea_inode: ~4 KiB shared).
+	// serves; only the provenance field is lost.
 	metadataXattrsDroppedTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "s3_metadata_xattrs_dropped_total",
 		Help: "Optional user-metadata xattrs dropped due to xattr-space exhaustion (object stored without them).",
@@ -205,13 +197,12 @@ var (
 	// selfHealRepairsTotal counts objects whose missing outputid metadata was
 	// reconstructed in place on read (see selfheal.go). These are leftovers from
 	// earlier cache-data iterations, or objects whose xattrs were stripped by a
-	// data-dir move; each one can never be a cache hit yet pins its key in
+	// data-dir move; each a single can never be a cache hit yet pins its key in
 	// /_index, forcing a rebuild on every consumer. The outputID is recomputed
 	// from the body (it IS sha256 of the decompressed body) and written back, so
 	// the object keeps its bytes and audit trail and becomes a hit -- no eviction,
-	// no re-upload. A nonzero value that trends to zero is the cache healing
-	// itself as it is read; the repair is one-time per object. (s3_ prefix kept
-	// for consistency with the other metrics until the repository rename.)
+	// no re-upload. (s3_ prefix kept for consistency with the other metrics until
+	// the repository rename.)
 	selfHealRepairsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "s3_self_heal_repairs_total",
 		Help: "Total cache objects whose missing outputid metadata was reconstructed in place on read.",
@@ -235,8 +226,7 @@ var (
 	// differing value appearing by stamp time is the stale-stamp corruption
 	// signature (the historical path-based setxattr race): an object whose
 	// outputid != sha256(body) is discarded by every client yet never
-	// re-uploaded — a permanent forced miss. Should be 0; the fd-based repair
-	// both counts and corrects it.
+	// re-uploaded — a permanent forced miss.
 	outputIDMismatchTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "s3_outputid_mismatch_total",
 		Help: "Self-heal repairs that found an existing outputid disagreeing with the body hash (stale-stamp corruption, repaired in place).",
@@ -246,26 +236,11 @@ var (
 	// flavors of "404" are distinguishable in metrics instead of all collapsing
 	// into s3_http_requests_total{status="404"}:
 	//
-	//   hit                        — 200, body served
-	//   miss_not_found             — no object and the key is not advertised in
-	//                                /_index: a genuinely-absent key (normal).
 	//   miss_advertised_unservable — no object on disk YET the key's action hash
-	//                                is currently advertised in /_index. This is
-	//                                the index/store-divergence signature behind
-	//                                the "GETs 404 on keys the index lists"
-	//                                incidents: each such key is a forced miss on
-	//                                every consumer (clients skip re-uploading
-	//                                indexed keys), so this counter should be ~0
-	//                                always and any sustained nonzero rate is an
-	//                                actionable bug.
-	//   miss_module_index_evicted  — a stored module-index blob was detected and
-	//                                evicted by the read guard.
-	//   miss_peek_error            — the read guard could not inspect/rewind the
-	//                                body (I/O error); refused fail-safe, left on
-	//                                disk.
-	//   miss_selfheal_failed       — the object lacks an outputid and its body
-	//                                could not be decompressed to reconstruct
-	//                                one; unservable, left on disk for eviction.
+	//   is currently advertised in /_index. miss_module_index_evicted — a stored
+	//   module-index blob was detected and evicted by the read guard.
+	//   miss_peek_error — the read guard could not inspect/rewind the body (I/O
+	//   error); refused fail-safe, left on disk.
 	getRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "s3_get_requests_total",
 		Help: "Single-object GET requests by outcome (hit, miss_not_found, miss_advertised_unservable, miss_module_index_evicted, miss_peek_error, miss_selfheal_failed).",
@@ -277,8 +252,8 @@ var (
 	// only stops NEW indexes from being stored; this counts the lazy removal of
 	// poison already on disk (e.g. uploaded before the PUT guard existed, when
 	// the v3 startup purge had already run). Each poisoned key is evicted on its
-	// first post-deploy fetch -- the client gets a clean miss and recomputes the
-	// index locally -- so a nonzero value that trends to zero is the cache
+	// earliest post-deploy fetch -- the client gets a clean miss and recomputes
+	// the index locally -- so a nonzero value that trends to empty is the cache
 	// shedding residual module-index poison as it is read. (s3_ prefix kept for
 	// consistency with the other metrics until the repository rename.)
 	moduleIndexEvictionsTotal = promauto.NewCounter(prometheus.CounterOpts{
@@ -288,9 +263,9 @@ var (
 
 	// metaCacheHitsTotal / metaCacheMissesTotal track the per-key metadata cache
 	// (metacache.go). A miss costs a listxattr plus a getxattr per attribute --
-	// roughly a dozen syscalls -- so on a warm cache this ratio IS the read
-	// path's CPU story: a ratio that collapses means keys are being rewritten
-	// (mtime moves, entries invalidate) or the cache is thrashing its bound.
+	// roughly a syscalls -- so on a warm cache this ratio IS the read path's CPU
+	// story: a ratio that collapses means keys are being rewritten (mtime moves,
+	// entries invalidate) or the cache is thrashing its bound.
 	metaCacheHitsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "s3_meta_cache_hits_total",
 		Help: "Total object-metadata reads served from the in-memory metadata cache.",
@@ -302,10 +277,10 @@ var (
 	})
 
 	// Memory accounting (memlimit.go, lrucache.go). The server's in-memory
-	// caches are byte-bounded and evict; these say how big each one is allowed
-	// to be, how big it actually is, and how many entries it has given up.
-	// Requests are never refused for memory, so a cache shrinking is the ONLY
-	// visible effect of pressure -- which is what these expose.
+	// caches are byte-bounded and evict; these say how big each a single is
+	// allowed to be, how big it actually is, and how many entries it has given
+	// up. Requests are never refused for memory, so a cache shrinking is the
+	// ONLY visible effect of pressure -- which is what these expose.
 	memoryLimitBytes = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "s3_memory_limit_bytes",
 		Help: "The process memory ceiling the caches are sized against (0 = none discovered).",
@@ -338,9 +313,7 @@ type statusRecorder struct {
 	statusCode int
 	// Atomic because the stall guard samples them from a timer goroutine while
 	// the handler is still writing. bytesWritten is the response size the
-	// metrics want. progress is what the guard watches, and it counts a header
-	// too: a header-only answer, such as a 304, is the handler making progress
-	// even though it adds no bytes to the body.
+	// metrics want.
 	bytesWritten atomic.Int64
 	progress     atomic.Int64
 }
@@ -364,25 +337,24 @@ func (r *statusRecorder) Unwrap() http.ResponseWriter {
 	return r.ResponseWriter
 }
 
-// readFromChunk is the most one forwarded ReadFrom call copies. The stall
-// guard sees progress only when a call returns, and the wrapped ReadFrom runs
-// until its source is exhausted, so the copy is split into calls this size.
-// At the guard's window this still passes any client above ~17 KiB/s.
+// readFromChunk is the most a single forwarded ReadFrom call copies. The
+// stall guard sees progress only when a call returns, and the wrapped
+// ReadFrom runs until its source is exhausted, so the copy is split into
+// calls this size.
 const readFromChunk = 1 << 20
 
-// ReadFrom forwards to the wrapped ResponseWriter's io.ReaderFrom when it has
-// one. net/http's response writer implements ReadFrom with a sendfile fast
-// path for *os.File sources; a wrapper that hides the interface silently
-// downgrades every GET body copy to userspace read/write loops. When the
-// wrapped writer is not a ReaderFrom (e.g. httptest recorders), fall back to
-// a plain copy through r.Write (which already counts bytes — writerOnly hides
-// this method so io.Copy cannot recurse into it).
+// net/http's response writer implements ReadFrom with a sendfile fast path for
+// *os.File sources; a wrapper that hides the interface silently downgrades
+// every GET body copy to userspace read/write loops. When the wrapped writer is
+// not a ReaderFrom (e.g. httptest recorders), fall back to a plain copy through
+// r.Write (which already counts bytes — writerOnly hides this method so
+// io.Copy cannot recurse into it).
 //
 // The forwarded copy runs in readFromChunk pieces, each counted as it
-// completes. Each piece is ONE io.LimitedReader over the innermost source,
-// because sendfile recognizes a single LimitedReader around an *os.File and
-// nothing nested deeper; a LimitedReader passed in (http.ServeContent's
-// io.CopyN) is unwrapped and its N kept current.
+// completes. Each piece is a single io.LimitedReader over the innermost
+// source, because sendfile recognizes a single LimitedReader around an
+// *os.File and nothing nested deeper; a LimitedReader passed in
+// (http.ServeContent's io.CopyN) is unwrapped and its N kept current.
 func (r *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
 	rf, ok := r.ResponseWriter.(io.ReaderFrom)
 	if !ok {

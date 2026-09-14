@@ -24,11 +24,11 @@ So look-ahead moved off that path.
 
 A hit seeds the pool with the keys that answered, deduplicated. A key that missed says nothing about where to look. A full queue drops the seed. Look-ahead is speculation. A build goroutine must never wait on it.
 
-The pool is off by default. `GO_TOOLCHAIN_CACHE_LOOKAHEAD` sets the worker count: unset or `0` means no pool, and a positive count is capped at 64. The server's `/_batch/get` also answers a `prefetch_only` request with an empty window unless its `prefetch` config field is `true`, so a pool pointed at a default server fetches nothing.
+The pool is off by default. `GO_TOOLCHAIN_CACHE_LOOKAHEAD` sets the worker count. Unset or `0` means no pool. A positive count is capped at 64. The server answers a `prefetch_only` request with an empty window by default. Its `prefetch` config field must be `true` to change that. A pool pointed at a default server therefore fetches nothing.
 
 ## What the pool is worth
 
-`BenchmarkBuildShape` walks a 12-level graph, 4 keys wide, against a real HTTP server. Three shapes. `none` is the critical path alone, with nothing fetched ahead of it. `blocking` is the old wire shape, where 32 speculative bodies ride the request the build is waiting on. `lookahead` is the pool, turned on for that arm: it fetches the same window off the critical path, into the local tier the build reads next.
+`BenchmarkBuildShape` walks a 12-level graph, 4 keys wide, against a real HTTP server. Three shapes. `none` is the critical path alone, with nothing fetched ahead of it. `blocking` is the old wire shape, where 32 speculative bodies ride the request the build is waiting on. `lookahead` is the pool, turned on for that arm. It fetches the same window off the critical path. The bodies go into the local tier the build reads next.
 
 Every arm installs that tier. A run without one measures a client whose look-ahead is switched OFF, because `expand` returns at once when `OnBatchEntries` is nil. The benchmark used to omit it, so its old numbers described a shape nothing ships.
 

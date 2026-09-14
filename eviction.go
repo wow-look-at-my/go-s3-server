@@ -16,10 +16,8 @@ import (
 
 // Access tracking is the IN-MEMORY half of eviction's least-recently-used
 // decisions, and the fallback half: the durable record of a read is the
-// filesystem's own access time (atime.go), which survives restarts. This map is
-// enabled only when the data_dir turns out not to record access times, because
-// one entry per key read since startup costs real memory at a million keys.
-// See the accessShards field on Storage.
+// filesystem's own access time (atime.go), which survives restarts. See the
+// accessShards field on Storage.
 
 const accessShardCount = 256
 
@@ -29,8 +27,8 @@ type accessShard struct {
 }
 
 // EnableAccessTracking turns on per-key last-access bookkeeping for eviction.
-// Call once at startup, before serving, when eviction is configured and the
-// data_dir's filesystem does not record access times itself.
+// Call a single time at startup, before serving, when eviction is configured
+// and the data_dir's filesystem does not record access times itself.
 func (s *Storage) EnableAccessTracking() {
 	shards := make([]*accessShard, accessShardCount)
 	for i := range shards {
@@ -40,7 +38,7 @@ func (s *Storage) EnableAccessTracking() {
 }
 
 // accessShardFor returns the shard owning ck. Action IDs are uniformly
-// distributed, so their first byte shards evenly; other keys hash their string.
+// distributed, so their earliest byte shards evenly; other keys hash their string.
 func (s *Storage) accessShardFor(ck compactKey) *accessShard {
 	if h, ok := ck.actionHash(); ok {
 		return s.accessShards[uint32(h[0])%accessShardCount]
@@ -106,9 +104,9 @@ func (s *Storage) pruneAccess(live map[compactKey]bool) {
 	}
 }
 
-// evictionVictim is one object the sweep has decided to remove. Victims are
-// carried in bounded batches, so this is the only per-object state a sweep ever
-// holds -- the scan itself keeps no list of the cache's contents.
+// evictionVictim is a single object the sweep has decided to remove. Victims
+// are carried in bounded batches, so this is the only per-object state a sweep
+// ever holds -- the scan itself keeps no list of the cache's contents.
 type evictionVictim struct {
 	compactKey
 	size      int64
@@ -129,15 +127,12 @@ type EvictStats struct {
 // histogram. The pass has to answer "how far back must I evict to free N
 // bytes?" without holding a sorted list of the whole cache in memory, so it
 // buckets last-use times and finds the bucket where the running total reaches
-// N. The cutoff therefore lands on a bucket edge and the sweep may free up to
-// one bucket more than strictly needed -- ten minutes of last-use activity,
-// which is a low-water margin, and finer than the once-a-day resolution the
-// kernel's relatime gives the access times feeding it.
+// N.
 const evictionBucketSeconds = 600
 
-// evictionScan is what one pass over the data_dir tells the sweeper: how big
-// the cache is, how its last-use times are distributed, and (only when
-// in-memory access records exist to prune) which keys are still there.
+// evictionScan is what a single pass over the data_dir tells the sweeper:
+// how big the cache is, how its last-use times are distributed, and (only
+// when in-memory access records exist to prune) which keys are still there.
 type evictionScan struct {
 	scanned    int
 	totalBytes int64
@@ -145,26 +140,17 @@ type evictionScan struct {
 	live       map[compactKey]bool
 }
 
-// Evict runs one eviction pass over the data_dir. If maxAge > 0, entries not
-// used within maxAge are removed. If maxBytes > 0, the least-recently-used
-// entries are removed until the total size is within budget. now is injected so
-// tests can control the clock.
+// Evict runs a single eviction pass over the data_dir. now is injected so tests
+// can control the clock.
 //
-// It walks the data_dir twice rather than building a list of candidates: at a
-// million objects that list, with a key string apiece, was the largest
-// allocation this process ever made, and it was made on a schedule. The first
-// walk only measures (a bounded histogram), and from it the sweep derives ONE
-// number -- the last-use cutoff below which entries must go. The second walk
-// deletes what falls under the cutoff, in bounded batches. Peak memory is
-// therefore a batch, not the cache.
+// the earliest walk only measures (a bounded histogram), and from it the
+// sweep derives a single number -- the last-use cutoff below which entries
+// must go. the next walk deletes what falls under the cutoff, in bounded
+// batches. Peak memory is therefore a batch, not the cache.
 //
 // Both passes are the same rule at different cutoffs (evict everything last
 // used before T), so age and size eviction combine into max(ageCutoff,
-// sizeCutoff) instead of running as two sequential selections.
-//
-// Deletions are done directly (os.Remove) and the in-memory index is rebuilt
-// once at the end rather than calling the O(n) Index.Remove per victim, which
-// would make a large sweep O(n^2).
+// sizeCutoff) instead of running as sequential selections.
 func (s *Storage) Evict(maxAge time.Duration, maxBytes int64, now time.Time) (EvictStats, error) {
 	var stats EvictStats
 
@@ -194,7 +180,7 @@ func (s *Storage) Evict(maxAge time.Duration, maxBytes int64, now time.Time) (Ev
 	if evicted > 0 {
 		evictionsTotal.Add(float64(evicted))
 		evictedBytesTotal.Add(float64(stats.BytesFreed))
-		// One rebuild so the index stops advertising evicted keys.
+		// A single rebuild so the index stops advertising evicted keys.
 		if s.Index != nil {
 			s.Index.rebuild(s)
 		}
@@ -231,8 +217,6 @@ func (s *Storage) scanForEviction(needHistogram bool) (*evictionScan, error) {
 	return scan, nil
 }
 
-// sizeCutoff returns the last-use time below which entries must be evicted for
-// the cache to fit maxBytes, or 0 when it already fits (or has no budget).
 func (sc *evictionScan) sizeCutoff(maxBytes int64) int64 {
 	if maxBytes <= 0 || sc.totalBytes <= maxBytes {
 		return 0
@@ -258,23 +242,15 @@ func (sc *evictionScan) sizeCutoff(maxBytes int64) int64 {
 }
 
 // evictionBatchSize is how many victims are de-advertised and deleted per
-// round. It trades a few MiB of sweep memory against index passes: each batch
-// costs one Index.RemoveKeys, which walks the whole index under its write lock,
-// so a sweep clearing a million entries should do that ten-odd times rather
-// than hundreds.
+// round.
 const evictionBatchSize = 65536
 
-// sweepBelow deletes every object last used before cutoff. Each batch is
-// de-advertised from the index BEFORE its files are unlinked: the opposite
-// ordering (unlink first, rebuild the index at sweep end) left each deleted key
-// advertised in /_index for the rest of the sweep -- a window in which every
-// GET of it was a 404 on an indexed key, the exact index/store divergence the
-// miss_advertised_unservable counter tracks. Advertised-but-already-deleted is
-// a forced miss; present-but-unadvertised, the state this ordering produces
-// instead, is at worst a redundant re-upload.
+// sweepBelow deletes every object last used before cutoff.
+// Advertised-but-already-deleted is a forced miss; present-but-unadvertised,
+// the state this ordering produces instead, is at worst a redundant re-upload.
 //
 // It re-reads each object's last-use time rather than trusting the scan's, so
-// anything read between the two passes is spared.
+// anything read between both passes is spared.
 func (s *Storage) sweepBelow(cutoff, ageCutoff int64, stats *EvictStats) error {
 	// Grown as needed rather than preallocated: most sweeps evict a handful of
 	// entries and should not reserve the full batch to do it.
@@ -325,17 +301,16 @@ func (s *Storage) sweepBelow(cutoff, ageCutoff int64, stats *EvictStats) error {
 	return err
 }
 
-// evictOne removes a single object's file by key, but only if its on-disk
-// mtime still matches what the sweep's scan recorded. The scan snapshot can be
+// evictOne removes a single object's file by key, but only if its on-disk mtime
+// still matches what the sweep's scan recorded. The scan snapshot can be
 // minutes stale by the time a victim is deleted; a concurrent overwrite PUT in
 // that window renames FRESH content onto the same path, and unconditionally
 // removing it would evict an object that was just written (the snapshot-then-
-// remove TOCTOU). Re-stat'ing first and skipping on any mtime change bounds the
-// race to the stat-to-remove instant. expectMtime <= 0 skips the check (for
-// callers that hold no snapshot). It reports whether a file was actually
-// removed (false if already gone or freshly overwritten). The index is
+// remove TOCTOU). Re-stat'ing earliest and skipping on any mtime change bounds
+// the race to the stat-to-remove instant. It reports whether a file was
+// actually removed (false if already gone or freshly overwritten). The index is
 // intentionally not touched here; Evict de-advertises victims up front and
-// rebuilds once at the end.
+// rebuilds a single time at the end.
 func (s *Storage) evictOne(key string, expectMtime int64) bool {
 	path := s.keyToPath(key)
 	if expectMtime > 0 {
@@ -367,27 +342,27 @@ func (s *Storage) evictOne(key string, expectMtime int64) bool {
 // Eviction-loop timing. The sweep schedule is kept in the data_dir, not in
 // this process: a restart-heavy deployment (rolling updates are the production
 // model) that restarted the clock on every boot would simply never sweep, and
-// one that swept on every boot would walk the whole disk on every rolling
+// a single that swept on every boot would walk the whole disk on every rolling
 // update. So the loop asks the marker when the last sweep was and sweeps
 // immediately -- after a jitter that spreads replicas restarting together --
-// when it is at least one interval old. The s3_cache_bytes gauge is refreshed
-// on its own faster cadence in between so operators are not looking at a value
-// a whole interval old.
+// when it is at least a single interval old. The s3_cache_bytes gauge is
+// refreshed on its own faster cadence in between so operators are not looking
+// at a value a whole interval old.
 const (
 	evictionStartupDelayMin   = 1 * time.Minute
 	evictionStartupDelayMax   = 5 * time.Minute
 	cacheBytesRefreshInterval = 15 * time.Minute
 )
 
-// evictionStartupDelay returns the jittered delay before the first sweep.
+// evictionStartupDelay returns the jittered delay before the earliest sweep.
 func evictionStartupDelay() time.Duration {
 	spread := evictionStartupDelayMax - evictionStartupDelayMin
 	return evictionStartupDelayMin + time.Duration(rand.Int64N(int64(spread)))
 }
 
 // lastSweepTime reads the recorded end of the last eviction sweep. A missing
-// marker (a new data_dir, or one from a server that predates it) reports no
-// recorded sweep, which schedules one at startup.
+// marker (a new data_dir, or a single from a server that predates it)
+// reports no recorded sweep, which schedules a single at startup.
 func (s *Storage) lastSweepTime() (time.Time, bool) {
 	data, err := os.ReadFile(filepath.Join(s.dataDir, sweepMarkerFile))
 	if err != nil {
@@ -415,7 +390,7 @@ func (s *Storage) recordSweepTime(t time.Time) {
 	}
 }
 
-// firstSweepDelay returns how long to wait before the first sweep of this
+// firstSweepDelay returns how long to wait before the earliest sweep of this
 // process: the jittered startup delay when a sweep is due (never swept, or the
 // recorded sweep is a full interval old), otherwise the time remaining until
 // the recorded sweep comes due.
@@ -430,12 +405,12 @@ func (s *Storage) firstSweepDelay(interval time.Duration) time.Duration {
 		return jitter
 	}
 	// A marker stamped in the future (a clock that jumped) must not push the
-	// first sweep past one interval, which would stop eviction indefinitely.
+	// earliest sweep past a single interval, which would stop eviction indefinitely.
 	return min(remaining, interval) + jitter
 }
 
-// runSweep executes one eviction sweep, records when it finished, and logs it
-// if anything was evicted.
+// runSweep executes a single eviction sweep, records when it finished, and
+// logs it if anything was evicted.
 func (s *Storage) runSweep(maxAge time.Duration, maxBytes int64) {
 	start := time.Now()
 	stats, err := s.Evict(maxAge, maxBytes, start)
@@ -474,9 +449,9 @@ func (s *Storage) RefreshCacheBytes() {
 }
 
 // RunEvictionLoop sweeps until the process exits. Run it in its own goroutine.
-// The first sweep is scheduled from the recorded last sweep (see
-// firstSweepDelay), and each subsequent one an interval after the previous
-// finished; the size gauge is refreshed on its own faster cadence in between.
+// the earliest sweep is scheduled from the recorded last sweep (see
+// firstSweepDelay), and each subsequent a single an interval after the
+// previous finished; the size gauge is refreshed on its own faster cadence in between.
 func (s *Storage) RunEvictionLoop(maxAge time.Duration, maxBytes int64, interval time.Duration) {
 	next := time.NewTimer(s.firstSweepDelay(interval))
 	defer next.Stop()

@@ -16,13 +16,13 @@ package main
 //
 // Bounded in BYTES with least-recently-used eviction (lrucache.go), sized from
 // the process's memory ceiling and shrunk when memory gets tight (memlimit.go).
-// Evicting an entry costs one re-probe of that key -- which is why this cache,
-// like the others, is the right thing to give up under memory pressure instead
-// of service.
+// Evicting an entry costs a single re-probe of that key -- which is why this
+// cache, like the others, is the right thing to give up under memory pressure
+// instead of service.
 
-// cleanEntryBytes is what one memoized verdict costs: the 32-byte hash, the map
-// bucket and the list element. The value carries no data -- membership IS the
-// verdict -- so an entry's size is a constant.
+// cleanEntryBytes is what a single memoized verdict costs: the 32-byte hash,
+// the map bucket and the list element. The value carries no data -- membership
+// IS the verdict -- so an entry's size is a constant.
 const cleanEntryBytes = 96
 
 // cleanMemoKind is the label this cache reports its size under.
@@ -33,8 +33,6 @@ type cleanKey = [gbciHashSize]byte
 func newCleanKeyMemo(budget int64) *lruCache[cleanKey, struct{}] {
 	return newLRUCache(budget,
 		func(h cleanKey) uint32 {
-			// Action IDs are uniformly distributed, so any four bytes shard
-			// evenly and there is nothing to gain from hashing all 32.
 			return uint32(h[0]) | uint32(h[1])<<8 | uint32(h[2])<<16 | uint32(h[3])<<24
 		},
 		func(cleanKey, struct{}) int64 { return cleanEntryBytes })

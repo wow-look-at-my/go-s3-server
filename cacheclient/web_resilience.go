@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -174,6 +175,45 @@ func (b *WebBackend) doRetryPUT(req *http.Request, body []byte) (*http.Response,
 	return b.doRetry(req, b.maxRetries)
 }
 
+// heldBackBody is the body of the answer doRetry gives an operation whose
+// every attempt fell in the server's quiet period, so none was sent.
+const heldBackBody = "overloaded: not sent; the server asked for quiet with Retry-After"
+
+// heldBackResponse stands in for the shed the server would have answered.
+// It is a 503 like the real one, so every caller accounts for it the way it
+// accounts for a shed: through its status handling and the coalesced error
+// log, never a per-operation warning.
+func heldBackResponse(req *http.Request) *http.Response {
+	return &http.Response{
+		Status:        "503 Service Unavailable",
+		StatusCode:    http.StatusServiceUnavailable,
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        http.Header{"X-Cache-Error-Code": {"overloaded"}},
+		Body:          io.NopCloser(strings.NewReader(heldBackBody)),
+		ContentLength: int64(len(heldBackBody)),
+		Request:       req,
+	}
+}
+
+// noteShed records a server's request for quiet. A later deadline wins, and
+// it is capped at retryMaxDelay like the per-request hint.
+func (b *WebBackend) noteShed(retryAfter time.Duration) {
+	until := time.Now().Add(retryAfter).UnixNano()
+	for {
+		cur := b.shedUntil.Load()
+		if cur >= until || b.shedUntil.CompareAndSwap(cur, until) {
+			return
+		}
+	}
+}
+
+// shedRemaining reports how much of the server's quiet period is left.
+func (b *WebBackend) shedRemaining() time.Duration {
+	return time.Until(time.Unix(0, b.shedUntil.Load()))
+}
+
 // doRetry is the shared retry loop behind doRetryGET, doRetryGETN, and
 // doRetryPUT. It retries a transient response (transientStatus) up to
 // maxRetries times, sleeping max(exponential-jittered backoff, server
@@ -184,12 +224,32 @@ func (b *WebBackend) doRetryPUT(req *http.Request, body []byte) (*http.Response,
 // response. An admission shed is transient and so is retried and backed
 // off (honoring Retry-After); if the retry budget is exhausted the caller
 // falls back to a local miss for that operation alone.
+//
+// A Retry-After on a transient answer is a request for quiet to the whole
+// process, not only to the operation that got it. Every concurrent operation
+// here talks to the same server, so each one retrying on its own schedule
+// multiplied the load on a server that had just said it was full. An attempt
+// that falls in the quiet period is not sent: it waits the period out (plus
+// jitter, so the waiters do not return together) and counts against the
+// retry budget like an attempt that was shed. An operation left with no
+// attempt sent gets heldBackResponse.
 func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response, error) {
 	var (
 		resp *http.Response
 		err  error
 	)
 	for attempt := 0; ; attempt++ {
+		if quiet := b.shedRemaining(); quiet > 0 {
+			b.ShedWaits.Increment()
+			if attempt >= maxRetries {
+				if resp == nil && err == nil {
+					resp = heldBackResponse(req)
+				}
+				return resp, err
+			}
+			b.sleepQuiet(attempt, quiet)
+			continue
+		}
 		// Rewind the body for a retry (batch get carries a small JSON body; a
 		// PUT carries the compressed object).
 		if attempt > 0 && req.GetBody != nil {
@@ -213,18 +273,41 @@ func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response,
 		}
 		watchdog.Stop()
 		cancel()
+		var retryAfter time.Duration
+		if err == nil {
+			retryAfter = parseRetryAfter(resp)
+			if retryAfter > 0 {
+				b.noteShed(retryAfter)
+			}
+		}
 		if attempt >= maxRetries {
 			return resp, err
 		}
 		// Honor a server Retry-After (e.g. an admission shed), but never sleep less than the jittered backoff.
-		var retryAfter time.Duration
 		if err == nil {
-			retryAfter = parseRetryAfter(resp)
-			// Drain and close so the connection returns to the pool.
-			io.Copy(io.Discard, io.LimitReader(resp.Body, 512))
+			// Drain and close so the connection returns to the pool. What was
+			// read is kept, so a response returned later still has its body.
+			drained, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 			resp.Body.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(drained))
 		}
 		b.sleepBackoff(attempt, retryAfter)
+	}
+}
+
+// sleepQuiet waits out the server's quiet period plus full jitter over the
+// attempt's backoff, so the operations held back by one shed do not all
+// return in the same instant. It returns early on shutdown.
+func (b *WebBackend) sleepQuiet(attempt int, quiet time.Duration) {
+	jitter := retryBaseDelay << attempt
+	if jitter > retryMaxDelay || jitter <= 0 {
+		jitter = retryMaxDelay
+	}
+	timer := time.NewTimer(quiet + time.Duration(rand.Int64N(int64(jitter)+1)))
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-b.batchStop:
 	}
 }
 

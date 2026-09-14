@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -39,10 +40,11 @@ type Server struct {
 	config          *Config
 	storage         *Storage
 	prefetchTracker *prefetchTracker
-	// sem bounds concurrent in-flight requests. A full sem means the server is
+	// sem bounds the requests doing work at once. A full sem means the server is
 	// at capacity, so excess requests are shed with 503 + Retry-After rather
 	// than queued until memory is exhausted (the OOM a fronting proxy reports as
-	// a 502). Buffered to MaxConcurrentRequests.
+	// a 502). A request whose remaining work is only a body transfer hands its
+	// slot back early (releaseSlot). Buffered to MaxConcurrentRequests.
 	sem chan struct{}
 	// mem scales the in-memory caches to fit the process's memory budget. It is
 	// deliberately NOT consulted on the request path: memory pressure changes
@@ -130,6 +132,36 @@ func (a *auditInfo) note(format string, v ...any) {
 }
 
 type auditKey struct{}
+
+// admission is one request's hold on a concurrency slot. release is
+// idempotent, so a handler can hand the slot back early and the deferred
+// release in ServeHTTP is then a no-op.
+type admission struct {
+	sem  chan struct{}
+	once sync.Once
+}
+
+func (a *admission) release() {
+	a.once.Do(func() {
+		<-a.sem
+		httpAdmittedRequests.Dec()
+	})
+}
+
+type admissionKey struct{}
+
+// releaseSlot hands the request's concurrency slot back before a transfer that
+// holds no per-request memory: a shared, already-built index blob, or a body
+// sent from an open file. The slot bounds the work a request does. Once only
+// the wire is left, a slow client would otherwise pin a slot for the whole
+// transfer, and a few downloads of the multi-megabyte index to CI runners
+// fill every slot and shed all other traffic with 503. It is a no-op when the
+// request holds no slot, as a handler invoked directly in a test does.
+func releaseSlot(r *http.Request) {
+	if a, ok := r.Context().Value(admissionKey{}).(*admission); ok {
+		a.release()
+	}
+}
 
 func auditFromContext(ctx context.Context) *auditInfo {
 	if v, ok := ctx.Value(auditKey{}).(*auditInfo); ok {
@@ -242,10 +274,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Admission control: if the server is already at capacity, shed this request
 	// with 503 + Retry-After instead of accepting unbounded concurrency and
 	// risking an OOM (which a fronting proxy would surface as a 502). The slot is
-	// held for the whole request and released on return.
+	// released on return, or earlier by a handler whose remaining work is a
+	// body transfer that holds no per-request memory (see releaseSlot).
+	slot := &admission{sem: s.sem}
 	select {
 	case s.sem <- struct{}{}:
-		defer func() { <-s.sem }()
+		httpAdmittedRequests.Inc()
+		defer slot.release()
 	default:
 		route = "Overload"
 		httpRejectedTotal.Inc()
@@ -270,7 +305,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		UserAgent: ua,
 		Timestamp: start,
 	}
-	r = r.WithContext(context.WithValue(r.Context(), auditKey{}, audit))
+	ctx := context.WithValue(r.Context(), auditKey{}, audit)
+	r = r.WithContext(context.WithValue(ctx, admissionKey{}, slot))
 
 	// Parse path: /{bucket}/{key...} or /{bucket}
 	path := strings.TrimPrefix(r.URL.Path, "/")

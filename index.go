@@ -44,6 +44,17 @@ type Index struct {
 	mu      sync.RWMutex
 	entries []indexEntry // sorted by mtime for NearbyKeys binary search
 
+	// entriesOff turns the mtime list off. That list exists for exactly one
+	// caller, /_batch/get's prefetch window, and it is the largest thing this
+	// process holds: an indexEntry is 56 bytes, which is 95 MB at 1.7M keys,
+	// more than the hash list and the serialized blob together. With prefetch
+	// off, NearbyKeys is never called and every one of those bytes is held for
+	// a reader that does not exist.
+	//
+	// The zero value keeps the list, so an Index built directly behaves as it
+	// always has; main turns it off when the config leaves prefetch off.
+	entriesOff bool
+
 	// pendingEntries is an unsorted append-only buffer of new mtime entries
 	// added by Put. Like pending (for hashes), it keeps the per-PUT path to a
 	// single O(1) mutex-guarded append; the O(n log n) merge+sort is deferred to
@@ -98,6 +109,27 @@ type indexEntry struct {
 	mtimeUnix int64
 }
 
+// indexEntryBytes is what one entry costs in the mtime list: the 32-byte
+// action hash, the 16-byte string header compactKey carries for a key outside
+// the cacheprog pattern, and the 8-byte mtime. TestIndexEntrySize holds the
+// struct to it.
+const indexEntryBytes = gbciHashSize + 16 + 8
+
+// indexHashBytes is what one key costs in the sorted hash list, which is also
+// what it costs in the serialized blob: the blob's body is that list.
+const indexHashBytes = gbciHashSize
+
+// indexEntriesDefault is whether a new Index maintains the mtime list.
+// SetIndexEntryTracking changes it before any Index exists, so the startup
+// rebuild does not spend the walk building a list the server is about to
+// throw away -- a 95 MB spike at 1.7M keys, at the moment a restarting
+// container is least able to afford one.
+var indexEntriesDefault = true
+
+// SetIndexEntryTracking decides whether indexes built after it maintain the
+// mtime list. Call it before NewStorage.
+func SetIndexEntryTracking(on bool) { indexEntriesDefault = on }
+
 // maxRetainedPending caps how much pending-buffer capacity survives a drain. A
 // rebuild or a PUT burst can grow these to the size of the whole cache, and
 // reslicing to [:0] holds that array for the life of the process; re-growing a
@@ -133,7 +165,7 @@ func extractActionHash(key string) ([gbciHashSize]byte, bool) {
 
 // NewIndex builds the index by scanning the filesystem.
 func NewIndex(storage *Storage) *Index {
-	idx := &Index{}
+	idx := &Index{entriesOff: !indexEntriesDefault}
 	idx.blobMinInterval.Store(int64(defaultIndexBlobInterval))
 	idx.rebuild(storage)
 	return idx
@@ -142,6 +174,25 @@ func NewIndex(storage *Storage) *Index {
 // SetBlobInterval sets the least time between two serializations. Zero
 // serializes every PUT on the next read.
 func (idx *Index) SetBlobInterval(d time.Duration) { idx.blobMinInterval.Store(int64(d)) }
+
+// DisableEntryTracking stops the index maintaining the mtime-sorted entry
+// list and releases what it holds. Call it before serving, from a server
+// whose prefetch is off: NearbyKeys then answers with no candidates, which is
+// what it would answer anyway with nobody asking.
+func (idx *Index) DisableEntryTracking() {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.entriesOff = true
+	idx.entries, idx.pendingEntries = nil, nil
+	idx.updateGaugesLocked()
+}
+
+// EntryTrackingEnabled reports whether the mtime list is maintained.
+func (idx *Index) EntryTrackingEnabled() bool {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return !idx.entriesOff
+}
 
 // BlobInterval reports the least time between two serializations.
 func (idx *Index) BlobInterval() time.Duration { return time.Duration(idx.blobMinInterval.Load()) }
@@ -163,7 +214,9 @@ func (idx *Index) Put(key string, size int64) {
 	// Append to the unsorted pending buffer only — O(1). The merge+sort into the
 	// mtime-ordered list is deferred to the next reader (see drainEntriesLocked),
 	// so a burst of concurrent PUTs no longer convoys behind a full re-sort.
-	idx.pendingEntries = append(idx.pendingEntries, indexEntry{compactKey: ck, mtimeUnix: now})
+	if !idx.entriesOff {
+		idx.pendingEntries = append(idx.pendingEntries, indexEntry{compactKey: ck, mtimeUnix: now})
+	}
 
 	if hashOK {
 		idx.pending = append(idx.pending, hash)
@@ -417,60 +470,77 @@ const nearbyScanFactor = 8
 // nearbyKeysLocked is the search itself. The caller must hold idx.mu (read or
 // write) and must have ensured idx.entries is drained and mtime-sorted.
 //
-// Candidates are carried as positions in idx.entries, not as keys: the window
-// can hold far more entries than the limit, and only the survivors are worth
-// rebuilding a key string for.
+// It walks OUTWARD from the window's midpoint rather than collecting the
+// window and sorting it. Entries are mtime-sorted, so distance from the
+// midpoint rises monotonically in each direction: taking whichever side is
+// nearer, one at a time, yields exactly the nearest-first order a sort would,
+// and stops as soon as the limit is full.
+//
+// The sort cost the caller a slice holding every entry in the window and an
+// O(n log n) over it, for a limit of a couple of hundred. At 100k indexed
+// keys inside one window that was ~9 MB and 633 allocations PER REQUEST; the
+// walk holds nothing but the result.
+//
+// Only a survivor is turned into a key string: rebuilding one per examined
+// candidate is the other allocation this bounds.
 func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded map[compactKey]bool, skip func(string) bool) []string {
-	// Binary search for the start of the time window.
+	if limit <= 0 || len(idx.entries) == 0 {
+		return nil
+	}
+	// The window's bounds, as positions: lo is its first entry, hi one past
+	// its last.
 	lo := sort.Search(len(idx.entries), func(i int) bool {
 		return idx.entries[i].mtimeUnix >= startUnix
 	})
-
-	// Collect candidates within the window.
-	mid := (startUnix + endUnix) / 2
-	type candidate struct {
-		pos  int
-		dist int64
-	}
-	var candidates []candidate
-	for i := lo; i < len(idx.entries) && idx.entries[i].mtimeUnix <= endUnix; i++ {
-		e := idx.entries[i]
-		if excluded[e.compactKey] {
-			continue
-		}
-		d := e.mtimeUnix - mid
-		if d < 0 {
-			d = -d
-		}
-		candidates = append(candidates, candidate{pos: i, dist: d})
-	}
-
-	// Sort by distance from center.
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].dist < candidates[j].dist
+	hi := sort.Search(len(idx.entries), func(i int) bool {
+		return idx.entries[i].mtimeUnix > endUnix
 	})
+	if lo >= hi {
+		return nil
+	}
 
-	// Take the nearest candidates the caller still wants. Without skip this is
-	// the first limit of them. With it, the walk continues past the rejects, so
-	// the window advances instead of re-proposing the same nearest keys on
-	// every request.
-	if skip == nil {
-		if len(candidates) > limit {
-			candidates = candidates[:limit]
+	// left and right are the next candidates on each side of the midpoint.
+	mid := (startUnix + endUnix) / 2
+	right := sort.Search(hi-lo, func(i int) bool {
+		return idx.entries[lo+i].mtimeUnix >= mid
+	}) + lo
+	left := right - 1
+
+	dist := func(pos int) int64 {
+		d := idx.entries[pos].mtimeUnix - mid
+		if d < 0 {
+			return -d
 		}
-		keys := make([]string, len(candidates))
-		for i, c := range candidates {
-			keys[i] = idx.entries[c.pos].Key()
-		}
-		return keys
+		return d
 	}
 
 	keys := make([]string, 0, limit)
 	examined := 0
+	// The scan budget bounds a skip-heavy request: a client deep into a build
+	// has been sent most of the window already, so the walk steps past a lot
+	// of rejects to fill the limit. Without a skip nothing is rejected and the
+	// walk stops at the limit on its own.
 	budget := limit * nearbyScanFactor
-	for _, c := range candidates {
-		if len(keys) == limit {
-			break
+	for len(keys) < limit && (left >= lo || right < hi) {
+		// Take whichever side is nearer; with only one side left, take it.
+		var pos int
+		switch {
+		case left < lo:
+			pos, right = right, right+1
+		case right >= hi:
+			pos, left = left, left-1
+		case dist(left) <= dist(right):
+			pos, left = left, left-1
+		default:
+			pos, right = right, right+1
+		}
+
+		if excluded[idx.entries[pos].compactKey] {
+			continue
+		}
+		if skip == nil {
+			keys = append(keys, idx.entries[pos].Key())
+			continue
 		}
 		if examined == budget {
 			// Out of scan budget with the limit unfilled. Say so: a rate that
@@ -480,7 +550,7 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded
 			break
 		}
 		examined++
-		key := idx.entries[c.pos].Key()
+		key := idx.entries[pos].Key()
 		if skip(key) {
 			continue
 		}
@@ -579,7 +649,7 @@ func (idx *Index) Blob() ([]byte, string) {
 
 func (idx *Index) rebuild(storage *Storage) {
 	start := time.Now()
-	b := newIndexBuild(idx.entryCount())
+	b := newIndexBuild(idx.hashCount(), !idx.EntryTrackingEnabled())
 	if err := storage.Walk(b.add); err != nil {
 		log.Printf("index: rebuild failed: %v", err)
 		return
@@ -600,6 +670,15 @@ func (idx *Index) entryCount() int {
 	return len(idx.entries) + len(idx.pendingEntries)
 }
 
+// hashCount sizes a rebuild's buffers. It counts hashes rather than entries,
+// because the entry list is empty on a server with prefetch off and a zero
+// hint makes the walk grow a million-element slice by doubling.
+func (idx *Index) hashCount() int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return len(idx.hashes) + len(idx.pending)
+}
+
 // indexBuild accumulates a rebuild's state as the data_dir walk produces it, so
 // a rebuild never materializes a second full copy of the cache's keys the way
 // walking into a []ListObject did.
@@ -607,18 +686,27 @@ type indexBuild struct {
 	entries []indexEntry
 	hashes  [][gbciHashSize]byte
 	sorted  bool
+	// entriesOff carries the index's setting into the walk, so a rebuild does
+	// not spend the walk building a list the index is about to discard.
+	entriesOff bool
 }
 
-func newIndexBuild(sizeHint int) *indexBuild {
-	return &indexBuild{
-		entries: make([]indexEntry, 0, sizeHint),
-		hashes:  make([][gbciHashSize]byte, 0, sizeHint),
+func newIndexBuild(sizeHint int, entriesOff bool) *indexBuild {
+	b := &indexBuild{
+		hashes:     make([][gbciHashSize]byte, 0, sizeHint),
+		entriesOff: entriesOff,
 	}
+	if !entriesOff {
+		b.entries = make([]indexEntry, 0, sizeHint)
+	}
+	return b
 }
 
 func (b *indexBuild) add(obj ListObject) {
 	ck := newCompactKey(obj.Key)
-	b.entries = append(b.entries, indexEntry{compactKey: ck, mtimeUnix: obj.LastModified.Unix()})
+	if !b.entriesOff {
+		b.entries = append(b.entries, indexEntry{compactKey: ck, mtimeUnix: obj.LastModified.Unix()})
+	}
 	if h, ok := ck.actionHash(); ok {
 		b.hashes = append(b.hashes, h)
 	}

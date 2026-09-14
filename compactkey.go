@@ -29,7 +29,14 @@ func (c compactKey) Key() string {
 	if c.raw != "" {
 		return c.raw
 	}
-	return gbciKeyPrefix + hex.EncodeToString(c.hash[:])
+	// Encoded straight into the buffer that becomes the string. The obvious
+	// spelling, prefix + hex.EncodeToString(hash), allocates the hex string,
+	// then the concatenation, then the result: three per key, on a path that
+	// rebuilds a couple of hundred of them per prefetching request.
+	b := make([]byte, len(gbciKeyPrefix)+2*gbciHashSize)
+	copy(b, gbciKeyPrefix)
+	hex.Encode(b[len(gbciKeyPrefix):], c.hash[:])
+	return string(b)
 }
 
 // actionHash returns the action ID, and whether this is a cacheprog key at all.

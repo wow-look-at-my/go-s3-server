@@ -380,7 +380,7 @@ func TestIndexHTTPMatchesInProcess(t *testing.T) {
 // buildFrom is what Storage.Walk feeds applyRebuild in production, assembled
 // here from a fixed object list so a rebuild can be tested without a data_dir.
 func buildFrom(objects []ListObject) *indexBuild {
-	b := newIndexBuild(len(objects))
+	b := newIndexBuild(len(objects), false)
 	for _, o := range objects {
 		b.add(o)
 	}

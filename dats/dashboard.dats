@@ -13,16 +13,24 @@ shared:
 			"${SERVER:-./build/go-s3-server}" --config "$config" > "$log" 2>&1 &
 			server=$!
 			trap 'kill "$server" 2>/dev/null || true; wait "$server" 2>/dev/null || true' EXIT
-			ready=""
-			for _ in $(seq 1 100); do
-				if curl -so /dev/null "http://127.0.0.1:$port/_health"; then ready=yes; break; fi
-				if ! kill -0 "$server" 2>/dev/null; then break; fi
-				sleep 0.1
-			done
-			if [ -z "$ready" ]; then
-				echo "the server never answered on port $port" >&2
-				sed 's/^/server: /' "$log" >&2
-				exit 1
+			wait_port() {
+				local p="$1" path="$2" ok=""
+				for _ in $(seq 1 100); do
+					if curl -so /dev/null "http://127.0.0.1:$p$path"; then ok=yes; break; fi
+					if ! kill -0 "$server" 2>/dev/null; then break; fi
+					sleep 0.1
+				done
+				if [ -z "$ok" ]; then
+					echo "the server never answered on port $p" >&2
+					sed 's/^/server: /' "$log" >&2
+					return 1
+				fi
+			}
+			wait_port "$port" /_health
+			# The dashboard is a second listener, so the cache port answering says nothing about it.
+			dash="$(sed -n 's/.*"dashboard_listen"[[:space:]]*:[[:space:]]*"[^"]*:\([0-9]\{1,\}\)".*/\1/p' "$config")"
+			if [ -n "$dash" ]; then
+				wait_port "$dash" /
 			fi
 			# A failing check gets the server's log too. Without this a check
 			# that cannot reach a server which HAD answered reports only its own

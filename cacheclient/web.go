@@ -162,6 +162,13 @@ type WebBackend struct {
 	// maxRetries bounds retries for a transient failure; past the budget the op falls back to a local miss.
 	maxRetries int // bounded retries for transient failures
 
+	// shedUntil is the UnixNano time until which the server asked for quiet: a
+	// transient answer carrying Retry-After sets it. Until then no attempt from
+	// this backend is sent (see doRetry).
+	shedUntil atomic.Int64
+	// ShedWaits counts attempts held back, unsent, because the server had asked for quiet.
+	ShedWaits AtomicCounter
+
 	errLog *httpErrLogger
 
 	// batchReqCh funnels concurrent Get keys to a worker that ships them as a single /_batch/get request.

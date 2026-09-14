@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -255,16 +256,19 @@ func TestBatchGet_PrefetchOnWindowOnly(t *testing.T) {
 // The config field is off unless the file turns it on.
 func TestConfigPrefetchDefaultsOff(t *testing.T) {
 	dir := t.TempDir()
-	load := func(extra string) *Config {
+	load := func(extra map[string]any) *Config {
 		path := filepath.Join(dir, "config.json")
-		body := `{"bucket":"b","data_dir":"` + dir + `","disable_auth":true` + extra + `}`
-		require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+		fields := map[string]any{"bucket": "b", "data_dir": dir, "disable_auth": true}
+		maps.Copy(fields, extra)
+		body, err := json.Marshal(fields)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(path, body, 0o644))
 		cfg, err := LoadConfig(path)
 		require.NoError(t, err)
 		return cfg
 	}
-	assert.False(t, load("").Prefetch)
-	assert.True(t, load(`,"prefetch":true`).Prefetch)
+	assert.False(t, load(nil).Prefetch)
+	assert.True(t, load(map[string]any{"prefetch": true}).Prefetch)
 }
 
 // indexedKey is a real cacheprog key: the prefix plus a 64-hex action hash.

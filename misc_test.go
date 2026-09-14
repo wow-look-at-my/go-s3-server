@@ -44,7 +44,6 @@ func TestHeadObject(t *testing.T) {
 	_, tracked := storage.lastAccess(key)
 	require.False(t, tracked, "HEAD must not record last-access")
 
-	// Absent key: a clean 404.
 	resp = doRequest(t, ts, "HEAD", "/testbucket/go-buildcache/v1"+strings.Repeat("6", 64), nil, nil)
 	require.Equal(t, 404, resp.StatusCode)
 	resp.Body.Close()
@@ -56,9 +55,6 @@ func TestHeadObject(t *testing.T) {
 // copying without double-counting.
 func TestStatusRecorderReadFrom(t *testing.T) {
 	payload := strings.Repeat("z", 4096)
-	// Strip WriterTo from the source: io.Copy prefers src.WriteTo over
-	// dst.ReadFrom, and strings.Reader has one — the real GET source
-	// (*os.File) does not, so this matches production dispatch.
 	source := func() io.Reader { return struct{ io.Reader }{strings.NewReader(payload)} }
 
 	// Fallback: httptest.ResponseRecorder has no ReadFrom.
@@ -94,11 +90,7 @@ func (c *countingReaderFrom) ReadFrom(src io.Reader) (int64, error) {
 	return io.Copy(&c.buf, src)
 }
 
-// TestMetadataOverflowDropsOptionalKey: an optional metadata value too large
-// for the xattr budget (>64 KiB triggers the VFS E2BIG cap portably) is
-// dropped — counted and logged — while the object, its body, and its
-// protected keys store and serve normally. A protected key hitting the same
-// limit still fails the PUT.
+// A protected key hitting the same limit still fails the PUT.
 func TestMetadataOverflowDropsOptionalKey(t *testing.T) {
 	if !inOwnProcess(t) {
 		return
@@ -106,7 +98,7 @@ func TestMetadataOverflowDropsOptionalKey(t *testing.T) {
 
 	_, storage := testSetupWithStorage(t)
 
-	huge := strings.Repeat("s", 70_000) // > XATTR_SIZE_MAX (64 KiB) => E2BIG
+	huge := strings.Repeat("s", 70_000)
 	key := "go-buildcache/v1" + strings.Repeat("7", 64)
 
 	droppedBefore := testutil.ToFloat64(metadataXattrsDroppedTotal)
@@ -123,8 +115,6 @@ func TestMetadataOverflowDropsOptionalKey(t *testing.T) {
 	_, hasSrc := meta.Metadata["src"]
 	require.False(t, hasSrc, "the oversized optional key must be dropped")
 
-	// A protected key over the limit still fails the PUT (better no object
-	// than an unusable one).
 	err = storage.Put("go-buildcache/v1"+strings.Repeat("a", 63)+"b", []byte("body"),
 		map[string]string{"outputid": huge}, nil)
 	require.Error(t, err, "an oversized PROTECTED key must fail the PUT")

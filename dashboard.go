@@ -13,28 +13,24 @@ import (
 	dto "github.com/prometheus/client_model/go"
 )
 
-// The dashboard is one page, its two assets and its icon. They are embedded so the
-// binary stays the whole deployment: no asset directory to mount, and no way
+// The dashboard is a single page, its assets and its icon. They are embedded so
+// the binary stays the whole deployment: no asset directory to mount, and no way
 // for the page to disagree with the server that serves it.
 //
 //go:embed dashboard.html dashboard.css dashboard.js icon.svg icon-monochrome.svg
 var dashboardAssets embed.FS
 
-// defaultDashboardListen is the address the dashboard binds when the config
-// does not name one. It is a SEPARATE port from the cache API on purpose: an
-// access proxy (Cloudflare Zero Trust, or any other) fronts this port and
-// leaves the cache protocol port alone, so operators reach the dashboard
-// through their identity provider while build machines keep talking basic auth
-// to the API.
+// It is a SEPARATE port from the cache API on purpose: an access proxy
+// (Cloudflare empty Trust, or any other) fronts this port and leaves the cache
+// protocol port alone, so operators reach the dashboard through their identity
+// provider while build machines keep talking basic auth to the API.
 const defaultDashboardListen = ":9002"
 
 // dashboardStatsPath serves the snapshot the page polls. Under it, the numbers
 // come from the same Prometheus registry /metrics serves, so the page and the
-// scrape can never report different values for one counter.
+// scrape can never report different values for a single counter.
 const dashboardStatsPath = "/api/stats"
 
-// metricValue is one metric family, flattened for the browser: Value for a
-// metric with no labels, Series for a labeled one (label set -> number).
 type metricValue struct {
 	Value  *float64           `json:"value,omitempty"`
 	Series map[string]float64 `json:"series,omitempty"`
@@ -95,9 +91,9 @@ func (d *dashboard) handler() http.Handler {
 	return mux
 }
 
-// servePage answers the page at "/" and its two assets by name. It does not
-// serve the embedded directory as a tree: the page must be at the root, which
-// is where an access proxy points its hostname.
+// servePage answers the page at "/" and its assets by name. It does not serve
+// the embedded directory as a tree: the page must be at the root, which is
+// where an access proxy points its hostname.
 func (d *dashboard) servePage(w http.ResponseWriter, r *http.Request) {
 	name, contentType := "", ""
 	switch r.URL.Path {
@@ -174,10 +170,10 @@ func (d *dashboard) snapshot() (*dashboardStats, error) {
 }
 
 // gatherDashboardMetrics flattens the registry into name -> value. A counter or
-// gauge with no labels becomes one number. A labeled one becomes a series keyed
-// by its label set. A histogram contributes "<name>_count" and "<name>_sum",
-// which is what an average duration needs; the buckets stay in /metrics for a
-// real time-series database to read.
+// gauge with no labels becomes a single number. A labeled a single becomes a
+// series keyed by its label set. A histogram contributes "<name>_count" and
+// "<name>_sum", which is what an average duration needs; the buckets stay in
+// /metrics for a real time-series database to read.
 func gatherDashboardMetrics(g prometheus.Gatherer) (map[string]metricValue, error) {
 	families, err := g.Gather()
 	if err != nil {
@@ -226,10 +222,8 @@ func addFamily(out map[string]metricValue, name string, metrics []*dto.Metric, v
 	}
 }
 
-// seriesKey names one labeled series. A single label reads as its bare value
-// ("hit"), because every one-label metric here already says what the label
-// means in its own name. More than one label reads as "k=v,k=v", sorted so the
-// key is stable between polls.
+// seriesKey names a single labeled series. More than a single label reads as
+// "k=v,k=v", sorted so the key is stable between polls.
 func seriesKey(labels []*dto.LabelPair) string {
 	if len(labels) == 1 {
 		return labels[0].GetValue()

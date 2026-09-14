@@ -11,9 +11,9 @@ import (
 // go-toolchain client now speaks a native protocol (native error bodies and
 // X-Cache-Meta-* metadata headers). The shims below keep not-yet-upgraded
 // clients working, but every use of a deprecated S3 feature is surfaced --
-// logged once and counted in the s3_deprecated_requests_total metric -- so the
-// remaining S3 traffic is visible and the shims can be removed once it drops to
-// zero (slated for the repository rename to go-toolchain-cache).
+// logged a single time and counted in the s3_deprecated_requests_total metric
+// -- so the remaining S3 traffic is visible and the shims can be removed a
+// single time it drops to empty (slated for the repository rename to go-toolchain-cache).
 
 const (
 	// nativeMetaPrefix is the current, non-S3 request/response header prefix
@@ -32,10 +32,10 @@ const featureAmzMeta = "amz_meta_header"
 var s3MetaDeprecationOnce sync.Once
 
 // noteDeprecatedS3Meta records that a client used the deprecated S3-style
-// X-Amz-Meta-* request headers. It logs a single prominent warning the first
-// time (a CI run issues thousands of PUTs, so per-request logging would flood
-// the log) and always increments the counter, so the ongoing volume stays
-// visible in metrics.
+// X-Amz-Meta-* request headers. It logs a single prominent warning the
+// earliest time (a CI run issues thousands of PUTs, so per-request logging
+// would flood the log) and always increments the counter, so the ongoing
+// volume stays visible in metrics.
 func noteDeprecatedS3Meta(r *http.Request) {
 	deprecatedRequestsTotal.WithLabelValues(featureAmzMeta).Inc()
 	s3MetaDeprecationOnce.Do(func() {

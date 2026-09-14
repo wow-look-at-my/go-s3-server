@@ -15,10 +15,10 @@ import (
 )
 
 // TestMetaCache_ServesWarmMetadataWithoutXattrs proves the cache is actually
-// consulted: after one read, the attributes are removed from disk behind the
-// cache's back and the next read still reports them. (Only a test may do that
-// -- the server never rewrites an inode's xattrs in place except through the
-// self-heal, which invalidates.)
+// consulted: after a single read, the attributes are removed from disk behind
+// the cache's back and the next read still reports them. (Only a test may do
+// that -- the server never rewrites an inode's xattrs in place except through
+// the self-heal, which invalidates.)
 func TestMetaCache_ServesWarmMetadataWithoutXattrs(t *testing.T) {
 	_, storage := testSetupWithStorage(t)
 	key := "go-buildcache/v1" + strings.Repeat("a", 64)
@@ -59,9 +59,9 @@ func TestMetaCache_OverwriteIsNotServedStale(t *testing.T) {
 	require.Equal(t, "second", meta.Metadata["outputid"], "an overwrite must invalidate the cached metadata")
 }
 
-// TestMetaCache_SetMetaInvalidates covers the one mutation the stat comparison
-// cannot see: an xattr written onto a live inode, which leaves mtime and size
-// exactly as they were.
+// TestMetaCache_SetMetaInvalidates covers the a single mutation the stat
+// comparison cannot see: an xattr written onto a live inode, which leaves
+// mtime and size exactly as they were.
 func TestMetaCache_SetMetaInvalidates(t *testing.T) {
 	_, storage := testSetupWithStorage(t)
 	key := "go-buildcache/v1" + strings.Repeat("c", 64)
@@ -97,8 +97,6 @@ func TestMetaCache_SelfHealInvalidates(t *testing.T) {
 	require.Equal(t, hex.EncodeToString(sum[:]), fresh.Metadata["outputid"], "the repair must be visible to the next reader")
 }
 
-// TestMetaCache_DeleteAndEvictionForget: a key that comes back later is a
-// different object, and must not inherit the old one's metadata.
 func TestMetaCache_DeleteAndEvictionForget(t *testing.T) {
 	_, storage := testSetupWithStorage(t)
 	for _, tc := range []struct {
@@ -226,8 +224,6 @@ func TestBatchGetServesFullMetadataAndBodies(t *testing.T) {
 	}
 }
 
-// batchGetDirect issues one /_batch/get against the handler and returns the
-// manifest plus each body.
 func batchGetDirect(t *testing.T, storage *Storage, tracker *prefetchTracker, keys []string) (batchGetManifest, map[string][]byte) {
 	t.Helper()
 	reqBody, err := json.Marshal(batchGetRequest{Keys: keys})
@@ -240,7 +236,7 @@ func batchGetDirect(t *testing.T, storage *Storage, tracker *prefetchTracker, ke
 
 // maxMetaEntryBytes bounds the single-entry overshoot the cache allows: an
 // insert never evicts the entry it just made, so a shard can exceed its budget
-// by at most one entry.
+// by at most a single entry.
 const maxMetaEntryBytes = 4096
 
 // cacheEntryFor reports how many cached metadata attributes the cache holds for

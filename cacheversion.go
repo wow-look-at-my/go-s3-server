@@ -2,8 +2,8 @@ package main
 
 // The data_dir's format version and the startup hygiene that goes with it:
 // purging a cache written under a version we no longer trust, and sweeping the
-// temp files an interrupted upload left behind. Both run once, before the
-// server serves anything, under the data_dir's exclusive lock.
+// temp files an interrupted upload left behind. Both run a single time, before
+// the server serves anything, under the data_dir's exclusive lock.
 
 import (
 	"errors"
@@ -16,13 +16,12 @@ import (
 	"strings"
 )
 
-// ensureCacheVersion reads the data_dir's version marker. If missing, it is
-// treated as version 1. If the stored version does not match
-// currentCacheVersion, every entry in the data_dir (except the lock file) is
-// removed and a new version marker is written. This forces the operator to
-// rebuild the cache from trusted inputs whenever we bump the version, e.g.
-// after fixing a vulnerability that could have let an attacker populate the
-// cache.
+// ensureCacheVersion reads the data_dir's version marker. If the stored
+// version does not match currentCacheVersion, every entry in the data_dir
+// (except the lock file) is removed and a new version marker is written.
+// This forces the operator to rebuild the cache from trusted inputs whenever
+// we bump the version, e.g. after fixing a vulnerability that could have let
+// an attacker populate the cache.
 func ensureCacheVersion(dataDir string) error {
 	stored, err := readCacheVersion(dataDir)
 	if err != nil {
@@ -46,7 +45,6 @@ func readCacheVersion(dataDir string) (int, error) {
 	data, err := os.ReadFile(filepath.Join(dataDir, cacheVersionFile))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			// No marker: treat as version 1 (any cache predating this feature).
 			return 1, nil
 		}
 		return 0, fmt.Errorf("read cache version: %w", err)

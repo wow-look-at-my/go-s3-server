@@ -52,9 +52,7 @@ func testSetupWithStorage(t *testing.T) (*httptest.Server, *Storage) {
 //
 // The payload is REALISTICALLY incompressible (magic + crypto/rand entropy), so
 // its single lz4 block compresses to several KB -- far past the old 512-byte
-// peek that masked the bug. This is the exact shape of the real production
-// poison blobs (compressed 600 B - ~36 KB), so these read-path tests genuinely
-// exercise "the compressed first block is bigger than the peek window".
+// peek that masked the bug.
 func plantModuleIndexBlob(t *testing.T, storage *Storage, key string) {
 	t.Helper()
 	raw := incompressibleIndexBody(t, 16384)
@@ -68,12 +66,8 @@ func plantModuleIndexBlob(t *testing.T, storage *Storage, key string) {
 	require.NoError(t, storage.PutStream(key, bytes.NewReader(compressed), meta, nil))
 }
 
-// TestGetObject_EvictsModuleIndexOnRead is the read-path half of the poison fix:
-// a module-index blob already on disk (planted directly, as if uploaded before
-// the PUT guard existed) is detected on the first GET, evicted (file + /_index
-// entry), and reported as a 404 miss -- the client then recomputes the index
-// locally. The PUT guard alone could never remove it; this is what sheds the
-// already-stored poison, lazily, on first fetch.
+// The PUT guard alone could never remove it; this is what sheds the
+// already-stored poison, lazily, on earliest fetch.
 func TestGetObject_EvictsModuleIndexOnRead(t *testing.T) {
 	if !inOwnProcess(t) {
 		return
@@ -98,8 +92,6 @@ func TestGetObject_EvictsModuleIndexOnRead(t *testing.T) {
 
 	evictBefore := testutil.ToFloat64(moduleIndexEvictionsTotal)
 
-	// First GET detects + evicts + reports a miss (404, the normal not-found path),
-	// NOT the served index body.
 	resp = doRequest(t, ts, "GET", "/testbucket/"+key, nil, nil)
 	require.Equal(t, 404, resp.StatusCode, "a stored module index must be refused on read")
 	require.Equal(t, "not_found", resp.Header.Get("X-Cache-Error-Code"))
@@ -130,17 +122,16 @@ func TestGetObject_EvictsModuleIndexOnRead(t *testing.T) {
 // TestGetObject_NonIndexBodyServedUnchanged is the regression guard that the
 // read-path peek does not corrupt or partially consume the served stream: a
 // normal (non-index) cacheprog object is served byte-for-byte, exactly as before
-// the guard. The peek rewinds the file to byte 0, so io.Copy reads the whole
-// body from the start.
+// the guard.
 func TestGetObject_NonIndexBodyServedUnchanged(t *testing.T) {
 	ts := testSetup(t)
 
 	// The served body must be LONGER than any peek the guard does so a botched
-	// peek (one that read but failed to rewind) would visibly truncate it. The
-	// server serves the stored bytes verbatim, so we store a large, random (hence
-	// definitely-not-index, and not lz4-shrinkable) body uncompressed -- with no
-	// compression hint the guard checks the raw leading bytes, and a multi-KB body
-	// dwarfs the read-path probe.
+	// peek (a single that read but failed to rewind) would visibly truncate it.
+	// The server serves the stored bytes verbatim, so we store a large, random
+	// (hence definitely-not-index, and not lz4-shrinkable) body uncompressed --
+	// with no compression hint the guard checks the raw leading bytes, and a
+	// multi-KB body dwarfs the read-path probe.
 	const actionHex = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 	key := "go-buildcache/v1" + actionHex
 	payload := make([]byte, 4096)

@@ -105,11 +105,10 @@ func BenchmarkBatchGetWarm(b *testing.B) {
 	}
 	reqBody, err := json.Marshal(batchGetRequest{Keys: keys})
 	require.NoError(b, err)
-	tracker := newPrefetchTracker()
 
 	// Warm the known-clean memo exactly as steady-state traffic would.
 	rec := httptest.NewRecorder()
-	handleBatchGet(rec, httptest.NewRequest("POST", "/testbucket/_batch/get", bytes.NewReader(reqBody)), storage, tracker, nil, false)
+	handleBatchGet(rec, httptest.NewRequest("POST", "/testbucket/_batch/get", bytes.NewReader(reqBody)), storage, nil, false)
 	require.Equal(b, 200, rec.Code)
 
 	b.SetBytes(int64(len(payload)) * nKeys)
@@ -118,7 +117,7 @@ func BenchmarkBatchGetWarm(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		req := httptest.NewRequest("POST", "/testbucket/_batch/get", bytes.NewReader(reqBody))
 		rec := httptest.NewRecorder()
-		handleBatchGet(rec, req, storage, tracker, nil, false)
+		handleBatchGet(rec, req, storage, nil, false)
 		require.Equal(b, 200, rec.Code)
 		require.Greater(b, rec.Body.Len(), nKeys*len(payload))
 	}

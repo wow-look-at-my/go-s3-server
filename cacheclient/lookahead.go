@@ -237,7 +237,9 @@ func (la *lookAhead) expand(seed []string) {
 		la.Dropped.Add(uint32(len(seed)))
 		return
 	}
-	body, err := json.Marshal(batchGetRequest{Keys: seed, Prefetch: true, PrefetchOnly: true})
+	// The request states what this build already has, which is the whole of
+	// what the server needs to skip: it keeps no memory of its own.
+	body, err := json.Marshal(batchGetRequest{Keys: seed, Prefetch: true, PrefetchOnly: true, Have: b.heldFilter()})
 	if err != nil {
 		return
 	}

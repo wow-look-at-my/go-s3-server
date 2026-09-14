@@ -182,6 +182,14 @@ type WebBackend struct {
 	// threw away: no sink, no budget, or a body that failed a gate.
 	PrefetchStored AtomicCounter
 
+	// heldMu guards held.
+	heldMu sync.RWMutex
+	// held is the action hashes whose bodies this process actually has: every
+	// object it received and verified, and every object it uploaded. It is NOT
+	// the index, which says what the server has. A prefetch request states it
+	// so the server can skip what this build is not going to need.
+	held *hashSet
+
 	// prefetchHold bounds the bytes of unrequested bodies this backend is
 	// carrying between reading them off a response and handing them over.
 	prefetchHold prefetchBudget
@@ -386,6 +394,7 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	// build never asked for.
 	b.prefetchHold.limit = lookAheadBudget()
 	b.knownMiss = newHashSet(0)
+	b.held = newHashSet(0)
 	b.indexMaxAge = cfg.IndexMaxAge
 	b.indexTiming = defaultIndexTiming()
 	return b, nil

@@ -2,6 +2,29 @@ package cacheclient
 
 import "sync/atomic"
 
+// noteHeld records that this process now has the object for h: it received
+// and verified it, or it uploaded it. A prefetch request states the set, so
+// the server can skip sending what this build already has.
+func (b *WebBackend) noteHeld(h actionHash) {
+	if b.held == nil {
+		return
+	}
+	b.heldMu.Lock()
+	b.held.Add(h)
+	b.heldMu.Unlock()
+}
+
+// heldFilter states the held set for a request. It answers nil while the set
+// is empty, which asks the server for the whole window.
+func (b *WebBackend) heldFilter() *haveFilter {
+	if b.held == nil {
+		return nil
+	}
+	b.heldMu.RLock()
+	defer b.heldMu.RUnlock()
+	return newHaveFilter(b.held.Len(), b.held.All())
+}
+
 // The blocking batch path's speculative half.
 //
 // A /_batch/get response can carry entries beyond the keys the request named:
@@ -115,6 +138,9 @@ func (b *WebBackend) storePrefetched(entries []BatchEntry) {
 		}
 		if _, ok := b.verify("web batch prefetch", actionID, e.OutputID, e.Data, e.RawSize); !ok {
 			continue
+		}
+		if h, ok := parseActionHash(actionID); ok {
+			b.noteHeld(h)
 		}
 		keep = append(keep, e)
 		if len(keep) >= lookAheadChunk {

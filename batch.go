@@ -22,6 +22,10 @@ type batchGetRequest struct {
 	// where in the store's time order to look, so streaming those bodies back
 	// would spend the whole request re-sending what the caller has.
 	PrefetchOnly bool `json:"prefetch_only"`
+	// Have is what the client says it already holds. The window leaves those
+	// keys out. An absent filter is a client that states nothing, and it is
+	// sent the full window. See havefilter.go.
+	Have *haveFilter `json:"have"`
 }
 
 // batchGetManifestEntry describes one entry in the batch response manifest.
@@ -88,85 +92,6 @@ const prefetchWindow = 30 * time.Second
 // beyond what was explicitly requested.
 const maxPrefetchEntries = 200
 
-// prefetchTrackerTTL bounds how long the server remembers having sent a key to
-// a given build. It is a backstop for a build that never ends and for a client
-// that sends no build header: the scope that matters is the build, and a build
-// that finishes stops asking.
-const prefetchTrackerTTL = 5 * time.Minute
-
-// prefetchSentEntryBytes is what one remembered send costs: the user+key
-// strings, the timestamp, the map bucket and the list element.
-const prefetchSentEntryBytes = 160
-
-// prefetchTrackerKind is the label this cache reports its size under.
-const prefetchTrackerKind = "prefetch-sent"
-
-// prefetchTracker remembers which keys were recently sent as prefetch to each
-// BUILD, so successive look-ahead requests within one build keep moving the
-// window instead of receiving the same 200-entry pool over and over.
-//
-// The scope is the build, not the user. It was the user, for five minutes, and
-// a user runs several builds in five minutes: the first build received the
-// window and every build after it received an empty one, so a second build in
-// a row fetched every object on its critical path and finished slower than a
-// build with no cache at all. A build ends and stops asking; a user does not.
-//
-// A client that sends no build header falls back to the username, which is the
-// old behavior, because two builds sharing one scope is the lesser fault. It
-// costs one of them a window; sharing nothing would hand one build the same
-// pool on every request for the whole build.
-//
-// Bounded in bytes with LRU eviction like the other in-memory caches: an
-// evicted record means one pool of prefetch entries may be offered to that
-// build a second time, which is a little wasted bandwidth and nothing else.
-// Records also expire on their own after prefetchTrackerTTL.
-type prefetchTracker struct {
-	sent *lruCache[string, time.Time] // "scope\x00key" → sent_at
-}
-
-func newPrefetchTracker() *prefetchTracker {
-	return &prefetchTracker{sent: newLRUCache(
-		cacheBudget(prefetchBudgetFraction, defaultPrefetchBytes),
-		fnv1a,
-		func(k string, _ time.Time) int64 { return int64(len(k)) + prefetchSentEntryBytes },
-	)}
-}
-
-// sentKey is the tracker's composite key. NUL cannot appear in a scope or a
-// storage key, so the join is unambiguous.
-func sentKey(scope, key string) string { return scope + "\x00" + key }
-
-// prefetchScope is what suppression is remembered against: the build, or the
-// user for a client too old to name one.
-func prefetchScope(prov requestProvenance, user string) string {
-	if prov.build != "" {
-		return prov.build
-	}
-	return user
-}
-
-// recentlySent reports whether key went to scope inside the TTL. It records
-// nothing, and it is cheap enough to run during index selection: one map
-// lookup, before any per-key stat, guard or heal work. record is called
-// afterwards with only the keys that actually made it into the response.
-func (t *prefetchTracker) recentlySent(scope, key string) bool {
-	sentAt, ok := t.sent.Get(sentKey(scope, key))
-	return ok && time.Since(sentAt) < prefetchTrackerTTL
-}
-
-// record marks keys as sent to scope now and amortizes eviction of that scope's
-// stale entries. Only keys that were genuinely included in a response should
-// be recorded — a candidate dropped by the guard/heal checks stays eligible.
-func (t *prefetchTracker) record(scope string, keys []string) {
-	now := time.Now()
-	for _, k := range keys {
-		t.sent.Put(sentKey(scope, k), now)
-	}
-	// Expiry needs no sweep: filterKeys treats a record older than the TTL as
-	// absent, and the byte bound evicts the least-recently-used records, which
-	// are exactly the ones nobody has looked up.
-}
-
 // handleBatchGet handles GET and POST /_batch/get requests. The client sends a
 // JSON list of keys it needs, and the server responds with a tar stream
 // containing the data and metadata for each found entry. POST is the
@@ -176,17 +101,19 @@ func (t *prefetchTracker) record(scope string, keys []string) {
 // If the server's prefetch config (prefetchEnabled) and the request both ask
 // for it, the server also includes entries whose modification time falls
 // within 30s either side of the requested entries, capturing entries from the same build
-// that the client is likely to need next. The prefetchTracker suppresses keys
-// already sent to THIS BUILD, preventing the same 200-entry pool from flooding
-// the client on every request. With prefetchEnabled false the client's
-// prefetch and prefetch_only flags are ignored: a batch carries only the
-// requested keys, and a prefetch_only request gets an empty manifest.
+// that the client is likely to need next. The request's own Have filter says
+// which of those the client already holds, and those are left out, so the
+// window keeps moving instead of the same 200-entry pool arriving on every
+// request. The server keeps no record of any of this. With prefetchEnabled
+// false the client's prefetch and prefetch_only flags are ignored: a batch
+// carries only the requested keys, and a prefetch_only request gets an empty
+// manifest.
 //
 // The tar layout is:
 //
 //	manifest.json                    — index of all entries with metadata
 //	data/<key>                       — raw file content for each entry
-func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tracker *prefetchTracker, agg *logAggregator, prefetchEnabled bool) {
+func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, agg *logAggregator, prefetchEnabled bool) {
 	if r.Method != "GET" && r.Method != "POST" {
 		writeError(w, 405, "method_not_allowed", "method not allowed")
 		return
@@ -207,12 +134,7 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 		return
 	}
 
-	user := anonymousUser
-	if a := auditFromContext(r.Context()); a != nil {
-		user = a.Username
-	}
 	prov := provenanceOf(r)
-	scope := prefetchScope(prov, user)
 
 	// lookup is the keys whose bodies this response carries. With prefetch
 	// off, a prefetch_only request wants nothing but the window, so it carries
@@ -268,35 +190,30 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 	}
 
 	// Prefetch: find related keys by modification time proximity, and let the
-	// index skip the ones already sent to this build AS IT SELECTS.
-	// Suppression during selection is what keeps the window moving: filtering
-	// the result afterwards handed back the same nearest maxPrefetchEntries
+	// index skip what the request says the client holds AS IT SELECTS.
+	// Skipping during selection is what keeps the window moving: filtering the
+	// result afterwards handed back the same nearest maxPrefetchEntries
 	// candidates on every request, so once a client had received them it got
-	// prefetched=0 and suppressed=maxPrefetchEntries for the rest of its build.
-	// The skip is a map lookup, and it runs before the per-key stat, guard and
-	// heal work, so a rejected candidate never costs a file open or an lz4
-	// block decode. Only keys that actually make it into the response are
-	// recorded as sent, so a candidate dropped by the guard stays eligible.
-	var nSuppressed int
+	// prefetched=0 for the rest of its build. The skip is a few bit tests
+	// against the request's own filter, and it runs before the per-key stat,
+	// guard and heal work, so a rejected candidate never costs a file open or
+	// an lz4 block decode.
+	var nHeld int
 	if req.Prefetch && len(entries) > 0 && !minMod.IsZero() && storage.Index != nil {
 		windowStart := minMod.Add(-prefetchWindow)
 		windowEnd := maxMod.Add(prefetchWindow)
 
 		freshKeys := storage.Index.NearbyKeys(windowStart.Unix(), windowEnd.Unix(), maxPrefetchEntries, requestedSet,
 			func(key string) bool {
-				if tracker.recentlySent(scope, key) {
-					nSuppressed++
-					return true
+				h, ok := extractActionHash(key)
+				if !ok || !req.Have.contains(h) {
+					return false
 				}
-				return false
+				nHeld++
+				return true
 			})
 
 		prefetched := buildPrefetchEntries(storage, freshKeys)
-		sentKeys := make([]string, len(prefetched))
-		for i, e := range prefetched {
-			sentKeys[i] = e.key
-		}
-		tracker.record(scope, sentKeys)
 		if req.PrefetchOnly {
 			// The requested keys were the anchor, not the ask. They still had to
 			// be stat'ed to find the window, and they still set it, but only the
@@ -377,12 +294,12 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 	batchKeysTotal.WithLabelValues("requested").Add(float64(len(req.Keys)))
 	batchKeysTotal.WithLabelValues("found").Add(float64(len(entries) - nPrefetch))
 	batchKeysTotal.WithLabelValues("prefetched").Add(float64(nPrefetch))
-	batchKeysTotal.WithLabelValues("suppressed").Add(float64(nSuppressed))
+	batchKeysTotal.WithLabelValues("client_held").Add(float64(nHeld))
 	batchKeysTotal.WithLabelValues("streamed").Add(float64(streamed))
 	// Attached to this request's own log line rather than printed as a second
 	// line about the same request.
-	auditFromContext(r.Context()).note("batch_get requested=%d found=%d prefetched=%d suppressed=%d streamed=%d",
-		len(req.Keys), len(entries)-nPrefetch, nPrefetch, nSuppressed, streamed)
+	auditFromContext(r.Context()).note("batch_get requested=%d found=%d prefetched=%d client_held=%d streamed=%d",
+		len(req.Keys), len(entries)-nPrefetch, nPrefetch, nHeld, streamed)
 }
 
 // handleBatchPut handles PUT /_batch/put. The go-toolchain client issues one

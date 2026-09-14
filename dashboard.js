@@ -200,7 +200,7 @@ function drawReads(stats) {
 	const scale = Math.max(requested, ...Object.values(kinds), 1);
 	fill(
 		$("batch-kinds"),
-		["requested", "found", "prefetched", "suppressed", "streamed"].map((k) =>
+		["requested", "found", "prefetched", "client_held", "streamed"].map((k) =>
 			bar(k, kinds[k] || 0, scale, k === "found" ? "good" : "", k === "found" && requested ? `${count(kinds[k] || 0)}  ${percent(kinds[k] || 0, requested)}` : undefined),
 		),
 	);

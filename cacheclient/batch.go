@@ -21,6 +21,10 @@ type batchGetRequest struct {
 	// has in order to say WHERE to look, and re-sending those bodies would
 	// throw away the point of the request.
 	PrefetchOnly bool `json:"prefetch_only,omitempty"`
+	// Have states what this client already holds, so the server can leave it
+	// out of the window. See havefilter.go. An absent filter asks for
+	// everything, which is what a client too old to send one gets.
+	Have *haveFilter `json:"have,omitempty"`
 }
 
 // batchGetManifest is the manifest entry in the server's tar response.
@@ -326,6 +330,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 		}
 		b.Stats.Hits.Increment()
 		b.Stats.HitBytes.Add(uint64(len(e.Data)))
+		b.noteHeld(r.hash)
 		hit = append(hit, r.key)
 		r.resp <- batchResp{outputID: e.OutputID, data: data, t: time.Now()}
 	})

@@ -200,7 +200,6 @@ func TestOpenBodyMatchesOpen(t *testing.T) {
 // still carry every attribute, and each body must arrive whole.
 func TestBatchGetServesFullMetadataAndBodies(t *testing.T) {
 	_, storage := testSetupWithStorage(t)
-	tracker := newPrefetchTracker()
 
 	body := []byte("!<arch>\n" + strings.Repeat("compiled", 500))
 	payload := lz4Compress(t, body)
@@ -216,7 +215,7 @@ func TestBatchGetServesFullMetadataAndBodies(t *testing.T) {
 		keys = append(keys, key)
 	}
 
-	manifest, bodies := batchGetDirect(t, storage, tracker, keys)
+	manifest, bodies := batchGetDirect(t, storage, keys)
 	require.Len(t, manifest.Entries, len(keys))
 	for _, e := range manifest.Entries {
 		require.Equal(t, meta["outputid"], e.Metadata["outputid"])
@@ -228,12 +227,12 @@ func TestBatchGetServesFullMetadataAndBodies(t *testing.T) {
 
 // batchGetDirect issues one /_batch/get against the handler and returns the
 // manifest plus each body.
-func batchGetDirect(t *testing.T, storage *Storage, tracker *prefetchTracker, keys []string) (batchGetManifest, map[string][]byte) {
+func batchGetDirect(t *testing.T, storage *Storage, keys []string) (batchGetManifest, map[string][]byte) {
 	t.Helper()
 	reqBody, err := json.Marshal(batchGetRequest{Keys: keys})
 	require.NoError(t, err)
 	rec := httptest.NewRecorder()
-	handleBatchGet(rec, httptest.NewRequest(http.MethodPost, "/testbucket/_batch/get", bytes.NewReader(reqBody)), storage, tracker, nil, false)
+	handleBatchGet(rec, httptest.NewRequest(http.MethodPost, "/testbucket/_batch/get", bytes.NewReader(reqBody)), storage, nil, false)
 	require.Equal(t, 200, rec.Code)
 	return parseBatchResponse(t, bytes.NewReader(rec.Body.Bytes()))
 }

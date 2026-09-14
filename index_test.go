@@ -126,7 +126,7 @@ func TestIndexAfterPuts(t *testing.T) {
 		require.Less(t, hashCompare(p.Hashes[i-1], p.Hashes[i]), 0)
 	}
 
-	// Every PUT hash must appear exactly once.
+	// Every PUT hash must appear exactly a single time.
 	seen := set.New[[32]byte](len(hashes))
 	for _, h := range p.Hashes {
 		seen.Add(h)
@@ -149,12 +149,10 @@ func TestIndexConditionalGet(t *testing.T) {
 	require.Equal(t, 200, status)
 	require.NotEqual(t, "", etag)
 
-	// Matching If-None-Match → 304 with no body.
 	status304, body304, _ := getIndex(t, ts, etag)
 	require.Equal(t, 304, status304)
 	require.Len(t, body304, 0)
 
-	// Non-matching If-None-Match → 200 with body.
 	status200, body200, _ := getIndex(t, ts, `"deadbeef"`)
 	require.Equal(t, 200, status200)
 	require.Greater(t, len(body200), 0)
@@ -222,7 +220,6 @@ func TestIndexETagStableAcrossDuplicatePuts(t *testing.T) {
 	require.Equal(t, etag1, etag2, "duplicate-only PUTs must not mint a new ETag")
 	require.Equal(t, body1, body2, "identical key sets must serialize byte-identically")
 
-	// And a conditional GET with the old ETag now answers 304.
 	status, _, _ = getIndex(t, ts, etag1)
 	require.Equal(t, 304, status)
 
@@ -280,9 +277,8 @@ func TestIndexBurstPuts(t *testing.T) {
 	wg.Wait()
 	burstDur := time.Since(start)
 
-	// 1000 PUTs in well under a second on real hardware; allow generous
-	// budget for slow CI shared runners. The point is to fail loudly if
-	// PUT regresses to O(n)-per-call sorting on the new hashes path.
+	// The point is to fail loudly if PUT regresses to O(n)-per-call
+	// sorting on the new hashes path.
 	require.Less(t, burstDur, 5*time.Second, "burst PUT took %v (regression?)", burstDur)
 
 	status, body, _ := getIndex(t, ts, "")
@@ -291,8 +287,7 @@ func TestIndexBurstPuts(t *testing.T) {
 	require.Equal(t, uint64(n), p.Count)
 }
 
-// hashCompare returns -1/0/+1 for lexicographic ordering of two 32-byte
-// hashes. Inlined here so tests don't pull in bytes.Compare.
+// Inlined here so tests don't pull in bytes.Compare.
 func hashCompare(a, b [32]byte) int {
 	for i := range a {
 		if a[i] < b[i] {
@@ -305,15 +300,11 @@ func hashCompare(a, b [32]byte) int {
 	return 0
 }
 
-// Sanity check: a request with the wrong method against /_index returns 405,
-// not a panic, even when the index is empty.
 func TestIndexMethodNotAllowed(t *testing.T) {
 	ts := testSetup(t)
 	resp := doRequest(t, ts, "PUT", "/testbucket/_index", []byte("x"), nil)
 	defer resp.Body.Close()
-	// _index isn't a valid PUT key (the routing dispatches to PutObject
-	// which writes it as a regular key); we accept either a 200 (treated
-	// as a normal write) or a 405. The point is no panic.
+	// The point is no panic.
 	require.True(t, resp.StatusCode == 200 || resp.StatusCode == 405)
 }
 
@@ -340,7 +331,7 @@ func TestIndexBlobRoundtrip(t *testing.T) {
 	require.Equal(t, etag1, etag2)
 	require.Equal(t, &blob1[0], &blob2[0], "Blob should return cached slice")
 
-	// One more PUT bumps generation on next read.
+	// A single more PUT bumps generation on next read.
 	var h [32]byte
 	h[0] = 0xff
 	require.NoError(t, s.Put(keyForHash(h), []byte("x"), nil, nil))
@@ -383,8 +374,8 @@ func TestIndexHTTPMatchesInProcess(t *testing.T) {
 // silently dropping the key from /_index until the next rebuild. applyRebuild
 // (the post-walk half of rebuild) must merge the pending buffers into the fresh
 // snapshot instead. The interleaving is reproduced deterministically: the
-// "walk" snapshot is taken first, the concurrent Put lands after it, then the
-// snapshot is applied.
+// "walk" snapshot is taken the concurrent Put lands after it, then the snapshot
+// is applied.
 
 // buildFrom is what Storage.Walk feeds applyRebuild in production, assembled
 // here from a fixed object list so a rebuild can be tested without a data_dir.
@@ -465,10 +456,7 @@ func TestRebuildConcurrentPutStress(t *testing.T) {
 	}
 }
 
-// TestIndexBlobHoldsForInterval pins the bound on serializations: inside the
-// interval a GET after a PUT serves the previous blob and its ETag, so a
-// conditional GET answers 304 and no client downloads the whole index again.
-// Once the interval passes the next GET serializes the PUT.
+// a single time the interval passes the next GET serializes the PUT.
 func TestIndexBlobHoldsForInterval(t *testing.T) {
 	ts, storage := testSetupWithStorage(t)
 	storage.Index.SetBlobInterval(time.Hour)

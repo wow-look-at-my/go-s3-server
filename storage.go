@@ -22,28 +22,17 @@ var (
 	ErrWriteOnceDuplicate = errors.New("object already exists")
 )
 
-// currentCacheVersion is the on-disk data-dir format version. When this
-// server starts and finds a data_dir with a different version (or no version
-// marker, which is treated as version 1), it wipes the data_dir to avoid
-// serving content written under an older, possibly-compromised regime.
+// currentCacheVersion is the on-disk data-dir format version.
 //
-// Bump this whenever prior cache contents should not be trusted. For
-// example, version 2 forces a purge of any cache that was populated while
-// the auth-bypass bug in auth.go (pre-fix) could have been exploited to
-// upload attacker-controlled artifacts.
+// Bump this whenever prior cache contents should not be trusted.
 //
-// Version 3 purges caches that may hold poisoned Go module-index objects. The
-// module index is stored opaquely here (the server cannot tell a good index
-// from a mis-keyed one), and a wrong one served for a std package's key breaks
-// every consumer's build at package load ("package runtime is not in std" /
-// "corrupt index"). The go-toolchain client now refuses to upload or serve
-// module-index blobs, but that only protects clients that have updated; this
-// purge removes the already-stored poison so EVERY client -- updated or not --
-// is repaired at once (a missing index key is simply recomputed locally).
+// The go-toolchain client now refuses to upload or serve module-index blobs,
+// but that only protects clients that have updated; this purge removes the
+// already-stored poison so EVERY client -- updated or not -- is repaired at
+// the same time (a missing index key is simply recomputed locally).
 //
-// Version 4 purges an entry that the retired executable-cache path stored as a
-// DIRECTORY holding a file named for the binary. Every entry is one plain file
-// now, so such an entry is unreadable. A missing key is simply rebuilt.
+// Every entry is a single plain file now, so such an entry is unreadable. A
+// missing key is simply rebuilt.
 const currentCacheVersion = 4
 
 const cacheVersionFile = ".cache_version"
@@ -70,13 +59,13 @@ type Storage struct {
 	// accessShards tracks the last-access time (unix seconds) of each key so the
 	// eviction sweeper can prune entries by least-recent *use*, not merely by
 	// write time. It is allocated only when eviction is enabled
-	// (EnableAccessTracking); while nil, recordAccess is a no-op and the read
-	// hot path pays nothing. Sharded so the per-GET update never serializes on a
+	// (EnableAccessTracking); while nil, recordAccess is a no-op and the read hot
+	// path pays nothing. Sharded so the per-GET update never serializes on a
 	// single global lock — the same lock-convoy concern that shaped the index's
 	// hot path. mtime stays the authoritative write time (the prefetch system
-	// keys on it); access time is kept here, separately, so the two never
-	// interfere. The map holds only keys read since startup (the working set),
-	// not the whole cache. The type and methods live in eviction.go.
+	// keys on it); access time is kept here, separately, so both never interfere.
+	// The map holds only keys read since startup (the working set), not the whole
+	// cache. The type and methods live in eviction.go.
 	accessShards []*accessShard
 
 	// metaCache remembers each key's user metadata against the mtime+size it
@@ -97,10 +86,8 @@ type ObjectMeta struct {
 	Size     int64
 }
 
-// ListObject is one stored object as reported by Walk: metadata only, never a
-// body. LastAccess is the filesystem's access time, which the kernel advances
-// when a body is read (see atime.go); it is the zero time when the platform or
-// the mount does not record one.
+// ListObject is a single stored object as reported by Walk: metadata only,
+// never a body.
 type ListObject struct {
 	Key          string
 	Size         int64
@@ -180,8 +167,6 @@ const hashedPrefix = "__hashed__"
 //	go-buildcache/v1aabbccdd11223344 → {dataDir}/go-buildcache/v1/aa/bbccdd11223344
 //
 // Unsafe keys are SHA256-hashed into a separate tree:
-//
-//	../../etc/passwd → {dataDir}/__hashed__/{hash[:2]}/{hash[2:4]}/{hash[4:]}
 func (s *Storage) keyToPath(key string) string {
 	if isKeySafe(key) {
 		return s.shardPath(s.dataDir, key)
@@ -257,11 +242,8 @@ func (s *Storage) Put(key string, data []byte, meta map[string]string, audit map
 }
 
 // PutStream stores the body read from r under key, streaming it straight to disk
-// so the server never buffers a whole upload in memory. This is the OOM-safety
-// property that lets many large concurrent PUTs coexist under a tight memory
-// budget: io.Copy uses a fixed 32 KiB buffer, so resident memory per upload is
-// flat regardless of object size. The actual byte count is recorded as the
-// audit content_length.
+// so the server never buffers a whole upload in memory. The actual byte count is
+// recorded as the audit content_length.
 func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, audit map[string]string) (err error) {
 	start := time.Now()
 	defer func() {
@@ -296,7 +278,7 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 	// the rename so a power loss cannot leave a big, mostly-unwritten file
 	// under the final name. Small objects skip the sync — full fsync-per-PUT
 	// would throttle CI bursts, and the client hash-verifies every download,
-	// so a rare torn small object costs one refused fetch, not correctness.
+	// so a rare torn small object costs a single refused fetch, not correctness.
 	if n >= fsyncThresholdBytes {
 		if err := tmp.Sync(); err != nil {
 			tmp.Close()
@@ -310,7 +292,7 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 	}
 
 	// write_once is applied after the body is on disk so the content comparison
-	// streams from two files instead of buffering either in memory.
+	// streams from files instead of buffering either in memory.
 	if s.writeOnce.Action == "deny" {
 		if _, statErr := os.Stat(path); statErr == nil { // object already exists
 			switch s.writeOnce.Notification {
@@ -379,7 +361,7 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 	return nil
 }
 
-// filesEqual reports whether two files have identical contents, comparing in
+// filesEqual reports whether files have identical contents, comparing in
 // fixed-size chunks so neither file is ever loaded into memory whole.
 func filesEqual(a, b string) (bool, error) {
 	fa, err := os.Open(a)
@@ -535,9 +517,7 @@ func (s *Storage) Open(key string) (_ *os.File, _ *ObjectMeta, err error) {
 }
 
 // OpenBody opens an object's body for streaming and reports its size, WITHOUT
-// reading its user metadata. It is Open minus the metadata read, for the batch
-// GET's streaming phase: that phase already published every entry's metadata in
-// the manifest it built during phase 1.
+// reading its user metadata.
 //
 // It is otherwise Open exactly: same "get" storage op, same last-access record,
 // same size-from-the-open-fd guarantee (so the tar header always matches the
@@ -622,8 +602,8 @@ func (s *Storage) Delete(key string) (err error) {
 
 // isReservedFile reports whether a name in the data_dir is server bookkeeping
 // rather than a stored object. Every walk of the data_dir must skip these:
-// listing one would advertise a phantom key in the index and let eviction
-// delete the server's own state.
+// listing a single would advertise a phantom key in the index and let
+// eviction delete the server's own state.
 func isReservedFile(name string) bool {
 	return name == lockFileName ||
 		name == cacheVersionFile ||
@@ -638,24 +618,12 @@ func isReservedFile(name string) bool {
 // Index is rebuilt from and the candidate set the eviction sweeper works over,
 // and it is not on any request path.
 //
-// It hands each object to fn as the directory walk finds it, rather than
-// returning a slice: at a million objects, materializing the listing cost more
-// (a heap-allocated key string apiece, plus the slice) than either caller's
-// own compact representation of the same data, and it was allocated afresh on
-// every index rebuild and every eviction sweep.
+// That endpoint is gone -- clients populate their index from the precomputed
+// /_index blob in a single request -- and what both remaining callers want is
+// "everything, unordered".
 //
-// It used to be List(prefix, maxKeys, continuationToken): a paginated,
-// key-sorted, S3-shaped listing serving GET /{bucket}/?list-type=2. That
-// endpoint is gone -- clients populate their index from the precomputed
-// /_index blob in one request -- and what the two remaining callers want is
-// "everything, unordered". What was left was a walk that sorted 100k+ keys
-// nobody read in order, plus pagination nobody called, plus a maxKeys cap both
-// callers faked with an arbitrary huge number (1<<30 and 1000000). The cap was
-// not free: a cache with more than a million objects would rebuild its index
-// from a TRUNCATED snapshot and silently stop advertising the remainder.
-//
-// Cost is one directory walk plus one stat per file, which is inherent to
-// enumerating a directory tree, and now nothing on top of it.
+// Cost is a single directory walk plus a single stat per file, which is
+// inherent to enumerating a directory tree, and now nothing on top of it.
 func (s *Storage) Walk(fn func(ListObject)) (err error) {
 	metricsStart := time.Now()
 	defer func() {

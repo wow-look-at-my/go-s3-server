@@ -14,12 +14,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestAdmission_BodyTransferHoldsNoSlot is the regression for the 503 storm a
-// CI run saw: every /_index download to a runner held an admission slot for
-// the whole multi-megabyte transfer, the slots filled with slow downloads, and
-// every PUT was shed for twenty minutes. Here the server has ONE slot, a
-// client starts a download and stops reading it, and a PUT must still be
-// admitted while that download is blocked mid-body.
+// Here the server has a single slot, a client starts a download and stops
+// reading it, and a PUT must still be admitted while that download is blocked
+// mid-body.
 func TestAdmission_BodyTransferHoldsNoSlot(t *testing.T) {
 	if !inOwnProcess(t) {
 		return
@@ -61,8 +58,7 @@ func TestAdmission_BodyTransferHoldsNoSlot(t *testing.T) {
 }
 
 // TestAdmission_WorkStillHoldsTheSlot is the other half: handing the slot back
-// early is for body transfers only. A request still doing work keeps its slot,
-// so the limit still sheds excess work with 503.
+// early is for body transfers only.
 func TestAdmission_WorkStillHoldsTheSlot(t *testing.T) {
 	if !inOwnProcess(t) {
 		return

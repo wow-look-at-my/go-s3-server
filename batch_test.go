@@ -39,8 +39,8 @@ func doBatchGet(client *http.Client, url string, body []byte) (*http.Response, e
 	return doBatchGetAs(client, url, body, "")
 }
 
-// doBatchGetAs issues a batch GET as one named build. An empty build sends no
-// header, which is the older client the scope has to keep working for.
+// doBatchGetAs issues a batch GET as a single named build. An empty build
+// sends no header, which is the older client the scope has to keep working for.
 func doBatchGetAs(client *http.Client, url string, body []byte, build string) (*http.Response, error) {
 	req, err := http.NewRequest("GET", url, bytes.NewReader(body))
 	if err != nil {
@@ -84,12 +84,12 @@ func TestBatchGet_Basic(t *testing.T) {
 	ts := testSetup(t)
 	client := ts.Client()
 
-	// Upload three entries.
+	// Upload entries.
 	putObject(t, client, ts.URL, "cache/v1aaa", []byte("data-a"), map[string]string{"Outputid": "out-a"})
 	putObject(t, client, ts.URL, "cache/v1bbb", []byte("data-b"), map[string]string{"Outputid": "out-b"})
 	putObject(t, client, ts.URL, "cache/v1ccc", []byte("data-c"), map[string]string{"Outputid": "out-c"})
 
-	// Batch GET two of them.
+	// Batch GET of them.
 	reqBody, _ := json.Marshal(batchGetRequest{
 		Keys: []string{"cache/v1aaa", "cache/v1ccc"},
 	})
@@ -124,9 +124,9 @@ func TestBatchGet_SelfHealRepairsMissingOutputID(t *testing.T) {
 	ts := testSetup(t)
 	client := ts.Client()
 
-	// One good entry (has outputid) and one relic (lz4 body, no outputid
-	// metadata). Self-heal only applies to indexed cacheprog keys
-	// (go-buildcache/v1<64-hex>), so the relic must use that form.
+	// A single good entry (has outputid) and a single relic (lz4 body,
+	// no outputid metadata). Self-heal only applies to indexed cacheprog
+	// keys (go-buildcache/v1<64-hex>), so the relic must use that form.
 	goodKey := "go-buildcache/v1" + strings.Repeat("a", 64)
 	putObject(t, client, ts.URL, goodKey, []byte("good"), map[string]string{"Outputid": "g"})
 
@@ -200,8 +200,8 @@ func TestBatchGet_EmptyRequest(t *testing.T) {
 	assert.Equal(t, 400, resp.StatusCode)
 }
 
-// batchGetManifestFor issues one batch request and returns its manifest and
-// bodies.
+// batchGetManifestFor issues a single batch request and returns its
+// manifest and bodies.
 func batchGetManifestFor(t *testing.T, ts *httptest.Server, req batchGetRequest) (batchGetManifest, map[string][]byte) {
 	t.Helper()
 	body, err := json.Marshal(req)
@@ -296,6 +296,21 @@ func holdFilter(t *testing.T, bytes int, keys ...string) *haveFilter {
 		for i := 0; i < f.K; i++ {
 			idx := haveFilterBit(h, i, m)
 			f.Bits[idx/8] |= 1 << (idx % 8)
+	// Earliest request: ask for key1 with prefetch. The server should return
+	// key1 plus key2 and key3 as prefetch.
+	req1, _ := json.Marshal(batchGetRequest{Keys: []string{"cache/v1key1"}, Prefetch: true})
+	resp1, err := doBatchGet(client, batchURL, req1)
+	require.NoError(t, err)
+	defer resp1.Body.Close()
+	require.Equal(t, 200, resp1.StatusCode)
+	manifest1, _ := parseBatchResponse(t, resp1.Body)
+	require.GreaterOrEqual(t, len(manifest1.Entries), 2, "first request should include prefetch entries")
+
+	// Collect which keys were prefetched in the earliest response.
+	prefetchedInFirst := map[string]bool{}
+	for _, e := range manifest1.Entries {
+		if e.Prefetch {
+			prefetchedInFirst[e.Key] = true
 		}
 	}
 	return f
@@ -313,6 +328,17 @@ func prefetchedKeys(t *testing.T, ts *httptest.Server, req batchGetRequest) map[
 	manifest, _ := parseBatchResponse(t, resp.Body)
 	got := map[string]bool{}
 	for _, e := range manifest.Entries {
+	// The tracker should suppress keys already sent in the earliest response.
+	req2, _ := json.Marshal(batchGetRequest{Keys: []string{"cache/v1key2"}, Prefetch: true})
+	resp2, err := doBatchGet(client, batchURL, req2)
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	require.Equal(t, 200, resp2.StatusCode)
+	manifest2, _ := parseBatchResponse(t, resp2.Body)
+
+	// None of the prefetch entries from the earliest response should reappear
+	// as prefetch in the next response.
+	for _, e := range manifest2.Entries {
 		if e.Prefetch {
 			got[e.Key] = true
 		}
@@ -323,6 +349,8 @@ func prefetchedKeys(t *testing.T, ts *httptest.Server, req batchGetRequest) map[
 // A key the request says the client holds is not sent; a request that states
 // nothing is sent the whole window. The server remembers neither.
 func TestBatchGet_PrefetchSkipsWhatTheClientHolds(t *testing.T) {
+// Suppression ends with the build that earned it.
+func TestBatchGet_PrefetchSuppressionIsPerBuild(t *testing.T) {
 	ts := testSetupPrefetch(t, true)
 	client := ts.Client()
 
@@ -354,6 +382,14 @@ func TestBatchGet_PrefetchSkipsWhatTheClientHolds(t *testing.T) {
 // filtering the result afterwards re-proposed the same nearest pool on every
 // request, and a real deployment showed prefetched=0 for the rest of a build.
 func TestBatchGet_PrefetchAdvancesAsTheClientStatesMore(t *testing.T) {
+	// Within a single build, suppression still holds, or a build receives the
+	// same pool on every look-ahead request for its whole run.
+	assert.Empty(t, prefetchedBy("build-one"), "a repeat request from one build stays suppressed")
+}
+
+// Suppression must not stop prefetch. Selection skips already-sent keys as it
+// walks the window, so a client keeps being handed NEW neighbours.
+func TestBatchGet_PrefetchKeepsAdvancingPastSuppressedKeys(t *testing.T) {
 	ts := testSetupPrefetch(t, true)
 	client := ts.Client()
 
@@ -474,7 +510,7 @@ func TestBatchGet_Prefetch(t *testing.T) {
 	// Wait to create a time gap, then upload an unrelated entry.
 	time.Sleep(100 * time.Millisecond)
 
-	// Request only one entry with prefetch enabled.
+	// Request only a single entry with prefetch enabled.
 	reqBody, _ := json.Marshal(batchGetRequest{
 		Keys:     []string{"cache/v1one"},
 		Prefetch: true,

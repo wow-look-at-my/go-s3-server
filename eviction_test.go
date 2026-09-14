@@ -13,9 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// gbciKey returns a well-formed cacheprog cache key (prefix + 64 hex chars) so
-// the entry also lands in the GBCI index, letting the index-rebuild path be
-// exercised by eviction tests.
 func gbciKey(n int) string {
 	return gbciKeyPrefix + fmt.Sprintf("%064x", n)
 }
@@ -36,7 +33,7 @@ func newEvictStorage(t *testing.T) *Storage {
 	return s
 }
 
-// TestEvictByAge: an entry idle longer than max_age is removed; a fresh one stays.
+// TestEvictByAge: an entry idle longer than max_age is removed; a fresh a single stays.
 func TestEvictByAge(t *testing.T) {
 	s := newEvictStorage(t)
 
@@ -103,11 +100,10 @@ func TestEvictBySize(t *testing.T) {
 	}
 
 	now := time.Now()
-	setMtime(t, s, a, now.Add(-3*time.Hour)) // oldest → evicted first
+	setMtime(t, s, a, now.Add(-3*time.Hour)) // oldest → evicted
 	setMtime(t, s, b, now.Add(-2*time.Hour))
 	setMtime(t, s, c, now.Add(-1*time.Hour)) // newest → kept
 
-	// Budget 250 with 300 stored: exactly one 100-byte entry must go.
 	stats, err := s.Evict(0, 250, now)
 	require.NoError(t, err)
 	assert.Equal(t, 0, stats.EvictedAge)
@@ -173,7 +169,6 @@ func TestEvictForgetsAccessRecord(t *testing.T) {
 	_, ok := s.lastAccess(k)
 	require.True(t, ok)
 
-	// Budget of 50 with 100 stored: the entry must go even though it is "hot".
 	stats, err := s.Evict(0, 50, time.Now())
 	require.NoError(t, err)
 	require.Equal(t, 1, stats.EvictedSize)
@@ -250,7 +245,6 @@ func TestEvictionConfigDefaults(t *testing.T) {
 	assert.True(t, cfg.Eviction.Enabled())
 	assert.Equal(t, defaultEvictionInterval, cfg.Eviction.Interval.Std())
 
-	// Explicit max_bytes 0 with no age limit → eviction disabled.
 	p2 := evictionConfig("off.json", map[string]any{"max_bytes": 0})
 	cfg, err = LoadConfig(p2)
 	require.NoError(t, err)
@@ -363,8 +357,6 @@ func TestEvictOneSkipsFreshlyOverwritten(t *testing.T) {
 	require.False(t, s.evictOne(key, current))
 }
 
-// TestEvictionStartupDelay: the first sweep is scheduled a jittered 1-5 minutes
-// after startup, never a full interval away.
 func TestEvictionStartupDelay(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		d := evictionStartupDelay()
@@ -375,7 +367,7 @@ func TestEvictionStartupDelay(t *testing.T) {
 
 // TestSweepScheduleSurvivesRestart: the sweep schedule lives in the data_dir,
 // so a deployment that restarts more often than the interval still sweeps, and
-// one that restarts constantly does not re-walk the whole disk every boot.
+// a single that restarts constantly does not re-walk the whole disk every boot.
 func TestSweepScheduleSurvivesRestart(t *testing.T) {
 	s := newEvictStorage(t)
 	const interval = 24 * time.Hour
@@ -394,13 +386,12 @@ func TestSweepScheduleSurvivesRestart(t *testing.T) {
 	assert.Less(t, s.firstSweepDelay(interval), evictionStartupDelayMax,
 		"a sweep older than the interval is overdue and must run at startup")
 
-	// Swept an hour ago: not due for another 23.
 	s.recordSweepTime(time.Now().Add(-time.Hour))
 	delay := s.firstSweepDelay(interval)
 	assert.Greater(t, delay, 22*time.Hour, "a recent sweep must not be repeated at startup")
 	assert.Less(t, delay, 24*time.Hour)
 
-	// A marker stamped in the future cannot delay eviction past one interval.
+	// A marker stamped in the future cannot delay eviction past a single interval.
 	s.recordSweepTime(time.Now().Add(30 * 24 * time.Hour))
 	assert.LessOrEqual(t, s.firstSweepDelay(interval), interval+evictionStartupDelayMax)
 
@@ -439,12 +430,10 @@ func TestEvictBySizeIsLeastRecentlyUsedFirst(t *testing.T) {
 	for i := range keys {
 		keys[i] = gbciKey(i + 1)
 		require.NoError(t, s.Put(keys[i], make([]byte, 100), nil, nil))
-		// keys[0] is the oldest use, keys[5] the newest.
 		used := now.Add(-time.Duration(count-i) * time.Hour)
 		require.NoError(t, os.Chtimes(s.keyToPath(keys[i]), used, used))
 	}
 
-	// 600 bytes stored, 350 allowed: the three oldest must go, no more.
 	stats, err := s.Evict(0, 350, now)
 	require.NoError(t, err)
 	assert.Equal(t, 3, stats.EvictedSize)

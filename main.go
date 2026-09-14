@@ -15,7 +15,7 @@ import (
 
 // HTTP server timeouts. ReadHeaderTimeout is the slowloris guard: a request
 // line and its headers must arrive promptly. Idle reaps an unused keep-alive
-// connection from one of many CI runners.
+// connection from any of many CI runners.
 //
 // There is deliberately no ReadTimeout and no WriteTimeout. Both cap a whole
 // request, so both measure how BIG a transfer is rather than whether it is
@@ -99,9 +99,7 @@ func run(cmd *cobra.Command, args []string) error {
 
 	srv := NewServer(cfg, storage)
 
-	// Normal mode's access log IS the aggregator: one line per second in which
-	// the cache moved anything. Verbose mode leaves it nil and every request
-	// prints itself instead.
+	// Verbose mode leaves it nil and every request prints itself instead.
 	if srv.logAgg != nil {
 		go srv.logAgg.Run()
 		defer srv.logAgg.Stop()
@@ -160,9 +158,9 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Bodies are already compressed when they arrive and this server never
-	// compresses anything, so a compressing dataset underneath is a second
-	// pass for no gain -- said once, here, where the other costly-config
-	// warnings are.
+	// compresses anything, so a compressing dataset underneath is another
+	// pass for no gain -- said a single time, here, where the other
+	// costly-config warnings are.
 	logCompressionAdvisory(cfg.DataDir, log.Printf)
 
 	httpSrv := &http.Server{
@@ -205,10 +203,7 @@ func run(cmd *cobra.Command, args []string) error {
 
 // configureLastUseTracking decides where eviction's last-use times come from.
 // The filesystem's own access times are preferred: the kernel maintains them
-// for free on every body read, and they survive restarts. Only when the
-// data_dir turns out not to record them does the server keep its own in-memory
-// map -- accurate while it runs, empty again after every restart, and one entry
-// per key read, which is the memory this avoids paying at a million keys.
+// for free on every body read, and they survive restarts.
 func configureLastUseTracking(storage *Storage, dataDir string) {
 	recorded, err := atimeIsRecorded(dataDir)
 	switch {

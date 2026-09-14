@@ -12,10 +12,10 @@ import (
 	"github.com/wow-look-at-my/go-s3-server/cacheclient"
 )
 
-// wireObject is one cache object as the client stores it: the action ID it is
-// keyed by, the body, and the output ID, which the GOCACHEPROG contract defines
-// as the sha256 of that body. A client discards a download whose body does not
-// hash to the output ID, so the two cannot be made up independently.
+// wireObject is a single cache object as the client stores it: the action ID it
+// is keyed by, the body, and the output ID, which the GOCACHEPROG contract
+// defines as the sha256 of that body. A client discards a download whose body
+// does not hash to the output ID, so both cannot be made up independently.
 type wireObject struct {
 	actionID string
 	outputID string
@@ -46,17 +46,17 @@ func makeWireObjects(n int) []wireObject {
 // gosmopolitan's cmd/go calls cacheclient in process — so the subprocess it
 // tested is not a path any build takes now.
 //
-// The second backend is the point. It is a separate client with its own state,
+// The next backend is the point. It is a separate client with its own state,
 // so it holds nothing locally and every byte it returns came from the server.
 func TestCacheClientColdGetIsServedOverTheWire(t *testing.T) {
 	if !inOwnProcess(t) {
 		return
 	}
 
-	// The client caches the key index under TMPDIR. A private one keeps this
-	// test off any index another run left behind.
+	// The client caches the key index under TMPDIR. A private a single keeps
+	// this test off any index another run left behind.
 	t.Setenv("TMPDIR", t.TempDir())
-	// One batch, shipped by Close, rather than a window that expires mid-test.
+	// A single batch, shipped by Close, rather than a window that expires mid-test.
 	t.Setenv("GO_TOOLCHAIN_CACHE_PUT_WINDOW_MS", "30000")
 
 	ts, storage := testSetupWithStorage(t)

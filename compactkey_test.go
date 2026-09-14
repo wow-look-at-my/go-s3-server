@@ -35,15 +35,8 @@ func TestCompactKeyDistinguishesKinds(t *testing.T) {
 		"equal keys must compare equal, since compactKey is used as a map key")
 }
 
-// TestCompactKeyCostsNothingPerKey pins the reason this type exists. The index,
-// the eviction sweep and the access map each hold one key per stored object; at
-// a million objects the previous string form cost ~80 bytes and one GC object
-// apiece on top of the entry itself. Storing the action ID inline has to stay
-// both allocation-free to build and small enough that a million of them is tens
-// of megabytes, not hundreds.
+// TestCompactKeyCostsNothingPerKey pins the reason this type exists.
 func TestCompactKeyCostsNothingPerKey(t *testing.T) {
-	// AllocsPerRun measures process-wide counters and drops GOMAXPROCS to 1, so
-	// it panics unless this test has the process to itself.
 	t.Serial()
 
 	key := gbciKeyPrefix + hex64('a')

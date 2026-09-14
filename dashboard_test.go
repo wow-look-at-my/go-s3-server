@@ -61,11 +61,11 @@ func TestDashboardServesPageAndAssets(t *testing.T) {
 }
 
 // dashboard.js reads `checked` off a scratch-toggle, which is a property the
-// element only has once the browser has upgraded it. A classic script runs
-// before the deferred module that defines the components, so it read undefined,
-// took "live" for off, and polled exactly once. The page then sat on one
-// snapshot forever. A module script runs after that definition, in document
-// order, which is what keeps the poll loop alive.
+// element only has a single time the browser has upgraded it. A classic script
+// runs before the deferred module that defines the components, so it read
+// undefined, took "live" for off, and polled exactly a single time. The page
+// then sat on a single snapshot forever. A module script runs after that
+// definition, in document order, which is what keeps the poll loop alive.
 func TestDashboardLoadsItsScriptAsAModule(t *testing.T) {
 	page, err := dashboardAssets.ReadFile("dashboard.html")
 	require.NoError(t, err)
@@ -75,7 +75,7 @@ func TestDashboardLoadsItsScriptAsAModule(t *testing.T) {
 
 // The graphs come from the org library at runtime, never vendored, so an
 // upstream fix reaches this page with no change here. sites.pazer.build is the
-// canonical origin; the github.io one is dead and fails CORS with no status.
+// canonical origin; the github.io a single is dead and fails CORS with no status.
 func TestDashboardImportsTheGraphFromTheLibrarySite(t *testing.T) {
 	script, err := dashboardAssets.ReadFile("dashboard.js")
 	require.NoError(t, err)
@@ -136,7 +136,7 @@ func TestDashboardReportsDraining(t *testing.T) {
 	assert.True(t, stats.Server.Draining, "the page must show the server is draining")
 }
 
-// A histogram has no single value, so it contributes the two numbers an
+// A histogram has no single value, so it contributes both numbers an
 // average needs. The buckets stay in /metrics.
 func TestGatherFlattensHistogramsAndMultiLabelSeries(t *testing.T) {
 	reg := prometheus.NewRegistry()

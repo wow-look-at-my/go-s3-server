@@ -11,8 +11,8 @@ import (
 )
 
 // TestCacheVersionPurgesOnMissingMarker simulates an existing cache with no
-// version marker (i.e. one populated by a pre-versioning release, which could
-// include content written during the auth-bypass exposure window).
+// version marker (i.e. a single populated by a pre-versioning release, which
+// could include content written during the auth-bypass exposure window).
 // NewStorage must purge it and write the current version marker.
 func TestCacheVersionPurgesOnMissingMarker(t *testing.T) {
 	dir := t.TempDir()
@@ -45,7 +45,7 @@ func TestCacheVersionPurgesOnMissingMarker(t *testing.T) {
 func TestCacheVersionLeavesCurrentAlone(t *testing.T) {
 	dir := t.TempDir()
 
-	// First bring the dir to current version.
+	// Earliest bring the dir to current version.
 	s1, err := NewStorage(dir, WriteOnceConfig{Action: "allow"})
 	require.NoError(t, err)
 
@@ -108,8 +108,6 @@ func TestDelete(t *testing.T) {
 	_, _, err = s.Get(key)
 	assert.Equal(t, ErrNotFound, err)
 
-	// Deleting a missing key reports ErrNotFound (the handler maps this to a
-	// 204 so DELETE stays idempotent).
 	assert.Equal(t, ErrNotFound, s.Delete(key))
 }
 

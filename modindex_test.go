@@ -25,11 +25,7 @@ func lz4Compress(t testing.TB, data []byte) []byte {
 }
 
 // incompressibleIndexBody builds a module-index payload (magic + random bytes)
-// whose lz4-compressed first block exceeds the old fixed 512-byte peek -- i.e. a
-// REALISTIC index, the shape that broke the original guard (and the shape of the
-// real production poison blobs, which compress to 600 B - ~36 KB). The earlier
-// test used 2 KiB of zeros, which lz4 shrank to ~61 bytes (under 512), masking the
-// bug; random bytes do not compress, so the compressed body is several KB.
+// whose lz4-compressed earliest block exceeds the old fixed 512-byte peek -- i.e.
 func incompressibleIndexBody(t *testing.T, randLen int) []byte {
 	t.Helper()
 	body := make([]byte, len(goModuleIndexMagic)+2+randLen) // magic + "2\n" + entropy
@@ -51,8 +47,8 @@ func TestLooksLikeGoModuleIndex(t *testing.T) {
 	require.False(t, looksLikeGoModuleIndex(nil, ""))
 
 	// lz4-compressed (the wire format). The detector is now handed the WHOLE
-	// compressed body (its contract: it needs the full first block), the same as
-	// the read path streams off the file and the PUT path peeks block-sized.
+	// compressed body (its contract: it needs the full earliest block), the same
+	// as the read path streams off the file and the PUT path peeks block-sized.
 	cIndex := lz4Compress(t, index)
 	cPlain := lz4Compress(t, plain)
 	require.True(t, looksLikeGoModuleIndex(cIndex, "lz4"))
@@ -61,10 +57,9 @@ func TestLooksLikeGoModuleIndex(t *testing.T) {
 	// A version-1 index (format-bump robustness).
 	require.True(t, looksLikeGoModuleIndex(lz4Compress(t, []byte("go index v1\nlegacy")), "lz4"))
 
-	// Regression: a REALISTIC, incompressible index whose compressed first block
-	// is far larger than the old 512-byte peek. The original guard truncated at
-	// 512 and returned false here (poison served); the full-block detector
-	// returns true. This is the exact shape of the real production blobs.
+	// Regression: a REALISTIC, incompressible index whose compressed earliest
+	// block is far larger than the old 512-byte peek. This is the exact shape of
+	// the real production blobs.
 	cReal := lz4Compress(t, incompressibleIndexBody(t, 8192))
 	require.Greater(t, len(cReal), 512, "the compressed index must exceed the old 512-byte peek to exercise the bug")
 	require.True(t, looksLikeGoModuleIndex(cReal, "lz4"),
@@ -74,8 +69,8 @@ func TestLooksLikeGoModuleIndex(t *testing.T) {
 // TestReadIsModuleIndex_FullBlock exercises the read-path detector against a
 // realistic, incompressible index whose compressed body far exceeds the old
 // 512-byte peek. readIsModuleIndex streams an lz4.Reader over the source and
-// pulls exactly the first block, so the magic is recovered however large that
-// block is -- the property the fixed-peek code lacked.
+// pulls exactly the earliest block, so the magic is recovered however large
+// that block is -- the property the fixed-peek code lacked.
 func TestReadIsModuleIndex_FullBlock(t *testing.T) {
 	cIndex := lz4Compress(t, incompressibleIndexBody(t, 16384))
 	require.Greater(t, len(cIndex), 512, "compressed index must exceed the old peek window")
@@ -109,23 +104,15 @@ func TestReadIsModuleIndex_FullBlock(t *testing.T) {
 	require.False(t, isIndex)
 }
 
-// BenchmarkPutObjectPeek exercises the PUT-path module-index guard for a typical
-// small (8 KiB) non-index object and reports -benchmem. It is the proof for the
-// allocation fix: the guard's prefix read must self-size to the body (~tens of
-// KiB), NOT pre-allocate the full indexPutPeekBytes (1 MiB) cap on every PUT.
-//
-// Before the fix (prefix := make([]byte, indexPutPeekBytes); io.ReadFull), this
-// reported ~1.09 MB/op. After (io.ReadAll(io.LimitReader(body, cap))), it drops
-// to roughly the body size. Driving handlePutObject directly (not over HTTP)
-// keeps the measurement on the body-read + store path where the regression lived.
+// After (io.ReadAll(io.LimitReader(body, cap))), it drops to roughly the body
+// size. Driving handlePutObject directly (not over HTTP) keeps the measurement on
+// the body-read + store path where the regression lived.
 func BenchmarkPutObjectPeek(b *testing.B) {
 	dir := b.TempDir()
 	storage, err := NewStorage(dir, WriteOnceConfig{Action: "allow"})
 	require.NoError(b, err)
 	b.Cleanup(func() { storage.Close() })
 
-	// A realistic ~8 KiB compiled-object body (non-index), lz4-compressed as the
-	// client sends it. Incompressible so the stored body is genuinely ~8 KiB.
 	raw := make([]byte, 8192)
 	_, err = rand.Read(raw)
 	require.NoError(b, err)
@@ -152,10 +139,8 @@ func BenchmarkPutObjectPeek(b *testing.B) {
 	}
 }
 
-// TestPutObject_RefusesModuleIndex is the server half of the poison fix: a
-// module-index upload is accepted on the wire (200) but never stored, so a
-// later GET misses and the client recomputes the index locally. A normal
-// object alongside it stores and serves as usual, proving the drop is specific.
+// A normal object alongside it stores and serves as usual, proving the drop is
+// specific.
 func TestPutObject_RefusesModuleIndex(t *testing.T) {
 	ts := testSetup(t)
 

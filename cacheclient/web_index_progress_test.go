@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,8 +19,10 @@ import (
 
 // shrinkIndexBudgets temporarily replaces the index-fetch budgets and
 // returns a restore func. Tests use it instead of poking the vars directly so
-// no test can leave a shortened budget behind for the tests after it.
-func shrinkIndexBudgets(header, stall time.Duration) func() {
+// no test can leave a shortened budget behind for the tests after it. The
+// budgets are package state, so the test runs alone while they are shrunk.
+func shrinkIndexBudgets(t *testing.T, header, stall time.Duration) func() {
+	t.Serial()
 	oh, os := indexHeaderBudget, indexStallTimeout
 	indexHeaderBudget, indexStallTimeout = header, stall
 	return func() {
@@ -77,7 +80,7 @@ func TestLoadOrFetchIndex_SlowButSteadyBodySucceeds(t *testing.T) {
 	defer srv.Close()
 
 	// A single deadline over the whole transfer would kill it mid-stream; only a per-chunk bound finishes it.
-	defer shrinkIndexBudgets(200*time.Millisecond, 200*time.Millisecond)()
+	defer shrinkIndexBudgets(t, 200*time.Millisecond, 200*time.Millisecond)()
 
 	b, err := NewWebBackend(WebConfig{
 		Bucket: "bk", Endpoint: srv.URL,
@@ -119,7 +122,7 @@ func TestLoadOrFetchIndex_StalledBodyAbandoned(t *testing.T) {
 	defer srv.Close()
 	defer close(release)
 
-	defer shrinkIndexBudgets(2*time.Second, 150*time.Millisecond)()
+	defer shrinkIndexBudgets(t, 2*time.Second, 150*time.Millisecond)()
 
 	start := time.Now()
 	b, err := NewWebBackend(WebConfig{
@@ -139,18 +142,40 @@ func TestLoadOrFetchIndex_StalledBodyAbandoned(t *testing.T) {
 }
 
 // levelLogger keeps Infof and Warnf apart, so a test can assert on the level
-// a message went out at.
-type levelLogger struct{ info, warn *[]string }
-
-func (l levelLogger) Infof(format string, args ...any) {
-	*l.info = append(*l.info, fmt.Sprintf(format, args...))
+// a message went out at. The client logs from its own goroutines, so every
+// access holds the mutex.
+type levelLogger struct {
+	mu         sync.Mutex
+	info, warn []string
 }
 
-func (l levelLogger) Warnf(format string, args ...any) {
-	*l.warn = append(*l.warn, fmt.Sprintf(format, args...))
+func (l *levelLogger) Infof(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.info = append(l.info, fmt.Sprintf(format, args...))
 }
 
-func (levelLogger) Debugf(string, ...any) {}
+func (l *levelLogger) Warnf(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.warn = append(l.warn, fmt.Sprintf(format, args...))
+}
+
+func (*levelLogger) Debugf(string, ...any) {}
+
+// Info is every Infof line so far, one per line.
+func (l *levelLogger) Info() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Join(l.info, "\n")
+}
+
+// Warn is every Warnf line so far, one per line.
+func (l *levelLogger) Warn() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Join(l.warn, "\n")
+}
 
 // TestLoadOrFetchIndex_StalledRefreshOverDiskCopyIsRoutine pins the level of
 // a refresh that stalls while a disk copy exists. Every go command on a busy
@@ -194,21 +219,21 @@ func TestLoadOrFetchIndex_StalledRefreshOverDiskCopyIsRoutine(t *testing.T) {
 	first.ensureIndex()
 	require.True(t, first.indexAuthoritative, "the first load must persist a disk copy for the second to refresh")
 
-	defer shrinkIndexBudgets(2*time.Second, 150*time.Millisecond)()
-	var info, warn []string
-	SetLogger(levelLogger{&info, &warn})
+	defer shrinkIndexBudgets(t, 2*time.Second, 150*time.Millisecond)()
+	logs := &levelLogger{}
+	SetLogger(logs)
 	t.Cleanup(func() { SetLogger(nil) })
 
 	b, err := NewWebBackend(cfg)
 	require.NoError(t, err)
 	defer b.Close()
 
-	b.ensureIndex()
+	b.awaitIndex()
 	require.False(t, b.indexAuthoritative)
 	require.Equal(t, 64, b.keys.Len(), "a stalled refresh keeps the disk copy's keys")
-	require.Empty(t, warn, "a stalled refresh over a disk copy is not a warning")
-	require.Contains(t, strings.Join(info, "\n"), "web index refresh: abandoned")
-	require.Contains(t, strings.Join(info, "\n"), "using 64 cached keys")
+	require.Empty(t, logs.Warn(), "a stalled refresh over a disk copy is not a warning")
+	require.Contains(t, logs.Info(), "web index refresh: abandoned")
+	require.Contains(t, logs.Info(), "using 64 cached keys")
 }
 
 // deadlineSpy records whether the request it forwards carried an absolute

@@ -86,6 +86,7 @@ All flags except `--config` override the corresponding config file value.
 | `credentials` | array | — | yes (unless `disable_auth: true`) | One or more `username`/`password` pairs. Both fields must be non-empty. |
 | `max_concurrent_requests` | int | `128` | no | Max in-flight requests; excess is shed with `503 + Retry-After`. `0` → default. |
 | `max_object_bytes` | int | `1073741824` (1 GiB) | no | Max single PUT body; larger uploads get `413`. The body is streamed to disk, so this guards disk, not memory. `0` → default. |
+| `prefetch` | bool | `false` | no | If `true`, `/_batch/get` adds keys stored near the requested ones; while `false` it returns only the requested keys and ignores the client's `prefetch`/`prefetch_only`. |
 | `eviction` | object | `{"max_bytes":53687091200,"interval":"24h"}` | no | Automatic pruning of the cache (see below). |
 | `log_mode` | string | `normal` | no | Access log shape. `normal` prints one aggregated line per active second; `verbose` prints one line per request. See [Logging](#logging). |
 | `dashboard_listen` | string | `:9002` | no | Operator dashboard, on its own port. `""` disables it. It answers without credentials, so front it with an access proxy — see [Dashboard](#dashboard). |

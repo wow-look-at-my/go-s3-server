@@ -225,6 +225,7 @@ func TestWebBackend_NoAbsoluteRequestDeadline(t *testing.T) {
 // must complete however long it runs. This one runs well past the window in
 // total while never pausing longer than it.
 func TestWebBackend_SlowButProgressingBodyCompletes(t *testing.T) {
+	t.Serial() // stallTimeout is package state
 	old := stallTimeout
 	stallTimeout = 150 * time.Millisecond
 	defer func() { stallTimeout = old }()
@@ -259,6 +260,7 @@ func TestWebBackend_SlowButProgressingBodyCompletes(t *testing.T) {
 // A body that goes quiet for longer than the window is abandoned, and the error
 // says why rather than surfacing a bare context cancellation.
 func TestWebBackend_StalledBodyIsAbandoned(t *testing.T) {
+	t.Serial() // stallTimeout is package state
 	old := stallTimeout
 	stallTimeout = 150 * time.Millisecond
 	defer func() { stallTimeout = old }()
@@ -283,6 +285,90 @@ func TestWebBackend_StalledBodyIsAbandoned(t *testing.T) {
 	_, err = io.Copy(io.Discard, resp.Body)
 	require.Error(t, err, "silence past the window must not hang forever")
 	require.Contains(t, err.Error(), "no progress", "the error names the cause")
+}
+
+// TestWebBackend_ShedQuietsTheWholeBackend is the regression for retries
+// amplifying an overload. Every operation used to retry a shed on its own
+// schedule, so N concurrent operations sent up to N*(1+maxRetries) requests to
+// a server that had just said it was full. One shed's Retry-After now quiets
+// every operation on the backend: those that arrive inside the quiet period
+// wait it out without sending, and each still ends with the 503 it would have
+// got, so callers account for it as a shed.
+func TestWebBackend_ShedQuietsTheWholeBackend(t *testing.T) {
+	const ops = 20
+
+	var requests atomic.Int64
+	var overloaded atomic.Bool
+	overloaded.Store(true)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if overloaded.Load() {
+			w.Header().Set("Retry-After", "1")
+			w.Header().Set("X-Cache-Error-Code", "overloaded")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			io.WriteString(w, "overloaded: server is at capacity, retry after a moment\n")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	b := testBackend(t, srv.URL)
+	defer b.Close()
+	require.Equal(t, defaultMaxRetries, b.maxRetries)
+
+	// get runs on other goroutines too, so it reports rather than asserts.
+	get := func() (int, error) {
+		req, err := http.NewRequest("GET", srv.URL+"/testbucket/key", nil)
+		if err != nil {
+			return 0, err
+		}
+		resp, err := b.doRetryGET(req)
+		if err != nil {
+			return 0, err
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return resp.StatusCode, nil
+	}
+	type result struct {
+		status int
+		err    error
+	}
+	results := make(chan result, ops+1)
+	run := func() {
+		status, err := get()
+		results <- result{status, err}
+	}
+
+	// The first shed starts the quiet period.
+	go run()
+	require.Eventually(t, func() bool { return b.shedRemaining() > 0 }, 5*time.Second, time.Millisecond)
+
+	for i := 0; i < ops; i++ {
+		go run()
+	}
+	for i := 0; i < ops+1; i++ {
+		r := <-results
+		require.NoError(t, r.err)
+		require.Equal(t, http.StatusServiceUnavailable, r.status, "every held-back operation still ends as a shed")
+	}
+
+	perOpBudget := int64(1 + defaultMaxRetries)
+	require.Less(t, requests.Load(), int64(ops),
+		"%d operations sent %d requests into an overload; without the shared quiet period each sends up to %d",
+		ops+1, requests.Load(), perOpBudget)
+	require.Positive(t, b.ShedWaits.Load(), "attempts inside the quiet period are held back, unsent")
+
+	// The quiet period is a pause, never a disable: once it passes and the
+	// server recovers, the next operation is sent and served.
+	overloaded.Store(false)
+	require.Eventually(t, func() bool { return b.shedRemaining() <= 0 }, 5*time.Second, 10*time.Millisecond)
+	before := requests.Load()
+	status, err := get()
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, before+1, requests.Load(), "a recovered server gets exactly one request per operation")
 }
 
 func testBackend(t *testing.T, endpoint string) *WebBackend {

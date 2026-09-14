@@ -181,6 +181,11 @@ type Config struct {
 	// to disk, so this guards disk, not memory.
 	MaxObjectBytes int64 `json:"max_object_bytes"`
 
+	// Prefetch lets /_batch/get add the keys stored near the requested ones.
+	// Off by default: a batch then returns only the requested keys, whatever
+	// the client's prefetch and prefetch_only flags say.
+	Prefetch bool `json:"prefetch"`
+
 	// Eviction bounds the on-disk cache so it does not grow until the disk
 	// fills. See EvictionConfig. Enabled by default with a size budget; set
 	// eviction.max_bytes to 0 to opt out.

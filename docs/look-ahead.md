@@ -19,16 +19,16 @@ That work used to ride the request the build was blocked on. It cost more than i
 So look-ahead moved off that path.
 
 - `sendBatch` asks for the requested keys and nothing else. Its response is as small as the build made it.
-- `lookAhead` is a pool of goroutines sized to the machine rather than to the build's `-p`. It issues its own requests with `prefetch_only`. That flag returns the window around a set of anchor keys without their bodies, which the caller already holds. Nothing blocks on these requests.
+- `lookAhead` is a pool of goroutines sized by configuration rather than by the build's `-p`. It issues its own requests with `prefetch_only`. That flag returns the window around a set of anchor keys without their bodies, which the caller already holds. Nothing blocks on these requests.
 - Each pool worker hands its own answer to `OnBatchEntries`. Verification and the local write therefore happen at the pool's width.
 
 A hit seeds the pool with the keys that answered, deduplicated. A key that missed says nothing about where to look. A full queue drops the seed. Look-ahead is speculation. A build goroutine must never wait on it.
 
-`GO_TOOLCHAIN_CACHE_LOOKAHEAD` sets the worker count.
+The pool is off by default. `GO_TOOLCHAIN_CACHE_LOOKAHEAD` sets the worker count: unset or `0` means no pool, and a positive count is capped at 64. The server's `/_batch/get` also answers a `prefetch_only` request with an empty window unless its `prefetch` config field is `true`, so a pool pointed at a default server fetches nothing.
 
 ## What the pool is worth
 
-`BenchmarkBuildShape` walks a 12-level graph, 4 keys wide, against a real HTTP server. Three shapes. `none` is the critical path alone, with nothing fetched ahead of it. `blocking` is the old wire shape, where 32 speculative bodies ride the request the build is waiting on. `lookahead` is what ships: the pool fetches the same window off the critical path, into the local tier the build reads next.
+`BenchmarkBuildShape` walks a 12-level graph, 4 keys wide, against a real HTTP server. Three shapes. `none` is the critical path alone, with nothing fetched ahead of it. `blocking` is the old wire shape, where 32 speculative bodies ride the request the build is waiting on. `lookahead` is the pool, turned on for that arm: it fetches the same window off the critical path, into the local tier the build reads next.
 
 Every arm installs that tier. A run without one measures a client whose look-ahead is switched OFF, because `expand` returns at once when `OnBatchEntries` is nil. The benchmark used to omit it, so its old numbers described a shape nothing ships.
 

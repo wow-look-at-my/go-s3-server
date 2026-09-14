@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -108,6 +112,115 @@ func TestStallGuard_BlockedWriteIsCutOff(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("the guard never cut off a response that stopped making progress")
 	}
+}
+
+// readSteadily downloads url the way a CI runner on a thin link does: a fixed
+// slice at a time with a pause between, never stopping. It returns the body
+// length and how long the transfer took.
+func readSteadily(t *testing.T, url string) (int64, time.Duration, error) {
+	t.Helper()
+	start := time.Now()
+	resp, err := http.Get(url)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	buf := make([]byte, 64<<10)
+	var total int64
+	for {
+		n, err := io.ReadFull(resp.Body, buf)
+		total += int64(n)
+		if err == io.EOF || err == io.ErrUnexpectedEOF && total == resp.ContentLength {
+			return total, time.Since(start), nil
+		}
+		if err != nil {
+			return total, time.Since(start), err
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// steadyBodyBytes is far past loopback socket buffers, so the server is still
+// writing long after the stall window has elapsed several times over.
+const steadyBodyBytes = 32 << 20
+
+// TestStallGuard_LongServeContentCompletes is the regression for truncated
+// /_index downloads. handleGetIndex serves the blob through http.ServeContent,
+// whose copy lands in statusRecorder.ReadFrom as ONE call for the whole body.
+// Progress was counted only when that call returned, so a download that kept
+// flowing looked silent to the guard and was cut off after two windows, and
+// the client read "unexpected EOF". Progress must count as the body moves.
+func TestStallGuard_LongServeContentCompletes(t *testing.T) {
+	t.Serial() // the window is package state
+
+	defer shrinkStallWindow(150 * time.Millisecond)()
+
+	blob := bytes.Repeat([]byte("i"), steadyBodyBytes)
+	srv := httptest.NewServer(guarded(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(blob))
+	}))
+	defer srv.Close()
+
+	n, took, err := readSteadily(t, srv.URL)
+	require.NoError(t, err, "a download that keeps flowing must not be cut off")
+	require.Equal(t, int64(len(blob)), n)
+	require.Greater(t, took, 3*stallWindow,
+		"the test proves nothing unless the transfer outlasts the window")
+}
+
+// TestStallGuard_LongFileCopyCompletes is the same regression on the object
+// GET path: handleGetObject io.Copies an open file, which also reaches the
+// forwarded ReadFrom as one call.
+func TestStallGuard_LongFileCopyCompletes(t *testing.T) {
+	t.Serial() // the window is package state
+
+	defer shrinkStallWindow(150 * time.Millisecond)()
+
+	path := filepath.Join(t.TempDir(), "object")
+	require.NoError(t, os.WriteFile(path, bytes.Repeat([]byte("o"), steadyBodyBytes), 0o644))
+	srv := httptest.NewServer(guarded(func(w http.ResponseWriter, r *http.Request) {
+		f, err := os.Open(path)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		defer f.Close()
+		w.Header().Set("Content-Length", strconv.Itoa(steadyBodyBytes))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(w, f)
+	}))
+	defer srv.Close()
+
+	n, took, err := readSteadily(t, srv.URL)
+	require.NoError(t, err, "a download that keeps flowing must not be cut off")
+	require.Equal(t, int64(steadyBodyBytes), n)
+	require.Greater(t, took, 3*stallWindow,
+		"the test proves nothing unless the transfer outlasts the window")
+}
+
+// TestStatusRecorderReadFromHonorsLimit pins the chunked forward against the
+// io.CopyN that http.ServeContent performs: it must stop at the limit, report
+// exactly what it copied, and leave the caller's LimitedReader drained.
+func TestStatusRecorderReadFromHonorsLimit(t *testing.T) {
+	src := bytes.Repeat([]byte("L"), 3*readFromChunk+17)
+	rf := &countingReaderFrom{}
+	rec := &statusRecorder{ResponseWriter: rf, statusCode: 200}
+
+	limit := int64(2*readFromChunk + 5)
+	lr := &io.LimitedReader{R: bytes.NewReader(src), N: limit}
+	n, err := rec.ReadFrom(lr)
+	require.NoError(t, err)
+	require.Equal(t, limit, n)
+	require.Equal(t, int64(0), lr.N, "the caller's limit is consumed as the copy goes")
+	require.Equal(t, limit, int64(rf.buf.Len()))
+	require.Equal(t, limit, rec.progress.Load(), "every copied byte counts as progress")
+
+	// An unlimited source runs to EOF across several chunks.
+	rf2 := &countingReaderFrom{}
+	rec2 := &statusRecorder{ResponseWriter: rf2, statusCode: 200}
+	n, err = rec2.ReadFrom(bytes.NewReader(src))
+	require.NoError(t, err)
+	require.Equal(t, int64(len(src)), n)
+	require.Equal(t, src, rf2.buf.Bytes())
 }
 
 // TestStallGuard_SlowUploadCounts pins that a request BODY arriving counts as

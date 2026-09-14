@@ -9,6 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -196,8 +199,76 @@ func TestBatchGet_EmptyRequest(t *testing.T) {
 	assert.Equal(t, 400, resp.StatusCode)
 }
 
-func TestBatchGet_PrefetchSuppression(t *testing.T) {
+// batchGetManifestFor issues one batch request and returns its manifest and
+// bodies.
+func batchGetManifestFor(t *testing.T, ts *httptest.Server, req batchGetRequest) (batchGetManifest, map[string][]byte) {
+	t.Helper()
+	body, err := json.Marshal(req)
+	require.NoError(t, err)
+	resp, err := doBatchGet(ts.Client(), ts.URL+"/testbucket/_batch/get", body)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode)
+	return parseBatchResponse(t, resp.Body)
+}
+
+// With the server's prefetch config off, which is the default, the client's
+// flags change nothing: a batch carries exactly the requested keys, even from
+// a client that still sets prefetch on the request its build is blocked on,
+// and a look-ahead request for the window alone comes back empty.
+func TestBatchGet_PrefetchOffIgnoresClientFlags(t *testing.T) {
 	ts := testSetup(t)
+	client := ts.Client()
+	putObject(t, client, ts.URL, "cache/v1off1", []byte("data1"), map[string]string{"Outputid": "o1"})
+	putObject(t, client, ts.URL, "cache/v1off2", []byte("data2"), map[string]string{"Outputid": "o2"})
+	putObject(t, client, ts.URL, "cache/v1off3", []byte("data3"), map[string]string{"Outputid": "o3"})
+
+	manifest, data := batchGetManifestFor(t, ts, batchGetRequest{Keys: []string{"cache/v1off1"}, Prefetch: true})
+	require.Len(t, manifest.Entries, 1, "only the requested key, whatever the client asked for")
+	assert.Equal(t, "cache/v1off1", manifest.Entries[0].Key)
+	assert.False(t, manifest.Entries[0].Prefetch)
+	assert.Equal(t, map[string][]byte{"cache/v1off1": []byte("data1")}, data)
+
+	manifest, data = batchGetManifestFor(t, ts, batchGetRequest{Keys: []string{"cache/v1off1"}, Prefetch: true, PrefetchOnly: true})
+	assert.Empty(t, manifest.Entries, "a request for the window alone gets an empty manifest")
+	assert.Empty(t, data)
+}
+
+// With prefetch on, a look-ahead request gets the window around its anchor
+// and not the anchor itself.
+func TestBatchGet_PrefetchOnWindowOnly(t *testing.T) {
+	ts := testSetupPrefetch(t, true)
+	client := ts.Client()
+	putObject(t, client, ts.URL, "cache/v1on1", []byte("data1"), map[string]string{"Outputid": "o1"})
+	putObject(t, client, ts.URL, "cache/v1on2", []byte("data2"), map[string]string{"Outputid": "o2"})
+	putObject(t, client, ts.URL, "cache/v1on3", []byte("data3"), map[string]string{"Outputid": "o3"})
+
+	manifest, data := batchGetManifestFor(t, ts, batchGetRequest{Keys: []string{"cache/v1on1"}, Prefetch: true, PrefetchOnly: true})
+	require.NotEmpty(t, manifest.Entries, "the window around the anchor is served")
+	for _, e := range manifest.Entries {
+		assert.NotEqual(t, "cache/v1on1", e.Key, "the anchor is not sent back")
+		assert.True(t, e.Prefetch)
+		assert.Contains(t, data, e.Key)
+	}
+}
+
+// The config field is off unless the file turns it on.
+func TestConfigPrefetchDefaultsOff(t *testing.T) {
+	dir := t.TempDir()
+	load := func(extra string) *Config {
+		path := filepath.Join(dir, "config.json")
+		body := `{"bucket":"b","data_dir":"` + dir + `","disable_auth":true` + extra + `}`
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+		cfg, err := LoadConfig(path)
+		require.NoError(t, err)
+		return cfg
+	}
+	assert.False(t, load("").Prefetch)
+	assert.True(t, load(`,"prefetch":true`).Prefetch)
+}
+
+func TestBatchGet_PrefetchSuppression(t *testing.T) {
+	ts := testSetupPrefetch(t, true)
 	client := ts.Client()
 
 	// Upload a cluster of entries close together in time.
@@ -251,7 +322,7 @@ func TestBatchGet_PrefetchSuppression(t *testing.T) {
 // empty one, so a second build in a row fetched every object on its critical
 // path and finished slower than a build with no cache at all.
 func TestBatchGet_PrefetchSuppressionIsPerBuild(t *testing.T) {
-	ts := testSetup(t)
+	ts := testSetupPrefetch(t, true)
 	client := ts.Client()
 
 	putObject(t, client, ts.URL, "cache/v1b1", []byte("data1"), map[string]string{"Outputid": "o1"})
@@ -294,7 +365,7 @@ func TestBatchGet_PrefetchSuppressionIsPerBuild(t *testing.T) {
 // request: a real deployment showed prefetched=0 and suppressed=200 on every
 // batch after a client's first one, for the rest of its build.
 func TestBatchGet_PrefetchKeepsAdvancingPastSuppressedKeys(t *testing.T) {
-	ts := testSetup(t)
+	ts := testSetupPrefetch(t, true)
 	client := ts.Client()
 
 	// The window has to hold enough unsent keys for every round to have
@@ -339,7 +410,7 @@ func TestBatchGet_PrefetchKeepsAdvancingPastSuppressedKeys(t *testing.T) {
 }
 
 func TestBatchGet_Prefetch(t *testing.T) {
-	ts := testSetup(t)
+	ts := testSetupPrefetch(t, true)
 	client := ts.Client()
 
 	// Upload entries with similar modification times (they're uploaded sequentially so close together).

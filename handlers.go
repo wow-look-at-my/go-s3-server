@@ -105,6 +105,10 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 
 	emitObjectHeaders(w, meta)
 	w.WriteHeader(200)
+	// The guards are done. What is left is a copy from the open file through a
+	// fixed buffer, which holds no per-request memory, so it runs without an
+	// admission slot.
+	releaseSlot(r)
 	// Stream the body, logging DISK-side failures. The status is already
 	// written, so an error here truncates the response; the client's hash
 	// check refuses the partial body, but without a log the server would be
@@ -333,6 +337,10 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 		return
 	}
 	blob, etag := idx.Blob()
+	// The blob is shared by every request and already built, so the transfer
+	// holds no memory of its own. It is tens of megabytes, and a CI runner can
+	// take minutes to pull it, so it goes out without an admission slot.
+	releaseSlot(r)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("ETag", etag)
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(blob))

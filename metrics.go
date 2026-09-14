@@ -3,6 +3,7 @@ package main
 import (
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"sync/atomic"
@@ -40,6 +41,14 @@ var (
 	httpInFlightRequests = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "cache_http_in_flight_requests",
 		Help: "Number of HTTP requests currently being served.",
+	})
+
+	// httpAdmittedRequests is the admission-control slots held right now: the
+	// number that max_concurrent_requests bounds. It is below the in-flight
+	// count when requests are streaming a body after handing their slot back.
+	httpAdmittedRequests = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "cache_http_admitted_requests",
+		Help: "Requests currently holding an admission-control slot (bounded by max_concurrent_requests).",
 	})
 
 	// httpRejectedTotal counts requests shed by admission control (503 +
@@ -355,6 +364,12 @@ func (r *statusRecorder) Unwrap() http.ResponseWriter {
 	return r.ResponseWriter
 }
 
+// readFromChunk is the most one forwarded ReadFrom call copies. The stall
+// guard sees progress only when a call returns, and the wrapped ReadFrom runs
+// until its source is exhausted, so the copy is split into calls this size.
+// At the guard's window this still passes any client above ~17 KiB/s.
+const readFromChunk = 1 << 20
+
 // ReadFrom forwards to the wrapped ResponseWriter's io.ReaderFrom when it has
 // one. net/http's response writer implements ReadFrom with a sendfile fast
 // path for *os.File sources; a wrapper that hides the interface silently
@@ -362,14 +377,39 @@ func (r *statusRecorder) Unwrap() http.ResponseWriter {
 // wrapped writer is not a ReaderFrom (e.g. httptest recorders), fall back to
 // a plain copy through r.Write (which already counts bytes — writerOnly hides
 // this method so io.Copy cannot recurse into it).
+//
+// The forwarded copy runs in readFromChunk pieces, each counted as it
+// completes. Each piece is ONE io.LimitedReader over the innermost source,
+// because sendfile recognizes a single LimitedReader around an *os.File and
+// nothing nested deeper; a LimitedReader passed in (http.ServeContent's
+// io.CopyN) is unwrapped and its N kept current.
 func (r *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
-	if rf, ok := r.ResponseWriter.(io.ReaderFrom); ok {
-		n, err := rf.ReadFrom(src)
+	rf, ok := r.ResponseWriter.(io.ReaderFrom)
+	if !ok {
+		return io.Copy(writerOnly{r}, src)
+	}
+	inner, remaining := src, int64(math.MaxInt64)
+	outer, limited := src.(*io.LimitedReader)
+	if limited {
+		inner, remaining = outer.R, outer.N
+	}
+	var total int64
+	for remaining > 0 {
+		chunk := min(remaining, readFromChunk)
+		n, err := rf.ReadFrom(&io.LimitedReader{R: inner, N: chunk})
+		total += n
+		remaining -= n
+		if limited {
+			outer.N = remaining
+		}
 		r.bytesWritten.Add(n)
 		r.progress.Add(n)
-		return n, err
+		// ReadFrom returns short only at the source's EOF or on an error.
+		if err != nil || n < chunk {
+			return total, err
+		}
 	}
-	return io.Copy(writerOnly{r}, src)
+	return total, nil
 }
 
 // writerOnly masks every method except Write, so the ReadFrom fallback's

@@ -35,14 +35,16 @@ type WebConfig struct {
 	// process temporary directory. A consumer whose builds share a cache
 	// directory but not a temporary directory points it at the cache.
 	IndexDir string
-	// IndexMaxAge is how long a disk copy of the index is served with no
-	// request to the server. Zero takes IndexMaxAgeDefault. A negative value
-	// revalidates on every load.
+	// IndexMaxAge is how long a disk copy of the index is served as
+	// authoritative with no request to the server. An older copy is still
+	// served at once, as non-authoritative, while a refresh runs in the
+	// background. Zero takes IndexMaxAgeDefault. A negative value revalidates
+	// on every load.
 	IndexMaxAge time.Duration
 }
 
 // IndexMaxAgeDefault is the index max age a zero WebConfig.IndexMaxAge takes.
-const IndexMaxAgeDefault = time.Minute
+const IndexMaxAgeDefault = 10 * time.Minute
 
 // defaultIndexMaxAge is what a zero IndexMaxAge resolves to. The package's
 // tests set it negative, so a test of the revalidation path sees a request.
@@ -70,6 +72,12 @@ type WebBackend struct {
 	// that never touches the cache never pays for it.
 	indexMaxAge time.Duration
 	indexOnce   sync.Once
+	// indexTiming bounds the first use's wait for an index and paces the lock
+	// that keeps processes sharing IndexDir to one download.
+	indexTiming indexTiming
+	// indexLoad is the load running in the background, or nil before the
+	// first use. See web_index_load.go.
+	indexLoad atomic.Pointer[indexLoad]
 	// moduleLate carries a module path learned after the backend was built. A
 	// consumer often knows its endpoint before it knows which module it is
 	// building, and the requests in between still deserve an attribution.
@@ -90,6 +98,9 @@ type WebBackend struct {
 	indexAuthoritative bool
 	// indexKeysAtStart is the key count from the startup index fetch, reported in WebSummary to flag a dead remote.
 	indexKeysAtStart int
+	// keysJournal records the claims and drops made while a background index
+	// load runs, so the set it installs keeps them. Nil when no load runs.
+	keysJournal *keysJournal
 	// indexBytes is what that fetch cost on the wire, which no hit or put total covers.
 	indexBytes AtomicBytes
 	missesMu   sync.RWMutex
@@ -322,21 +333,8 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	if b.indexMaxAge == 0 {
 		b.indexMaxAge = defaultIndexMaxAge
 	}
+	b.indexTiming = defaultIndexTiming()
 	return b, nil
-}
-
-// ensureIndex loads the key index the first time the cache is used. Every
-// path that reads or claims a key calls it first.
-func (b *WebBackend) ensureIndex() {
-	b.indexOnce.Do(func() {
-		keys, authoritative := b.loadOrFetchIndex()
-		b.keysMu.Lock()
-		b.keys = keys
-		b.indexAuthoritative = authoritative
-		b.indexEmpty = keys.Len() == 0
-		b.indexKeysAtStart = keys.Len()
-		b.keysMu.Unlock()
-	})
 }
 
 // KeyPrefix returns what a cache key carries ahead of its action ID. The
@@ -388,9 +386,12 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 		return "", nil, time.Time{}, true
 	}
 
-	if b.indexAuthoritative {
+	b.keysMu.RLock()
+	authoritative, empty := b.indexAuthoritative, b.indexEmpty
+	b.keysMu.RUnlock()
+	if authoritative {
 		// Authoritative index already says the key is absent: miss without a probe.
-		if b.indexEmpty {
+		if empty {
 			b.SkippedEmptyIndex.Increment()
 		} else {
 			b.SkippedNotInIndex.Increment()
@@ -444,9 +445,7 @@ func (b *WebBackend) reclaimAbsent(h actionHash) bool {
 	b.ensureIndex()
 	b.keysMu.Lock()
 	removed := b.keys.Contains(h)
-	if removed {
-		b.keys.Remove(h)
-	}
+	b.dropKeyLocked(h)
 	b.keysMu.Unlock()
 	if removed {
 		b.Reclaimed404.Increment()
@@ -468,6 +467,12 @@ func (b *WebBackend) ForgetStale(actionID string) {
 // Close drains the batch coalescer and flushes the HTTP error logger.
 
 func (b *WebBackend) Close() error {
+	// An index load still running is abandoned, and its lock on the disk copy
+	// released for the next process.
+	if l := b.indexLoad.Load(); l != nil {
+		l.cancel()
+		<-l.done
+	}
 	// The prep pool first, since it still owes the coalescer every object it holds.
 	b.prep.Close()
 	// Flush the PUT coalescer up front: an unflushed upload was claimed in the index but never stored.

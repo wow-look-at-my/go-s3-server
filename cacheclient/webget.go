@@ -123,6 +123,6 @@ func (b *WebBackend) getBatch(actionID, key string, h actionHash) batchResp {
 // when the upload fails, so it can be retried on the next attempt.
 func (b *WebBackend) removeClaimed(h actionHash) {
 	b.keysMu.Lock()
-	b.keys.Remove(h)
+	b.dropKeyLocked(h)
 	b.keysMu.Unlock()
 }

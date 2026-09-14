@@ -71,7 +71,7 @@ func (b *WebBackend) enqueuePut(actionID, outputID string, data []byte, path str
 		b.PutSkippedKnown.Increment()
 		return nil
 	}
-	b.keys.Add(h)
+	b.addKeyLocked(h)
 	b.keysMu.Unlock()
 
 	j := putJob{actionID: actionID, key: b.key(actionID), hash: h, outputID: outputID, data: data, path: path}

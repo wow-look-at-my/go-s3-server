@@ -306,12 +306,17 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 	}
 	hit := make([]string, 0, len(reqs))
 	count := 0
+	// A body nobody here asked for goes to the local tier rather than on the
+	// floor. The hand-off waits until every caller in this batch is answered.
+	prefetched := &prefetchSink{b: b}
+	defer prefetched.deliver()
 
 	err = streamBatchResponse(resp.Body, func(e BatchEntry) {
 		count++
 		r, ok := reqByKey[e.Key]
 		if !ok {
-			return // a prefetched body nobody in this batch asked for
+			prefetched.collect(e)
+			return
 		}
 		delete(reqByKey, e.Key)
 		data, ok := b.verify("web batch get", r.actionID, e.OutputID, e.Data, e.RawSize)

@@ -172,6 +172,23 @@ type WebBackend struct {
 	RawBytes        AtomicCounter
 	CompressedBytes AtomicCounter
 
+	// PrefetchOffered counts entries a batch response carried that nobody in
+	// that batch asked for. It is the client's view of what the server's
+	// prefetch window is actually costing.
+	PrefetchOffered AtomicCounter
+
+	// PrefetchStored counts those entries that passed the read gates and were
+	// handed to OnBatchEntries. The gap to PrefetchOffered is what the client
+	// threw away: no sink, no budget, or a body that failed a gate.
+	PrefetchStored AtomicCounter
+
+	// prefetchHold bounds the bytes of unrequested bodies this backend is
+	// carrying between reading them off a response and handing them over.
+	prefetchHold prefetchBudget
+	// prefetchWG tracks the hand-offs still running, so Close does not return
+	// while a consumer callback is in flight.
+	prefetchWG sync.WaitGroup
+
 	// SkippedEmptyIndex counts clean misses skipped because the startup index was empty.
 	SkippedEmptyIndex AtomicCounter
 
@@ -365,6 +382,9 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	go b.batchPutCoalescer()
 	b.prep = newPrepPool(b)
 	b.lookAhead = newLookAhead(b)
+	// The same knob bounds both speculative paths, since both hold bodies the
+	// build never asked for.
+	b.prefetchHold.limit = lookAheadBudget()
 	b.knownMiss = newHashSet(0)
 	b.indexMaxAge = cfg.IndexMaxAge
 	b.indexTiming = defaultIndexTiming()
@@ -521,6 +541,9 @@ func (b *WebBackend) Close() error {
 		close(b.batchStop)
 		<-b.batchDone
 	}
+	// The coalescer is done, so no further hand-off can start; the ones running
+	// still owe the consumer their callback.
+	b.prefetchWG.Wait()
 	// Now nothing can seed it, so what it holds is all it will ever hold.
 	b.lookAhead.Close()
 	if b.errLog != nil {

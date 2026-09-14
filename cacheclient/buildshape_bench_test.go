@@ -52,9 +52,9 @@ func benchKeyIndex(key string) (int, bool) {
 //
 // A benchmark without one measures a client whose look-ahead is switched OFF:
 // expand returns at once when OnBatchEntries is nil, so the pool issues no
-// request at all. Nothing ships that way. cmd/go always installs
-// SharedCache.populate, and the build's next Get then reads what the pool
-// already put on disk instead of reaching the network.
+// request at all. cmd/go always installs SharedCache.populate, and with the
+// pool turned on the build's next Get then reads what the pool already put on
+// disk instead of reaching the network.
 type localTier struct {
 	mu   sync.Mutex
 	objs map[string]struct{}
@@ -218,7 +218,7 @@ func BenchmarkBuildShape(bench *testing.B) {
 	// Three shapes. none is the critical path alone, with nothing fetched
 	// ahead of it: the floor a cache must beat. blocking is the old wire
 	// shape, where the speculative bodies ride the request the build is
-	// waiting on. lookahead is what ships: the pool fetches the same window
+	// waiting on. lookahead turns the pool on: it fetches the same window
 	// off the critical path, into the tier the build reads next.
 	for _, tc := range []struct {
 		name       string
@@ -235,6 +235,9 @@ func BenchmarkBuildShape(bench *testing.B) {
 		{"wan/lookahead", 32, false, true, 5 * time.Millisecond},
 	} {
 		bench.Run(tc.name, func(bench *testing.B) {
+			if tc.lookAhead {
+				bench.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "32") // the pool is off unless asked for
+			}
 			srv := buildShapeServer(bench, body, tc.carried, tc.onBlocking, tc.latency)
 			var hits int
 			for range bench.N {

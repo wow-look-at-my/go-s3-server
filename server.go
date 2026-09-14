@@ -333,7 +333,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// lookup (GET-with-a-body is proxy-hostile); GET stays accepted for
 		// existing clients.
 		route = "BatchGet"
-		handleBatchGet(rec, r, s.storage, s.prefetchTracker, s.logAgg)
+		handleBatchGet(rec, r, s.storage, s.prefetchTracker, s.logAgg, s.config.Prefetch)
 	case r.Method == "GET" && key != "":
 		route = "GetObject"
 		handleGetObject(rec, r, s.storage, key, s.logAgg)

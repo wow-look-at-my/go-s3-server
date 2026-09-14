@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -122,16 +121,16 @@ func chunkBudget(budget int64, workers int) int64 {
 	return per
 }
 
-// lookAheadDefaults returns the worker count and queue depth. Workers scale
-// with the machine because each one is a socket read, not a core's worth of
-// work, and the floor matters more than the ceiling on a small runner.
+// maxLookAheadWorkers caps the pool however large GO_TOOLCHAIN_CACHE_LOOKAHEAD is.
+const maxLookAheadWorkers = 64
+
+// lookAheadDefaults returns the worker count and queue depth. The pool is off
+// unless GO_TOOLCHAIN_CACHE_LOOKAHEAD names a positive worker count: unset and
+// 0 both mean no pool. A positive count is capped at maxLookAheadWorkers.
 func lookAheadDefaults() (workers, depth int) {
-	workers = envInt("GO_TOOLCHAIN_CACHE_LOOKAHEAD", 4*runtime.NumCPU())
-	if workers < 8 {
-		workers = 8
-	}
-	if workers > 64 {
-		workers = 64
+	workers = envInt("GO_TOOLCHAIN_CACHE_LOOKAHEAD", 0)
+	if workers > maxLookAheadWorkers {
+		workers = maxLookAheadWorkers
 	}
 	return workers, workers * 8
 }

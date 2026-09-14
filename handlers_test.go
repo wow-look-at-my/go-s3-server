@@ -18,6 +18,12 @@ import (
 
 func testSetup(t *testing.T) *httptest.Server {
 	t.Helper()
+	return testSetupPrefetch(t, false)
+}
+
+// testSetupPrefetch is testSetup with the server's prefetch config set.
+func testSetupPrefetch(t *testing.T, prefetch bool) *httptest.Server {
+	t.Helper()
 	dir := t.TempDir()
 
 	cfg := &Config{
@@ -26,6 +32,7 @@ func testSetup(t *testing.T) *httptest.Server {
 		DataDir:     dir,
 		WriteOnce:   WriteOnceConfig{Action: "allow"},
 		DisableAuth: true,
+		Prefetch:    prefetch,
 	}
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)

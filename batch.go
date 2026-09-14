@@ -173,17 +173,20 @@ func (t *prefetchTracker) record(scope string, keys []string) {
 // semantically sound method (the request carries a body; GET-with-a-body is
 // hostile to proxies and caches); GET remains accepted for existing clients.
 //
-// If prefetch is enabled, the server also includes entries whose modification
-// time falls within ±30s of the requested entries, capturing entries from the
-// same build that the client is likely to need next. The prefetchTracker
-// suppresses keys already sent to THIS BUILD, preventing the same 200-entry
-// pool from flooding the client on every request.
+// If the server's prefetch config (prefetchEnabled) and the request both ask
+// for it, the server also includes entries whose modification time falls
+// within 30s either side of the requested entries, capturing entries from the same build
+// that the client is likely to need next. The prefetchTracker suppresses keys
+// already sent to THIS BUILD, preventing the same 200-entry pool from flooding
+// the client on every request. With prefetchEnabled false the client's
+// prefetch and prefetch_only flags are ignored: a batch carries only the
+// requested keys, and a prefetch_only request gets an empty manifest.
 //
 // The tar layout is:
 //
 //	manifest.json                    — index of all entries with metadata
 //	data/<key>                       — raw file content for each entry
-func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tracker *prefetchTracker, agg *logAggregator) {
+func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tracker *prefetchTracker, agg *logAggregator, prefetchEnabled bool) {
 	if r.Method != "GET" && r.Method != "POST" {
 		writeError(w, 405, "method_not_allowed", "method not allowed")
 		return
@@ -211,14 +214,25 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 	prov := provenanceOf(r)
 	scope := prefetchScope(prov, user)
 
+	// lookup is the keys whose bodies this response carries. With prefetch
+	// off, a prefetch_only request wants nothing but the window, so it carries
+	// none; every other request carries exactly what it asked for.
+	lookup := req.Keys
+	if !prefetchEnabled {
+		if req.PrefetchOnly {
+			lookup = nil
+		}
+		req.Prefetch, req.PrefetchOnly = false, false
+	}
+
 	// Phase 1: collect metadata for the requested keys WITHOUT reading bodies.
 	// Stat is cheap (os.Stat + xattrs); the bodies are streamed later, one at a
 	// time, so the whole batch never sits in memory.
 	var entries []batchEntry
-	requestedSet := make(map[string]bool, len(req.Keys))
+	requestedSet := make(map[string]bool, len(lookup))
 	var minMod, maxMod time.Time
 
-	for _, key := range req.Keys {
+	for _, key := range lookup {
 		requestedSet[key] = true
 		meta, err := storage.Stat(key)
 		if err != nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -185,6 +186,102 @@ func TestBandwidthBucketFoldsModulesPastTheCap(t *testing.T) {
 	point := window.Points[bandwidthBucketCount-1]
 	assert.Equal(t, served, point.Total)
 	assert.Equal(t, served, point.Modules[bandwidthOtherModule])
+}
+
+// A second that serves more modules than a bucket can name folds the tail into
+// the remainder band, and that band can then be the largest thing in the window.
+// The store's fold and the dashboard's top-N cut are two reasons to have a
+// remainder, and they name the same one: the band appears once, and the bands
+// plus the index series still add up to the total the chart's axis is drawn
+// against.
+func TestBandwidthFoldedBandIsTheOnlyRemainder(t *testing.T) {
+	store, _ := testBandwidthStore(testBandwidthEpoch)
+	// More modules than a bucket tracks, so modules past the cap are folded and
+	// their bytes go into the remainder band.
+	const modules = bandwidthModuleCap + 8
+	const each = 10
+	var served int64
+	for i := range modules {
+		store.record(bandwidthSample{module: fmt.Sprintf("example.com/m%02d", i), bytes: each})
+		served += each
+	}
+	store.record(bandwidthSample{index: true, bytes: 7})
+
+	window := store.window(5)
+	assert.Equal(t, bandwidthOtherModule, window.Bands[len(window.Bands)-1], "the remainder is the last band")
+
+	seen := 0
+	for _, band := range window.Bands {
+		if band == bandwidthOtherModule {
+			seen++
+		}
+	}
+	assert.Equal(t, 1, seen, "one remainder band, however it was arrived at")
+
+	point := window.Points[bandwidthBucketCount-1]
+	assert.Equal(t, served+7, point.Total)
+	assert.Equal(t, int64((modules-5)*each), point.Modules[bandwidthOtherModule],
+		"the folded bytes and the modules past the top cut are one band, and none are lost")
+	assert.Equal(t, int64(each), point.Modules["example.com/m00"])
+
+	var bands int64
+	for _, n := range point.Modules {
+		bands += n
+	}
+	assert.Equal(t, point.Total, bands+point.Index, "bands + index is the total the axis is drawn against")
+}
+
+// The store is written by every request and read by the dashboard's poll, so the
+// two run at the same time. Here they do it from many goroutines at once, on a
+// clock that does not move, so the correct answer is a constant however the
+// interleaving falls: every byte recorded is counted once. Under -race this is
+// also what proves the claim the store makes about itself.
+func TestBandwidthConcurrentRecordAndRead(t *testing.T) {
+	store, _ := testBandwidthStore(testBandwidthEpoch)
+	const writers = 8
+	const each = 100
+
+	var writing sync.WaitGroup
+	for w := range writers {
+		writing.Add(1)
+		go func() {
+			defer writing.Done()
+			for range each {
+				store.record(bandwidthSample{module: fmt.Sprintf("example.com/w%d", w), bytes: 1})
+				store.record(bandwidthSample{index: true, bytes: 1})
+			}
+		}()
+	}
+
+	// A reader runs the whole time, the way the page polls on its own clock.
+	stop := make(chan struct{})
+	var reading sync.WaitGroup
+	reading.Add(1)
+	go func() {
+		defer reading.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				store.window(5)
+			}
+		}
+	}()
+
+	writing.Wait()
+	close(stop)
+	reading.Wait()
+
+	point := store.window(5).Points[bandwidthBucketCount-1]
+	assert.Equal(t, int64(writers*each), point.Index)
+	assert.Equal(t, int64(writers*each*2), point.Total, "every byte recorded is counted exactly once")
+	var bands int64
+	for _, n := range point.Modules {
+		bands += n
+	}
+	assert.Equal(t, int64(writers*each), bands)
+	assert.Equal(t, point.Total, bands+point.Index)
 }
 
 func TestBandwidthUnattributableBytesAreNamedNotDropped(t *testing.T) {

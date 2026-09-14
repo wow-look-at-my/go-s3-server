@@ -39,9 +39,12 @@ const (
 	// counted: only its identity is given up.
 	bandwidthModuleCap = 32
 
-	// bandwidthOtherModule is the band the dashboard sums every module past its
-	// top cut into, and the name a bucket folds overflow onto. A Go module path
-	// cannot carry a parenthesis, so this cannot collide with a real module.
+	// bandwidthOtherModule is the single remainder band: the name a bucket folds
+	// its overflow onto, and the band the dashboard sums every module past its
+	// top cut into. Those are the same remainder reached two ways, so they are
+	// one band rather than two, and it appears in the window's band list exactly
+	// once. A Go module path cannot carry a parenthesis, so this cannot collide
+	// with a real module.
 	bandwidthOtherModule = "(other)"
 
 	// bandwidthUnknownModule names bytes there is nothing to attribute to: an
@@ -190,6 +193,12 @@ func (b *bandwidthStore) bucketAt(unixSecond int64) *bandwidthBucket {
 // topModules is how many modules are named individually; everything else is
 // summed into bandwidthOtherModule. A value of zero or less names none of them.
 //
+// The shape it returns holds two things a reader can rely on: the remainder band
+// appears in Bands once, and for every point the bands and the index series add
+// up to that point's total. That second one is what makes the stack the page
+// draws reach exactly the total its axis is scaled to, so it is asserted instead
+// of assumed.
+//
 // The whole read happens under the lock. The answer is at most
 // bandwidthBucketCount x bandwidthModuleCap counters, and copying the per-bucket
 // maps out to aggregate them outside the lock would cost more than the
@@ -236,6 +245,15 @@ func (b *bandwidthStore) window(topModules int) bandwidthWindow {
 	}
 	ranked := make([]string, 0, len(totals))
 	for module := range totals {
+		// The remainder is never a band of its own, whatever it is called: a
+		// bucket that met more modules than it could name filed them under
+		// bandwidthOtherModule, and those bytes belong with every other module
+		// past the top cut. Naming it here instead would put the same band in
+		// out.Bands twice, and the chart would draw it twice: once for the
+		// folded bytes and once for the tail.
+		if module == bandwidthOtherModule {
+			continue
+		}
 		ranked = append(ranked, module)
 	}
 	// Bytes first, name second: the name makes the order of two modules with
@@ -283,7 +301,10 @@ func (b *bandwidthStore) window(topModules int) bandwidthWindow {
 			if point.Modules == nil {
 				point.Modules = make(map[string]int64, 1)
 			}
-			point.Modules[bandwidthOtherModule] = remainder
+			// Added, not assigned: the band may already hold the bytes a busy
+			// bucket folded onto it, and those are part of the remainder rather
+			// than a second, competing value for the same band.
+			point.Modules[bandwidthOtherModule] += remainder
 		}
 	}
 	return out

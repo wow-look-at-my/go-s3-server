@@ -17,8 +17,8 @@ import (
 // the exclusive lock, before serving.
 func TestStartupSweepsTempOrphans(t *testing.T) {
 	dir := t.TempDir()
-	// Stamp the current cache version FIRST so NewStorage does not purge the
-	// planted files for a version mismatch.
+	// Stamp the current cache version earliest so NewStorage does not purge
+	// the planted files for a version mismatch.
 	require.NoError(t, writeCacheVersion(dir, currentCacheVersion))
 
 	shard := filepath.Join(dir, "go-buildcache", "v1", "ab")
@@ -63,17 +63,14 @@ func TestPutStreamLargeBodyFsyncPath(t *testing.T) {
 	require.True(t, bytes.Equal(body, got))
 }
 
-// failingReader errors on the first read: a stand-in for a dying disk.
+// failingReader errors on the earliest read: a stand-in for a dying disk.
 type failingReader struct{}
 
 var errDiskDead = errors.New("simulated disk I/O failure")
 
 func (failingReader) Read([]byte) (int, error) { return 0, errDiskDead }
 
-// TestReadProbeDistinguishesIOError: the lz4 read probe must surface a real
-// source I/O error instead of swallowing it as "not an index" — the caller
-// then refuses the serve (miss) instead of emitting a 200 header and dying
-// mid-copy. A garbled-but-readable body remains fail-open (not an index).
+// A garbled-but-readable body remains fail-open (not an index).
 func TestReadProbeDistinguishesIOError(t *testing.T) {
 	isIndex, err := readIsModuleIndex(failingReader{}, "lz4")
 	require.False(t, isIndex)

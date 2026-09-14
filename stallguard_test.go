@@ -145,9 +145,9 @@ const steadyBodyBytes = 32 << 20
 
 // TestStallGuard_LongServeContentCompletes is the regression for truncated
 // /_index downloads. handleGetIndex serves the blob through http.ServeContent,
-// whose copy lands in statusRecorder.ReadFrom as ONE call for the whole body.
-// Progress was counted only when that call returned, so a download that kept
-// flowing looked silent to the guard and was cut off after two windows, and
+// whose copy lands in statusRecorder.ReadFrom as a single call for the whole
+// body. Progress was counted only when that call returned, so a download that
+// kept flowing looked silent to the guard and was cut off after windows, and
 // the client read "unexpected EOF". Progress must count as the body moves.
 func TestStallGuard_LongServeContentCompletes(t *testing.T) {
 	t.Serial() // the window is package state
@@ -169,7 +169,7 @@ func TestStallGuard_LongServeContentCompletes(t *testing.T) {
 
 // TestStallGuard_LongFileCopyCompletes is the same regression on the object
 // GET path: handleGetObject io.Copies an open file, which also reaches the
-// forwarded ReadFrom as one call.
+// forwarded ReadFrom as a single call.
 func TestStallGuard_LongFileCopyCompletes(t *testing.T) {
 	t.Serial() // the window is package state
 

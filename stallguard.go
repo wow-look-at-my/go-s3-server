@@ -19,11 +19,8 @@ import (
 // however long it takes.
 //
 // The window must exceed the longest legitimate gap between bytes, which is
-// the work a handler does before its first write: an index blob rebuild, or
-// the stat and guard pass over the keys of a batch. It is still far under the
-// five-minute total cap it replaces, so a genuinely stuck connection is now
-// reaped sooner than before, not later.
-// A var, so a test can shorten it rather than sleep out the real one.
+// the work a handler does before its earliest write: an index blob rebuild,
+// or the stat and guard pass over the keys of a batch.
 var stallWindow = 60 * time.Second
 
 // countingReader counts what a request body delivers, so an upload that is
@@ -41,8 +38,8 @@ func (c *countingReader) Read(p []byte) (int, error) {
 
 func (c *countingReader) Close() error { return c.rc.Close() }
 
-// guardStall arms an inactivity watchdog over one request and returns the stop
-// func the caller defers. The watchdog samples the bytes the response has
+// guardStall arms an inactivity watchdog over a single request and returns the
+// stop func the caller defers. The watchdog samples the bytes the response has
 // written and the bytes the body has delivered. Movement re-arms it. Silence
 // past stallWindow sets both connection deadlines to now, which fails the
 // blocked read or write and lets the handler unwind.

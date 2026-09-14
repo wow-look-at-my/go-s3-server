@@ -26,21 +26,16 @@ func unlockFile(f *os.File) {
 // metadataProtectedKeys are load-bearing for the cache protocol: outputid is
 // the content address every client verifies before consuming a body, and
 // compression steers both the module-index guards and client decompression.
-// A failure persisting one of these fails the PUT — storing the object
+// A failure persisting any of these fails the PUT — storing the object
 // without them would serve unusable (or unguardable) bytes. Every other
 // metadata key is descriptive provenance (src, pkg, go-version, ...).
 var metadataProtectedKeys = set.Of("outputid", "compression")
 
 // setMetadata persists user metadata as xattrs. Protected keys are written
-// first (so they claim xattr space) and any error on them fails the call.
-// Optional keys degrade gracefully under xattr-space pressure: on ext4
-// without the ea_inode feature ALL of a file's xattrs share one ~4 KiB EA
-// block, and the client's Src header is an uncapped list of source file
-// names, so a many-file package can overflow it. Failing the whole PUT for
-// that (the old behavior: any xattr error → 500) made exactly the biggest
-// packages permanently uncacheable. Instead the oversized optional key is
-// dropped, counted, and logged — the object stores and serves normally,
-// minus one provenance field.
+// earliest (so they claim xattr space) and any error on them fails the
+// call. Instead the oversized optional key is dropped, counted, and logged
+// — the object stores and serves normally, minus a single provenance
+// field.
 func setMetadata(path string, meta map[string]string) error {
 	for k := range metadataProtectedKeys.All() {
 		if v, ok := meta[k]; ok {
@@ -82,9 +77,9 @@ func setMetadata(path string, meta map[string]string) error {
 // setMetadataFd writes user-metadata xattrs through an open file descriptor
 // rather than a path. This is the race-free variant for repairs computed FROM
 // that descriptor: a path-based setxattr can land on a different inode than
-// the one that was hashed (a concurrent overwrite PUT renames a new file onto
-// the path in between), stamping a stale value onto a fresh body; fsetxattr
-// by construction stamps the exact inode the caller read.
+// the a single that was hashed (a concurrent overwrite PUT renames a new file
+// onto the path in between), stamping a stale value onto a fresh body;
+// fsetxattr by construction stamps the exact inode the caller read.
 func setMetadataFd(f *os.File, meta map[string]string) error {
 	for k, v := range meta {
 		attrName := "user.s3." + k
@@ -95,9 +90,9 @@ func setMetadataFd(f *os.File, meta map[string]string) error {
 	return nil
 }
 
-// getMetadataValueFd reads one user-metadata value through an open file
-// descriptor ("" if absent or unreadable). Fd-based for the same reason as
-// setMetadataFd: it inspects the exact inode the caller holds.
+// getMetadataValueFd reads a single user-metadata value through an open
+// file descriptor ("" if absent or unreadable). Fd-based for the same
+// reason as setMetadataFd: it inspects the exact inode the caller holds.
 func getMetadataValueFd(f *os.File, key string) string {
 	attrName := "user.s3." + key
 	sz, err := unix.Fgetxattr(int(f.Fd()), attrName, nil)
@@ -142,12 +137,6 @@ func getMetadata(path string, meta *ObjectMeta) {
 	}
 }
 
-// xattr reads are sized optimistically and only fall back to the two-call
-// probe-then-read dance on ERANGE. Every probe is a syscall, and a metadata
-// read issues one per attribute plus one for the listing, which is why the
-// naive version cost ~42us per key; these buffers cover every value the cache
-// actually stores (the largest is the capped src list, a few hundred bytes) and
-// the whole name list of a typical object.
 const (
 	xattrValueBufSize = 512
 	xattrNameBufSize  = 1024
@@ -180,7 +169,7 @@ func listXattrs(path string) ([]string, error) {
 	return attrs, nil
 }
 
-// getXattrBuf reads one attribute into buf when it fits, falling back to a
+// getXattrBuf reads a single attribute into buf when it fits, falling back to a
 // probe-then-read for an oversized value. The returned slice aliases buf on the
 // fast path, so callers must copy anything they keep.
 func getXattrBuf(path, name string, buf []byte) ([]byte, error) {

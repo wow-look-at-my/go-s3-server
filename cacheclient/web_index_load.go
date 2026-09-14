@@ -91,8 +91,7 @@ func (b *WebBackend) startIndexLoad() {
 	start := time.Now()
 	path := b.indexCachePath()
 	disk := b.readDiskIndex(path)
-	maxAge := b.resolveIndexMaxAge(path)
-	if disk.blob != nil && maxAge > 0 && disk.age() < maxAge {
+	if disk.blob != nil && b.indexMaxAge > 0 && disk.age() < b.indexMaxAge {
 		logging.Infof("cacheprog: web index: %d keys from a copy %v old", disk.count, disk.age().Round(time.Second))
 		b.keysMu.Lock()
 		b.keys = disk.keys

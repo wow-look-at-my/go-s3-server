@@ -272,20 +272,14 @@ func TestConfigPrefetchDefaultsOff(t *testing.T) {
 }
 
 // indexedKey is a real cacheprog key: the prefix plus a 64-hex action hash.
-// Suppression addresses keys by that hash, so a test about it cannot use the
-// short made-up keys the other batch tests get away with.
 func indexedKey(n int) string {
-	var h [gbciHashSize]byte
-	h[0] = byte(n)
-	h[1] = byte(n >> 8)
-	h[2] = byte(n >> 16)
-	h[3] = 0xa5
+	h := sha256.Sum256(fmt.Appendf(nil, "action-%d", n))
 	return gbciKeyPrefix + hex.EncodeToString(h[:])
 }
 
 // holdFilter is a request's statement that the client holds keys, built the
-// way the client builds it: k positions per hash, three bytes of the hash
-// each, modulo the bit count.
+// way the client builds it: k positions per hash, bytes of the hash each,
+// modulo the bit count.
 func holdFilter(t *testing.T, bytes int, keys ...string) *haveFilter {
 	t.Helper()
 	f := &haveFilter{Bits: make([]byte, bytes), K: 6}
@@ -301,7 +295,7 @@ func holdFilter(t *testing.T, bytes int, keys ...string) *haveFilter {
 	return f
 }
 
-// prefetchedKeys issues one batch and returns the keys the window carried.
+// prefetchedKeys issues a single batch and returns the keys the window carried.
 func prefetchedKeys(t *testing.T, ts *httptest.Server, req batchGetRequest) map[string]bool {
 	t.Helper()
 	body, err := json.Marshal(req)
@@ -349,10 +343,10 @@ func TestBatchGet_PrefetchSkipsWhatTheClientHolds(t *testing.T) {
 	assert.Equal(t, full, again, "the server must hold no memory of what it sent")
 }
 
-// A window is only worth sending once, so a client that keeps stating what it
-// received keeps being handed NEW neighbours. Selection skips as it walks:
-// filtering the result afterwards re-proposed the same nearest pool on every
-// request, and a real deployment showed prefetched=0 for the rest of a build.
+// A window is only worth sending a single time, so a client that keeps
+// stating what it received keeps being handed NEW neighbours. Selection skips
+// as it walks: filtering the result afterwards re-proposed the same nearest
+// pool on every request, and a real deployment showed prefetched=0 for the rest of a build.
 func TestBatchGet_PrefetchAdvancesAsTheClientStatesMore(t *testing.T) {
 	ts := testSetupPrefetch(t, true)
 	client := ts.Client()
@@ -393,13 +387,11 @@ func TestBatchGet_PrefetchAdvancesAsTheClientStatesMore(t *testing.T) {
 	assert.Positive(t, fresh[2], "prefetch must keep advancing while the window holds unstated keys")
 }
 
-// haveFilterVectorBits is the filter over the hashes filled with 1, 2, 3 and
-// 4 in 32 bytes at k=3, as a hex sha256 of the bit array.
 //
 // cacheclient has its own copy of this filter and its own test asserting this
-// same constant. The two implementations cannot import each other, so this
-// vector is what holds them together: change the bit arithmetic on one side
-// and one of the two tests fails, rather than suppression silently going
+// same constant. both implementations cannot import each other, so this
+// vector is what holds them together: change the bit arithmetic on a single
+// side and any of both tests fails, rather than suppression silently going
 // wrong on the wire.
 const haveFilterVectorBits = "c2643f18fd57b6aa9bb7cb286f32b9ee7c655c83b95e78ca11591a166bd6658a"
 
@@ -423,12 +415,11 @@ func TestHaveFilterVector(t *testing.T) {
 }
 
 // The filter's errors are false positives and nothing else: it never says a
-// client lacks a key it stated. A false positive costs one un-sent body, which
-// the client then asks for by name; the other direction would re-send bodies
-// it already has.
+// client lacks a key it stated. A false positive costs a single un-sent body,
+// which the client then asks for by name; the other direction would re-send
+// bodies it already has.
 func TestHaveFilterFailsTowardSending(t *testing.T) {
-	// Everything stated must read back as held. This is the direction that
-	// must never fail, because a miss here re-sends what the client has.
+	// Everything stated must read back as held.
 	stated := make([]string, 256)
 	for i := range stated {
 		stated[i] = indexedKey(i)
@@ -440,8 +431,7 @@ func TestHaveFilterFailsTowardSending(t *testing.T) {
 	}
 
 	// A key never stated may still read as held, and at this loading it
-	// usually does not. The rate is asserted, not assumed: 256 keys in 8192
-	// bits at k=6 is well inside a percent.
+	// usually does not.
 	var falsePositives int
 	const probes = 4096
 	for i := range probes {
@@ -536,7 +526,6 @@ func TestBatchGet_AcceptsPOST(t *testing.T) {
 // TestBatchGet_SingleOpenPerServedKey pins the double-open fix: serving a batch
 // of N found keys performs exactly N storage "get" operations (the phase-2
 // streaming opens). The guard peek and the self-heal use raw opens that are
-// neither counted as ops nor recorded as access, so they no longer double
 // every key's metrics or stamp last-access onto keys that are never served.
 func TestBatchGet_SingleOpenPerServedKey(t *testing.T) {
 	if !inOwnProcess(t) {

@@ -200,6 +200,7 @@ func TestGetBatch_MissingOutputIDNotCorrupt(t *testing.T) {
 // populator. The request the build was blocked on carries only what the build
 // asked for: the extra entry arrives on the pool's own request, afterwards.
 func TestGetBatch_SeedsLookAheadWhichFeedsThePopulator(t *testing.T) {
+	t.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "8") // the pool is off unless asked for
 	store := make(map[string][]byte)
 	meta := make(map[string]map[string]string)
 	srv := fakeBatchServer(t, store, meta)

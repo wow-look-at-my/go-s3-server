@@ -167,15 +167,17 @@ function drawTiles(stats) {
 	const cacheBytes = value(stats, "s3_cache_bytes");
 	const budget = stats.eviction.max_bytes;
 	const inFlight = value(stats, "cache_http_in_flight_requests");
+	const admitted = value(stats, "cache_http_admitted_requests");
 	const limit = stats.server.max_concurrent_requests;
 	const indexed = value(stats, "s3_index_hashes") + value(stats, "s3_index_pending_hashes");
 	const rejected = value(stats, "s3_http_rejected_total");
+	const shed = rejected ? `${count(rejected)} shed with 503` : "nothing shed";
 
 	fill($("tiles"), [
 		hitRateTile(stats),
 		cacheSizeTile(cacheBytes, budget, indexed),
 		tile("keys advertised", count(indexed), "action hashes in /_index"),
-		tile("in flight", `${count(inFlight)} / ${count(limit)}`, rejected ? `${count(rejected)} shed with 503` : "nothing shed", rejected ? "warn" : ""),
+		tile("slots in use", `${count(admitted)} / ${count(limit)}`, `${count(inFlight)} in flight; ${shed}`, rejected ? "warn" : ""),
 		tile("batch requests", count(value(stats, "s3_batch_requests_total")), `${count(series(stats, "s3_batch_keys_total").streamed || 0)} bodies streamed`),
 		tile("evicted", count(value(stats, "s3_evictions_total")), `${bytes(value(stats, "s3_evicted_bytes_total"))} reclaimed`),
 	]);

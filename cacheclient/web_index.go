@@ -87,47 +87,39 @@ func (b *WebBackend) indexCachePath() string {
 	return filepath.Join(dir, name)
 }
 
-// loadOrFetchIndex returns the set of known cache keys for this backend and
-// whether that set is AUTHORITATIVE — i.e. server-confirmed fresh this run
-// (a parsed blob, or a not-modified answer validating our disk copy).
+// fetchIndex revalidates the disk copy against the server and returns the set
+// of known cache keys and whether that set is AUTHORITATIVE, i.e.
+// server-confirmed this run (a parsed blob, or a not-modified answer
+// validating the disk copy).
 //
-// It reads any previously cached blob from disk, then issues a conditional
-// GET /<bucket>/_index against the server. On not-modified we keep the disk
-// blob; on a fresh body we adopt it and persist it. Any failure produces a
-// NON-authoritative set (the stale disk copy, or empty): Get/Put still work,
-// and because absences from a non-authoritative set prove nothing, cold keys
-// are batch-probed instead of fast-missed (see WebBackend.Get).
+// It issues a conditional GET /<bucket>/_index. On not-modified it keeps the
+// disk blob and restarts its age; on a fresh body it adopts and persists it.
+// Any failure produces a NON-authoritative set (the disk copy, or empty):
+// Get/Put still work, and because absences from a non-authoritative set prove
+// nothing, cold keys are batch-probed instead of fast-missed (see
+// WebBackend.Get).
 //
-// A disk copy younger than the backend's index max age is served with no
-// request at all, and it is AUTHORITATIVE. A test suite starts thousands of
-// go commands a minute, and the blob is tens of megabytes that the server
-// rebuilds as keys arrive, so a copy validated within the last minute is what
-// a revalidation would download again. A key another machine uploaded inside
-// that minute misses here and is rebuilt. A probe for it would cost a request
-// per cold key, and a build of new code has thousands the server holds for
-// nobody.
+// ctx carries no deadline. Each fetch carries the header and stall budgets
+// above, and those are what a hung server trips; ctx is cancelled only when
+// the backend closes.
 //
 // Each outcome logs once here. The consumer's stderr carries only the Warnf
 // lines unless it asks for the routine ones.
-func (b *WebBackend) loadOrFetchIndex() (*hashSet, bool) {
-	path := b.indexCachePath()
-	diskBlob, diskKeys, diskETag, diskAge := b.readDiskIndex(path)
-	if diskBlob != nil && b.indexMaxAge > 0 && diskAge < b.indexMaxAge {
-		logging.Infof("cacheprog: web index: %d keys from a copy %v old", diskKeys.Len(), diskAge.Round(time.Second))
-		return diskKeys, true
-	}
-
-	// No deadline here. Each fetch carries the header and stall budgets above,
-	// and those are what a hung server trips.
-	ctx := context.Background()
+func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex) (*hashSet, bool) {
+	diskBlob, diskKeys, diskETag := disk.blob, disk.keys, disk.etag
 
 	blob, status, err := b.fetchIndexBlob(ctx, diskETag)
 	if err != nil {
+		if ctx.Err() != nil {
+			// The backend closed under the fetch. Nothing failed that anyone
+			// needs to hear about, and nothing is left to install.
+			return nil, false
+		}
 		if diskBlob != nil {
 			// A failed refresh over a disk copy is routine: the build keeps a
 			// key set, and every go command reports it on a busy host.
 			logging.Infof("cacheprog: web index refresh: %v", err)
-			logging.Infof("cacheprog: web index: refresh failed; using %d cached keys (batch probing enabled)", diskKeys.Len())
+			logging.Infof("cacheprog: web index: refresh failed; using %d cached keys (batch probing enabled)", disk.count)
 			return diskKeys, false
 		}
 		logging.Warnf("cacheprog: web index fetch: %v", err)
@@ -139,12 +131,15 @@ func (b *WebBackend) loadOrFetchIndex() (*hashSet, bool) {
 			// The copy's age is the time since the server last confirmed it.
 			now := time.Now()
 			_ = os.Chtimes(path, now, now)
-			logging.Infof("cacheprog: web index: %d keys", diskKeys.Len())
+			logging.Infof("cacheprog: web index: %d keys", disk.count)
 			return diskKeys, true
 		}
 		// No disk copy despite a not-modified answer (likely a cleared /tmp); refetch unconditionally.
 		blob, _, err = b.fetchIndexBlob(ctx, "")
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, false
+			}
 			logging.Warnf("cacheprog: web index refetch: %v", err)
 			logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
 			return newHashSet(0), false
@@ -154,7 +149,7 @@ func (b *WebBackend) loadOrFetchIndex() (*hashSet, bool) {
 	if err != nil {
 		logging.Warnf("cacheprog: web index parse: %v", err)
 		if diskBlob != nil {
-			logging.Infof("cacheprog: web index: refresh failed; using %d cached keys (batch probing enabled)", diskKeys.Len())
+			logging.Infof("cacheprog: web index: refresh failed; using %d cached keys (batch probing enabled)", disk.count)
 			return diskKeys, false
 		}
 		logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
@@ -165,23 +160,44 @@ func (b *WebBackend) loadOrFetchIndex() (*hashSet, bool) {
 	return keys, true
 }
 
-// readDiskIndex returns (raw, parsed, etag, age) or (nil, empty, "", 0) if
-// the file is missing or invalid. The age is the time since the copy was
-// written or last confirmed current.
-func (b *WebBackend) readDiskIndex(path string) ([]byte, *hashSet, string, time.Duration) {
+// diskIndex is the index's disk copy as one read found it.
+type diskIndex struct {
+	blob []byte   // the raw copy; nil when missing or invalid
+	keys *hashSet // its parsed keys; empty when blob is nil
+	etag string   // its strong ETag; empty when blob is nil
+	// count is the key count as read. keys may be installed as the live set
+	// and gain claims after that, so a report on the copy uses this instead.
+	count int
+	// mtime is when the copy was written or last confirmed current, and the
+	// zero time when there is no file at all. A change in it is how another
+	// process's refresh shows up here.
+	mtime time.Time
+}
+
+// age is the time since the copy was written or last confirmed current.
+func (d diskIndex) age() time.Duration {
+	return time.Since(d.mtime)
+}
+
+// readDiskIndex reads the disk copy at path. A missing or invalid copy comes
+// back with a nil blob and an empty key set.
+func (b *WebBackend) readDiskIndex(path string) diskIndex {
+	d := diskIndex{keys: newHashSet(0)}
+	st, err := os.Stat(path)
+	if err != nil {
+		return d
+	}
+	d.mtime = st.ModTime()
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, newHashSet(0), "", 0
+		return d
 	}
 	keys, etag, err := parseIndexBlob(data)
 	if err != nil {
-		return nil, newHashSet(0), "", 0
+		return d
 	}
-	var age time.Duration
-	if st, err := os.Stat(path); err == nil {
-		age = time.Since(st.ModTime())
-	}
-	return data, keys, etag, age
+	d.blob, d.keys, d.etag, d.count = data, keys, etag, keys.Len()
+	return d
 }
 
 // fetchIndexBlob does a conditional GET <endpoint>/<bucket>/_index under ctx,
@@ -261,14 +277,29 @@ func (s *stallGuardedReader) Read(p []byte) (int, error) {
 	return s.r.Read(p)
 }
 
-// writeIndexBlob persists a GBCI v1 blob via tmp file + atomic rename. Best-effort: a stale
-// on-disk cache only forces a fresh GET next time.
+// writeIndexBlob persists a GBCI v1 blob via a temp file private to this
+// writer and an atomic rename, so processes sharing the directory never
+// interleave into one file. Best-effort: a stale on-disk cache only forces a
+// fresh GET next time.
 func (b *WebBackend) writeIndexBlob(path string, blob []byte) {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, blob, 0644); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp*")
+	if err != nil {
 		return
 	}
-	os.Rename(tmp, path)
+	tmp := f.Name()
+	_, werr := f.Write(blob)
+	cerr := f.Close()
+	if werr != nil || cerr != nil {
+		os.Remove(tmp)
+		return
+	}
+	if err := os.Chmod(tmp, 0644); err != nil {
+		os.Remove(tmp)
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+	}
 }
 
 // parseIndexBlob validates a GBCI v1 blob and returns:

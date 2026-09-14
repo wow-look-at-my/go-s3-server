@@ -34,6 +34,26 @@ func keySetToHashes(keys set.Set[string]) *hashSet {
 	return s
 }
 
+// awaitIndex is ensureIndex plus the wait for any background half of the
+// load, for a test that asserts on what the load finally installed.
+func (b *WebBackend) awaitIndex() {
+	b.ensureIndex()
+	if l := b.indexLoad.Load(); l != nil {
+		<-l.done
+	}
+}
+
+// shortenIndexWaits sets the first use's wait and the lock pacing, for a test
+// that cannot spend the defaults. Call it before the first use.
+func (b *WebBackend) shortenIndexWaits(wait, lockStale time.Duration) {
+	b.indexTiming = indexTiming{
+		wait:          wait,
+		lockHeartbeat: lockStale / 4,
+		lockStale:     lockStale,
+		lockPoll:      5 * time.Millisecond,
+	}
+}
+
 // getTest is Get in the shape the tests were written against.
 func (b *WebBackend) getTest(actionID string) (string, io.ReadCloser, int64, time.Time, bool, bool, error) {
 	outputID, data, t, miss := b.Get(actionID)

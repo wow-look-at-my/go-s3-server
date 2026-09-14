@@ -1,3 +1,4 @@
 /build/
 /go-s3-server
 cacheclient/build/
+/.claude/worktrees/

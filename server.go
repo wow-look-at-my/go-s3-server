@@ -29,6 +29,13 @@ const (
 )
 
 type Server struct {
+	config  *Config
+	storage *Storage
+	// sem bounds the requests doing work at once. A full sem means the server is
+	// at capacity, so excess requests are shed with 503 + Retry-After rather
+	// than queued until memory is exhausted (the OOM a fronting proxy reports as
+	// a 502). A request whose remaining work is only a body transfer hands its
+	// slot back early (releaseSlot). Buffered to MaxConcurrentRequests.
 	config          *Config
 	storage         *Storage
 	prefetchTracker *prefetchTracker
@@ -58,12 +65,11 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 		cfg.MaxObjectBytes = defaultMaxObjectBytes
 	}
 	s := &Server{
-		config:          cfg,
-		storage:         storage,
-		prefetchTracker: newPrefetchTracker(),
-		sem:             make(chan struct{}, cfg.MaxConcurrentRequests),
-		mem:             newMemController(memoryBudget),
-		verboseLog:      cfg.LogMode == logModeVerbose,
+		config:     cfg,
+		storage:    storage,
+		sem:        make(chan struct{}, cfg.MaxConcurrentRequests),
+		mem:        newMemController(memoryBudget),
+		verboseLog: cfg.LogMode == logModeVerbose,
 	}
 	if !s.verboseLog {
 		s.logAgg = newLogAggregator()
@@ -79,7 +85,6 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 			s.mem.Register(cleanMemoKind, storage.cleanKeys.Budget(), storage.cleanKeys)
 		}
 	}
-	s.mem.Register(prefetchTrackerKind, s.prefetchTracker.sent.Budget(), s.prefetchTracker.sent)
 	return s
 }
 
@@ -306,7 +311,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// lookup (GET-with-a-body is proxy-hostile); GET stays accepted for
 		// existing clients.
 		route = "BatchGet"
-		handleBatchGet(rec, r, s.storage, s.prefetchTracker, s.logAgg, s.config.Prefetch)
+		handleBatchGet(rec, r, s.storage, s.logAgg, s.config.Prefetch)
 	case r.Method == "GET" && key != "":
 		route = "GetObject"
 		handleGetObject(rec, r, s.storage, key, s.logAgg)

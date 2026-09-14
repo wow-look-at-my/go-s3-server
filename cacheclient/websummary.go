@@ -37,6 +37,12 @@ type WebSummary struct {
 	SkippedBatchBackoff uint32 `json:"skipped_batch_backoff"`
 	Reclaimed404        uint32 `json:"reclaimed_404"`
 
+	// What the server's prefetch window carried on the blocking path, and how
+	// much of it the local tier kept. Offered with nothing stored means the
+	// window is being paid for and thrown away.
+	PrefetchOffered uint32 `json:"prefetch_offered"`
+	PrefetchStored  uint32 `json:"prefetch_stored"`
+
 	// PUT non-upload outcomes. put_refused_modindex reads empty normally (handlePut refuses earlier); a count is a local gap.
 	PutSkippedKnown    uint32 `json:"put_skipped_known"`
 	PutRefusedModIndex uint32 `json:"put_refused_modindex"`
@@ -88,6 +94,8 @@ func (b *WebBackend) SummarySnapshot() WebSummary {
 		SkippedNotInIndex:   b.SkippedNotInIndex.Load(),
 		SkippedBatchBackoff: b.SkippedBatchBackoff.Load(),
 		Reclaimed404:        b.Reclaimed404.Load(),
+		PrefetchOffered:     b.PrefetchOffered.Load(),
+		PrefetchStored:      b.PrefetchStored.Load(),
 		PutSkippedKnown:     b.PutSkippedKnown.Load(),
 		PutRefusedModIndex:  b.PutRefusedModIndex.Load(),
 		PutRefusedBuildID:   b.PutRefusedBuildID.Load(),

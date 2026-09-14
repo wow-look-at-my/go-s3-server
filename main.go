@@ -91,6 +91,10 @@ func run(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Before NewStorage, which builds the index: the startup walk must not
+	// build a list this server will not read.
+	SetIndexEntryTracking(cfg.Prefetch)
+
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
 	if err != nil {
 		return fmt.Errorf("init storage: %w", err)
@@ -143,12 +147,22 @@ func run(cmd *cobra.Command, args []string) error {
 	if cfg.IndexBlobInterval != nil {
 		storage.Index.SetBlobInterval(time.Duration(*cfg.IndexBlobInterval))
 	}
+	if !storage.Index.EntryTrackingEnabled() {
+		log.Printf("index: prefetch is off, so the mtime entry list is not maintained (it costs %d bytes per key and only /_batch/get's prefetch window reads it); s3_index_entries therefore reads 0. Set prefetch=true to turn both back on.", indexEntryBytes)
+	}
 	log.Printf("limits: max_concurrent_requests=%d max_object_bytes=%d index_blob_interval=%v", cfg.MaxConcurrentRequests, cfg.MaxObjectBytes, storage.Index.BlobInterval())
 
 	// Memory: the in-memory caches are already sized from this budget; starting
 	// the controller adds the feedback half, shrinking them when memory gets
 	// tight and letting them grow back when it does not. It never touches
 	// request handling -- a cache that stops answering is not a cache.
+	if applied, previous := tuneGC(); applied {
+		log.Printf("memory: GOGC is unset, so the heap growth target is %d%% rather than the %d%% default; the live set here is mostly the key index, and at %d%% the resident heap settles near twice it. Set GOGC to override.",
+			defaultGCPercent, previous, previous)
+	} else {
+		log.Printf("memory: GOGC=%s is set by the operator and left alone", os.Getenv("GOGC"))
+	}
+
 	if memoryBudget > 0 {
 		log.Printf("memory: budget %d MiB (from %s); in-memory caches sized against it and shrunk above %d%% in use",
 			memoryBudget>>20, memoryBudgetSource, int(memShrinkFraction*100))

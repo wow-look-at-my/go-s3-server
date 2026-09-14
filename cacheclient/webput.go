@@ -73,6 +73,9 @@ func (b *WebBackend) enqueuePut(actionID, outputID string, data []byte, path str
 	}
 	b.addKeyLocked(h)
 	b.keysMu.Unlock()
+	// The body came from this machine, so this process has it whatever the
+	// upload goes on to do.
+	b.noteHeld(h)
 
 	j := putJob{actionID: actionID, key: b.key(actionID), hash: h, outputID: outputID, data: data, path: path}
 	if !b.prep.submit(j) {

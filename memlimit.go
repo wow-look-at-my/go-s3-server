@@ -42,12 +42,10 @@ const (
 	// and these only save syscalls and re-probes.
 	metaCacheBudgetFraction = 0.10
 	cleanMemoBudgetFraction = 0.03
-	prefetchBudgetFraction  = 0.02
 	// Defaults when there is no discoverable ceiling: what the previous
 	// entry-count bounds worked out to in bytes.
 	defaultMetaCacheBytes = 32 << 20
 	defaultCleanMemoBytes = 16 << 20
-	defaultPrefetchBytes  = 8 << 20
 
 	// memShrinkFraction: above this share of the budget, shrink the caches.
 	memShrinkFraction = 0.85

@@ -21,6 +21,10 @@ type batchGetRequest struct {
 	// has in order to say WHERE to look, and re-sending those bodies would
 	// throw away the point of the request.
 	PrefetchOnly bool `json:"prefetch_only,omitempty"`
+	// Have states what this client already holds, so the server can leave it
+	// out of the window. See havefilter.go. An absent filter asks for
+	// everything, which is what a client too old to send one gets.
+	Have *haveFilter `json:"have,omitempty"`
 }
 
 // batchGetManifest is the manifest entry in the server's tar response.
@@ -306,12 +310,17 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 	}
 	hit := make([]string, 0, len(reqs))
 	count := 0
+	// A body nobody here asked for goes to the local tier rather than on the
+	// floor. The hand-off waits until every caller in this batch is answered.
+	prefetched := &prefetchSink{b: b}
+	defer prefetched.deliver()
 
 	err = streamBatchResponse(resp.Body, func(e BatchEntry) {
 		count++
 		r, ok := reqByKey[e.Key]
 		if !ok {
-			return // a prefetched body nobody in this batch asked for
+			prefetched.collect(e)
+			return
 		}
 		delete(reqByKey, e.Key)
 		data, ok := b.verify("web batch get", r.actionID, e.OutputID, e.Data, e.RawSize)
@@ -321,6 +330,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 		}
 		b.Stats.Hits.Increment()
 		b.Stats.HitBytes.Add(uint64(len(e.Data)))
+		b.noteHeld(r.hash)
 		hit = append(hit, r.key)
 		r.resp <- batchResp{outputID: e.OutputID, data: data, t: time.Now()}
 	})

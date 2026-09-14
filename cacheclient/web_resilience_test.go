@@ -225,6 +225,7 @@ func TestWebBackend_NoAbsoluteRequestDeadline(t *testing.T) {
 // must complete however long it runs. This one runs well past the window in
 // total while never pausing longer than it.
 func TestWebBackend_SlowButProgressingBodyCompletes(t *testing.T) {
+	t.Serial() // stallTimeout is package state
 	old := stallTimeout
 	stallTimeout = 150 * time.Millisecond
 	defer func() { stallTimeout = old }()
@@ -259,6 +260,7 @@ func TestWebBackend_SlowButProgressingBodyCompletes(t *testing.T) {
 // A body that goes quiet for longer than the window is abandoned, and the error
 // says why rather than surfacing a bare context cancellation.
 func TestWebBackend_StalledBodyIsAbandoned(t *testing.T) {
+	t.Serial() // stallTimeout is package state
 	old := stallTimeout
 	stallTimeout = 150 * time.Millisecond
 	defer func() { stallTimeout = old }()

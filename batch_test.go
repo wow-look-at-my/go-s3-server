@@ -296,21 +296,6 @@ func holdFilter(t *testing.T, bytes int, keys ...string) *haveFilter {
 		for i := 0; i < f.K; i++ {
 			idx := haveFilterBit(h, i, m)
 			f.Bits[idx/8] |= 1 << (idx % 8)
-	// Earliest request: ask for key1 with prefetch. The server should return
-	// key1 plus key2 and key3 as prefetch.
-	req1, _ := json.Marshal(batchGetRequest{Keys: []string{"cache/v1key1"}, Prefetch: true})
-	resp1, err := doBatchGet(client, batchURL, req1)
-	require.NoError(t, err)
-	defer resp1.Body.Close()
-	require.Equal(t, 200, resp1.StatusCode)
-	manifest1, _ := parseBatchResponse(t, resp1.Body)
-	require.GreaterOrEqual(t, len(manifest1.Entries), 2, "first request should include prefetch entries")
-
-	// Collect which keys were prefetched in the earliest response.
-	prefetchedInFirst := map[string]bool{}
-	for _, e := range manifest1.Entries {
-		if e.Prefetch {
-			prefetchedInFirst[e.Key] = true
 		}
 	}
 	return f
@@ -328,17 +313,6 @@ func prefetchedKeys(t *testing.T, ts *httptest.Server, req batchGetRequest) map[
 	manifest, _ := parseBatchResponse(t, resp.Body)
 	got := map[string]bool{}
 	for _, e := range manifest.Entries {
-	// The tracker should suppress keys already sent in the earliest response.
-	req2, _ := json.Marshal(batchGetRequest{Keys: []string{"cache/v1key2"}, Prefetch: true})
-	resp2, err := doBatchGet(client, batchURL, req2)
-	require.NoError(t, err)
-	defer resp2.Body.Close()
-	require.Equal(t, 200, resp2.StatusCode)
-	manifest2, _ := parseBatchResponse(t, resp2.Body)
-
-	// None of the prefetch entries from the earliest response should reappear
-	// as prefetch in the next response.
-	for _, e := range manifest2.Entries {
 		if e.Prefetch {
 			got[e.Key] = true
 		}
@@ -349,8 +323,6 @@ func prefetchedKeys(t *testing.T, ts *httptest.Server, req batchGetRequest) map[
 // A key the request says the client holds is not sent; a request that states
 // nothing is sent the whole window. The server remembers neither.
 func TestBatchGet_PrefetchSkipsWhatTheClientHolds(t *testing.T) {
-// Suppression ends with the build that earned it.
-func TestBatchGet_PrefetchSuppressionIsPerBuild(t *testing.T) {
 	ts := testSetupPrefetch(t, true)
 	client := ts.Client()
 
@@ -382,14 +354,6 @@ func TestBatchGet_PrefetchSuppressionIsPerBuild(t *testing.T) {
 // filtering the result afterwards re-proposed the same nearest pool on every
 // request, and a real deployment showed prefetched=0 for the rest of a build.
 func TestBatchGet_PrefetchAdvancesAsTheClientStatesMore(t *testing.T) {
-	// Within a single build, suppression still holds, or a build receives the
-	// same pool on every look-ahead request for its whole run.
-	assert.Empty(t, prefetchedBy("build-one"), "a repeat request from one build stays suppressed")
-}
-
-// Suppression must not stop prefetch. Selection skips already-sent keys as it
-// walks the window, so a client keeps being handed NEW neighbours.
-func TestBatchGet_PrefetchKeepsAdvancingPastSuppressedKeys(t *testing.T) {
 	ts := testSetupPrefetch(t, true)
 	client := ts.Client()
 

@@ -226,7 +226,6 @@ func TestBatchGetServesFullMetadataAndBodies(t *testing.T) {
 // batchGetDirect issues one /_batch/get against the handler and returns the
 // manifest plus each body.
 func batchGetDirect(t *testing.T, storage *Storage, keys []string) (batchGetManifest, map[string][]byte) {
-func batchGetDirect(t *testing.T, storage *Storage, tracker *prefetchTracker, keys []string) (batchGetManifest, map[string][]byte) {
 	t.Helper()
 	reqBody, err := json.Marshal(batchGetRequest{Keys: keys})
 	require.NoError(t, err)

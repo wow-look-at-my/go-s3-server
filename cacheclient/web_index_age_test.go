@@ -14,7 +14,7 @@ import (
 // the revalidation path predate the max age and count requests. The tests of
 // the max age below pass one explicitly.
 func TestMain(m *testing.M) {
-	defaultIndexMaxAge = func(string) time.Duration { return -1 }
+	defaultIndexMaxAge = -1
 	os.Exit(m.Run())
 }
 

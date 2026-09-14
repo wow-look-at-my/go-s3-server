@@ -11,7 +11,7 @@ import (
 	"github.com/pierrec/lz4/v4"
 )
 
-// A stored body names its own codec in its first four bytes. The server reads
+// A stored body names its own codec in its earliest bytes. The server reads
 // that rather than the client's `compression` metadata, because the bytes
 // cannot disagree with themselves: an object whose metadata was lost, or
 // stamped by a client of another version, is still decoded correctly.
@@ -27,8 +27,7 @@ const (
 // codecPeekBytes is how many leading bytes settle the codec question.
 const codecPeekBytes = 4
 
-// errNoZstdDecoder means the pool could not build one, which only a broken
-// option set causes. It is reported rather than swallowed.
+// It is reported rather than swallowed.
 var errNoZstdDecoder = errors.New("codec: cannot build a zstd decoder")
 
 // frameCodec names the codec a stored body opens with, or "" when the bytes
@@ -46,8 +45,7 @@ func frameCodec(head []byte) string {
 	return ""
 }
 
-// zstdProbeDecoders reuses decoders across probes. Building one costs far more
-// than the sixteen bytes a probe reads, and the read paths probe constantly.
+// zstdProbeDecoders reuses decoders across probes.
 var zstdProbeDecoders = sync.Pool{New: func() any {
 	d, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxWindow(1<<27))
 	if err != nil {
@@ -67,7 +65,7 @@ var zstdProbeDecoders = sync.Pool{New: func() any {
 // body that never decompressed would mint a confident, wrong content address.
 //
 // The peek is non-destructive: whatever it consumed is replayed in front of
-// the rest, so the caller hands over a plain io.Reader and gets one back.
+// the rest, so the caller hands over a plain io.Reader and gets a single back.
 func decompressingReader(r io.Reader) (io.Reader, func(), string, error) {
 	br := bufio.NewReaderSize(r, 4096)
 	head, err := br.Peek(codecPeekBytes)

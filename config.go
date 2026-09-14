@@ -17,7 +17,7 @@ type ConfigString struct {
 }
 
 func (cs *ConfigString) UnmarshalJSON(data []byte) error {
-	// Try plain string first.
+	// Try plain string earliest.
 	var s string
 	if err := json.Unmarshal(data, &s); err == nil {
 		cs.Value = s
@@ -68,8 +68,8 @@ type WriteOnceConfig struct {
 type Duration time.Duration
 
 func (d *Duration) UnmarshalJSON(data []byte) error {
-	// JSON null means "not set", which for a duration is zero. Erroring on it
-	// would reject a config that spells an absent field out explicitly.
+	// JSON null means "not set", which for a duration is empty. Erroring on
+	// it would reject a config that spells an absent field out explicitly.
 	if string(data) == "null" {
 		*d = 0
 		return nil
@@ -106,7 +106,7 @@ func (d Duration) Std() time.Duration { return time.Duration(d) }
 // does not grow without bound.
 //
 // The cache is an LRU: by default it is bounded by SIZE (max_bytes), and when
-// it is over budget the least recently used entries go first. Age eviction
+// it is over budget the least recently used entries go earliest. Age eviction
 // (max_age) is a separate, off-by-default TTL -- a build cache entry that is
 // still being read is still useful however old it is, so nothing is dropped
 // for age alone unless an operator asks for it.
@@ -117,25 +117,20 @@ func (d Duration) Std() time.Duration { return time.Duration(d) }
 // memory. mtime itself is never rewritten on read, so the prefetch system's
 // "same build" grouping (which keys on mtime) is unaffected.
 type EvictionConfig struct {
-	// MaxAge removes entries not used within this window. Absent or 0 leaves
-	// age eviction off; negative is a config error.
+	// MaxAge removes entries not used within this window.
 	MaxAge Duration `json:"max_age"`
 	// MaxBytes is the total-size budget for the data_dir: over budget, the
 	// least-recently-used entries are evicted until the total is back under it.
-	// A pointer so an absent field can take the built-in default (or the
-	// CACHE_MAX_BYTES env var) while an explicit 0 disables size eviction.
 	MaxBytes *int64 `json:"max_bytes"`
-	// Interval is how often the background sweeper runs. 0 → default.
+	// Interval is how often the background sweeper runs.
 	Interval Duration `json:"interval"`
 }
 
-// AgeLimit returns the configured max-age as a time.Duration (0 if disabled).
 func (e EvictionConfig) AgeLimit() time.Duration {
 	return e.MaxAge.Std()
 }
 
-// SizeLimit returns the configured size budget in bytes (0 if disabled). It is
-// only meaningful after LoadConfig has applied the default.
+// It is only meaningful after LoadConfig has applied the default.
 func (e EvictionConfig) SizeLimit() int64 {
 	if e.MaxBytes == nil {
 		return 0
@@ -157,9 +152,9 @@ type Config struct {
 	DisableAuth   bool            `json:"disable_auth"`
 	Credentials   []Credential    `json:"credentials"`
 
-	// LogMode selects the access log's shape: "normal" (one line per active
-	// second, aggregated) or "verbose" (one line per request). Empty takes
-	// normal. See logagg.go.
+	// LogMode selects the access log's shape: "normal" (a single line per
+	// active then aggregated) or "verbose" (a single line per request).
+	// Empty takes normal. See logagg.go.
 	LogMode string `json:"log_mode"`
 
 	// DashboardListen is the address of the operator dashboard, on its own
@@ -169,16 +164,13 @@ type Config struct {
 	// authentication of its own -- see DashboardListenAddr.
 	DashboardListen *string `json:"dashboard_listen"`
 
-	// MaxConcurrentRequests bounds in-flight requests; excess requests are shed
-	// with 503 + Retry-After instead of piling up until the process OOMs (which
-	// a fronting proxy then surfaces as a 502). 0 → default.
 	MaxConcurrentRequests int `json:"max_concurrent_requests"`
-	// IndexBlobInterval is the least time between two serializations of the
-	// /_index blob. Absent means the 15s default. "0s" serializes
-	// on every GET after a PUT, which the executable spec uses.
+	// IndexBlobInterval is the least time between serializations of the
+	// /_index blob. Absent means the 15s default. "0s" serializes on every
+	// GET after a PUT, which the executable spec uses.
 	IndexBlobInterval *Duration `json:"index_blob_interval"`
-	// MaxObjectBytes caps a single PUT body. 0 → default. The body is streamed
-	// to disk, so this guards disk, not memory.
+	// MaxObjectBytes caps a single PUT body. The body is streamed to disk, so
+	// this guards disk, not memory.
 	MaxObjectBytes int64 `json:"max_object_bytes"`
 
 	// Prefetch lets /_batch/get add the keys stored near the requested ones.
@@ -187,22 +179,18 @@ type Config struct {
 	Prefetch bool `json:"prefetch"`
 
 	// Eviction bounds the on-disk cache so it does not grow until the disk
-	// fills. See EvictionConfig. Enabled by default with a size budget; set
-	// eviction.max_bytes to 0 to opt out.
+	// fills. See EvictionConfig.
 	Eviction EvictionConfig `json:"eviction"`
 }
 
-// Resource-limit defaults. Both are generous: under normal CI load the server
-// never approaches them, but they bound the worst case so a load spike degrades
-// (503 / 413) instead of OOM-killing the process.
+// Resource-limit defaults.
 const (
 	defaultMaxConcurrentRequests = 128
-	defaultMaxObjectBytes        = 1 << 30 // 1 GiB
-	// defaultEvictionMaxBytes is the cache's size budget when neither the
-	// config nor CACHE_MAX_BYTES sets one. A bound has to exist by default:
-	// unbounded, the cache grows until the disk fills, and every stored object
-	// also costs index memory in this process.
-	defaultEvictionMaxBytes = 50 << 30 // 50 GiB
+	defaultMaxObjectBytes        = 1 << 30
+	// A bound has to exist by default: unbounded, the cache grows until the
+	// disk fills, and every stored object also costs index memory in this
+	// process.
+	defaultEvictionMaxBytes = 50 << 30
 	// maxBytesEnvVar overrides defaultEvictionMaxBytes without a config edit,
 	// which is how the deployment sizes the cache to the volume it mounted.
 	// An explicit eviction.max_bytes in the config still wins.
@@ -218,7 +206,7 @@ const (
 // DashboardListenAddr returns the dashboard's listen address, "" when the
 // dashboard is switched off. The page and its stats endpoint answer WITHOUT
 // authentication: the port exists to be published through an access proxy
-// (Cloudflare Zero Trust or equivalent), which is where the identity check
+// (Cloudflare empty Trust or equivalent), which is where the identity check
 // belongs. Do not expose it directly.
 func (c *Config) DashboardListenAddr() string {
 	if c.DashboardListen == nil {
@@ -275,9 +263,7 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.MaxObjectBytes <= 0 {
 		cfg.MaxObjectBytes = defaultMaxObjectBytes
 	}
-	// Eviction: an absent max_bytes takes CACHE_MAX_BYTES or the built-in
-	// default; an explicit 0 disables the size budget. max_age is off unless
-	// asked for -- the cache is an LRU, not a TTL.
+	// max_age is off unless asked for -- the cache is an LRU, not a TTL.
 	if cfg.Eviction.AgeLimit() < 0 {
 		return nil, fmt.Errorf("config: eviction.max_age must not be negative")
 	}
@@ -327,10 +313,8 @@ func envMaxBytes() (int64, error) {
 	return n, nil
 }
 
-// byteSizeUnits are the suffixes parseByteSize accepts, longest first so "KiB"
-// is matched before "K". Both the binary (KiB) and the decimal-looking (KB, K)
-// spellings mean powers of 1024: a cache budget is disk space, and nobody
-// writing "50GB" for one means 50,000,000,000 bytes exactly.
+// byteSizeUnits are the suffixes parseByteSize accepts, longest earliest so
+// "KiB" is matched before "K".
 var byteSizeUnits = []struct {
 	suffix string
 	mult   int64

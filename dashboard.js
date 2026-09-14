@@ -1,6 +1,6 @@
-// The dashboard polls one JSON snapshot and redraws. It keeps no state on the
-// server: a rate is the difference between two samples this page took, so a
-// reload starts the rate over and nothing else.
+// The dashboard polls a single JSON snapshot and redraws. It keeps no state
+// on the server: a rate is the difference between samples this page took, so
+// a reload starts the rate over and nothing else.
 
 // Registers <perf-graph>. The library site serves it with CORS for any origin.
 import "https://sites.pazer.build/js-snippets/branch/library/ui/perf-graph.js";
@@ -17,9 +17,8 @@ const $ = (id) => document.getElementById(id);
 
 // --- reading the snapshot ---------------------------------------------------
 
-// value returns an unlabeled metric, or 0 when the server has never touched it.
 // A counter that has not fired yet is absent from the registry, and "absent"
-// and "zero" mean the same thing on this page.
+// and "empty" mean the same thing on this page.
 function value(stats, name) {
 	const m = stats.metrics[name];
 	if (!m) return 0;
@@ -81,8 +80,8 @@ function tile(label, value, sub, tone) {
 	return el;
 }
 
-// One bar: a label row over a <scratch-progress>. The component owns the
-// geometry and the fill colour, so tone is one of its own states rather than a
+// A single bar: a label row over a <scratch-progress>. The component owns the
+// geometry and the fill colour, so tone is any of its own states rather than a
 // class this page styles.
 function bar(name, n, max, tone, right) {
 	const el = document.createElement("div");
@@ -126,9 +125,8 @@ function rows(table, entries) {
 
 // --- panels -----------------------------------------------------------------
 
-// The server measures cache size during an eviction sweep, so before the first
-// sweep the gauge is 0. A server holding keys must not report "0 B": say the
-// number is not measured yet instead of drawing a confident zero.
+// A server holding keys must not report "0 B": say the number is not measured
+// yet instead of drawing a confident empty.
 function cacheSizeTile(cacheBytes, budget, indexed) {
 	if (cacheBytes === 0 && indexed > 0) {
 		return tile("cache size", "not measured", "measured at the first eviction sweep");
@@ -137,7 +135,7 @@ function cacheSizeTile(cacheBytes, budget, indexed) {
 	return tile("cache size", bytes(cacheBytes), sub, budget && cacheBytes > budget * 0.9 ? "warn" : "");
 }
 
-// The header state: an LED plus its word. The LED carries the three states the
+// The header state: an LED plus its word. The LED carries each states the
 // design language defines, so serving is good, draining is accent, and a poll
 // that failed is bad.
 function setState(text, led) {
@@ -221,17 +219,17 @@ function drawTraffic(stats) {
 	drawRate(stats);
 }
 
-// push feeds one sample to a <perf-graph>. The element is defined by a module
-// fetched at run time, so an early poll can land before it upgrades; a plain
-// element has no push and the sample is dropped rather than throwing.
+// push feeds a single sample to a <perf-graph>. The element is defined by a
+// module fetched at run time, so an early poll can land before it upgrades; a
+// plain element has no push and the sample is dropped rather than throwing.
 function push(id, v) {
 	const el = $(id);
 	if (el && typeof el.push === "function") el.push(v);
 }
 
-// The graphs are gauges over time, so each one takes the value as it stands.
-// The rate is the exception: the server reports a counter, and a rate is the
-// difference between two samples this page took.
+// The graphs are gauges over time, so each a single takes the value as it
+// stands. The rate is the exception: the server reports a counter, and a
+// rate is the difference between samples this page took.
 function drawRate(stats) {
 	const total = sum(series(stats, "cache_http_requests_total"));
 	const prev = state.previous;
@@ -257,9 +255,9 @@ function drawRate(stats) {
 	$("rate-label").textContent = `${now.toFixed(1)} req/s now, peak ${state.peak.toFixed(1)} since this page loaded`;
 }
 
-// The two gauges beside the rate. Both read straight off the snapshot, so
-// neither needs a previous sample and both start drawing on the first poll.
-// The batch series is the same one hitRateTile reads, for the same reason.
+// Both gauges beside the rate. Both read straight off the snapshot, so
+// neither needs a previous sample and both start drawing on the earliest
+// poll. The batch series is the same a single hitRateTile reads, for the same reason.
 function drawGauges(stats) {
 	const kinds = series(stats, "s3_batch_keys_total");
 	const requested = kinds.requested || 0;
@@ -267,9 +265,9 @@ function drawGauges(stats) {
 	$("inflight-chart").push(value(stats, "cache_http_in_flight_requests"));
 }
 
-// Every entry here is a number that should be zero, or should be falling. The
-// alert flag turns the value red so a rising one is visible without reading
-// the labels.
+// Every entry here is a number that should be empty, or should be falling.
+// The alert flag turns the value red so a rising a single is visible without
+// reading the labels.
 function drawTripwires(stats) {
 	const outcomes = series(stats, "s3_get_requests_total");
 	const unservable = outcomes.miss_advertised_unservable || 0;
@@ -363,9 +361,9 @@ async function poll() {
 }
 
 // The toggle is a custom element whose module is deferred, and this script is
-// a classic one at the end of the body, so it runs first. Until the element
-// upgrades it carries the attribute and no property, and reading the property
-// alone reports "off" and stops the page polling at all.
+// a classic a single at the end of the body, so it runs earliest. Until the
+// element upgrades it carries the attribute and no property, and reading the
+// property alone reports "off" and stops the page polling at all.
 function live() {
 	const el = $("autorefresh");
 	return typeof el.checked === "boolean" ? el.checked : el.hasAttribute("checked");
@@ -381,13 +379,13 @@ $("autorefresh").addEventListener("change", () => {
 	if (live()) poll();
 });
 
-// `checked` is a property scratch-toggle only has once it is upgraded. Read it
-// before that and the answer is undefined, which reads as "live is off": the
-// page then draws one snapshot and never polls again. Waiting makes the poll
-// loop independent of which script the browser ran first.
+// `checked` is a property scratch-toggle only has a single time it is
+// upgraded. Read it before that and the answer is undefined, which reads as
+// "live is off": the page then draws a single snapshot and never polls again.
+// Waiting makes the poll loop independent of which script the browser ran earliest.
 poll();
 await customElements.whenDefined("scratch-toggle");
 schedule();
-// Once the element upgrades its property is authoritative; re-read it in case
-// it disagrees with the attribute this started on.
+// A single time the element upgrades its property is authoritative; re-read
+// it in case it disagrees with the attribute this started on.
 customElements.whenDefined("scratch-toggle").then(schedule);

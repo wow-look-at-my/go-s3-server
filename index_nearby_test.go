@@ -7,8 +7,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// nearbyIndex builds an index whose entries sit at known mtimes: key i is at
-// second i, so distance from a midpoint is exactly predictable.
 func nearbyIndex(n int) *Index {
 	idx := &Index{}
 	for i := range n {
@@ -28,12 +26,11 @@ func nearbyKeyNum(t *testing.T, key string) int {
 	return int(h[0]) | int(h[1])<<8 | int(h[2])<<16
 }
 
-// The window's nearest entries come back first, taken from both sides of the
+// The window's nearest entries come back taken from both sides of the
 // midpoint. This is the ordering prefetch depends on: the objects written
 // closest in time to the ones the build just asked for.
 func TestNearbyKeysReturnsNearestFirst(t *testing.T) {
 	idx := nearbyIndex(100)
-	// Window 20..40, midpoint 30.
 	got := idx.NearbyKeys(20, 40, 5, nil, nil)
 	require.Len(t, got, 5)
 
@@ -106,8 +103,6 @@ func TestNearbyKeysWalksPastSkippedKeys(t *testing.T) {
 	require.Equal(t, 6, examined, "the three held keys plus the three offered")
 }
 
-// A window that is almost entirely skipped ends at the scan budget rather
-// than walking a million entries for one request.
 func TestNearbyKeysStopsAtTheScanBudget(t *testing.T) {
 	idx := nearbyIndex(10000)
 	var examined int
@@ -119,9 +114,7 @@ func TestNearbyKeysStopsAtTheScanBudget(t *testing.T) {
 	require.Equal(t, 10*nearbyScanFactor, examined, "the walk stops at limit*nearbyScanFactor")
 }
 
-// The selection must not allocate per candidate examined. Collecting the
-// whole window and sorting it cost ~9 MB and 633 allocations per request at
-// 100k keys, on a path that runs on every prefetching batch GET.
+// The selection must not allocate per candidate examined.
 func TestNearbyKeysAllocatesOnlyItsResult(t *testing.T) {
 	const (
 		keys  = 50_000
@@ -133,7 +126,7 @@ func TestNearbyKeysAllocatesOnlyItsResult(t *testing.T) {
 		got = idx.NearbyKeys(0, int64(keys), limit, nil, nil)
 	})
 	require.Len(t, got, limit)
-	// One slice for the result plus one string per key returned.
+	// A single slice for the result plus a single string per key returned.
 	require.LessOrEqual(t, allocs, float64(limit+2),
 		"selection must allocate its result and nothing per candidate examined")
 }

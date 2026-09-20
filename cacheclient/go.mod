@@ -14,4 +14,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-require github.com/wow-look-at-my/go-containers v0.0.0-20260913115023-d3bbbdd0286d // go-toolchain:auto-branch
+require github.com/wow-look-at-my/go-containers v0.0.0 // go-toolchain:auto-branch

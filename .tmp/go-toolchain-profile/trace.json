@@ -1,0 +1,4691 @@
+[
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 20,
+    "args": {
+      "name": "go actions #15"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 21,
+    "args": {
+      "name": "go actions #16"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 31,
+    "args": {
+      "name": "go actions #26"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 34,
+    "args": {
+      "name": "go actions #29"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "name": "go actions #01"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 8,
+    "args": {
+      "name": "go actions #03"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 14,
+    "args": {
+      "name": "go actions #09"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 16,
+    "args": {
+      "name": "go actions #11"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 27,
+    "args": {
+      "name": "go actions #22"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 32,
+    "args": {
+      "name": "go actions #27"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 26,
+    "args": {
+      "name": "go actions #21"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 2,
+    "args": {
+      "name": "main"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 4,
+    "args": {
+      "name": "test"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 9,
+    "args": {
+      "name": "go actions #04"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 18,
+    "args": {
+      "name": "go actions #13"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 23,
+    "args": {
+      "name": "go actions #18"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 25,
+    "args": {
+      "name": "go actions #20"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 30,
+    "args": {
+      "name": "go actions #25"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 1,
+    "args": {
+      "name": "deps"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 17,
+    "args": {
+      "name": "go actions #12"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 33,
+    "args": {
+      "name": "go actions #28"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "name": "test/go-s3-server"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 19,
+    "args": {
+      "name": "go actions #14"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 22,
+    "args": {
+      "name": "go actions #17"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 28,
+    "args": {
+      "name": "go actions #23"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 29,
+    "args": {
+      "name": "go actions #24"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 3,
+    "args": {
+      "name": "comment-scan"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "name": "go actions #02"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 11,
+    "args": {
+      "name": "go actions #06"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 24,
+    "args": {
+      "name": "go actions #19"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 35,
+    "args": {
+      "name": "go actions #30"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 12,
+    "args": {
+      "name": "go actions #07"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 36,
+    "args": {
+      "name": "go actions #31"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "name": "go actions #05"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 13,
+    "args": {
+      "name": "go actions #08"
+    }
+  },
+  {
+    "name": "thread_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 15,
+    "args": {
+      "name": "go actions #10"
+    }
+  },
+  {
+    "name": "process_name",
+    "ph": "M",
+    "ts": 0,
+    "pid": 1,
+    "tid": 0,
+    "args": {
+      "name": "go-toolchain"
+    }
+  },
+  {
+    "name": "Dependency check",
+    "cat": "pipeline",
+    "ph": "X",
+    "ts": 1789940960442946,
+    "dur": 229,
+    "pid": 1,
+    "tid": 1
+  },
+  {
+    "name": "go mod tidy",
+    "cat": "pipeline",
+    "ph": "X",
+    "ts": 1789940960639988,
+    "dur": 1719739,
+    "pid": 1,
+    "tid": 2
+  },
+  {
+    "name": "comment scan",
+    "cat": "pipeline",
+    "ph": "X",
+    "ts": 1789940963816370,
+    "dur": 741064,
+    "pid": 1,
+    "tid": 3
+  },
+  {
+    "name": "vet: gofmt",
+    "cat": "pipeline",
+    "ph": "X",
+    "ts": 1789940964557469,
+    "dur": 63914,
+    "pid": 1,
+    "tid": 2
+  },
+  {
+    "name": "vet: fix imports",
+    "cat": "pipeline",
+    "ph": "X",
+    "ts": 1789940964621398,
+    "dur": 68081,
+    "pid": 1,
+    "tid": 2
+  },
+  {
+    "name": "vet: type-check (default)",
+    "cat": "pipeline",
+    "ph": "X",
+    "ts": 1789940964689496,
+    "dur": 2229093,
+    "pid": 1,
+    "tid": 2
+  },
+  {
+    "name": "vet: run analyzers",
+    "cat": "pipeline",
+    "ph": "X",
+    "ts": 1789940966918602,
+    "dur": 8893,
+    "pid": 1,
+    "tid": 2
+  },
+  {
+    "name": "go vet ./...",
+    "cat": "pipeline",
+    "ph": "X",
+    "ts": 1789940964557448,
+    "dur": 2370054,
+    "pid": 1,
+    "tid": 2
+  },
+  {
+    "name": "File length check",
+    "cat": "pipeline",
+    "ph": "X",
+    "ts": 1789940966927511,
+    "dur": 3725,
+    "pid": 1,
+    "tid": 2
+  },
+  {
+    "name": "go-s3-server.TestAdmission_BodyTransferHoldsNoSlot",
+    "cat": "pipeline",
+    "ph": "X",
+    "ts": 1789940969860374,
+    "dur": 560000,
+    "pid": 1,
+    "tid": 4,
+    "args": {
+      "status": "failed"
+    }
+  },
+  {
+    "name": "go-s3-server.TestIndexPerKeyFootprint",
+    "cat": "pipeline",
+    "ph": "X",
+    "ts": 1789940971205405,
+    "dur": 110000,
+    "pid": 1,
+    "tid": 4
+  },
+  {
+    "name": "go-s3-server.TestIndexBurstPuts",
+    "cat": "pipeline",
+    "ph": "X",
+    "ts": 1789940971426316,
+    "dur": 140000,
+    "pid": 1,
+    "tid": 4,
+    "args": {
+      "status": "failed"
+    }
+  },
+  {
+    "name": "go-s3-server.TestStallGuard_SlowButSteadyResponseCompletes",
+    "cat": "pipeline",
+    "ph": "X",
+    "ts": 1789940972157453,
+    "dur": 310000,
+    "pid": 1,
+    "tid": 4
+  },
+  {
+    "name": "go-s3-server.TestStallGuard_BlockedWriteIsCutOff",
+    "cat": "pipeline",
+    "ph": "X",
+    "ts": 1789940972470230,
+    "dur": 400000,
+    "pid": 1,
+    "tid": 4
+  },
+  {
+    "name": "go-s3-server.TestStallGuard_LongServeContentCompletes",
+    "cat": "pipeline",
+    "ph": "X",
+    "ts": 1789940972869649,
+    "dur": 1200000,
+    "pid": 1,
+    "tid": 4
+  },
+  {
+    "name": "go-s3-server.TestStallGuard_LongFileCopyCompletes",
+    "cat": "pipeline",
+    "ph": "X",
+    "ts": 1789940974071099,
+    "dur": 1210000,
+    "pid": 1,
+    "tid": 4
+  },
+  {
+    "name": "go-s3-server.TestStallGuard_SlowUploadCounts",
+    "cat": "pipeline",
+    "ph": "X",
+    "ts": 1789940975282781,
+    "dur": 310000,
+    "pid": 1,
+    "tid": 4
+  },
+  {
+    "name": "Running tests with coverage",
+    "cat": "pipeline",
+    "ph": "X",
+    "ts": 1789940966931241,
+    "dur": 94518038,
+    "pid": 1,
+    "tid": 2,
+    "args": {
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestAdmission_BodyTransferHoldsNoSlot",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940969860369,
+    "dur": 560000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestAdmission_WorkStillHoldsTheSlot",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940970421239,
+    "dur": 70000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "pass"
+    }
+  },
+  {
+    "name": "TestPutObject_RefusedIndexNotAdvertised",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940970491239,
+    "dur": 58257,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "pass"
+    }
+  },
+  {
+    "name": "TestGetOutcome_AdvertisedUnservable",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940970549496,
+    "dur": 57149,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestBatchGet_SelfHealRepairsMissingOutputID",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940970621282,
+    "dur": 60000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestBatchGet_SingleOpenPerServedKey",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940970691528,
+    "dur": 60000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestCacheClientColdGetIsServedOverTheWire",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940970769199,
+    "dur": 60000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestCleanMemo_SkipsReprobeUntilInvalidated",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940970829199,
+    "dur": 56899,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestPutStreamLargeBodyFsyncPath",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940970895096,
+    "dur": 10000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestRefreshCacheBytes",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940970914458,
+    "dur": 60000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestWriteOnceNotificationNever",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940970982681,
+    "dur": 20000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestMetadataRoundTrip",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940971009748,
+    "dur": 20000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestLegacyAmzMetaCompat",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940971029748,
+    "dur": 59412,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestSelfHealRepairsOutputIDInPlace",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940971089160,
+    "dur": 59724,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestSelfHealLeavesUnrepairableObjectInPlace",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940971148884,
+    "dur": 56527,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestIndexPerKeyFootprint",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940971205411,
+    "dur": 109994,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "pass"
+    }
+  },
+  {
+    "name": "TestIndexWithoutEntriesCostsLess",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940971317010,
+    "dur": 90000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "pass"
+    }
+  },
+  {
+    "name": "TestNearbyKeysAllocatesOnlyItsResult",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940971409411,
+    "dur": 10000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "pass"
+    }
+  },
+  {
+    "name": "TestIndexBurstPuts",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940971426316,
+    "dur": 140000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestIndexMethodNotAllowed",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940971569593,
+    "dur": 20000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestLoad_OverloadShedsWith503",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940971599825,
+    "dur": 60000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "pass"
+    }
+  },
+  {
+    "name": "TestMemSampler_ReadsRuntimeMemory",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940971679587,
+    "dur": 20000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "pass"
+    }
+  },
+  {
+    "name": "TestPutRefusalCounted",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940971708158,
+    "dur": 60000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "pass"
+    }
+  },
+  {
+    "name": "TestBatchCountersRecorded",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940971773125,
+    "dur": 50000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestIndexGauges",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940971825692,
+    "dur": 50000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "pass"
+    }
+  },
+  {
+    "name": "TestMetadataOverflowDropsOptionalKey",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940971880841,
+    "dur": 50000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestGetObject_EvictsModuleIndexOnRead",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940971932945,
+    "dur": 50000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestGetObject_NonCacheprogKeyNotInspected",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940971987523,
+    "dur": 50000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestBatchGet_EvictsModuleIndex",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940972040103,
+    "dur": 50000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestSelfHealCountsOutputIDMismatch",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940972097278,
+    "dur": 60000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "failed"
+    }
+  },
+  {
+    "name": "TestStallGuard_SlowButSteadyResponseCompletes",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940972157453,
+    "dur": 310000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "pass"
+    }
+  },
+  {
+    "name": "TestStallGuard_BlockedWriteIsCutOff",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940972470230,
+    "dur": 400000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "pass"
+    }
+  },
+  {
+    "name": "TestStallGuard_LongServeContentCompletes",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940972870230,
+    "dur": 1199419,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "pass"
+    }
+  },
+  {
+    "name": "TestStallGuard_LongFileCopyCompletes",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940974071098,
+    "dur": 1210000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "pass"
+    }
+  },
+  {
+    "name": "TestStallGuard_SlowUploadCounts",
+    "cat": "test",
+    "ph": "X",
+    "ts": 1789940975282781,
+    "dur": 310000,
+    "pid": 1,
+    "tid": 5,
+    "args": {
+      "package": "github.com/wow-look-at-my/go-s3-server",
+      "status": "pass"
+    }
+  },
+  {
+    "name": "lz4errors (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826483,
+    "dur": 56168,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/pierrec/lz4/v4/internal/lz4errors"
+    }
+  },
+  {
+    "name": "strconv (embedded std)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826503,
+    "dur": 1,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "embedded std",
+      "package": "internal/strconv"
+    }
+  },
+  {
+    "name": "sync (embedded std)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826514,
+    "dur": 3,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "embedded std",
+      "package": "internal/sync"
+    }
+  },
+  {
+    "name": "utf16 (embedded std)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826523,
+    "dur": 1,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "embedded std",
+      "package": "unicode/utf16"
+    }
+  },
+  {
+    "name": "godebug (embedded std)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826548,
+    "dur": 1,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "embedded std",
+      "package": "internal/godebug"
+    }
+  },
+  {
+    "name": "fips140 (embedded std)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826555,
+    "dur": 1,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "embedded std",
+      "package": "crypto/internal/fips140"
+    }
+  },
+  {
+    "name": "flate (embedded std)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826587,
+    "dur": 1,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "embedded std",
+      "package": "compress/flate"
+    }
+  },
+  {
+    "name": "xxh32 (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826590,
+    "dur": 58039,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/pierrec/lz4/v4/internal/xxh32"
+    }
+  },
+  {
+    "name": "quantile (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826594,
+    "dur": 56255,
+    "pid": 1,
+    "tid": 8,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/beorn7/perks/quantile"
+    }
+  },
+  {
+    "name": "v2 (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826602,
+    "dur": 116577,
+    "pid": 1,
+    "tid": 9,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/cespare/xxhash/v2"
+    }
+  },
+  {
+    "name": "pragma (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826607,
+    "dur": 60852,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/pragma"
+    }
+  },
+  {
+    "name": "flags (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826609,
+    "dur": 56313,
+    "pid": 1,
+    "tid": 11,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/flags"
+    }
+  },
+  {
+    "name": "set (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826612,
+    "dur": 60221,
+    "pid": 1,
+    "tid": 12,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/set"
+    }
+  },
+  {
+    "name": "version (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826613,
+    "dur": 56342,
+    "pid": 1,
+    "tid": 13,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/version"
+    }
+  },
+  {
+    "name": "v2 (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826618,
+    "dur": 59825,
+    "pid": 1,
+    "tid": 14,
+    "args": {
+      "mode": "build check cache",
+      "package": "go.yaml.in/yaml/v2"
+    }
+  },
+  {
+    "name": "goautoneg (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826621,
+    "dur": 59328,
+    "pid": 1,
+    "tid": 15,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/munnerz/goautoneg"
+    }
+  },
+  {
+    "name": "fs (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826637,
+    "dur": 57260,
+    "pid": 1,
+    "tid": 16,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/prometheus/procfs/internal/fs"
+    }
+  },
+  {
+    "name": "util (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826637,
+    "dur": 59594,
+    "pid": 1,
+    "tid": 17,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/prometheus/procfs/internal/util"
+    }
+  },
+  {
+    "name": "unix (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826637,
+    "dur": 119093,
+    "pid": 1,
+    "tid": 18,
+    "args": {
+      "mode": "build check cache",
+      "package": "golang.org/x/sys/unix"
+    }
+  },
+  {
+    "name": "internal (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826643,
+    "dur": 57890,
+    "pid": 1,
+    "tid": 19,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/prometheus/client_golang/prometheus/promhttp/internal"
+    }
+  },
+  {
+    "name": "detrand (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826654,
+    "dur": 59433,
+    "pid": 1,
+    "tid": 20,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/detrand"
+    }
+  },
+  {
+    "name": "diff (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826663,
+    "dur": 58172,
+    "pid": 1,
+    "tid": 21,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/kylelemons/godebug/diff"
+    }
+  },
+  {
+    "name": "user (embedded std)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826670,
+    "dur": 1,
+    "pid": 1,
+    "tid": 22,
+    "args": {
+      "mode": "embedded std",
+      "package": "os/user"
+    }
+  },
+  {
+    "name": "spew (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826672,
+    "dur": 59597,
+    "pid": 1,
+    "tid": 22,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/davecgh/go-spew/spew"
+    }
+  },
+  {
+    "name": "difflib (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826684,
+    "dur": 58328,
+    "pid": 1,
+    "tid": 23,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/pmezard/go-difflib/difflib"
+    }
+  },
+  {
+    "name": "yaml.v3 (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826693,
+    "dur": 60402,
+    "pid": 1,
+    "tid": 24,
+    "args": {
+      "mode": "build check cache",
+      "package": "gopkg.in/yaml.v3"
+    }
+  },
+  {
+    "name": "set (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826704,
+    "dur": 60500,
+    "pid": 1,
+    "tid": 25,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/wow-look-at-my/go-containers/set"
+    }
+  },
+  {
+    "name": "hpke (embedded std)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826706,
+    "dur": 1,
+    "pid": 1,
+    "tid": 26,
+    "args": {
+      "mode": "embedded std",
+      "package": "crypto/hpke"
+    }
+  },
+  {
+    "name": "tls13 (embedded std)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826707,
+    "dur": 1,
+    "pid": 1,
+    "tid": 26,
+    "args": {
+      "mode": "embedded std",
+      "package": "crypto/internal/fips140/tls13"
+    }
+  },
+  {
+    "name": "compress (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826710,
+    "dur": 59694,
+    "pid": 1,
+    "tid": 26,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/klauspost/compress"
+    }
+  },
+  {
+    "name": "netip (embedded std)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826718,
+    "dur": 1,
+    "pid": 1,
+    "tid": 27,
+    "args": {
+      "mode": "embedded std",
+      "package": "net/netip"
+    }
+  },
+  {
+    "name": "quotedprintable (embedded std)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826726,
+    "dur": 1,
+    "pid": 1,
+    "tid": 27,
+    "args": {
+      "mode": "embedded std",
+      "package": "mime/quotedprintable"
+    }
+  },
+  {
+    "name": "testcert (embedded std)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826781,
+    "dur": 1,
+    "pid": 1,
+    "tid": 27,
+    "args": {
+      "mode": "embedded std",
+      "package": "net/http/internal/testcert"
+    }
+  },
+  {
+    "name": "godebugs (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826793,
+    "dur": 1,
+    "pid": 1,
+    "tid": 27,
+    "args": {
+      "mode": "vet",
+      "package": "internal/godebugs"
+    }
+  },
+  {
+    "name": "editiondefaults (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826798,
+    "dur": 59937,
+    "pid": 1,
+    "tid": 27,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/editiondefaults"
+    }
+  },
+  {
+    "name": "cmp (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826816,
+    "dur": 3,
+    "pid": 1,
+    "tid": 28,
+    "args": {
+      "mode": "vet",
+      "package": "cmp"
+    }
+  },
+  {
+    "name": "header (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826820,
+    "dur": 59855,
+    "pid": 1,
+    "tid": 28,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/prometheus/client_golang/internal/github.com/golang/gddo/httputil/header"
+    }
+  },
+  {
+    "name": "bisect (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826832,
+    "dur": 1,
+    "pid": 1,
+    "tid": 29,
+    "args": {
+      "mode": "vet",
+      "package": "internal/bisect"
+    }
+  },
+  {
+    "name": "sysrand (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968826859,
+    "dur": 1,
+    "pid": 1,
+    "tid": 29,
+    "args": {
+      "mode": "vet",
+      "package": "crypto/internal/sysrand"
+    }
+  },
+  {
+    "name": "sig (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827113,
+    "dur": 5,
+    "pid": 1,
+    "tid": 29,
+    "args": {
+      "mode": "vet",
+      "package": "crypto/internal/boring/sig"
+    }
+  },
+  {
+    "name": "v2 (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827208,
+    "dur": 7,
+    "pid": 1,
+    "tid": 29,
+    "args": {
+      "mode": "vet",
+      "package": "math/rand/v2"
+    }
+  },
+  {
+    "name": "rand (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827264,
+    "dur": 6,
+    "pid": 1,
+    "tid": 29,
+    "args": {
+      "mode": "vet",
+      "package": "math/rand"
+    }
+  },
+  {
+    "name": "big (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827270,
+    "dur": 1,
+    "pid": 1,
+    "tid": 29,
+    "args": {
+      "mode": "vet",
+      "package": "math/big"
+    }
+  },
+  {
+    "name": "jsonflags (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827306,
+    "dur": 1,
+    "pid": 1,
+    "tid": 29,
+    "args": {
+      "mode": "vet",
+      "package": "encoding/json/internal/jsonflags"
+    }
+  },
+  {
+    "name": "flate (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827311,
+    "dur": 1,
+    "pid": 1,
+    "tid": 29,
+    "args": {
+      "mode": "vet",
+      "package": "compress/flate"
+    }
+  },
+  {
+    "name": "sha3 (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827336,
+    "dur": 1,
+    "pid": 1,
+    "tid": 29,
+    "args": {
+      "mode": "vet",
+      "package": "crypto/sha3"
+    }
+  },
+  {
+    "name": "edwards25519 (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827340,
+    "dur": 1,
+    "pid": 1,
+    "tid": 29,
+    "args": {
+      "mode": "vet",
+      "package": "crypto/internal/fips140/edwards25519"
+    }
+  },
+  {
+    "name": "fse (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827355,
+    "dur": 59773,
+    "pid": 1,
+    "tid": 29,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/klauspost/compress/fse"
+    }
+  },
+  {
+    "name": "le (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827429,
+    "dur": 59706,
+    "pid": 1,
+    "tid": 30,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/klauspost/compress/internal/le"
+    }
+  },
+  {
+    "name": "snapref (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827441,
+    "dur": 60171,
+    "pid": 1,
+    "tid": 31,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/klauspost/compress/internal/snapref"
+    }
+  },
+  {
+    "name": "xxhash (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827506,
+    "dur": 116322,
+    "pid": 1,
+    "tid": 32,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/klauspost/compress/zstd/internal/xxhash"
+    }
+  },
+  {
+    "name": "go-mmap (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827518,
+    "dur": 60009,
+    "pid": 1,
+    "tid": 33,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/wow-look-at-my/go-mmap"
+    }
+  },
+  {
+    "name": "cachedisk (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827543,
+    "dur": 63699,
+    "pid": 1,
+    "tid": 34,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/wow-look-at-my/go-s3-server/cacheclient/cachedisk"
+    }
+  },
+  {
+    "name": "pflag (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827792,
+    "dur": 61849,
+    "pid": 1,
+    "tid": 35,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/spf13/pflag"
+    }
+  },
+  {
+    "name": "httpguts (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827840,
+    "dur": 1,
+    "pid": 1,
+    "tid": 36,
+    "args": {
+      "mode": "vet",
+      "package": "vendor/golang.org/x/net/http/httpguts"
+    }
+  },
+  {
+    "name": "httpsfv (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827841,
+    "dur": 1,
+    "pid": 1,
+    "tid": 36,
+    "args": {
+      "mode": "vet",
+      "package": "net/http/internal/httpsfv"
+    }
+  },
+  {
+    "name": "embed (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827846,
+    "dur": 1,
+    "pid": 1,
+    "tid": 36,
+    "args": {
+      "mode": "vet",
+      "package": "embed"
+    }
+  },
+  {
+    "name": "flag (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827849,
+    "dur": 1,
+    "pid": 1,
+    "tid": 36,
+    "args": {
+      "mode": "vet",
+      "package": "flag"
+    }
+  },
+  {
+    "name": "parse (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968827853,
+    "dur": 1,
+    "pid": 1,
+    "tid": 36,
+    "args": {
+      "mode": "vet",
+      "package": "text/template/parse"
+    }
+  },
+  {
+    "name": "lz4errors",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968882680,
+    "dur": 55,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "action_id": "HNRqfwAL2nIaXJ85_lRB",
+      "mode": "build",
+      "package": "github.com/pierrec/lz4/v4/internal/lz4errors"
+    }
+  },
+  {
+    "name": "lz4errors (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968882775,
+    "dur": 55537,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/pierrec/lz4/v4/internal/lz4errors"
+    }
+  },
+  {
+    "name": "lz4block (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968882856,
+    "dur": 60521,
+    "pid": 1,
+    "tid": 8,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/pierrec/lz4/v4/internal/lz4block"
+    }
+  },
+  {
+    "name": "quantile",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968882873,
+    "dur": 20,
+    "pid": 1,
+    "tid": 36,
+    "args": {
+      "action_id": "seBu-6GtH7nnirhqCVQo",
+      "mode": "build",
+      "package": "github.com/beorn7/perks/quantile"
+    }
+  },
+  {
+    "name": "quantile (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968882918,
+    "dur": 55339,
+    "pid": 1,
+    "tid": 36,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/beorn7/perks/quantile"
+    }
+  },
+  {
+    "name": "flags",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968882935,
+    "dur": 20,
+    "pid": 1,
+    "tid": 11,
+    "args": {
+      "action_id": "FFN3z6eYMkbqP6hbBU2r",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/flags"
+    }
+  },
+  {
+    "name": "flags (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968882982,
+    "dur": 55445,
+    "pid": 1,
+    "tid": 11,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/flags"
+    }
+  },
+  {
+    "name": "version",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968882989,
+    "dur": 26,
+    "pid": 1,
+    "tid": 13,
+    "args": {
+      "action_id": "XyDwOxi6hlKtuFzlR_YH",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/version"
+    }
+  },
+  {
+    "name": "version (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968883029,
+    "dur": 55491,
+    "pid": 1,
+    "tid": 13,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/version"
+    }
+  },
+  {
+    "name": "xxh32",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968885553,
+    "dur": 763,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "8iEvfld_g5twPcINaxaV",
+      "mode": "build",
+      "package": "github.com/pierrec/lz4/v4/internal/xxh32"
+    }
+  },
+  {
+    "name": "fs",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968885657,
+    "dur": 200,
+    "pid": 1,
+    "tid": 16,
+    "args": {
+      "action_id": "RRn0R3IRWZzWCfQXLc2e",
+      "mode": "build",
+      "package": "github.com/prometheus/procfs/internal/fs"
+    }
+  },
+  {
+    "name": "fs (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968885868,
+    "dur": 52954,
+    "pid": 1,
+    "tid": 16,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/prometheus/procfs/internal/fs"
+    }
+  },
+  {
+    "name": "internal",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968885873,
+    "dur": 17,
+    "pid": 1,
+    "tid": 19,
+    "args": {
+      "action_id": "o70GGM6e6VRKwSAhRJDy",
+      "mode": "build",
+      "package": "github.com/prometheus/client_golang/prometheus/promhttp/internal"
+    }
+  },
+  {
+    "name": "internal (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968885894,
+    "dur": 52619,
+    "pid": 1,
+    "tid": 19,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/prometheus/client_golang/prometheus/promhttp/internal"
+    }
+  },
+  {
+    "name": "goautoneg",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968885958,
+    "dur": 13,
+    "pid": 1,
+    "tid": 15,
+    "args": {
+      "action_id": "adCXZDAMnbZnRh5f9J0O",
+      "mode": "build",
+      "package": "github.com/munnerz/goautoneg"
+    }
+  },
+  {
+    "name": "goautoneg (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968885975,
+    "dur": 52400,
+    "pid": 1,
+    "tid": 15,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/munnerz/goautoneg"
+    }
+  },
+  {
+    "name": "diff",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968885980,
+    "dur": 8,
+    "pid": 1,
+    "tid": 21,
+    "args": {
+      "action_id": "1QB3XjCgXRTFQLQe0eQO",
+      "mode": "build",
+      "package": "github.com/kylelemons/godebug/diff"
+    }
+  },
+  {
+    "name": "diff (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968885992,
+    "dur": 52410,
+    "pid": 1,
+    "tid": 21,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/kylelemons/godebug/diff"
+    }
+  },
+  {
+    "name": "detrand",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968886091,
+    "dur": 10,
+    "pid": 1,
+    "tid": 20,
+    "args": {
+      "action_id": "gU9vXou0lYjkTpTuHp3B",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/detrand"
+    }
+  },
+  {
+    "name": "detrand (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968886107,
+    "dur": 52536,
+    "pid": 1,
+    "tid": 20,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/detrand"
+    }
+  },
+  {
+    "name": "errors (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968886110,
+    "dur": 380,
+    "pid": 1,
+    "tid": 23,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/errors"
+    }
+  },
+  {
+    "name": "util",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968886235,
+    "dur": 8,
+    "pid": 1,
+    "tid": 17,
+    "args": {
+      "action_id": "CfAsv5-3RG4FY_xPLEm2",
+      "mode": "build",
+      "package": "github.com/prometheus/procfs/internal/util"
+    }
+  },
+  {
+    "name": "util (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968886246,
+    "dur": 52046,
+    "pid": 1,
+    "tid": 17,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/prometheus/procfs/internal/util"
+    }
+  },
+  {
+    "name": "spew",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968886274,
+    "dur": 13,
+    "pid": 1,
+    "tid": 22,
+    "args": {
+      "action_id": "bKrexnLCnZLKHNa3yc_j",
+      "mode": "build",
+      "package": "github.com/davecgh/go-spew/spew"
+    }
+  },
+  {
+    "name": "difflib",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968886320,
+    "dur": 8,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "qZvs45irzio57hUQ2wGB",
+      "mode": "build",
+      "package": "github.com/pmezard/go-difflib/difflib"
+    }
+  },
+  {
+    "name": "compress",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968886408,
+    "dur": 6,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "NMsBhBdzJ8o8IXFjt1ov",
+      "mode": "build",
+      "package": "github.com/klauspost/compress"
+    }
+  },
+  {
+    "name": "v2",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968886447,
+    "dur": 13,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "0dY5PLZAFWZyLfAfQA5i",
+      "mode": "build",
+      "package": "go.yaml.in/yaml/v2"
+    }
+  },
+  {
+    "name": "errors",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968886495,
+    "dur": 5,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "LfHCGY1gypOYMDsVNi1f",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/errors"
+    }
+  },
+  {
+    "name": "protowire (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968886501,
+    "dur": 408,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/encoding/protowire"
+    }
+  },
+  {
+    "name": "header",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968886677,
+    "dur": 5,
+    "pid": 1,
+    "tid": 14,
+    "args": {
+      "action_id": "fjLB268tHxF-LBSB4lHF",
+      "mode": "build",
+      "package": "github.com/prometheus/client_golang/internal/github.com/golang/gddo/httputil/header"
+    }
+  },
+  {
+    "name": "httputil (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968886685,
+    "dur": 364,
+    "pid": 1,
+    "tid": 14,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/prometheus/client_golang/internal/github.com/golang/gddo/httputil"
+    }
+  },
+  {
+    "name": "editiondefaults",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968886738,
+    "dur": 5,
+    "pid": 1,
+    "tid": 22,
+    "args": {
+      "action_id": "JGW44Mr0OqzWeXEuvvDD",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/editiondefaults"
+    }
+  },
+  {
+    "name": "set",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968886835,
+    "dur": 11,
+    "pid": 1,
+    "tid": 12,
+    "args": {
+      "action_id": "WN0dXZKokGKp-9LURrUT",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/set"
+    }
+  },
+  {
+    "name": "protowire",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968886914,
+    "dur": 4,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "FZ3ebjnRL0HO30IrUFSd",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/encoding/protowire"
+    }
+  },
+  {
+    "name": "httputil",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968887050,
+    "dur": 11,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "gL54yCNoSk9h75tbDZ94",
+      "mode": "build",
+      "package": "github.com/prometheus/client_golang/internal/github.com/golang/gddo/httputil"
+    }
+  },
+  {
+    "name": "yaml.v3",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968887100,
+    "dur": 7,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "ZF0NHDzkMtcn5ISHIni5",
+      "mode": "build",
+      "package": "gopkg.in/yaml.v3"
+    }
+  },
+  {
+    "name": "yaml (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968887109,
+    "dur": 385,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/stretchr/testify/assert/yaml"
+    }
+  },
+  {
+    "name": "fse",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968887131,
+    "dur": 5,
+    "pid": 1,
+    "tid": 12,
+    "args": {
+      "action_id": "hP4oDC6U1FcgerdZ_3Ao",
+      "mode": "build",
+      "package": "github.com/klauspost/compress/fse"
+    }
+  },
+  {
+    "name": "le",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968887140,
+    "dur": 8,
+    "pid": 1,
+    "tid": 12,
+    "args": {
+      "action_id": "EVhvue5BJ1RQQ7guDaHY",
+      "mode": "build",
+      "package": "github.com/klauspost/compress/internal/le"
+    }
+  },
+  {
+    "name": "huff0 (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968887154,
+    "dur": 57067,
+    "pid": 1,
+    "tid": 12,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/klauspost/compress/huff0"
+    }
+  },
+  {
+    "name": "set",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968887211,
+    "dur": 15,
+    "pid": 1,
+    "tid": 14,
+    "args": {
+      "action_id": "o-PVXesK_PiUalqGa8Bs",
+      "mode": "build",
+      "package": "github.com/wow-look-at-my/go-containers/set"
+    }
+  },
+  {
+    "name": "pragma",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968887462,
+    "dur": 4,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "action_id": "SJQMDh54KzVgnwfYfGpz",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/pragma"
+    }
+  },
+  {
+    "name": "protoreflect (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968887469,
+    "dur": 1648,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/reflect/protoreflect"
+    }
+  },
+  {
+    "name": "yaml",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968887499,
+    "dur": 5,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "LlnQYoq1Ds5LaEu-YguM",
+      "mode": "build",
+      "package": "github.com/stretchr/testify/assert/yaml"
+    }
+  },
+  {
+    "name": "assert (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968887505,
+    "dur": 4033,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/stretchr/testify/assert"
+    }
+  },
+  {
+    "name": "go-mmap",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968887531,
+    "dur": 5,
+    "pid": 1,
+    "tid": 14,
+    "args": {
+      "action_id": "Byq4ncvN9LGu_GE54O_w",
+      "mode": "build",
+      "package": "github.com/wow-look-at-my/go-mmap"
+    }
+  },
+  {
+    "name": "go-shm (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968887537,
+    "dur": 933,
+    "pid": 1,
+    "tid": 14,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/wow-look-at-my/go-shm"
+    }
+  },
+  {
+    "name": "snapref",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968887618,
+    "dur": 5,
+    "pid": 1,
+    "tid": 22,
+    "args": {
+      "action_id": "G6iDQBA0X-05u0MvQjcA",
+      "mode": "build",
+      "package": "github.com/klauspost/compress/internal/snapref"
+    }
+  },
+  {
+    "name": "go-shm",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968888474,
+    "dur": 8,
+    "pid": 1,
+    "tid": 14,
+    "args": {
+      "action_id": "Lnj7V7cma40-JQPJt3tb",
+      "mode": "build",
+      "package": "github.com/wow-look-at-my/go-shm"
+    }
+  },
+  {
+    "name": "protoreflect",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968889122,
+    "dur": 10,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "action_id": "yfi_AP9s90GlAW2eliCo",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/reflect/protoreflect"
+    }
+  },
+  {
+    "name": "descfmt (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968889141,
+    "dur": 496,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/descfmt"
+    }
+  },
+  {
+    "name": "descopts (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968889216,
+    "dur": 291,
+    "pid": 1,
+    "tid": 14,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/descopts"
+    }
+  },
+  {
+    "name": "strs (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968889447,
+    "dur": 486,
+    "pid": 1,
+    "tid": 22,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/strs"
+    }
+  },
+  {
+    "name": "descopts",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968889548,
+    "dur": 29,
+    "pid": 1,
+    "tid": 14,
+    "args": {
+      "action_id": "4YwQ2XVrSsGmG_fxFRi6",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/descopts"
+    }
+  },
+  {
+    "name": "messageset (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968889560,
+    "dur": 337,
+    "pid": 1,
+    "tid": 23,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/encoding/messageset"
+    }
+  },
+  {
+    "name": "genid (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968889578,
+    "dur": 1105,
+    "pid": 1,
+    "tid": 14,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/genid"
+    }
+  },
+  {
+    "name": "descfmt",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968889649,
+    "dur": 7,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "action_id": "3SEXPl9QnC6hvpnSqScg",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/descfmt"
+    }
+  },
+  {
+    "name": "order (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968889657,
+    "dur": 432,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/order"
+    }
+  },
+  {
+    "name": "protoiface (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968889662,
+    "dur": 450,
+    "pid": 1,
+    "tid": 24,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/runtime/protoiface"
+    }
+  },
+  {
+    "name": "pflag",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968889753,
+    "dur": 8,
+    "pid": 1,
+    "tid": 25,
+    "args": {
+      "action_id": "jtmMdA70KTgxv0oFgVFR",
+      "mode": "build",
+      "package": "github.com/spf13/pflag"
+    }
+  },
+  {
+    "name": "cobra (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968889763,
+    "dur": 1844,
+    "pid": 1,
+    "tid": 25,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/spf13/cobra"
+    }
+  },
+  {
+    "name": "messageset",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968889903,
+    "dur": 8,
+    "pid": 1,
+    "tid": 23,
+    "args": {
+      "action_id": "bqsgqQkeIVMTTiAEkqL4",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/encoding/messageset"
+    }
+  },
+  {
+    "name": "protoregistry (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968889912,
+    "dur": 745,
+    "pid": 1,
+    "tid": 23,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/reflect/protoregistry"
+    }
+  },
+  {
+    "name": "strs",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968889937,
+    "dur": 7,
+    "pid": 1,
+    "tid": 22,
+    "args": {
+      "action_id": "gHtelXGrPRLE5-gVNzcw",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/strs"
+    }
+  },
+  {
+    "name": "text (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968889945,
+    "dur": 1992,
+    "pid": 1,
+    "tid": 22,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/encoding/text"
+    }
+  },
+  {
+    "name": "order",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968890092,
+    "dur": 9,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "action_id": "MjiZ1YFtRkbjyPtHiLDs",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/order"
+    }
+  },
+  {
+    "name": "protoiface",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968890117,
+    "dur": 11,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "action_id": "JmP-SADG726mO0qhC9W4",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/runtime/protoiface"
+    }
+  },
+  {
+    "name": "protolazy (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968890478,
+    "dur": 790,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/protolazy"
+    }
+  },
+  {
+    "name": "protoregistry",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968890662,
+    "dur": 11,
+    "pid": 1,
+    "tid": 23,
+    "args": {
+      "action_id": "AN18EkGSjVjoRuWL3x7_",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/reflect/protoregistry"
+    }
+  },
+  {
+    "name": "genid",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968890684,
+    "dur": 149,
+    "pid": 1,
+    "tid": 14,
+    "args": {
+      "action_id": "LM0T_Ug8gIWAnoWT1bec",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/genid"
+    }
+  },
+  {
+    "name": "proto (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968890855,
+    "dur": 1896,
+    "pid": 1,
+    "tid": 14,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/proto"
+    }
+  },
+  {
+    "name": "protolazy",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968891274,
+    "dur": 13,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "action_id": "IZgmhgC6LefIGEjER50l",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/protolazy"
+    }
+  },
+  {
+    "name": "assert",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968891541,
+    "dur": 13,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "Hd3Ll14yXpn-oVG37H-h",
+      "mode": "build",
+      "package": "github.com/stretchr/testify/assert"
+    }
+  },
+  {
+    "name": "require (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968891561,
+    "dur": 1045,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/stretchr/testify/require"
+    }
+  },
+  {
+    "name": "cobra",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968891609,
+    "dur": 10,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "action_id": "Wta7lCjRw-iE0ldy4dqv",
+      "mode": "build",
+      "package": "github.com/spf13/cobra"
+    }
+  },
+  {
+    "name": "text",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968891943,
+    "dur": 9,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "action_id": "TdhphKb_IHqffU7_m6_7",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/encoding/text"
+    }
+  },
+  {
+    "name": "defval (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968891954,
+    "dur": 544,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/encoding/defval"
+    }
+  },
+  {
+    "name": "defval",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968892505,
+    "dur": 7,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "action_id": "aQayNVgWN9OakGiHsytr",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/encoding/defval"
+    }
+  },
+  {
+    "name": "require",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968892612,
+    "dur": 5,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "1F8SOr6ZUu2E-VhM6oyb",
+      "mode": "build",
+      "package": "github.com/stretchr/testify/require"
+    }
+  },
+  {
+    "name": "proto",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968892758,
+    "dur": 7,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "uATWRAJhFm7yMKF0KyjB",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/proto"
+    }
+  },
+  {
+    "name": "prototext (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968892773,
+    "dur": 523,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/encoding/prototext"
+    }
+  },
+  {
+    "name": "filedesc (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968892773,
+    "dur": 983,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/filedesc"
+    }
+  },
+  {
+    "name": "protodelim (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968892782,
+    "dur": 496,
+    "pid": 1,
+    "tid": 14,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/encoding/protodelim"
+    }
+  },
+  {
+    "name": "protodelim",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968893284,
+    "dur": 11,
+    "pid": 1,
+    "tid": 14,
+    "args": {
+      "action_id": "ohP6YEzpfCVYhX5iqViZ",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/encoding/protodelim"
+    }
+  },
+  {
+    "name": "prototext",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968893299,
+    "dur": 5,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "43lRw2-bkh-Un6swcmEv",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/encoding/prototext"
+    }
+  },
+  {
+    "name": "filedesc",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968893761,
+    "dur": 13,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "rScKmH_2xlEhcE38ZNx9",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/filedesc"
+    }
+  },
+  {
+    "name": "tag (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968893777,
+    "dur": 396,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/encoding/tag"
+    }
+  },
+  {
+    "name": "tag",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968894176,
+    "dur": 9,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "7hFWK9rrH7PPIcSqz2AN",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/encoding/tag"
+    }
+  },
+  {
+    "name": "impl (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968894189,
+    "dur": 2121,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/impl"
+    }
+  },
+  {
+    "name": "impl",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968896318,
+    "dur": 15,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "ePIuiGmmwXhKvD0h2a10",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/impl"
+    }
+  },
+  {
+    "name": "filetype (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968896341,
+    "dur": 347,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/internal/filetype"
+    }
+  },
+  {
+    "name": "filetype",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968896693,
+    "dur": 15,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "Ba-viGObuJbrgSk3DL6A",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/internal/filetype"
+    }
+  },
+  {
+    "name": "protoimpl (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968896712,
+    "dur": 411,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/runtime/protoimpl"
+    }
+  },
+  {
+    "name": "protoimpl",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968897129,
+    "dur": 12,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "VGT-5VYo1hRn_MIRgbG4",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/runtime/protoimpl"
+    }
+  },
+  {
+    "name": "timestamppb (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968897144,
+    "dur": 413,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "build check cache",
+      "package": "google.golang.org/protobuf/types/known/timestamppb"
+    }
+  },
+  {
+    "name": "timestamppb",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968897562,
+    "dur": 9,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "4JqQy_2PoaF0z6XbkqXq",
+      "mode": "build",
+      "package": "google.golang.org/protobuf/types/known/timestamppb"
+    }
+  },
+  {
+    "name": "go (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968897575,
+    "dur": 441,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/prometheus/client_model/go"
+    }
+  },
+  {
+    "name": "go",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968898024,
+    "dur": 9,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "hgCiu62UcLRTXxKENfnl",
+      "mode": "build",
+      "package": "github.com/prometheus/client_model/go"
+    }
+  },
+  {
+    "name": "model (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968898040,
+    "dur": 1371,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/prometheus/common/model"
+    }
+  },
+  {
+    "name": "validations (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968898050,
+    "dur": 653,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/prometheus/client_golang/prometheus/testutil/promlint/validations"
+    }
+  },
+  {
+    "name": "validations",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968898710,
+    "dur": 7,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "action_id": "MAJUoPtawvjfD9_AZqrJ",
+      "mode": "build",
+      "package": "github.com/prometheus/client_golang/prometheus/testutil/promlint/validations"
+    }
+  },
+  {
+    "name": "model",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968899417,
+    "dur": 9,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "Khe4xp49Ma63C0f-uXsI",
+      "mode": "build",
+      "package": "github.com/prometheus/common/model"
+    }
+  },
+  {
+    "name": "internal (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968899430,
+    "dur": 1073,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/prometheus/client_golang/prometheus/internal"
+    }
+  },
+  {
+    "name": "expfmt (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968899565,
+    "dur": 889,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/prometheus/common/expfmt"
+    }
+  },
+  {
+    "name": "expfmt",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968900459,
+    "dur": 6,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "action_id": "zDOtRn3LWDv4TeEem4Fo",
+      "mode": "build",
+      "package": "github.com/prometheus/common/expfmt"
+    }
+  },
+  {
+    "name": "promlint (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968900468,
+    "dur": 375,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/prometheus/client_golang/prometheus/testutil/promlint"
+    }
+  },
+  {
+    "name": "internal",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968900506,
+    "dur": 10,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "mbUuFpS-bBM9NZt5rUP8",
+      "mode": "build",
+      "package": "github.com/prometheus/client_golang/prometheus/internal"
+    }
+  },
+  {
+    "name": "promlint",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968900849,
+    "dur": 7,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "bhKtn9ou2qkQRMC2lw4Y",
+      "mode": "build",
+      "package": "github.com/prometheus/client_golang/prometheus/testutil/promlint"
+    }
+  },
+  {
+    "name": "cachedisk (cover)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938262,
+    "dur": 2,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "cover",
+      "package": "github.com/wow-look-at-my/go-s3-server/cacheclient/cachedisk"
+    }
+  },
+  {
+    "name": "xxh32 (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938267,
+    "dur": 328,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/pierrec/lz4/v4/internal/xxh32"
+    }
+  },
+  {
+    "name": "cachedisk",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938286,
+    "dur": 14,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "action_id": "ev1axEOoBu7wGXwTUz5h",
+      "mode": "build",
+      "package": "github.com/wow-look-at-my/go-s3-server/cacheclient/cachedisk"
+    }
+  },
+  {
+    "name": "pragma (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938293,
+    "dur": 436,
+    "pid": 1,
+    "tid": 14,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/pragma"
+    }
+  },
+  {
+    "name": "editiondefaults (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938314,
+    "dur": 318,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/editiondefaults"
+    }
+  },
+  {
+    "name": "set (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938376,
+    "dur": 773,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/set"
+    }
+  },
+  {
+    "name": "v2 (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938404,
+    "dur": 305,
+    "pid": 1,
+    "tid": 15,
+    "args": {
+      "mode": "vet",
+      "package": "go.yaml.in/yaml/v2"
+    }
+  },
+  {
+    "name": "header (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938427,
+    "dur": 520,
+    "pid": 1,
+    "tid": 11,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/prometheus/client_golang/internal/github.com/golang/gddo/httputil/header"
+    }
+  },
+  {
+    "name": "spew (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938514,
+    "dur": 464,
+    "pid": 1,
+    "tid": 17,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/davecgh/go-spew/spew"
+    }
+  },
+  {
+    "name": "difflib (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938521,
+    "dur": 336,
+    "pid": 1,
+    "tid": 13,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/pmezard/go-difflib/difflib"
+    }
+  },
+  {
+    "name": "yaml.v3 (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938596,
+    "dur": 319,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "vet",
+      "package": "gopkg.in/yaml.v3"
+    }
+  },
+  {
+    "name": "set (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938632,
+    "dur": 438,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/wow-look-at-my/go-containers/set"
+    }
+  },
+  {
+    "name": "errors (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938645,
+    "dur": 456,
+    "pid": 1,
+    "tid": 19,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/errors"
+    }
+  },
+  {
+    "name": "compress (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938710,
+    "dur": 381,
+    "pid": 1,
+    "tid": 15,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/klauspost/compress"
+    }
+  },
+  {
+    "name": "fse (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938730,
+    "dur": 408,
+    "pid": 1,
+    "tid": 14,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/klauspost/compress/fse"
+    }
+  },
+  {
+    "name": "le (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938822,
+    "dur": 346,
+    "pid": 1,
+    "tid": 16,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/klauspost/compress/internal/le"
+    }
+  },
+  {
+    "name": "snapref (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938857,
+    "dur": 466,
+    "pid": 1,
+    "tid": 13,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/klauspost/compress/internal/snapref"
+    }
+  },
+  {
+    "name": "yaml (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938916,
+    "dur": 385,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/stretchr/testify/assert/yaml"
+    }
+  },
+  {
+    "name": "httputil (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938947,
+    "dur": 385,
+    "pid": 1,
+    "tid": 11,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/prometheus/client_golang/internal/github.com/golang/gddo/httputil"
+    }
+  },
+  {
+    "name": "go-mmap (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968938979,
+    "dur": 329,
+    "pid": 1,
+    "tid": 17,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/wow-look-at-my/go-mmap"
+    }
+  },
+  {
+    "name": "cachedisk (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968939071,
+    "dur": 390,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/wow-look-at-my/go-s3-server/cacheclient/cachedisk"
+    }
+  },
+  {
+    "name": "pflag (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968939092,
+    "dur": 381,
+    "pid": 1,
+    "tid": 15,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/spf13/pflag"
+    }
+  },
+  {
+    "name": "protowire (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968939103,
+    "dur": 449,
+    "pid": 1,
+    "tid": 19,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/encoding/protowire"
+    }
+  },
+  {
+    "name": "assert (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968939303,
+    "dur": 303,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/stretchr/testify/assert"
+    }
+  },
+  {
+    "name": "go-shm (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968939310,
+    "dur": 247,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/wow-look-at-my/go-shm"
+    }
+  },
+  {
+    "name": "cobra (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968939478,
+    "dur": 319,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/spf13/cobra"
+    }
+  },
+  {
+    "name": "protoreflect (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968939558,
+    "dur": 276,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/reflect/protoreflect"
+    }
+  },
+  {
+    "name": "require (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968939611,
+    "dur": 443,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/stretchr/testify/require"
+    }
+  },
+  {
+    "name": "descfmt (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968939840,
+    "dur": 311,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/descfmt"
+    }
+  },
+  {
+    "name": "descopts (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968939851,
+    "dur": 471,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/descopts"
+    }
+  },
+  {
+    "name": "strs (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968939857,
+    "dur": 330,
+    "pid": 1,
+    "tid": 11,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/strs"
+    }
+  },
+  {
+    "name": "messageset (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968939866,
+    "dur": 412,
+    "pid": 1,
+    "tid": 13,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/encoding/messageset"
+    }
+  },
+  {
+    "name": "genid (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968939873,
+    "dur": 373,
+    "pid": 1,
+    "tid": 14,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/genid"
+    }
+  },
+  {
+    "name": "order (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968939937,
+    "dur": 379,
+    "pid": 1,
+    "tid": 15,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/order"
+    }
+  },
+  {
+    "name": "protoiface (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968939944,
+    "dur": 301,
+    "pid": 1,
+    "tid": 16,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/runtime/protoiface"
+    }
+  },
+  {
+    "name": "text (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968940192,
+    "dur": 314,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/encoding/text"
+    }
+  },
+  {
+    "name": "protolazy (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968940252,
+    "dur": 274,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/protolazy"
+    }
+  },
+  {
+    "name": "protoregistry (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968940281,
+    "dur": 296,
+    "pid": 1,
+    "tid": 11,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/reflect/protoregistry"
+    }
+  },
+  {
+    "name": "defval (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968940512,
+    "dur": 435,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/encoding/defval"
+    }
+  },
+  {
+    "name": "proto (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968940580,
+    "dur": 352,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/proto"
+    }
+  },
+  {
+    "name": "prototext (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968940936,
+    "dur": 315,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/encoding/prototext"
+    }
+  },
+  {
+    "name": "protodelim (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968940944,
+    "dur": 309,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/encoding/protodelim"
+    }
+  },
+  {
+    "name": "filedesc (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968940948,
+    "dur": 332,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/filedesc"
+    }
+  },
+  {
+    "name": "tag (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968941284,
+    "dur": 252,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/encoding/tag"
+    }
+  },
+  {
+    "name": "impl (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968941539,
+    "dur": 259,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/impl"
+    }
+  },
+  {
+    "name": "filetype (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968941802,
+    "dur": 326,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/internal/filetype"
+    }
+  },
+  {
+    "name": "protoimpl (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968942131,
+    "dur": 548,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/runtime/protoimpl"
+    }
+  },
+  {
+    "name": "timestamppb (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968942682,
+    "dur": 429,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "google.golang.org/protobuf/types/known/timestamppb"
+    }
+  },
+  {
+    "name": "go (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968943113,
+    "dur": 821,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/prometheus/client_model/go"
+    }
+  },
+  {
+    "name": "v2",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968943181,
+    "dur": 11,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "ghZm6WAEjSdXNJjYO2sB",
+      "mode": "build",
+      "package": "github.com/cespare/xxhash/v2"
+    }
+  },
+  {
+    "name": "v2 (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968943193,
+    "dur": 352,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/cespare/xxhash/v2"
+    }
+  },
+  {
+    "name": "lz4block",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968943380,
+    "dur": 13,
+    "pid": 1,
+    "tid": 8,
+    "args": {
+      "action_id": "wtKYuHBLoUr3mVjWRx44",
+      "mode": "build",
+      "package": "github.com/pierrec/lz4/v4/internal/lz4block"
+    }
+  },
+  {
+    "name": "lz4block (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968943398,
+    "dur": 816,
+    "pid": 1,
+    "tid": 8,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/pierrec/lz4/v4/internal/lz4block"
+    }
+  },
+  {
+    "name": "lz4stream (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968943547,
+    "dur": 1469,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/pierrec/lz4/v4/internal/lz4stream"
+    }
+  },
+  {
+    "name": "xxhash",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968943830,
+    "dur": 9,
+    "pid": 1,
+    "tid": 9,
+    "args": {
+      "action_id": "6I4LyGV1gl5eqpGd4m_r",
+      "mode": "build",
+      "package": "github.com/klauspost/compress/zstd/internal/xxhash"
+    }
+  },
+  {
+    "name": "xxhash (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968943840,
+    "dur": 673,
+    "pid": 1,
+    "tid": 9,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/klauspost/compress/zstd/internal/xxhash"
+    }
+  },
+  {
+    "name": "model (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968943936,
+    "dur": 352,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/prometheus/common/model"
+    }
+  },
+  {
+    "name": "validations (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968944215,
+    "dur": 390,
+    "pid": 1,
+    "tid": 8,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/prometheus/client_golang/prometheus/testutil/promlint/validations"
+    }
+  },
+  {
+    "name": "huff0",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968944223,
+    "dur": 9,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "action_id": "zI1owXWLtCK1nQq4Xkuf",
+      "mode": "build",
+      "package": "github.com/klauspost/compress/huff0"
+    }
+  },
+  {
+    "name": "huff0 (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968944236,
+    "dur": 700,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/klauspost/compress/huff0"
+    }
+  },
+  {
+    "name": "zstd (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968944245,
+    "dur": 2395,
+    "pid": 1,
+    "tid": 11,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/klauspost/compress/zstd"
+    }
+  },
+  {
+    "name": "internal (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968944295,
+    "dur": 483,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/prometheus/client_golang/prometheus/internal"
+    }
+  },
+  {
+    "name": "expfmt (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968944438,
+    "dur": 523,
+    "pid": 1,
+    "tid": 12,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/prometheus/common/expfmt"
+    }
+  },
+  {
+    "name": "promlint (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968944966,
+    "dur": 285,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/prometheus/client_golang/prometheus/testutil/promlint"
+    }
+  },
+  {
+    "name": "lz4stream",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968945020,
+    "dur": 7,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "action_id": "8Z2AQTEPWUvuwWzsRAwt",
+      "mode": "build",
+      "package": "github.com/pierrec/lz4/v4/internal/lz4stream"
+    }
+  },
+  {
+    "name": "lz4stream (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968945028,
+    "dur": 340,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/pierrec/lz4/v4/internal/lz4stream"
+    }
+  },
+  {
+    "name": "v4 (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968945095,
+    "dur": 838,
+    "pid": 1,
+    "tid": 8,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/pierrec/lz4/v4"
+    }
+  },
+  {
+    "name": "unix",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968945737,
+    "dur": 6,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "action_id": "ofxq3g-Q-lfE8kettvQ8",
+      "mode": "build",
+      "package": "golang.org/x/sys/unix"
+    }
+  },
+  {
+    "name": "unix (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968945744,
+    "dur": 386,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "golang.org/x/sys/unix"
+    }
+  },
+  {
+    "name": "procfs (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968945757,
+    "dur": 2238,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/prometheus/procfs"
+    }
+  },
+  {
+    "name": "go-ipc (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968945765,
+    "dur": 1159,
+    "pid": 1,
+    "tid": 9,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/wow-look-at-my/go-ipc"
+    }
+  },
+  {
+    "name": "v4",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968945940,
+    "dur": 7,
+    "pid": 1,
+    "tid": 8,
+    "args": {
+      "action_id": "moFCNPPQ85-ccXltPFaI",
+      "mode": "build",
+      "package": "github.com/pierrec/lz4/v4"
+    }
+  },
+  {
+    "name": "v4 (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968945948,
+    "dur": 316,
+    "pid": 1,
+    "tid": 8,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/pierrec/lz4/v4"
+    }
+  },
+  {
+    "name": "zstd",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968946646,
+    "dur": 5,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "action_id": "dPoSEtEmJVFVZgU5cxcV",
+      "mode": "build",
+      "package": "github.com/klauspost/compress/zstd"
+    }
+  },
+  {
+    "name": "zstd (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968946652,
+    "dur": 385,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/klauspost/compress/zstd"
+    }
+  },
+  {
+    "name": "go-ipc",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968946930,
+    "dur": 18,
+    "pid": 1,
+    "tid": 8,
+    "args": {
+      "action_id": "XBYYw8Rsa205ick1rQA-",
+      "mode": "build",
+      "package": "github.com/wow-look-at-my/go-ipc"
+    }
+  },
+  {
+    "name": "go-ipc (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968946953,
+    "dur": 299,
+    "pid": 1,
+    "tid": 8,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/wow-look-at-my/go-ipc"
+    }
+  },
+  {
+    "name": "cacheclient (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968946961,
+    "dur": 16098,
+    "pid": 1,
+    "tid": 9,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/wow-look-at-my/go-s3-server/cacheclient"
+    }
+  },
+  {
+    "name": "procfs",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968948002,
+    "dur": 5,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "action_id": "K3n4kf42rBE6pUSQl6oj",
+      "mode": "build",
+      "package": "github.com/prometheus/procfs"
+    }
+  },
+  {
+    "name": "procfs (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968948010,
+    "dur": 281,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/prometheus/procfs"
+    }
+  },
+  {
+    "name": "prometheus (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968948013,
+    "dur": 2319,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/prometheus/client_golang/prometheus"
+    }
+  },
+  {
+    "name": "prometheus",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968950336,
+    "dur": 7,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "action_id": "_OlB_TKXeAYp75RVVmyP",
+      "mode": "build",
+      "package": "github.com/prometheus/client_golang/prometheus"
+    }
+  },
+  {
+    "name": "prometheus (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968950353,
+    "dur": 289,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/prometheus/client_golang/prometheus"
+    }
+  },
+  {
+    "name": "promhttp (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968950356,
+    "dur": 1044,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/prometheus/client_golang/prometheus/promhttp"
+    }
+  },
+  {
+    "name": "testutil (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968950360,
+    "dur": 563,
+    "pid": 1,
+    "tid": 8,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/prometheus/client_golang/prometheus/testutil"
+    }
+  },
+  {
+    "name": "promauto (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968950369,
+    "dur": 356,
+    "pid": 1,
+    "tid": 10,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/prometheus/client_golang/prometheus/promauto"
+    }
+  },
+  {
+    "name": "promauto",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968950733,
+    "dur": 7,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "action_id": "2XFJa9PyxlZXNOLZRzrA",
+      "mode": "build",
+      "package": "github.com/prometheus/client_golang/prometheus/promauto"
+    }
+  },
+  {
+    "name": "promauto (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968950743,
+    "dur": 358,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/prometheus/client_golang/prometheus/promauto"
+    }
+  },
+  {
+    "name": "testutil",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968950927,
+    "dur": 15,
+    "pid": 1,
+    "tid": 8,
+    "args": {
+      "action_id": "Y-9lWjqkMiVni6K-mYLu",
+      "mode": "build",
+      "package": "github.com/prometheus/client_golang/prometheus/testutil"
+    }
+  },
+  {
+    "name": "testutil (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968950945,
+    "dur": 333,
+    "pid": 1,
+    "tid": 8,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/prometheus/client_golang/prometheus/testutil"
+    }
+  },
+  {
+    "name": "promhttp",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968951407,
+    "dur": 6,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "action_id": "Wx_oHh87cOzCoyboCS8U",
+      "mode": "build",
+      "package": "github.com/prometheus/client_golang/prometheus/promhttp"
+    }
+  },
+  {
+    "name": "promhttp (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968951418,
+    "dur": 315,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/prometheus/client_golang/prometheus/promhttp"
+    }
+  },
+  {
+    "name": "go-s3-server (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968951425,
+    "dur": 2171,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/wow-look-at-my/go-s3-server"
+    }
+  },
+  {
+    "name": "go-s3-server (cover)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968953600,
+    "dur": 1,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "cover",
+      "package": "github.com/wow-look-at-my/go-s3-server"
+    }
+  },
+  {
+    "name": "go-s3-server",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968953604,
+    "dur": 8,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "action_id": "45Lqxw1izhpTiJfxBxY9",
+      "mode": "build",
+      "package": "github.com/wow-look-at-my/go-s3-server"
+    }
+  },
+  {
+    "name": "write coverage meta-data file",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968953616,
+    "dur": 191,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "write coverage meta-data file"
+    }
+  },
+  {
+    "name": "cacheclient (cover)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968963066,
+    "dur": 2,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "cover",
+      "package": "github.com/wow-look-at-my/go-s3-server/cacheclient"
+    }
+  },
+  {
+    "name": "cacheclient",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968963070,
+    "dur": 10,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "action_id": "WjJbPsh2SsITNCiUWwiT",
+      "mode": "build",
+      "package": "github.com/wow-look-at-my/go-s3-server/cacheclient"
+    }
+  },
+  {
+    "name": "cacheclient (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968963086,
+    "dur": 382,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/wow-look-at-my/go-s3-server/cacheclient"
+    }
+  },
+  {
+    "name": "go-s3-server (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968963469,
+    "dur": 19026,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/wow-look-at-my/go-s3-server"
+    }
+  },
+  {
+    "name": "go-s3-server (cover)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968982500,
+    "dur": 3,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "cover",
+      "package": "github.com/wow-look-at-my/go-s3-server"
+    }
+  },
+  {
+    "name": "go-s3-server",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968982508,
+    "dur": 11,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "action_id": "zghLEMb5yPmGqS4wRLjZ",
+      "mode": "build",
+      "package": "github.com/wow-look-at-my/go-s3-server"
+    }
+  },
+  {
+    "name": "go-s3-server.test (build check cache)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968982523,
+    "dur": 507,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "build check cache",
+      "package": "github.com/wow-look-at-my/go-s3-server.test"
+    }
+  },
+  {
+    "name": "go-s3-server (vet)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968982706,
+    "dur": 499,
+    "pid": 1,
+    "tid": 7,
+    "args": {
+      "mode": "vet",
+      "package": "github.com/wow-look-at-my/go-s3-server"
+    }
+  },
+  {
+    "name": "go-s3-server.test (cover)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968983035,
+    "dur": 2,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "cover",
+      "package": "github.com/wow-look-at-my/go-s3-server.test"
+    }
+  },
+  {
+    "name": "go-s3-server.test",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968983038,
+    "dur": 12,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "action_id": "U10r9NEcvQ_TOolcxBKa",
+      "mode": "build",
+      "package": "github.com/wow-look-at-my/go-s3-server.test"
+    }
+  },
+  {
+    "name": "go-s3-server.test (link)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940968983051,
+    "dur": 813969,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "action_id": "EFDDKdEWRQ2eApAN8DJP",
+      "mode": "link",
+      "package": "github.com/wow-look-at-my/go-s3-server.test"
+    }
+  },
+  {
+    "name": "go-s3-server (test run)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940969797055,
+    "dur": 5833535,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "test run",
+      "package": "github.com/wow-look-at-my/go-s3-server"
+    }
+  },
+  {
+    "name": "go-s3-server (test clean)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940975630606,
+    "dur": 5368,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "test clean",
+      "package": "github.com/wow-look-at-my/go-s3-server"
+    }
+  },
+  {
+    "name": "go-s3-server (test print)",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940975635990,
+    "dur": 10,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "test print",
+      "package": "github.com/wow-look-at-my/go-s3-server"
+    }
+  },
+  {
+    "name": "go test",
+    "cat": "action",
+    "ph": "X",
+    "ts": 1789940975636006,
+    "dur": 2,
+    "pid": 1,
+    "tid": 6,
+    "args": {
+      "mode": "go test"
+    }
+  }
+]

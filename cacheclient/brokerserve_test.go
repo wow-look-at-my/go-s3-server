@@ -33,7 +33,7 @@ func serveOwner(t *testing.T, dir string) (owner Cache, child Cache) {
 	require.NoError(t, err)
 	serveBroker(disk, dir)
 	t.Cleanup(StopBroker)
-	require.NotEmpty(t, os.Getenv(brokerEnv), "the owner must name its socket in the environment")
+	require.NotEmpty(t, os.Getenv(brokerEnv), "the owner must name its endpoint in the environment")
 
 	child = dialBroker()
 	require.NotNil(t, child, "a process that finds a live owner must become a child")
@@ -42,7 +42,7 @@ func serveOwner(t *testing.T, dir string) (owner Cache, child Cache) {
 }
 
 // A child stores through the owner and reads back what the owner wrote. The
-// body never crosses the socket: the answer names a file both can open.
+// body never crosses the ring: the answer names a file both can open.
 func TestBrokerChildStoresAndReadsThroughTheOwner(t *testing.T) {
 	dir := t.TempDir()
 	owner, child := serveOwner(t, dir)
@@ -123,12 +123,12 @@ func TestBrokerSharesOneLookupAndOneStore(t *testing.T) {
 	group.Wait()
 }
 
-// The socket outlives the process that made it, so a stale name in the
+// The name outlives the process that made it, so a stale one in the
 // environment must not turn the next process into a child of nothing.
-func TestBrokerDeadSocketMakesTheNextProcessTheOwner(t *testing.T) {
+func TestBrokerDeadNameMakesTheNextProcessTheOwner(t *testing.T) {
 	t.Setenv(brokerOffEnv, "")
-	t.Setenv(brokerEnv, t.TempDir()+"/gone.sock")
-	assert.Nil(t, dialBroker(), "a socket nobody answers must not be dialed")
+	t.Setenv(brokerEnv, "gobuildcache-nobody-holds-this")
+	assert.Nil(t, dialBroker(), "a name nobody answers must not be dialed")
 }
 
 // The off switch is what a bisect of a broker-shaped problem wants: every
@@ -141,6 +141,6 @@ func TestBrokerOffSwitchServesNothing(t *testing.T) {
 	require.NoError(t, err)
 	serveBroker(disk, dir)
 	t.Cleanup(StopBroker)
-	assert.Empty(t, os.Getenv(brokerEnv), "the off switch must leave no socket to find")
+	assert.Empty(t, os.Getenv(brokerEnv), "the off switch must leave no endpoint to find")
 	assert.Empty(t, BrokerEnviron())
 }

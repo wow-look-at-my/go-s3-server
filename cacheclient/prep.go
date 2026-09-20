@@ -7,11 +7,11 @@ import (
 
 // putJob is a claimed object waiting for a prep worker.
 //
-// The body arrives one of two ways. data carries it for a caller that already
+// The body arrives any of ways. data carries it for a caller that already
 // holds the bytes. path names a file for a caller that does not, and then the
-// body is not resident while the job waits: the queue is four times the worker
-// count deep, so a body held from submit to prepare cost four times the peak a
-// body read ON the worker does.
+// body is not resident while the job waits: the queue is times the worker
+// count deep, so a body held from submit to prepare cost times the peak a body
+// read ON the worker does.
 type putJob struct {
 	actionID string
 	key      string
@@ -23,10 +23,7 @@ type putJob struct {
 
 // prepPool compresses outgoing objects.
 //
-// Compression is the expensive part of storing an object, and it used to run on
-// the goroutine that had just finished a compile -- the exact goroutine the
-// build wanted back so it could start the next one. A build that stores
-// thousands of objects paid for every one of them in build time.
+// A build that stores thousands of objects paid for each of them in build time.
 //
 // It is CPU work, so the pool is sized to the machine's cores rather than to
 // the fetch pools, which are sized to sockets in flight. The queue is bounded:
@@ -77,8 +74,8 @@ func newPrepPool(b *WebBackend) *prepPool {
 //
 // It blocks while the queue is full, and that is deliberate: the alternative
 // is dropping an object the build just paid to produce, or letting the queue
-// grow without limit. The wait is bounded by how long one object takes to
-// compress.
+// grow without limit. The wait is bounded by how long a single object takes
+// to compress.
 func (p *prepPool) submit(j putJob) bool {
 	if p == nil {
 		return false

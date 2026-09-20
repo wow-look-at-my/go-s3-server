@@ -1,6 +1,6 @@
-// Copyright 2026 The Go Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// All rights reserved. Use of this source code is
+// governed by a BSD-style license that can be found
+// in the LICENSE file.
 
 package cacheclient
 
@@ -10,10 +10,10 @@ import (
 	"github.com/wow-look-at-my/go-s3-server/cacheclient/cachedisk"
 )
 
-// The cache's directory lives one package down, where nothing imports net. A
-// consumer that must not depend on net holds that package directly and gets a
-// working cache with no store and no broker under it. Everything else holds
-// this one, and these names are what makes the two read the same.
+// The cache's directory lives a single package down, where nothing imports
+// net. A consumer that must not depend on net holds that package directly and
+// gets a working cache with no store and no broker under it. Everything else
+// holds this, and these names are what makes both read the same.
 
 // An ActionID is a cache action key, the hash of a complete description of a
 // repeatable computation: the command line, the environment, the input file
@@ -26,7 +26,7 @@ type OutputID = cachedisk.OutputID
 // A Cache stores an action's output under that action's key.
 type Cache = cachedisk.Cache
 
-// An Entry is what a cache holds for one action.
+// An Entry is what a cache holds for a single action.
 type Entry = cachedisk.Entry
 
 // A DiskCache is the cache directory itself.
@@ -66,7 +66,7 @@ func GetBytes(c Cache, id ActionID) ([]byte, Entry, error) { return cachedisk.Ge
 func PutBytes(c Cache, id ActionID, data []byte) error { return cachedisk.PutBytes(c, id, data) }
 
 // PutNoVerify stores an output that is not reproducible, such as test output,
-// so GODEBUG=gocacheverify=1 does not hold it to a second identical run.
+// so GODEBUG=gocacheverify=1 does not hold it to another identical run.
 func PutNoVerify(c Cache, id ActionID, file io.ReadSeeker) (OutputID, int64, error) {
 	return cachedisk.PutNoVerify(c, id, file)
 }

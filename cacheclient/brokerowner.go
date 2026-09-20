@@ -1,6 +1,6 @@
-// Copyright 2026 The Go Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// All rights reserved. Use of this source code is
+// governed by a BSD-style license that can be found
+// in the LICENSE file.
 
 package cacheclient
 
@@ -16,14 +16,14 @@ import (
 	ipc "github.com/wow-look-at-my/go-ipc"
 )
 
-// A build is not one process, and a cache each of its processes opens for
+// A build is not a single process, and a cache each of its processes opens for
 // itself costs each of them an index write, a trim, a connection to the store,
-// and an exit held open to drain uploads. One process owns the cache instead,
-// and serves the rest over shared memory.
+// and an exit held open to drain uploads. a single process owns the cache
+// instead, and serves the rest over shared memory.
 //
-// That leaves one writer for the directory, so the trim has a single owner.
-// Nothing spins: a send into a ring with room makes no system call, and a side
-// with nothing to do parks on a kernel wait rather than looking again.
+// That leaves a single writer for the directory, so the trim has a single
+// owner. Nothing spins: a send into a ring with room makes no system call, and
+// a side with nothing to do parks on a kernel wait rather than looking again.
 
 // brokerEnv names the owner's hello queue. A process that finds it set and
 // answering is a child. A process that finds it unset becomes the owner.
@@ -46,7 +46,6 @@ type brokerServer struct {
 	serve sync.WaitGroup
 }
 
-// liveBroker is the server this process runs, if it runs one.
 var liveBroker atomic.Pointer[brokerServer]
 
 // serveBroker serves owner under a name of this process's own and puts that
@@ -85,9 +84,9 @@ func endpointName(kind string) string {
 // BrokerEnviron is what a child needs in its environment to find this
 // process's cache, or nothing when this process serves none.
 //
-// A consumer that starts its children with os.Environ needs none of this. One
-// that builds a curated environment, as the go command does for a test binary,
-// adds these entries to it.
+// A consumer that starts its children with os.Environ needs none of this. a
+// single that builds a curated environment, as the go command does for a test
+// binary, adds these entries to it.
 func BrokerEnviron() []string {
 	if bkr := liveBroker.Load(); bkr != nil {
 		return []string{brokerEnv + "=" + bkr.name}
@@ -143,7 +142,7 @@ func (bkr *brokerServer) greet(ctx context.Context) {
 	}
 }
 
-// attend answers one child until it goes away. Each request runs on a
+// attend answers a single child until it goes away. Each request runs on a
 // goroutine of its own: a lookup that reaches the store must not hold up the
 // ones behind it.
 func (bkr *brokerServer) attend(ctx context.Context, child *ipc.Channel) {
@@ -167,7 +166,7 @@ func (bkr *brokerServer) attend(ctx context.Context, child *ipc.Channel) {
 	}
 }
 
-// answer handles one request and sends its reply.
+// answer handles a single request and sends its reply.
 func (bkr *brokerServer) answer(ctx context.Context, child *ipc.Channel, typ uint32, req []byte) {
 	id, action, rest, err := readRequest(req)
 	if err != nil {
@@ -196,9 +195,9 @@ func (bkr *brokerServer) answer(ctx context.Context, child *ipc.Channel, typ uin
 	}
 }
 
-// lookup answers an action, sharing the first asker's work with everyone who
-// asks for the same one while it runs. The rest park until the close wakes
-// them.
+// lookup answers an action, sharing the earliest asker's work with everyone
+// who asks for the same a single while it runs. The rest park until the
+// close wakes them.
 func (bkr *brokerServer) lookup(action ActionID) (Entry, string, error) {
 	key := string(action[:])
 	flight, mine := bkr.fly.startGet(key)
@@ -220,8 +219,7 @@ func (bkr *brokerServer) lookup(action ActionID) (Entry, string, error) {
 // store reads the body the child named by path, before it answers, so the
 // child may exit as soon as its Put returns.
 //
-// Two children that built the same object offer it at once. The first one's
-// store is the one that happens, so one body is read and stored once.
+// Children that built the same object offer it at the same time.
 func (bkr *brokerServer) store(action ActionID, path string) (Entry, error) {
 	key := string(action[:])
 	flight, mine := bkr.fly.startPut(key)
@@ -248,8 +246,6 @@ func (bkr *brokerServer) store(action ActionID, path string) (Entry, error) {
 	return Entry{OutputID: out, Size: size, Time: time.Now()}, nil
 }
 
-// ownerGet looks an action up in the owner's cache, naming the tier that
-// answered when the owner can report one.
 func (bkr *brokerServer) ownerGet(id ActionID) (Entry, string, error) {
 	if tiered, ok := bkr.owner.(Tiered); ok {
 		return tiered.GetTiered(id)

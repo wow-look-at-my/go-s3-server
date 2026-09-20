@@ -1,6 +1,6 @@
-// Copyright 2026 The Go Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// All rights reserved. Use of this source code is
+// governed by a BSD-style license that can be found
+// in the LICENSE file.
 
 package cacheclient
 
@@ -12,9 +12,9 @@ import (
 	"github.com/wow-look-at-my/go-s3-server/cacheclient/cachedisk"
 )
 
-// The broker's records. A request and a reply are each one record in a
+// The broker's records. A request and a reply are each record in a
 // shared-memory ring: an opcode in the record's type word, a correlation ID in
-// the first eight bytes, and fixed-width fields after it.
+// the earliest bytes, and fixed-width fields after it.
 //
 // No body ever travels. Both processes can open the cache directory, so an
 // answer names a file rather than carrying it.
@@ -40,7 +40,7 @@ const idBytes = 8
 const entryBytes = cachedisk.HashSize + 8 + 8
 
 // errShortRecord says a record is too small to hold what its opcode needs. A
-// peer that sends one is not this version of the protocol.
+// peer that sends a single is not this version of the protocol.
 var errShortRecord = errors.New("cache broker: truncated record")
 
 // putRecord writes a store request: the correlation ID, the action, and the

@@ -1,6 +1,6 @@
-// Copyright 2026 The Go Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// All rights reserved. Use of this source code is
+// governed by a BSD-style license that can be found
+// in the LICENSE file.
 
 package cacheclient
 
@@ -39,10 +39,10 @@ var errBrokerMiss = errors.New("the build cache owner has no such entry")
 // A brokerLink is this process's channel to the owner.
 //
 // A build compiles in parallel, so its cache reads are parallel, and the
-// replies come back in whatever order the owner finishes. One goroutine reads
-// them and hands each to the caller that is waiting for its correlation ID.
-// Every wait is a park: a sender blocks on its own channel, and the reader
-// blocks in the ring.
+// replies come back in whatever order the owner finishes. a single goroutine
+// reads them and hands each to the caller that is waiting for its correlation
+// ID. Every wait is a park: a sender blocks on its own channel, and the
+// reader blocks in the ring.
 type brokerLink struct {
 	channel *ipc.Channel
 	next    atomic.Uint64
@@ -55,7 +55,7 @@ type brokerLink struct {
 	done chan struct{}
 }
 
-// A reply is what the owner answered one request with.
+// A reply is what the owner answered a single request with.
 type reply struct {
 	typ   uint32
 	entry Entry
@@ -65,8 +65,8 @@ type reply struct {
 
 // dialBroker answers the cache this process should use when a live owner is
 // named in the environment. A name outlives the process that made it, so the
-// owner's first record is what decides, and it also reports the directory the
-// owner writes into.
+// owner's earliest record is what decides, and it also reports the directory
+// the owner writes into.
 func dialBroker() Cache {
 	name := os.Getenv(brokerEnv)
 	if name == "" || os.Getenv(brokerOffEnv) != "" {
@@ -112,7 +112,7 @@ func dialBroker() Cache {
 }
 
 // read hands each reply to whoever is waiting for it. It parks in the ring
-// between replies and wakes when one lands.
+// between replies and wakes when a single lands.
 func (link *brokerLink) read(ctx context.Context) {
 	defer close(link.done)
 	for {
@@ -150,8 +150,8 @@ func (link *brokerLink) deliver(id uint64, answer reply) {
 	}
 }
 
-// fail wakes every caller when the owner goes away. Without it each one waits
-// for a reply that cannot arrive.
+// fail wakes every caller when the owner goes away. Without it each waits for
+// a reply that cannot arrive.
 func (link *brokerLink) fail(err error) {
 	link.mu.Lock()
 	waiting := link.waiting
@@ -163,7 +163,7 @@ func (link *brokerLink) fail(err error) {
 	}
 }
 
-// ask sends one request and waits for its reply.
+// ask sends a single request and waits for its reply.
 func (link *brokerLink) ask(typ uint32, build func(id uint64) []byte) (reply, error) {
 	id := link.next.Add(1)
 	waiter := make(chan reply, 1)
@@ -218,9 +218,9 @@ func (c *brokerCache) GetTiered(id ActionID) (Entry, string, error) {
 // Put hands a body to the owner by naming the file it sits in. The owner reads
 // it before it answers, so this process may exit as soon as Put returns.
 //
-// A caller that already holds an open file names that file. One that holds
-// anything else spills to a temporary file first: the bytes have to reach
-// another process, and a path is what this protocol carries.
+// A caller that already holds an open file names that file. a single that
+// holds anything else spills to a temporary file earliest: the bytes have
+// to reach another process, and a path is what this protocol carries.
 func (c *brokerCache) Put(id ActionID, file io.ReadSeeker) (OutputID, int64, error) {
 	path, cleanup, err := readerPath(file)
 	if err != nil {

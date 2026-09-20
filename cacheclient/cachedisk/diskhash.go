@@ -9,7 +9,7 @@ const HashSize = 32
 var debugHash = false
 
 // hashDebug holds what went into each key, under verify mode alone. A mismatch
-// is reported from it, because two opaque ids say nothing.
+// is reported from it, because opaque ids say nothing.
 var hashDebug struct {
 	sync.Mutex
 	m map[[HashSize]byte]string

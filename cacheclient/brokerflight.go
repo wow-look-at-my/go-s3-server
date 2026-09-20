@@ -1,21 +1,20 @@
-// Copyright 2026 The Go Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// All rights reserved. Use of this source code is
+// governed by a BSD-style license that can be found
+// in the LICENSE file.
 
 package cacheclient
 
 import "sync"
 
-// Two processes of one build ask for the same action all the time: a test
-// binary and the go command that starts it link the same package, and two
-// script tests compile the same fixture. Without this each ask is its own trip
-// to the store, and each stored body is written by two of them.
+// Processes of a single build ask for the same action all the time: a test
+// binary and the go command that starts it link the same package, and script
+// tests compile the same fixture. Without this each ask is its own trip to the
+// store, and each stored body is written by of them.
 //
-// A flight holds the first ask. Every other ask for that action blocks on the
-// first one's channel, which parks the goroutine in the scheduler. Nothing
-// polls: a waiter wakes on the close, and the close happens once.
+// A flight holds the earliest ask. Nothing polls: a waiter wakes on the
+// close, and the close happens a single time.
 
-// getFlight is one in-progress lookup, shared by everyone who asked for it.
+// getFlight is a single in-progress lookup, shared by everyone who asked for it.
 type getFlight struct {
 	done  chan struct{}
 	entry Entry
@@ -23,8 +22,8 @@ type getFlight struct {
 	miss  bool
 }
 
-// putFlight is one in-progress store, shared the same way. It carries no
-// result: a caller needs to know the bytes are taken, and nothing else.
+// putFlight is a single in-progress store, shared the same way. It
+// carries no result: a caller needs to know the bytes are taken, and nothing else.
 type putFlight struct {
 	done chan struct{}
 }
@@ -54,8 +53,8 @@ func (fli *flights) startGet(key string) (*getFlight, bool) {
 }
 
 // finishGet publishes the result and wakes every waiter. The key leaves the
-// map first, so the next ask starts a flight of its own rather than reading a
-// result that is already spent.
+// map so the next ask starts a flight of its own rather than reading a result
+// that is already spent.
 func (fli *flights) finishGet(key string, flight *getFlight) {
 	fli.mutex.Lock()
 	delete(fli.gets, key)

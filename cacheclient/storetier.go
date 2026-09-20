@@ -107,7 +107,7 @@ func (tier *storeTier) populate(entries []BatchEntry) {
 }
 
 // keep writes a body the store served. Its output ID is checked already, so
-// this skips the hash Put would compute a second time.
+// this skips the hash Put would compute another time.
 func (tier *storeTier) keep(id ActionID, out OutputID, data []byte) {
 	if err := tier.DiskCache.KeepVerified(id, out, data); err != nil {
 		return
@@ -126,15 +126,15 @@ func (tier *storeTier) Close() error {
 	return tier.closeErr
 }
 
-// closeStore closes the store tier once: it drains the uploads and gives up
-// the index's lock. The disk cache stays open.
+// closeStore closes the store tier a single time: it drains the uploads and
+// gives up the index's lock. The disk cache stays open.
 func (tier *storeTier) closeStore() error {
 	tier.storeOnce.Do(func() { tier.storeErr = tier.store.Close() })
 	return tier.storeErr
 }
 
 // report names what each tier answered and what it moved. Close drains the
-// uploads first, so the totals here are final rather than in flight.
+// uploads so the totals here are final rather than in flight.
 func (tier *storeTier) report() {
 	web := tier.store.SummarySnapshot()
 	cacheNotice("cache: local %s, %s stored | server %s, %s pushed | index %s",

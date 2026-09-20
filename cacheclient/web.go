@@ -38,26 +38,26 @@ type WebConfig struct {
 	IndexDir string
 	// IndexMaxAge is how long a disk copy of the index is served as
 	// authoritative with no request to the server. An older copy is still
-	// served at once, as non-authoritative, while a refresh runs in the
-	// background. Zero takes IndexMaxAgeDefault. A negative value revalidates
-	// on every load.
+	// served at the same time, as non-authoritative, while a refresh runs in
+	// the background. empty takes IndexMaxAgeDefault. A negative value
+	// revalidates on every load.
 	IndexMaxAge time.Duration
 }
 
-// IndexMaxAgeDefault is the floor a zero WebConfig.IndexMaxAge takes outside
-// CI. The run window in indexRunWindow raises it to cover a longer run.
+// IndexMaxAgeDefault is the floor a empty WebConfig.IndexMaxAge takes
+// outside CI. The run window in indexRunWindow raises it to cover a longer run.
 const IndexMaxAgeDefault = 10 * time.Minute
 
-// IndexMaxAgeCI is what a zero WebConfig.IndexMaxAge takes in CI: a disk copy
-// is served however old it is, for the whole run. A CI run builds once from a
-// fresh checkout, so a copy taken at its start describes the store as well at
-// the end as it did at the start, and re-fetching tens of megabytes in the
-// middle of it buys nothing.
+// IndexMaxAgeCI is what a empty WebConfig.IndexMaxAge takes in CI: a disk
+// copy is served however old it is, for the whole run. A CI run builds a
+// single time from a fresh checkout, so a copy taken at its start describes
+// the store as well at the end as it did at the start, and re-fetching tens
+// of megabytes in the middle of it buys nothing.
 const IndexMaxAgeCI = time.Duration(math.MaxInt64)
 
-// defaultIndexMaxAge resolves a zero IndexMaxAge for the index copy at
-// indexPath. The package's tests replace it with one returning a negative
-// duration, so a test of the revalidation path sees a request.
+// defaultIndexMaxAge resolves a empty IndexMaxAge for the index copy at
+// indexPath. The package's tests replace it with a single returning a
+// negative duration, so a test of the revalidation path sees a request.
 var defaultIndexMaxAge = resolveDefaultIndexMaxAge
 
 // resolveDefaultIndexMaxAge is the default index max age for the copy at
@@ -100,15 +100,15 @@ type WebBackend struct {
 	target    string // GOOS/GOARCH this build produces, for request provenance
 	indexDir  string // where the key index's disk copy lives; empty is os.TempDir
 	// indexMaxAge is how long the disk copy is served with no request. The
-	// index loads on the first Get or Put, under indexOnce, so a go command
-	// that never touches the cache never pays for it.
+	// index loads on the earliest Get or Put, under indexOnce, so a go
+	// command that never touches the cache never pays for it.
 	indexMaxAge time.Duration
 	indexOnce   sync.Once
-	// indexTiming bounds the first use's wait for an index and paces the lock
-	// that keeps processes sharing IndexDir to one download.
+	// indexTiming bounds the earliest use's wait for an index and paces the
+	// lock that keeps processes sharing IndexDir to a single download.
 	indexTiming indexTiming
 	// indexLoad is the load running in the background, or nil before the
-	// first use. See web_index_load.go.
+	// earliest use. See web_index_load.go.
 	indexLoad atomic.Pointer[indexLoad]
 	// moduleLate carries a module path learned after the backend was built. A
 	// consumer often knows its endpoint before it knows which module it is
@@ -118,12 +118,9 @@ type WebBackend struct {
 	Pool       ConcurrencyTracker // HTTP connection pool usage (shared across all Servers)
 	Latency    *LatencyStats      // optional; set by Server for sub-operation tracking
 	keysMu     sync.RWMutex
-	// keys holds RAW ACTION HASHES, not cache-key strings. A key string is the
-	// same 32-byte hash written as 64 hex characters behind a fixed prefix, so
-	// a string set costs about three times the memory and charges a hex encode
-	// and an allocation per entry to build. A large cache is hundreds of
-	// thousands of entries, and that set is built at startup before the build
-	// does anything at all.
+	// keys holds RAW ACTION HASHES, not cache-key strings. A large cache is
+	// hundreds of thousands of entries, and that set is built at startup
+	// before the build does anything at all.
 	keys       *hashSet // known keys, from the startup index fetch + Put claims
 	indexEmpty bool     // remote index was empty at startup: nothing to batch-probe for
 	// indexAuthoritative marks a fresh, server-confirmed index: an absent key can then miss without a probe.
@@ -148,12 +145,12 @@ type WebBackend struct {
 	// the build. Leaving it nil turns look-ahead off entirely: with nowhere to
 	// put an object nobody has asked for yet, fetching it is pure cost. That is
 	// not hypothetical -- the pool's ancestor rode every batch response and its
-	// entries went straight to the garbage collector, because the one consumer
-	// never set this.
+	// entries went straight to the garbage collector, because the thing
+	// consumer never set this.
 	//
-	// Entries arrive on the pool's own goroutines, several at once, and carry
-	// COMPRESSED bodies: a consumer that already holds an object locally drops
-	// it without paying to decompress it. Verify anything kept with Verify.
+	// Entries arrive on the pool's own goroutines, several at the same time,
+	// and carry COMPRESSED bodies: a consumer that already holds an object
+	// locally drops it without paying to decompress it. Verify anything kept with Verify.
 	OnBatchEntries func(entries []BatchEntry)
 
 	// Miss reason counters for diagnostics.
@@ -310,16 +307,13 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		TLSClientConfig: &tls.Config{},
-		// HTTP/1.1, deliberately. HTTP/2 multiplexes every request onto ONE TCP
-		// connection, so MaxConnsPerHost below stops meaning anything: the pool
-		// holds one connection with one congestion window, and throughput ramps
-		// at whatever that single window opens at. This workload is many
-		// independent blobs and wants many independent windows, which is what
-		// the connection pool gives it once nothing collapses them.
+		// This workload is many independent blobs and wants many independent
+		// windows, which is what the connection pool gives it a single time
+		// nothing collapses them.
 		//
-		// H2's advantages -- header compression, one handshake -- are worth
-		// little here: the requests are few and large, and the bodies dwarf the
-		// headers.
+		// H2's advantages -- header compression, a single handshake -- are
+		// worth little here: the requests are few and large, and the bodies
+		// dwarf the headers.
 		ForceAttemptHTTP2:     false,
 		TLSNextProto:          map[string]func(string, *tls.Conn) http.RoundTripper{},
 		MaxIdleConns:          MaxConnsPerHost,
@@ -338,8 +332,8 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 		// progress purely for being big. This client's responses are bulk: a
 		// batch get is tens of megabytes and the key index is larger still. At
 		// the bandwidth a remote CI runner actually gets, anything past about
-		// ten megabytes could not finish inside the old deadline, and every one
-		// of them died mid-body and was retried from the start.
+		// megabytes could not finish inside the old deadline, and each of them
+		// died mid-body and was retried from the start.
 		//
 		// Liveness is the transport's job instead: ResponseHeaderTimeout above
 		// bounds a server that never answers, which is what a deadline here was
@@ -397,8 +391,8 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	b.prefetchHold.limit = lookAheadBudget()
 	b.knownMiss = newHashSet(0)
 	b.held = newHashSet(0)
-	// Zero stays zero. The default depends on the copy's own path and on how
-	// long this run has been going, which is known at load time and not here.
+	// Empty stays empty. The default depends on the copy's own path and on
+	// how long this run has been going, which is known at load time and not here.
 	b.indexMaxAge = cfg.IndexMaxAge
 	b.indexTiming = defaultIndexTiming()
 	return b, nil
@@ -540,7 +534,7 @@ func (b *WebBackend) Close() error {
 		l.cancel()
 		<-l.done
 	}
-	// The prep pool first, since it still owes the coalescer every object it holds.
+	// The prep pool since it still owes the coalescer every object it holds.
 	b.prep.Close()
 	// Flush the PUT coalescer up front: an unflushed upload was claimed in the index but never stored.
 	if b.putBatchStop != nil {
@@ -548,8 +542,8 @@ func (b *WebBackend) Close() error {
 		<-b.putBatchDone
 	}
 	// The GET coalescer before the look-ahead, because a batch SEEDS the
-	// look-ahead as its last act. Closing the pool first dropped every seed an
-	// in-flight batch was about to make, silently and on timing alone.
+	// look-ahead as its last act. Closing the pool earliest dropped every seed
+	// an in-flight batch was about to make, silently and on timing alone.
 	if b.batchStop != nil {
 		close(b.batchStop)
 		<-b.batchDone
@@ -573,8 +567,7 @@ func (b *WebBackend) GetStats() *CacheStats { return &b.Stats }
 // something an operator can act on. A key says nothing about who wanted it; the
 // module says which project's build is running, the target says which port it
 // is building for, and the kind separates the requests a build is blocked on
-// from the ones the look-ahead pool made on its own. Without that last one a
-// server cannot tell a slow build from a busy one.
+// from the ones the look-ahead pool made on its own.
 func (b *WebBackend) signRequest(req *http.Request) {
 	req.SetBasicAuth(b.accessKey, b.secretKey)
 	if module := b.moduleName(); module != "" {
@@ -598,7 +591,7 @@ func (b *WebBackend) SetModule(path string) {
 	}
 }
 
-// moduleName is the configured module path, or one set later.
+// moduleName is the configured module path, or a single set later.
 func (b *WebBackend) moduleName() string {
 	if p := b.moduleLate.Load(); p != nil {
 		return *p
@@ -613,22 +606,17 @@ const (
 	HeaderTarget    = "X-Cache-Target"    // GOOS/GOARCH the build is producing
 	HeaderClient    = "X-Cache-Client"    // this client's wire version
 	HeaderKind      = "X-Cache-Kind"      // KindCritical or KindLookAhead
-	HeaderBuild     = "X-Cache-Build"     // one build, so prefetch suppression ends with it
+	HeaderBuild     = "X-Cache-Build"     // a single build, so prefetch suppression ends
 )
 
 // buildID names this process's build. It is random per process, and it exists
 // for the server's prefetch suppression.
 //
-// The server must not hand one look-ahead request the same window it just
-// handed the last one, so it remembers what it sent. What it remembered was the
-// USER, for five minutes, and a user runs many builds in five minutes: the
-// first build got the window and every build after it got an empty one, so a
-// second build in a row fell back to fetching every object on its critical
-// path. Scoped to the build, suppression still moves the window within a build
-// and ends when the build does.
+// Scoped to the build, suppression still moves the window within a build and
+// ends when the build does.
 //
-// A collision costs one build a suppressed window, so a failed read of the
-// system source falls back to the clock and the pid rather than to a constant.
+// A collision costs a single build a suppressed window, so a failed read of
+// the system source falls back to the clock and the pid rather than to a constant.
 var buildID = newBuildID()
 
 func newBuildID() string {
@@ -640,7 +628,7 @@ func newBuildID() string {
 }
 
 // Request kinds. A server that cannot tell these apart cannot tell a build
-// that is waiting from one that is merely reading ahead.
+// that is waiting from a single that is merely reading ahead.
 const (
 	KindCritical  = "critical"
 	KindLookAhead = "look-ahead"

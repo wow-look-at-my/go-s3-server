@@ -11,10 +11,8 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// IndexWaitDefault is how long the first Get or Put waits for the key index
-// when no disk copy exists. Past it the build goes on without one: a key the
-// index would have listed is batch-probed instead, and the load keeps running
-// in the background.
+// IndexWaitDefault is how long the earliest Get or Put waits for the key
+// index when no disk copy exists.
 const IndexWaitDefault = 15 * time.Second
 
 // indexSlowLoad is the load time past which the load is reported at warning
@@ -22,9 +20,9 @@ const IndexWaitDefault = 15 * time.Second
 const indexSlowLoad = 5 * time.Second
 
 // indexTiming holds the waits of an index load. It is per backend so a test
-// can shorten one without touching another test's backend.
+// can shorten a single without touching another test's backend.
 type indexTiming struct {
-	// wait bounds how long the first use blocks on a load with no disk copy.
+	// wait bounds how long the earliest use blocks on a load with no disk copy.
 	wait time.Duration
 	// lockHeartbeat is how often the process holding the lock touches it.
 	lockHeartbeat time.Duration
@@ -46,7 +44,7 @@ func defaultIndexTiming() indexTiming {
 // indexLoad is a load running in the background.
 type indexLoad struct {
 	cancel context.CancelFunc
-	done   chan struct{} // closed once the load has installed its result
+	done   chan struct{} // closed a single time the load has installed
 }
 
 // keysJournal holds the claims and drops made on the live key set while a
@@ -75,14 +73,14 @@ func (b *WebBackend) dropKeyLocked(h actionHash) {
 	}
 }
 
-// ensureIndex loads the key index the first time the cache is used. Every
-// path that reads or claims a key calls it first.
+// ensureIndex loads the key index the earliest time the cache is used.
+// Every path that reads or claims a key calls it earliest.
 //
 // It never blocks on a download while any disk copy exists. A copy younger
-// than the max age is authoritative and final. An older one is installed at
-// once as non-authoritative, and the refresh runs in the background. With no
-// copy at all the first use waits up to indexTiming.wait for the load, then
-// goes on non-authoritative while the load continues.
+// than the max age is authoritative and final. An older a single is
+// installed at the same time as non-authoritative, and the refresh runs in
+// the background. With no copy at all the earliest use waits up to
+// indexTiming.wait for the load, then goes on non-authoritative while the load continues.
 func (b *WebBackend) ensureIndex() {
 	b.indexOnce.Do(b.startIndexLoad)
 }
@@ -182,12 +180,12 @@ func (b *WebBackend) adoptIndex(keys *hashSet, authoritative bool) {
 // refreshIndex brings the disk copy up to date and returns the keys to
 // install, whether they are authoritative, and where they came from.
 //
-// One process at a time downloads into a directory. The first to create the
-// lock file next to the copy fetches; any other waits for the lock to go and
-// then reads what the holder wrote. A holder that dies leaves a lock nobody
-// touches, and past indexTiming.lockStale the lock is removed and the fetch
-// taken over. A holder whose fetch failed leaves the copy as it was; the
-// waiter then tries once itself.
+// A single process at a time downloads into a directory. the earliest to
+// create the lock file next to the copy fetches; any other waits for the
+// lock to go and then reads what the holder wrote. A holder that dies leaves
+// a lock nobody touches, and past indexTiming.lockStale the lock is removed
+// and the fetch taken over. A holder whose fetch failed leaves the copy as
+// it was; the waiter then tries a single time itself.
 func (b *WebBackend) refreshIndex(ctx context.Context, path string, disk diskIndex) (*hashSet, bool, string) {
 	lockPath := path + ".lock"
 	for attempt := 0; ; attempt++ {
@@ -219,8 +217,8 @@ func (b *WebBackend) refreshIndex(ctx context.Context, path string, disk diskInd
 // runs, and releases it.
 func (b *WebBackend) fetchIndexLocked(ctx context.Context, path string, disk diskIndex, lock *indexLock) (*hashSet, bool, string) {
 	defer lock.release()
-	// A refresh that landed between the disk read and the lock is the one this
-	// fetch would repeat.
+	// A refresh that landed between the disk read and the lock is the thing
+	// this fetch would repeat.
 	if cur, ok := b.refreshedSince(path, disk); ok {
 		logging.Infof("cacheprog: web index: %d keys from another process's refresh", cur.count)
 		return cur.keys, true, "another process fetched it"
@@ -242,7 +240,7 @@ func (b *WebBackend) refreshedSince(path string, disk diskIndex) (diskIndex, boo
 }
 
 // awaitIndexLock waits for the lock at lockPath to be released, or to go
-// stale, in which case it removes it. It reports false when ctx ends first.
+// stale, in which case it removes it. It reports false when ctx ends earliest.
 func (b *WebBackend) awaitIndexLock(ctx context.Context, lockPath string) bool {
 	tick := time.NewTicker(b.indexTiming.lockPoll)
 	defer tick.Stop()
@@ -264,9 +262,9 @@ func (b *WebBackend) awaitIndexLock(ctx context.Context, lockPath string) bool {
 	}
 }
 
-// indexLock is the lock file one process holds while it downloads the index.
-// It is a file created exclusively rather than an OS lock, so it works on
-// every platform and filesystem the directory can be on.
+// indexLock is the lock file a single process holds while it downloads the
+// index. It is a file created exclusively rather than an OS lock, so it
+// works on every platform and filesystem the directory can be on.
 type indexLock struct {
 	path string
 }
@@ -291,8 +289,6 @@ func (l *indexLock) release() {
 	os.Remove(l.path)
 }
 
-// heartbeat touches the lock every interval until stop is called, so a
-// waiter can tell a live holder from a dead one.
 func (l *indexLock) heartbeat(every time.Duration) (stop func()) {
 	tick := time.NewTicker(every)
 	quit := make(chan struct{})

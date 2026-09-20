@@ -15,10 +15,10 @@ const lockHold = 10 * time.Second
 const lockPoll = 20 * time.Millisecond
 
 // transformFile reads a file, hands its contents to change, and writes back
-// what change answers. One process does this at a time, through a lock file
-// whose writer is whoever creates it, because cmd/go's own lockedfile package
-// is unreachable from this module. An error from change is returned as it
-// stands, and the file keeps its bytes.
+// what change answers. a single process does this at a time, through a lock
+// file whose writer is whoever creates it, because cmd/go's own lockedfile
+// package is unreachable from this module. An error from change is returned
+// as it stands, and the file keeps its bytes.
 func transformFile(path string, change func([]byte) ([]byte, error)) error {
 	release, err := takeLock(path + ".lock")
 	if err != nil {
@@ -37,7 +37,7 @@ func transformFile(path string, change func([]byte) ([]byte, error)) error {
 }
 
 // takeLock creates the lock file, waiting for whoever holds it. A lock left by
-// a process that died is removed once it is older than lockHold.
+// a process that died is removed a single time it is older than lockHold.
 func takeLock(path string) (release func(), err error) {
 	deadline := time.Now().Add(lockHold * 2)
 	for {

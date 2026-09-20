@@ -1,6 +1,6 @@
-// Copyright 2017 The Go Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// All rights reserved. Use of this source code is
+// governed by a BSD-style license that can be found
+// in the LICENSE file.
 
 package cachedisk
 
@@ -25,8 +25,8 @@ func dummyID(num int) [HashSize]byte {
 	return out
 }
 
-// An entry survives being overwritten, and a second cache over the same
-// directory reads what the first one wrote.
+// An entry survives being overwritten, and another cache over the same
+// directory reads what the earliest a single wrote.
 func TestDiskCacheSharesADirectory(t *testing.T) {
 	dir := t.TempDir()
 	_, err := Open(filepath.Join(dir, "notexist"))
@@ -59,7 +59,7 @@ func TestDiskCacheSharesADirectory(t *testing.T) {
 }
 
 // Every entry written is readable, both as it is written and after the whole
-// set is in. The second pass is what catches a write that a later one moved.
+// set is in. the next pass is what catches a write that a later a single moved.
 func TestDiskCacheKeepsEveryEntry(t *testing.T) {
 	cache, err := Open(t.TempDir())
 	require.NoError(t, err)
@@ -84,9 +84,9 @@ func TestDiskCacheKeepsEveryEntry(t *testing.T) {
 	}
 }
 
-// Verify mode exists to catch an action that is not reproducible. A second Put
-// of different bytes under one key is exactly that, and it panics rather than
-// storing quietly.
+// Verify mode exists to catch an action that is not reproducible. another Put
+// of different bytes under a single key is exactly that, and it panics rather
+// than storing quietly.
 func TestDiskCacheVerifyModePanicsOnAMismatch(t *testing.T) {
 	t.Setenv("GODEBUG", "gocacheverify=1")
 	initEnv()
@@ -164,7 +164,7 @@ func TestDiskCacheTrimKeepsWhatWasUsed(t *testing.T) {
 	// A trim inside the trim interval does nothing, and the stamp says so.
 	now = start + 80000
 	require.NoError(t, cache.Trim())
-	// This read is what makes the first key one a build has used since.
+	// This read is what makes the earliest key a single a build has used since.
 	_, err = cache.Get(id)
 	require.NoError(t, err)
 	cache.OutputFile(entry.OutputID)
@@ -172,7 +172,7 @@ func TestDiskCacheTrimKeepsWhatWasUsed(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, stamp, again, "a trim inside the interval must do nothing")
 
-	// Five days on. The first key was read and stays. The second was not.
+	// Days on. the earliest key was read and stays. the next was not.
 	now += 5 * 86400
 	require.NoError(t, cache.Trim())
 	_, err = cache.Get(id)
@@ -182,7 +182,7 @@ func TestDiskCacheTrimKeepsWhatWasUsed(t *testing.T) {
 	_, err = cache.Get(dummyID(2))
 	require.Error(t, err, "the trim must drop a key nothing has read")
 
-	// Another five days. checkTime reads a stamp without moving it.
+	// Another days. checkTime reads a stamp without moving it.
 	now += 5 * 86400
 	require.NoError(t, cache.Trim())
 	checkTime(actionFile, kept)
@@ -194,7 +194,7 @@ func TestDiskCacheTrimKeepsWhatWasUsed(t *testing.T) {
 	checkTime(actionFile, kept)
 	checkTime(outputFile, kept)
 
-	// A full day since the last trim. This one runs, and the key goes.
+	// A full day since the last trim. this runs, and the key goes.
 	now += 86400/2 + 1
 	require.NoError(t, cache.Trim())
 	_, err = cache.Get(dummyID(1))

@@ -1,6 +1,6 @@
-// Copyright 2017 The Go Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// All rights reserved. Use of this source code is
+// governed by a BSD-style license that can be found
+// in the LICENSE file.
 
 // Package cachedisk is the build cache's directory on disk: the entry files,
 // the output files, and the trim that drops what nothing has read.
@@ -61,10 +61,10 @@ type DiskCache struct {
 
 // Open answers the cache in a directory.
 //
-// Processes on ONE machine may share a directory: they coordinate with file
-// locks, and duplicate work rather than corrupt it. Processes on different
-// machines may not, because a network filesystem's locking cannot be relied
-// on.
+// Processes on a single machine may share a directory: they coordinate with
+// file locks, and duplicate work rather than corrupt it. Processes on
+// different machines may not, because a network filesystem's locking cannot
+// be relied on.
 func Open(dir string) (*DiskCache, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
@@ -86,7 +86,7 @@ func Open(dir string) (*DiskCache, error) {
 	return c, nil
 }
 
-// Dir is where a tier above this one keeps its own state too.
+// Dir is where a tier above this keeps its own state too.
 func (c *DiskCache) Dir() string { return c.dir }
 
 // KeepVerified writes a body whose output ID a tier above checked already.
@@ -122,7 +122,6 @@ func (e *MissError) Unwrap() error {
 }
 
 const (
-	// action entry file is "v1 <hex id> <hex out> <decimal size space-padded to 20 bytes> <unixnano space-padded to 20 bytes>\n"
 	hexSize   = HashSize * 2
 	entrySize = 2 + 1 + hexSize + 1 + hexSize + 1 + 20 + 1 + 20 + 1
 )
@@ -185,7 +184,7 @@ func (c *DiskCache) get(id ActionID) (Entry, error) {
 		return missing(err)
 	}
 	defer f.Close()
-	entry := make([]byte, entrySize+1) // +1 to detect whether f is too long
+	entry := make([]byte, entrySize+1)
 	if n, err := io.ReadFull(f, entry); n > entrySize {
 		return missing(errors.New("too long"))
 	} else if err != io.ErrUnexpectedEOF {
@@ -281,10 +280,7 @@ func (c *DiskCache) OutputFile(out OutputID) string {
 
 const (
 	// A file's mtime is its time of last use, stamped no more often than this,
-	// so that a build does not rewrite every inode it reads. A scan runs no
-	// more often than trimInterval, and drops what nothing has read for
-	// trimLimit, where a month of measured reuse ran out
-	// (golang.org/issue/22990).
+	// so that a build does not rewrite every inode it reads.
 	mtimeInterval = 1 * time.Hour
 	trimInterval  = 24 * time.Hour
 	trimLimit     = 5 * 24 * time.Hour
@@ -309,8 +305,8 @@ func (c *DiskCache) Trim() error {
 	now := c.now()
 
 	// dir/trim.txt holds when the last trim finished. A stamp that cannot be
-	// parsed, or one from the future, trims anyway: a trim over an empty cache
-	// costs nothing, and a full one may be what corrupted the stamp.
+	// parsed, or a single from the future, trims anyway: a trim over an empty
+	// cache costs nothing, and a full a single may be what corrupted the stamp.
 	skipTrim := func(data []byte) bool {
 		if t, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64); err == nil {
 			lastTrim := time.Unix(t, 0)
@@ -320,7 +316,7 @@ func (c *DiskCache) Trim() error {
 		}
 		return false
 	}
-	// Read it first, apart from the exclusive pass, so a skip takes no lock.
+	// Read it apart from the exclusive pass, so a skip takes no lock.
 	stamp := filepath.Join(c.dir, "trim.txt")
 	if data, err := os.ReadFile(stamp); err == nil {
 		if skipTrim(data) {
@@ -330,7 +326,7 @@ func (c *DiskCache) Trim() error {
 
 	errFileChanged := errors.New("file changed")
 
-	// Stamp before the trim starts, so two commands here together do not both trim.
+	// Stamp before the trim starts, so commands here together do not both trim.
 	err := transformFile(stamp, func(data []byte) ([]byte, error) {
 		// A stamp that moved since the read above belongs to another command.
 		if skipTrim(data) {
@@ -357,7 +353,7 @@ func (c *DiskCache) Trim() error {
 
 // trimSubdir trims a single cache subdirectory.
 func (c *DiskCache) trimSubdir(subdir string, cutoff time.Time) {
-	// Read every name first: a remove can move the scan's own offset.
+	// Read every name earliest: a remove can move the scan's own offset.
 	f, err := os.Open(subdir)
 	if err != nil {
 		return
@@ -407,7 +403,7 @@ func (c *DiskCache) putIndexEntry(id ActionID, out OutputID, size int64, allowVe
 	}
 	_, err = f.WriteString(entry)
 	if err == nil {
-		// AFTER the write: an O_TRUNC undoes an equal write while this one runs.
+		// AFTER the write: an O_TRUNC undoes an equal write while this runs.
 		err = f.Truncate(int64(len(entry)))
 	}
 	if closeErr := f.Close(); err == nil {
@@ -428,7 +424,7 @@ type noVerifyReadSeeker struct {
 	io.ReadSeeker
 }
 
-// Put stores an output under an action's key. It may read the file twice, and the content must not change between passes.
+// Put stores an output under an action's key. It may read the file again, and the content must not change between passes.
 func (c *DiskCache) Put(id ActionID, file io.ReadSeeker) (OutputID, int64, error) {
 	wrapper, isNoVerify := file.(noVerifyReadSeeker)
 	if isNoVerify {
@@ -506,8 +502,7 @@ func (c *DiskCache) copyFile(file io.ReadSeeker, out OutputID, size int64) error
 		return err
 	}
 	defer f.Close()
-	// One zero-length body exists, so the file is already right. This also
-	// gives the copy below a last byte to hold back.
+	// This also gives the copy below a last byte to hold back.
 	if size == 0 {
 		return nil
 	}

@@ -1,6 +1,6 @@
-// Copyright 2026 The Go Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// All rights reserved. Use of this source code is
+// governed by a BSD-style license that can be found
+// in the LICENSE file.
 
 package cacheclient
 
@@ -65,7 +65,7 @@ func TestBrokerChildStoresAndReadsThroughTheOwner(t *testing.T) {
 		"the layout is the owner's, and the child computes the same name")
 }
 
-// A key nothing stored is an ordinary miss, exactly as a local one is.
+// A key nothing stored is an ordinary miss, exactly as a local a single is.
 func TestBrokerChildReportsAMissAsAMiss(t *testing.T) {
 	_, child := serveOwner(t, t.TempDir())
 
@@ -76,7 +76,7 @@ func TestBrokerChildReportsAMissAsAMiss(t *testing.T) {
 }
 
 // The owner names which tier answered, and a child passes that on. Without it
-// a trace cannot tell a hit off local disk from one fetched over the network.
+// a trace cannot tell a hit off local disk from a single fetched over the network.
 func TestBrokerChildReportsTheOwnersTier(t *testing.T) {
 	_, child := serveOwner(t, t.TempDir())
 
@@ -91,9 +91,6 @@ func TestBrokerChildReportsTheOwnersTier(t *testing.T) {
 	assert.Equal(t, TierDisk, tier)
 }
 
-// Many children asking for one action share the first one's lookup, and many
-// offering one body store it once. Nothing here polls: an asker parks until
-// the first one's channel closes.
 func TestBrokerSharesOneLookupAndOneStore(t *testing.T) {
 	_, child := serveOwner(t, t.TempDir())
 
@@ -123,8 +120,8 @@ func TestBrokerSharesOneLookupAndOneStore(t *testing.T) {
 	group.Wait()
 }
 
-// The name outlives the process that made it, so a stale one in the
-// environment must not turn the next process into a child of nothing.
+// The name outlives the process that made it, so a stale a single in
+// the environment must not turn the next process into a child of nothing.
 func TestBrokerDeadNameMakesTheNextProcessTheOwner(t *testing.T) {
 	t.Setenv(brokerOffEnv, "")
 	t.Setenv(brokerEnv, "gobuildcache-nobody-holds-this")

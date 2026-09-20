@@ -2,16 +2,15 @@ package cacheclient
 
 import "sync/atomic"
 
-// liveTier is the store tier this process owns, if it owns one.
 var liveTier atomic.Pointer[storeTier]
 
 // CloseStore drains this process's uploads and gives up the key index's lock.
 // The directory stays open, so a caller may still read and write it.
 //
 // A consumer calls it as the process exits. Every go command opens the cache,
-// and one that exits holding the index's lock makes the next wait for it. A
-// command that never runs a build therefore has to give it up here, because
-// nothing else will call Close.
+// and a single that exits holding the index's lock makes the next wait for
+// it. A command that never runs a build therefore has to give it up here,
+// because nothing else will call Close.
 func CloseStore() error {
 	if tier := liveTier.Load(); tier != nil {
 		return tier.closeStore()
@@ -22,12 +21,12 @@ func CloseStore() error {
 // OpenCache answers the cache this process should use, and it is the whole
 // decision a consumer makes about caching.
 //
-// The first process of a build opens the directory, layers the store under it
-// when one is configured, and serves the result to every process it starts.
-// Each of those asks it instead: no directory of its own, no key index of its
-// own, and no connection to the store. That is why the disk cache, the broker
-// and the store client are one module -- a consumer holding a Cache should not
-// have to know which of the three answered.
+// The earliest process of a build opens the directory, layers the store under
+// it when a single is configured, and serves the result to every process it
+// starts. Each of those asks it instead: no directory of its own, no key index
+// of its own, and no connection to the store. That is why the disk cache, the
+// broker and the store client are a single module -- a consumer holding a
+// Cache should not have to know which of each answered.
 //
 // A child that cannot reach the owner opens the directory itself. A slower
 // build is the cost of that; a build that stops is not.

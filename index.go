@@ -187,12 +187,11 @@ func (idx *Index) Put(key string, size int64) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	// Append to the unsorted pending buffer, which is O(1). drainEntriesLocked
-	// merges and sorts it for the next reader.
+	// drainEntriesLocked merges and sorts it for the next reader.
 	//
 	// Nothing appends beside this guard. An unguarded append here built the
 	// very list the guard suppresses, so entriesOff saved nothing, and where
-	// tracking was on it recorded every key a second time.
+	// tracking was on it recorded every key another time.
 	if !idx.entriesOff {
 		idx.pendingEntries = append(idx.pendingEntries, indexEntry{compactKey: ck, mtimeUnix: now})
 	}

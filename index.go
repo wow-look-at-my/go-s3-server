@@ -43,14 +43,11 @@ type Index struct {
 	mu      sync.RWMutex
 	entries []indexEntry // sorted by mtime for NearbyKeys binary search
 
-	// entriesOff turns the mtime list off. That list exists for exactly one
-	// caller, /_batch/get's prefetch window, and it is the largest thing this
-	// process holds: an indexEntry is 56 bytes, which is 95 MB at 1.7M keys,
-	// more than the hash list and the serialized blob together. With prefetch
-	// off, NearbyKeys is never called and every one of those bytes is held for
-	// a reader that does not exist.
+	// entriesOff turns the mtime list off. With prefetch off, NearbyKeys is
+	// never called and each of those bytes is held for a reader that does not
+	// exist.
 	//
-	// The zero value keeps the list, so an Index built directly behaves as it
+	// An unset value keeps the list, so an Index built directly behaves as it
 	// always has; main turns it off when the config leaves prefetch off.
 	entriesOff bool
 
@@ -97,32 +94,24 @@ type indexEntry struct {
 }
 
 // maxRetainedPending caps how much pending-buffer capacity survives a drain.
-// indexEntryBytes is what one entry costs in the mtime list: the 32-byte
+// indexEntryBytes is what a single entry costs in the mtime list: the 32-byte
 // action hash, the 16-byte string header compactKey carries for a key outside
 // the cacheprog pattern, and the 8-byte mtime. TestIndexEntrySize holds the
 // struct to it.
 const indexEntryBytes = gbciHashSize + 16 + 8
 
-// indexHashBytes is what one key costs in the sorted hash list, which is also
-// what it costs in the serialized blob: the blob's body is that list.
+// indexHashBytes is what a single key costs in the sorted hash list, which is
+// also what it costs in the serialized blob: the blob's body is that list.
 const indexHashBytes = gbciHashSize
 
 // indexEntriesDefault is whether a new Index maintains the mtime list.
-// SetIndexEntryTracking changes it before any Index exists, so the startup
-// rebuild does not spend the walk building a list the server is about to
-// throw away -- a 95 MB spike at 1.7M keys, at the moment a restarting
-// container is least able to afford one.
 var indexEntriesDefault = true
 
 // SetIndexEntryTracking decides whether indexes built after it maintain the
 // mtime list. Call it before NewStorage.
 func SetIndexEntryTracking(on bool) { indexEntriesDefault = on }
 
-// maxRetainedPending caps how much pending-buffer capacity survives a drain. A
-// rebuild or a PUT burst can grow these to the size of the whole cache, and
-// reslicing to [:0] holds that array for the life of the process; re-growing a
-// small buffer on the next burst is cheaper than keeping tens of megabytes
-// permanently.
+// maxRetainedPending caps how much pending-buffer capacity survives a drain.
 const maxRetainedPending = 4096
 
 func resetPending[T any](s []T) []T {
@@ -181,7 +170,7 @@ func (idx *Index) EntryTrackingEnabled() bool {
 	return !idx.entriesOff
 }
 
-// BlobInterval reports the least time between two serializations.
+// BlobInterval reports the least time between serializations.
 func (idx *Index) BlobInterval() time.Duration { return time.Duration(idx.blobMinInterval.Load()) }
 
 // Put records a key with the current time and queues its action-ID hash
@@ -202,9 +191,9 @@ func (idx *Index) Put(key string, size int64) {
 	// (see drainEntriesLocked), so a burst of concurrent PUTs no longer convoys
 	// behind a full re-sort.
 	idx.pendingEntries = append(idx.pendingEntries, indexEntry{compactKey: ck, mtimeUnix: now})
-	// Append to the unsorted pending buffer only — O(1). The merge+sort into the
-	// mtime-ordered list is deferred to the next reader (see drainEntriesLocked),
-	// so a burst of concurrent PUTs no longer convoys behind a full re-sort.
+	// The merge+sort into the mtime-ordered list is deferred to the next reader
+	// (see drainEntriesLocked), so a burst of concurrent PUTs no longer convoys
+	// behind a full re-sort.
 	if !idx.entriesOff {
 		idx.pendingEntries = append(idx.pendingEntries, indexEntry{compactKey: ck, mtimeUnix: now})
 	}
@@ -456,22 +445,17 @@ const nearbyScanFactor = 8
 // It walks OUTWARD from the window's midpoint rather than collecting the
 // window and sorting it. Entries are mtime-sorted, so distance from the
 // midpoint rises monotonically in each direction: taking whichever side is
-// nearer, one at a time, yields exactly the nearest-first order a sort would,
-// and stops as soon as the limit is full.
+// nearer, a single at a time, yields exactly the nearest-earliest order a
+// sort would, and stops as soon as the limit is full.
 //
-// The sort cost the caller a slice holding every entry in the window and an
-// O(n log n) over it, for a limit of a couple of hundred. At 100k indexed
-// keys inside one window that was ~9 MB and 633 allocations PER REQUEST; the
-// walk holds nothing but the result.
-//
-// Only a survivor is turned into a key string: rebuilding one per examined
-// candidate is the other allocation this bounds.
+// Only a survivor is turned into a key string: rebuilding a single per
+// examined candidate is the other allocation this bounds.
 func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded map[compactKey]bool, skip func(string) bool) []string {
 	if limit <= 0 || len(idx.entries) == 0 {
 		return nil
 	}
-	// The window's bounds, as positions: lo is its first entry, hi one past
-	// its last.
+	// The window's bounds, as positions: lo is its earliest entry, hi a
+	// single past its last.
 	lo := sort.Search(len(idx.entries), func(i int) bool {
 		return idx.entries[i].mtimeUnix >= startUnix
 	})
@@ -516,7 +500,7 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded
 	// walk stops at the limit on its own.
 	budget := limit * nearbyScanFactor
 	for len(keys) < limit && (left >= lo || right < hi) {
-		// Take whichever side is nearer; with only one side left, take it.
+		// Take whichever side is nearer; with only a single side left, take it.
 		var pos int
 		switch {
 		case left < lo:
@@ -649,9 +633,7 @@ func (idx *Index) entryCount() int {
 	return len(idx.entries) + len(idx.pendingEntries)
 }
 
-// hashCount sizes a rebuild's buffers. It counts hashes rather than entries,
-// because the entry list is empty on a server with prefetch off and a zero
-// hint makes the walk grow a million-element slice by doubling.
+// hashCount sizes a rebuild's buffers.
 func (idx *Index) hashCount() int {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()

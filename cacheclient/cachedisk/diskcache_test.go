@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package cacheclient
+package cachedisk
 
 import (
 	"encoding/binary"
@@ -166,6 +166,11 @@ func TestDiskCacheTrimKeepsWhatWasUsed(t *testing.T) {
 	// unchanged stamp file is what reports.
 	now = start + 80000
 	require.NoError(t, cache.Trim())
+	// Read the key here too. What the trim five days on keeps is what a build
+	// has read since, and this read is what makes it the first key.
+	_, err = cache.Get(id)
+	require.NoError(t, err)
+	cache.OutputFile(entry.OutputID)
 	again, err := os.ReadFile(filepath.Join(dir, "trim.txt"))
 	require.NoError(t, err)
 	require.Equal(t, stamp, again, "a trim inside the interval must do nothing")

@@ -119,8 +119,12 @@ func BrokerEnviron() []string {
 // StopBroker closes the socket. The consumer calls it as the process exits,
 // after every child it started has gone.
 func StopBroker() {
-	if bkr := liveBroker.Load(); bkr != nil {
+	if bkr := liveBroker.Swap(nil); bkr != nil {
 		bkr.stop()
+		// The socket is gone, so nothing may be sent to it. A child handed
+		// this process's environment after the stop would dial a name nobody
+		// answers.
+		os.Unsetenv(brokerEnv)
 	}
 }
 

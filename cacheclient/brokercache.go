@@ -17,6 +17,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
+
+	"github.com/wow-look-at-my/go-s3-server/cacheclient/cachedisk"
 )
 
 // brokerCache is the cache in a process that did not open the directory. It
@@ -102,7 +104,7 @@ func (c *brokerCache) Get(id ActionID) (Entry, error) {
 func (c *brokerCache) GetTiered(id ActionID) (Entry, string, error) {
 	resp, err := c.link.client.Get("http://broker" + brokerEntry + "?id=" + hex.EncodeToString(id[:]))
 	if err != nil {
-		return Entry{}, TierOwner, &entryNotFoundError{Err: err}
+		return Entry{}, TierOwner, cachedisk.Miss(err)
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, resp.Body)
@@ -111,7 +113,7 @@ func (c *brokerCache) GetTiered(id ActionID) (Entry, string, error) {
 		tier = TierOwner
 	}
 	if resp.StatusCode != http.StatusOK {
-		return Entry{}, tier, &entryNotFoundError{Err: errBrokerMiss}
+		return Entry{}, tier, cachedisk.Miss(errBrokerMiss)
 	}
 	entry, err := readEntry(resp.Header)
 	return entry, tier, err
@@ -166,12 +168,12 @@ func readEntry(header http.Header) (Entry, error) {
 	raw, err := hex.DecodeString(header.Get(outputHeader))
 	var out OutputID
 	if err != nil || len(raw) != len(out) {
-		return Entry{}, &entryNotFoundError{Err: errBrokerMiss}
+		return Entry{}, cachedisk.Miss(errBrokerMiss)
 	}
 	copy(out[:], raw)
 	size, err := strconv.ParseInt(header.Get(sizeHeader), 10, 64)
 	if err != nil {
-		return Entry{}, &entryNotFoundError{Err: errBrokerMiss}
+		return Entry{}, cachedisk.Miss(errBrokerMiss)
 	}
 	stamp := time.Time{}
 	if nanos, err := strconv.ParseInt(header.Get(mtimeHeader), 10, 64); err == nil {

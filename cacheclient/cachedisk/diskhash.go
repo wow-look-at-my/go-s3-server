@@ -1,10 +1,10 @@
-package cacheclient
+package cachedisk
 
 import "sync"
 
 // HashSize is the length of a cache key, in bytes. An action ID and an output
 // ID are both one of these.
-const HashSize = hashSize
+const HashSize = 32
 
 // debugHash makes the hashes a build computes report themselves. The consumer
 // computes them, so it also sets this, and the disk cache reads it to decide

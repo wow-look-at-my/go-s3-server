@@ -109,12 +109,7 @@ func (tier *storeTier) populate(entries []BatchEntry) {
 // keep writes a body the store served. Its output ID is checked already, so
 // this skips the hash Put would compute a second time.
 func (tier *storeTier) keep(id ActionID, out OutputID, data []byte) {
-	if err := tier.DiskCache.copyFile(bytesReader(data), out, int64(len(data))); err != nil {
-		return
-	}
-	// allowVerify is false: this body came off the network, so the local
-	// reproducibility check has nothing to say about it.
-	if err := tier.DiskCache.putIndexEntry(id, out, int64(len(data)), false); err != nil {
+	if err := tier.DiskCache.KeepVerified(id, out, data); err != nil {
 		return
 	}
 	tier.localPuts.Add(1)

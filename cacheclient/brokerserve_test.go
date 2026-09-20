@@ -6,6 +6,7 @@ package cacheclient
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"sync"
 	"testing"
@@ -13,6 +14,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// dummyID is a cache key with a number in it, so a test can name the entry it
+// is talking about.
+func dummyID(num int) [HashSize]byte {
+	var out [HashSize]byte
+	binary.LittleEndian.PutUint64(out[:], uint64(num))
+	return out
+}
 
 // serveOwner opens a cache over dir and serves it, then answers the cache a
 // process below would hold.
@@ -62,7 +71,7 @@ func TestBrokerChildReportsAMissAsAMiss(t *testing.T) {
 
 	_, err := child.Get(ActionID(dummyID(11)))
 	require.Error(t, err)
-	var miss *entryNotFoundError
+	var miss *MissError
 	assert.ErrorAs(t, err, &miss, "a broker miss must be the miss every caller already branches on")
 }
 

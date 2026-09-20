@@ -1,15 +1,10 @@
 package cacheclient
 
 import (
-	"bytes"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 )
-
-// bytesReader answers a reader over data, for a body that is already in hand.
-func bytesReader(data []byte) io.ReadSeeker { return bytes.NewReader(data) }
 
 // joinErrors is errors.Join, named here so the tier reads the same whatever
 // the module's Go version allows.

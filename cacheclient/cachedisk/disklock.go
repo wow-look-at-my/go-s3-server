@@ -1,4 +1,4 @@
-package cacheclient
+package cachedisk
 
 import (
 	"errors"

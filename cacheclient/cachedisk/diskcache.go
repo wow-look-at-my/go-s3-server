@@ -2,8 +2,13 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Package cache implements a build artifact cache.
-package cacheclient
+// Package cachedisk is the build cache's directory on disk: the entry files,
+// the output files, and the trim that drops what nothing has read.
+//
+// It is the half of the cache that speaks to no network, so a program that
+// must not depend on net can hold a cache anyway. The go command's bootstrap
+// build is that program.
+package cachedisk
 
 import (
 	"bytes"
@@ -31,7 +36,7 @@ type OutputID [HashSize]byte
 // Cache is the interface as used by the cmd/go.
 type Cache interface {
 	// Get returns the cache entry for the provided ActionID.
-	// On miss, the error type should be of type *entryNotFoundError.
+	// On miss, the error type should be of type *MissError.
 	//
 	// After a successful call to Get, OutputFile(Entry.OutputID) must
 	// exist on disk until Close is called (at the end of the process).
@@ -108,25 +113,47 @@ func Open(dir string) (*DiskCache, error) {
 	return c, nil
 }
 
+// Dir is the directory this cache writes. A tier above it puts its own state
+// beside the cache it describes, so builds sharing a GOCACHE share that state
+// whatever their TMPDIR.
+func (c *DiskCache) Dir() string { return c.dir }
+
+// KeepVerified writes a body whose output ID is known and already checked. A
+// tier that fetched the body has hashed it once to check it, and Put would
+// hash it a second time to derive the same answer.
+//
+// The local reproducibility check has nothing to say about a body from
+// somewhere else, so this never runs it.
+func (c *DiskCache) KeepVerified(id ActionID, out OutputID, data []byte) error {
+	if err := c.copyFile(bytes.NewReader(data), out, int64(len(data))); err != nil {
+		return err
+	}
+	return c.putIndexEntry(id, out, int64(len(data)), false)
+}
+
 // fileName returns the name of the file corresponding to the given id.
 func (c *DiskCache) fileName(id [HashSize]byte, key string) string {
 	return filepath.Join(c.dir, fmt.Sprintf("%02x", id[0]), fmt.Sprintf("%x", id)+"-"+key)
 }
 
-// An entryNotFoundError indicates that a cache entry was not found, with an
-// optional underlying reason.
-type entryNotFoundError struct {
+// A MissError says the cache holds no entry for an action, and why. Every
+// tier answers a miss with one of these, so a caller branches on the type
+// rather than on which tier it asked.
+type MissError struct {
 	Err error
 }
 
-func (e *entryNotFoundError) Error() string {
+// Miss answers the error a tier reports for an action it does not hold.
+func Miss(reason error) error { return &MissError{Err: reason} }
+
+func (e *MissError) Error() string {
 	if e.Err == nil {
 		return "cache entry not found"
 	}
 	return fmt.Sprintf("cache entry not found: %v", e.Err)
 }
 
-func (e *entryNotFoundError) Unwrap() error {
+func (e *MissError) Unwrap() error {
 	return e.Err
 }
 
@@ -181,7 +208,7 @@ func godebugOn(settings, name string) bool {
 // saved file for that output ID is still available.
 func (c *DiskCache) Get(id ActionID) (Entry, error) {
 	if verify {
-		return Entry{}, &entryNotFoundError{Err: errVerifyMode}
+		return Entry{}, &MissError{Err: errVerifyMode}
 	}
 	return c.get(id)
 }
@@ -195,7 +222,7 @@ type Entry struct {
 // get is Get but does not respect verify mode, so that Put can use it.
 func (c *DiskCache) get(id ActionID) (Entry, error) {
 	missing := func(reason error) (Entry, error) {
-		return Entry{}, &entryNotFoundError{Err: reason}
+		return Entry{}, &MissError{Err: reason}
 	}
 	f, err := os.Open(c.fileName(id, "a"))
 	if err != nil {
@@ -265,10 +292,10 @@ func GetFile(c Cache, id ActionID) (file string, entry Entry, err error) {
 	file = c.OutputFile(entry.OutputID)
 	info, err := os.Stat(file)
 	if err != nil {
-		return "", Entry{}, &entryNotFoundError{Err: err}
+		return "", Entry{}, &MissError{Err: err}
 	}
 	if info.Size() != entry.Size {
-		return "", Entry{}, &entryNotFoundError{Err: errors.New("file incomplete")}
+		return "", Entry{}, &MissError{Err: errors.New("file incomplete")}
 	}
 	return file, entry, nil
 }
@@ -283,7 +310,7 @@ func GetBytes(c Cache, id ActionID) ([]byte, Entry, error) {
 	}
 	data, _ := os.ReadFile(c.OutputFile(entry.OutputID))
 	if OutputID(sha256.Sum256(data)) != entry.OutputID {
-		return nil, entry, &entryNotFoundError{Err: errors.New("bad checksum")}
+		return nil, entry, &MissError{Err: errors.New("bad checksum")}
 	}
 	return data, entry, nil
 }

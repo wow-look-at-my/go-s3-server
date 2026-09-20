@@ -11,9 +11,8 @@ const (
 	TierOwner  = "owner"
 )
 
-// Tiered is implemented by a Cache whose lookup reports which tier answered.
-// Without it a hit served over the network cannot be told from one served off
-// the local disk, and that is the single most useful thing a cache trace says.
+// Tiered is implemented by a Cache whose lookup names the tier that answered.
+// That is the most useful thing a cache trace says.
 type Tiered interface {
 	GetTiered(id ActionID) (entry Entry, tier string, err error)
 }

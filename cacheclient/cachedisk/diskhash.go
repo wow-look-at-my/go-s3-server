@@ -2,37 +2,28 @@ package cachedisk
 
 import "sync"
 
-// HashSize is the length of a cache key, in bytes. An action ID and an output
-// ID are both one of these.
+// HashSize is the length of a cache key in bytes.
 const HashSize = 32
 
-// debugHash makes the hashes a build computes report themselves. The consumer
-// computes them, so it also sets this, and the disk cache reads it to decide
-// whether an entry mismatch is worth describing.
+// debugHash is GODEBUG=gocachehash=1. The consumer computes the keys, so the
+// consumer prints them.
 var debugHash = false
 
-// hashDebug holds what went into a hash the consumer computed, so a mismatch
-// can be reported as the description of what should have been there rather
-// than as two opaque ids. It is filled under GODEBUG=gocacheverify=1 and is
-// empty otherwise.
+// hashDebug holds what went into each key, under verify mode alone. Two opaque
+// ids say nothing about a mismatch, and this description says everything.
 var hashDebug struct {
 	sync.Mutex
 	m map[[HashSize]byte]string
 }
 
-// Verifying reports whether the cache runs in verify mode, under
-// GODEBUG=gocacheverify=1. A consumer that computes cache keys records what
-// produced each one while this is on, so a mismatch names the description
-// rather than two opaque ids.
+// Verifying reports whether the cache runs in verify mode.
 func Verifying() bool { return verify }
 
-// HashDebug reports whether GODEBUG=gocachehash=1 asks for every hash to
-// report itself. The consumer computes the hashes, so the consumer prints
-// them.
+// HashDebug reports whether every hash is asked to report itself.
 func HashDebug() bool { return debugHash }
 
-// RecordHash remembers what produced an id, for the report a mismatch makes.
-// A consumer that computes cache keys calls it under gocacheverify.
+// RecordHash remembers what produced a key. A consumer that computes keys
+// calls it while Verifying.
 func RecordHash(id [HashSize]byte, description string) {
 	hashDebug.Lock()
 	defer hashDebug.Unlock()

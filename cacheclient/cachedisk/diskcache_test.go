@@ -133,8 +133,7 @@ func TestDiskCacheTrimKeepsWhatWasUsed(t *testing.T) {
 	checkTime(actionFile, start)
 	checkTime(outputFile, start)
 
-	// A read inside the mtime interval leaves the stamp alone, which is what
-	// keeps a build from rewriting every inode it touches.
+	// A read inside the mtime interval leaves the stamp alone.
 	now = start + 10
 	_, err = cache.Get(id)
 	require.NoError(t, err)
@@ -162,12 +161,10 @@ func TestDiskCacheTrimKeepsWhatWasUsed(t *testing.T) {
 	require.NoError(t, err)
 	checkTime(fmt.Sprintf("%x-a", dummyID(2)), start)
 
-	// A second trim inside the trim interval does no work at all, which the
-	// unchanged stamp file is what reports.
+	// A trim inside the trim interval does nothing, and the stamp says so.
 	now = start + 80000
 	require.NoError(t, cache.Trim())
-	// Read the key here too. What the trim five days on keeps is what a build
-	// has read since, and this read is what makes it the first key.
+	// This read is what makes the first key one a build has used since.
 	_, err = cache.Get(id)
 	require.NoError(t, err)
 	cache.OutputFile(entry.OutputID)
@@ -175,8 +172,7 @@ func TestDiskCacheTrimKeepsWhatWasUsed(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, stamp, again, "a trim inside the interval must do nothing")
 
-	// Five days on. The first key was read a moment ago and stays. The second
-	// has not been read since it was written, so it goes.
+	// Five days on. The first key was read and stays. The second was not.
 	now += 5 * 86400
 	require.NoError(t, cache.Trim())
 	_, err = cache.Get(id)
@@ -186,15 +182,13 @@ func TestDiskCacheTrimKeepsWhatWasUsed(t *testing.T) {
 	_, err = cache.Get(dummyID(2))
 	require.Error(t, err, "the trim must drop a key nothing has read")
 
-	// Another five days. That last read is what keeps the first key, and
-	// checkTime reads the stamp without moving it.
+	// Another five days. checkTime reads a stamp without moving it.
 	now += 5 * 86400
 	require.NoError(t, cache.Trim())
 	checkTime(actionFile, kept)
 	checkTime(outputFile, kept)
 
-	// Half a day later there is no trim to run, so the key gets a reprieve
-	// even though it is now old enough to drop.
+	// Half a day later no trim runs, so the key is old enough and stays.
 	now += 86400 / 2
 	require.NoError(t, cache.Trim())
 	checkTime(actionFile, kept)

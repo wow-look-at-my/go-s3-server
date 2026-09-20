@@ -25,73 +25,46 @@ import (
 	"time"
 )
 
-// An ActionID is a cache action key, the hash of a complete description of a
-// repeatable computation (command line, environment variables,
-// input file contents, executable contents).
+// An ActionID hashes a repeatable computation's whole description.
 type ActionID [HashSize]byte
 
 // An OutputID is a cache output key, the hash of an output of a computation.
 type OutputID [HashSize]byte
 
-// Cache is the interface as used by the cmd/go.
+// Cache stores an action's output under that action's key.
+//
+// After a Get or a Put answers, OutputFile names a file that exists until
+// Close. That holds ACROSS processes: a trim here must not delete an output
+// another process just read, which is why nothing used in the last day goes.
 type Cache interface {
-	// Get returns the cache entry for the provided ActionID.
-	// On miss, the error type should be of type *MissError.
-	//
-	// After a successful call to Get, OutputFile(Entry.OutputID) must
-	// exist on disk until Close is called (at the end of the process).
+	// Get answers the entry for an action, or a *MissError.
 	Get(ActionID) (Entry, error)
 
-	// Put adds an item to the cache.
-	//
-	// The seeker is only used to seek to the beginning. After a call to Put,
-	// the seek position is not guaranteed to be in any particular state.
-	//
-	// As a special case, if the ReadSeeker is of type noVerifyReadSeeker,
-	// the verification from GODEBUG=goverifycache=1 is skipped.
-	//
-	// After a successful call to Put, OutputFile(OutputID) must
-	// exist on disk until Close is called (at the end of the process).
+	// Put stores an output, seeking the reader to the start and leaving the position anywhere.
 	Put(ActionID, io.ReadSeeker) (_ OutputID, size int64, _ error)
 
-	// Close is called at the end of the go process. Implementations can do
-	// cache cleanup work at this phase, or wait for and report any errors from
-	// background cleanup work started earlier. Any cache trimming in one
-	// process should not cause the invariants of this interface to be
-	// violated in another process. Namely, a cache trim from one process should
-	// not delete an OutputID from disk that was recently Get or Put from
-	// another process. As a rule of thumb, don't trim things used in the last
-	// day.
+	// Close ends this process's use: the trim and any waiting run here.
 	Close() error
 
-	// OutputFile returns the path on disk where OutputID is stored.
-	//
-	// It's only called after a successful get or put call so it doesn't need
-	// to return an error; it's assumed that if the previous get or put succeeded,
-	// it's already on disk.
+	// OutputFile names a stored output, which a get or a put just answered for.
 	OutputFile(OutputID) string
 
-	// FuzzDir returns where fuzz files are stored.
+	// FuzzDir names where fuzz files are stored.
 	FuzzDir() string
 }
 
-// A Cache is a package cache, backed by a file system directory tree.
+// A DiskCache is a cache backed by a directory tree.
 type DiskCache struct {
 	dir string
 	now func() time.Time
 }
 
-// Open opens and returns the cache in the given directory.
+// Open answers the cache in a directory.
 //
-// It is safe for multiple processes on a single machine to use the
-// same cache directory in a local file system simultaneously.
-// They will coordinate using operating system file locks and may
-// duplicate effort but will not corrupt the cache.
-//
-// However, it is NOT safe for multiple processes on different machines
-// to share a cache directory (for example, if the directory were stored
-// in a network file system). File locking is notoriously unreliable in
-// network file systems and may not suffice to protect the cache.
+// Processes on ONE machine may share a directory: they coordinate with file
+// locks, and duplicate work rather than corrupt it. Processes on different
+// machines may not, because a network filesystem's locking cannot be relied
+// on.
 func Open(dir string) (*DiskCache, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
@@ -113,17 +86,10 @@ func Open(dir string) (*DiskCache, error) {
 	return c, nil
 }
 
-// Dir is the directory this cache writes. A tier above it puts its own state
-// beside the cache it describes, so builds sharing a GOCACHE share that state
-// whatever their TMPDIR.
+// Dir is where a tier above this one keeps its own state too.
 func (c *DiskCache) Dir() string { return c.dir }
 
-// KeepVerified writes a body whose output ID is known and already checked. A
-// tier that fetched the body has hashed it once to check it, and Put would
-// hash it a second time to derive the same answer.
-//
-// The local reproducibility check has nothing to say about a body from
-// somewhere else, so this never runs it.
+// KeepVerified writes a body whose output ID a tier above checked already.
 func (c *DiskCache) KeepVerified(id ActionID, out OutputID, data []byte) error {
 	if err := c.copyFile(bytes.NewReader(data), out, int64(len(data))); err != nil {
 		return err
@@ -136,9 +102,7 @@ func (c *DiskCache) fileName(id [HashSize]byte, key string) string {
 	return filepath.Join(c.dir, fmt.Sprintf("%02x", id[0]), fmt.Sprintf("%x", id)+"-"+key)
 }
 
-// A MissError says the cache holds no entry for an action, and why. Every
-// tier answers a miss with one of these, so a caller branches on the type
-// rather than on which tier it asked.
+// A MissError says no entry is held, and why.
 type MissError struct {
 	Err error
 }
@@ -163,27 +127,21 @@ const (
 	entrySize = 2 + 1 + hexSize + 1 + hexSize + 1 + 20 + 1 + 20 + 1
 )
 
-// verify controls whether to run the cache in verify mode.
-// In verify mode, the cache always returns errMissing from Get
-// but then double-checks in Put that the data being written
-// exactly matches any existing entry. This provides an easy
-// way to detect program behavior that would have been different
-// had the cache entry been returned from Get.
-//
-// verify is enabled by setting the environment variable
-// GODEBUG=gocacheverify=1.
-var verify = false
-
-var errVerifyMode = errors.New("gocacheverify=1")
+// Under GODEBUG=gocacheverify=1 every Get misses, and Put then checks what it
+// is handed against what is stored. An action that is not reproducible then
+// shows up as a mismatch rather than as a hit nobody re-derived.
+var (
+	verify        = false
+	errVerifyMode = errors.New("gocacheverify=1")
+)
 
 // DebugTest is set when GODEBUG=gocachetest=1 is in the environment.
 var DebugTest = false
 
 func init() { initEnv() }
 
-// The three switches come from GODEBUG, which a consumer of this module reads
-// for itself: the counters godebug keeps are the go command's own, and this
-// module is not in its tree.
+// initEnv reads the switches out of GODEBUG. This module is outside the go
+// command's tree, so the counters internal/godebug keeps are not reachable.
 func initEnv() {
 	settings := os.Getenv("GODEBUG")
 	verify = godebugOn(settings, "gocacheverify")
@@ -202,10 +160,8 @@ func godebugOn(settings, name string) bool {
 	return false
 }
 
-// Get looks up the action ID in the cache,
-// returning the corresponding output ID and file size, if any.
-// Note that finding an output ID does not guarantee that the
-// saved file for that output ID is still available.
+// Get answers an action's output ID and size. An output ID it answers is not
+// a promise that the file is still there.
 func (c *DiskCache) Get(id ActionID) (Entry, error) {
 	if verify {
 		return Entry{}, &MissError{Err: errVerifyMode}
@@ -315,46 +271,26 @@ func GetBytes(c Cache, id ActionID) ([]byte, Entry, error) {
 	return data, entry, nil
 }
 
-// A mapped read of an entry stays with the consumer. It maps a file this
-// package named, which is the whole of this package's part in it, and the
-// mapping itself belongs to whoever knows how to map a file on that platform.
-
-// OutputFile returns the name of the cache file storing output with the given OutputID.
+// OutputFile names the file holding an output. A consumer that wants it MAPPED
+// maps this path itself, because how to map a file is a platform's business.
 func (c *DiskCache) OutputFile(out OutputID) string {
 	file := c.fileName(out, "d")
 	c.markUsed(file)
 	return file
 }
 
-// Time constants for cache expiration.
-//
-// We set the mtime on a cache file on each use, but at most one per mtimeInterval (1 hour),
-// to avoid causing many unnecessary inode updates. The mtimes therefore
-// roughly reflect "time of last use" but may in fact be older by at most an hour.
-//
-// We scan the cache for entries to delete at most once per trimInterval (1 day).
-//
-// When we do scan the cache, we delete entries that have not been used for
-// at least trimLimit (5 days). Statistics gathered from a month of usage by
-// Go developers found that essentially all reuse of cached entries happened
-// within 5 days of the previous reuse. See golang.org/issue/22990.
 const (
+	// A file's mtime is its time of last use, stamped at most this often so a
+	// build does not rewrite every inode it reads.
 	mtimeInterval = 1 * time.Hour
-	trimInterval  = 24 * time.Hour
-	trimLimit     = 5 * 24 * time.Hour
+	// A scan runs at most this often.
+	trimInterval = 24 * time.Hour
+	// A scan drops what nothing has read for this long, which is where a
+	// month of measured reuse ran out (golang.org/issue/22990).
+	trimLimit = 5 * 24 * time.Hour
 )
 
-// markUsed makes a best-effort attempt to update mtime on file,
-// so that mtime reflects cache access time.
-//
-// Because the reflection only needs to be approximate,
-// and to reduce the amount of disk activity caused by using
-// cache entries, used only updates the mtime if the current
-// mtime is more than an hour old. This heuristic eliminates
-// nearly all of the mtime updates that would otherwise happen,
-// while still keeping the mtimes useful for cache trimming.
-//
-// markUsed reports whether the file is a directory (an executable cache entry).
+// markUsed stamps a file, best effort, and reports whether it is a directory.
 func (c *DiskCache) markUsed(file string) (isDir bool) {
 	info, err := os.Stat(file)
 	if err != nil {
@@ -372,13 +308,9 @@ func (c *DiskCache) Close() error { return c.Trim() }
 func (c *DiskCache) Trim() error {
 	now := c.now()
 
-	// We maintain in dir/trim.txt the time of the last completed cache trim.
-	// If the cache has been trimmed recently enough, do nothing.
-	// This is the common case.
-	// If the trim file is corrupt, detected if the file can't be parsed, or the
-	// trim time is too far in the future, attempt the trim anyway. It's possible that
-	// the cache was full when the corruption happened. Attempting a trim on
-	// an empty cache is cheap, so there wouldn't be a big performance hit in that case.
+	// dir/trim.txt holds when the last trim finished. A stamp that cannot be
+	// parsed, or one from the future, trims anyway: a trim over an empty cache
+	// costs nothing, and a full one may be what corrupted the stamp.
 	skipTrim := func(data []byte) bool {
 		if t, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64); err == nil {
 			lastTrim := time.Unix(t, 0)
@@ -388,8 +320,7 @@ func (c *DiskCache) Trim() error {
 		}
 		return false
 	}
-	// Check to see if we need a trim. Do this check separately from the
-	// exclusive pass below, so the common case takes no lock.
+	// Read it first, apart from the exclusive pass, so a skip takes no lock.
 	stamp := filepath.Join(c.dir, "trim.txt")
 	if data, err := os.ReadFile(stamp); err == nil {
 		if skipTrim(data) {
@@ -399,12 +330,10 @@ func (c *DiskCache) Trim() error {
 
 	errFileChanged := errors.New("file changed")
 
-	// Write the new timestamp before the trim starts, so two commands that
-	// reach this together do not both trim.
+	// Stamp before the trim starts, so two commands here together do not both trim.
 	err := transformFile(stamp, func(data []byte) ([]byte, error) {
+		// A stamp that moved since the read above belongs to another command.
 		if skipTrim(data) {
-			// Another go command updated the stamp since the read above, so
-			// the trim belongs to that one.
 			return nil, errFileChanged
 		}
 		return fmt.Appendf(nil, "%d", now.Unix()), nil
@@ -416,9 +345,7 @@ func (c *DiskCache) Trim() error {
 		return nil
 	}
 
-	// Trim each of the 256 subdirectories.
-	// We subtract an additional mtimeInterval
-	// to account for the imprecision of our "last used" mtimes.
+	// The extra mtimeInterval is the hour a stamp is allowed to be stale by.
 	cutoff := now.Add(-trimLimit - mtimeInterval)
 	for i := 0; i < 256; i++ {
 		subdir := filepath.Join(c.dir, fmt.Sprintf("%02x", i))
@@ -430,11 +357,7 @@ func (c *DiskCache) Trim() error {
 
 // trimSubdir trims a single cache subdirectory.
 func (c *DiskCache) trimSubdir(subdir string, cutoff time.Time) {
-	// Read all directory entries from subdir before removing
-	// any files, in case removing files invalidates the file offset
-	// in the directory scan. Also, ignore error from f.Readdirnames,
-	// because we don't care about reporting the error and we still
-	// want to process any entries found before the error.
+	// Read every name first: a remove can move the scan's own offset.
 	f, err := os.Open(subdir)
 	if err != nil {
 		return
@@ -459,20 +382,12 @@ func (c *DiskCache) trimSubdir(subdir string, cutoff time.Time) {
 	}
 }
 
-// putIndexEntry adds an entry to the cache recording that executing the action
-// with the given id produces an output with the given output id (hash) and size.
+// putIndexEntry records that an action produced an output of a size.
+//
+// An action file stays writable: a repeat that embeds a timestamp or a
+// temporary directory name produces a different output, which is ordinary
+// rather than wrong. Verify mode is where it becomes a finding.
 func (c *DiskCache) putIndexEntry(id ActionID, out OutputID, size int64, allowVerify bool) error {
-	// Note: We expect that for one reason or another it may happen
-	// that repeating an action produces a different output hash
-	// (for example, if the output contains a time stamp or temp dir name).
-	// While not ideal, this is also not a correctness problem, so we
-	// don't make a big deal about it. In particular, we leave the action
-	// cache entries writable specifically so that they can be overwritten.
-	//
-	// Setting GODEBUG=gocacheverify=1 does make a big deal:
-	// in verify mode we are double-checking that the cache entries
-	// are entirely reproducible. As just noted, this may be unrealistic
-	// in some cases but the check is also useful for shaking out real bugs.
 	entry := fmt.Sprintf("v1 %x %x %20d %20d\n", id, out, size, time.Now().UnixNano())
 	if verify && allowVerify {
 		old, err := c.get(id)
@@ -492,21 +407,15 @@ func (c *DiskCache) putIndexEntry(id ActionID, out OutputID, size int64, allowVe
 	}
 	_, err = f.WriteString(entry)
 	if err == nil {
-		// Truncate the file only *after* writing it.
-		// (This should be a no-op, but truncate just in case of previous corruption.)
-		//
-		// This differs from os.WriteFile, which truncates to 0 *before* writing
-		// via os.O_TRUNC. Truncating only after writing ensures that a second write
-		// of the same content to the same file is idempotent, and does not — even
-		// temporarily! — undo the effect of the first write.
+		// Truncate AFTER the write: an O_TRUNC before it would undo an equal
+		// write for as long as this one takes.
 		err = f.Truncate(int64(len(entry)))
 	}
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
 	if err != nil {
-		// TODO(bcmills): This Remove potentially races with another go command writing to file.
-		// Can we eliminate it?
+		// TODO(bcmills): this races another command writing the same file.
 		os.Remove(file)
 		return err
 	}
@@ -515,15 +424,12 @@ func (c *DiskCache) putIndexEntry(id ActionID, out OutputID, size int64, allowVe
 	return nil
 }
 
-// noVerifyReadSeeker is an io.ReadSeeker wrapper sentinel type
-// that says that Cache.Put should skip the verify check
-// (from GODEBUG=goverifycache=1).
+// noVerifyReadSeeker marks a body Put must not hold to the verify check.
 type noVerifyReadSeeker struct {
 	io.ReadSeeker
 }
 
-// Put stores the given output in the cache as the output for the action ID.
-// It may read file twice. The content of file must not change between the two passes.
+// Put stores an output under an action's key. It may read the file twice, and the content must not change between passes.
 func (c *DiskCache) Put(id ActionID, file io.ReadSeeker) (OutputID, int64, error) {
 	wrapper, isNoVerify := file.(noVerifyReadSeeker)
 	if isNoVerify {
@@ -532,10 +438,8 @@ func (c *DiskCache) Put(id ActionID, file io.ReadSeeker) (OutputID, int64, error
 	return c.put(id, file, !isNoVerify)
 }
 
-// PutNoVerify is like Put but disables the verify check
-// when GODEBUG=goverifycache=1 is set.
-// It is meant for data that is OK to cache but that we expect to vary slightly from run to run,
-// like test output containing times and the like.
+// PutNoVerify is Put for an output that is worth caching and is not
+// reproducible, such as test output carrying a time.
 func PutNoVerify(c Cache, id ActionID, file io.ReadSeeker) (OutputID, int64, error) {
 	return c.Put(id, noVerifyReadSeeker{file})
 }
@@ -568,8 +472,8 @@ func PutBytes(c Cache, id ActionID, data []byte) error {
 	return err
 }
 
-// copyFile copies file into the cache, expecting it to have the given
-// output ID and size, if that file is not present already.
+// copyFile writes a body into the cache under the output ID and size it is
+// told, unless that file is there already.
 func (c *DiskCache) copyFile(file io.ReadSeeker, out OutputID, size int64) error {
 	name := c.fileName(out, "d")
 	info, err := os.Stat(name)
@@ -595,27 +499,22 @@ func (c *DiskCache) copyFile(file io.ReadSeeker, out OutputID, size int64) error
 	}
 	f, err := os.OpenFile(name, mode, 0o666)
 	if err != nil {
+		// A running program holds it, so another go process wrote it and ran
+		// it. The bytes are there.
 		if isETXTBSY(err) {
-			// This file is being used by an executable. It must have
-			// already been written by another go process and then run.
-			// return without an error.
 			return nil
 		}
 		return err
 	}
 	defer f.Close()
+	// One zero-length body exists, so the file is already right. This also
+	// gives the copy below a last byte to hold back.
 	if size == 0 {
-		// File now exists with correct size.
-		// Only one possible zero-length file, so contents are OK too.
-		// Early return here makes sure there's a "last byte" for code below.
 		return nil
 	}
 
-	// From here on, if any of the I/O writing the file fails,
-	// we make a best-effort attempt to truncate the file f
-	// before returning, to avoid leaving bad bytes in the file.
-
-	// Copy file to f, but also into h to double-check hash.
+	// Past here a failed write truncates the file, so it holds no bad bytes.
+	// The copy runs through a hash as well, to check what it wrote.
 	if _, err := file.Seek(0, 0); err != nil {
 		f.Truncate(0)
 		return err
@@ -626,9 +525,7 @@ func (c *DiskCache) copyFile(file io.ReadSeeker, out OutputID, size int64) error
 		f.Truncate(0)
 		return err
 	}
-	// Check last byte before writing it; writing it will make the size match
-	// what other processes expect to find and might cause them to start
-	// using the file.
+	// Check the last byte BEFORE writing it: the write makes the size match, and another process reading that size uses the file.
 	buf := make([]byte, 1)
 	if _, err := file.Read(buf); err != nil {
 		f.Truncate(0)
@@ -647,9 +544,7 @@ func (c *DiskCache) copyFile(file io.ReadSeeker, out OutputID, size int64) error
 		return err
 	}
 	if err := f.Close(); err != nil {
-		// Data might not have been written,
-		// but file may look like it is the right size.
-		// To be extra careful, remove cached file.
+		// The file can carry the right size and not the data, so drop it.
 		os.Remove(name)
 		return err
 	}
@@ -658,14 +553,7 @@ func (c *DiskCache) copyFile(file io.ReadSeeker, out OutputID, size int64) error
 	return nil
 }
 
-// FuzzDir returns a subdirectory within the cache for storing fuzzing data.
-// The subdirectory may not exist.
-//
-// This directory is managed by the internal/fuzz package. Files in this
-// directory aren't removed by the 'go clean -cache' command or by Trim.
-// They may be removed with 'go clean -fuzzcache'.
-//
-// TODO(#48526): make Trim remove unused files from this directory.
+// FuzzDir names internal/fuzz's directory, which the trim leaves alone.
 func (c *DiskCache) FuzzDir() string {
 	return filepath.Join(c.dir, "fuzz")
 }

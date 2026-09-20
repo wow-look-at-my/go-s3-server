@@ -8,13 +8,7 @@ import (
 	"time"
 )
 
-// The disk cache has one file two processes write: the trim stamp. cmd/go
-// guarded it with its own lockedfile package, which this module cannot import,
-// so the same guarantee is built here from a lock file: the writer is whoever
-// creates it, and a lock nobody has touched for lockHold is taken to belong to
-// a process that died.
-
-// lockHold is the age past which a lock file is treated as abandoned.
+// lockHold is the age at which a lock belonged to a process that died.
 const lockHold = 10 * time.Second
 
 // lockPoll is how often a waiter looks at a lock it did not get.
@@ -23,6 +17,10 @@ const lockPoll = 20 * time.Millisecond
 // transformFile reads a file, hands its contents to change, and writes back
 // what change answers. Only one process does this at a time. An error from
 // change is returned as it stands, and the file keeps the bytes it had.
+//
+// One file here has two processes writing it: the trim stamp. cmd/go's own
+// lockedfile package is unreachable from this module, so the guarantee comes
+// from a lock file whose writer is whoever creates it.
 func transformFile(path string, change func([]byte) ([]byte, error)) error {
 	release, err := takeLock(path + ".lock")
 	if err != nil {
@@ -58,9 +56,9 @@ func takeLock(path string) (release func(), err error) {
 			os.Remove(path)
 			continue
 		}
+		// The holder is alive and slow, or the clock moved. Neither is worth
+		// blocking the build for.
 		if time.Now().After(deadline) {
-			// The holder is alive and slow, or the clock moved. Either way the
-			// caller's work is not worth blocking the build for.
 			return nil, errors.New("cache: " + path + " is held by another process")
 		}
 		time.Sleep(lockPoll)
@@ -86,8 +84,7 @@ func writeFileAtomic(path string, data []byte) error {
 	return nil
 }
 
-// dirOf is filepath.Dir without the import, since this file needs nothing else
-// from that package.
+// dirOf is filepath.Dir without the import.
 func dirOf(path string) string {
 	for idx := len(path) - 1; idx >= 0; idx-- {
 		if os.IsPathSeparator(path[idx]) {
@@ -97,9 +94,8 @@ func dirOf(path string) string {
 	return "."
 }
 
-// isETXTBSY reports whether err says the file is a running program. A cache
-// entry that a process is executing cannot be replaced on unix, and the go
-// command treats that as a miss rather than a failure.
+// isETXTBSY reports whether a running program holds the file, which unix
+// refuses to replace. That is a miss rather than a failure.
 func isETXTBSY(err error) bool {
 	return errors.Is(err, syscall.ETXTBSY)
 }

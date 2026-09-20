@@ -163,14 +163,14 @@ func (l *levelLogger) Warnf(format string, args ...any) {
 
 func (*levelLogger) Debugf(string, ...any) {}
 
-// Info is every Infof line so far, one per line.
+// Info is every Infof line so far, a single per line.
 func (l *levelLogger) Info() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return strings.Join(l.info, "\n")
 }
 
-// Warn is every Warnf line so far, one per line.
+// Warn is every Warnf line so far, a single per line.
 func (l *levelLogger) Warn() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -252,13 +252,10 @@ func (d *deadlineSpy) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // TestLoadOrFetchIndex_RequestCarriesNoDeadline pins the absence of a
-// wall-clock ceiling over the index load. A real index is tens of megabytes
-// and a remote runner pulls it at a few hundred kilobytes a second, so any
-// ceiling short enough to be useful against a hung server is also short enough
-// to kill a healthy transfer. The stall and header budgets bound a hung server
-// instead, and they are what this asserts is the ONLY bound: a deadline on the
-// request is one this test cannot wait out, so it checks for the deadline
-// rather than for the timeout it would cause.
+// wall-clock ceiling over the index load. The stall and header budgets bound a
+// hung server instead, and they are what this asserts is the ONLY bound: a
+// deadline on the request is a single this test cannot wait out, so it checks
+// for the deadline rather than for the timeout it would cause.
 func TestLoadOrFetchIndex_RequestCarriesNoDeadline(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 

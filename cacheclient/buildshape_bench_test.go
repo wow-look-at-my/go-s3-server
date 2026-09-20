@@ -13,20 +13,20 @@ import (
 )
 
 // A build asks for keys the way a dependency graph lets it: a level at a time,
-// -p wide, and it cannot name the next level until this one answers. These
+// -p wide, and it cannot name the next level until this answers. These
 // benchmarks reproduce that shape against a real HTTP server, because the cost
 // this client was paying was never visible in a per-call microbenchmark -- it
 // was in what each round trip dragged along with it.
 
 const (
-	benchLevels   = 12 // dependency depth: one round trip's worth of latency each
-	benchPerLevel = 4  // the build's -p: how many keys can be outstanding at once
+	benchLevels   = 12 // dependency depth: a single round trip's worth of latency
+	benchPerLevel = 4  // the build's -p: how many keys can be outstanding at the
 )
 
-// benchKey names the object a build asks for at one position in the walk.
-// runBuildShape and the fake server must agree on it, because a speculative
-// body for a key the build never asks for cannot model a prefetch that pays
-// off: it is pure cost by construction, whatever the client does with it.
+// benchKey names the object a build asks for at a single position in the
+// walk. runBuildShape and the fake server must agree on it, because a
+// speculative body for a key the build never asks for cannot model a
+// prefetch that pays off: it is pure cost by construction, whatever the client does with it.
 func benchKey(n int) string { return fmt.Sprintf("%064x", n) }
 
 // benchWireKey is the same object as it travels: Get takes a bare action ID
@@ -34,7 +34,6 @@ func benchKey(n int) string { return fmt.Sprintf("%064x", n) }
 // never by benchKey.
 func benchWireKey(n int) string { return gbciKeyPrefix + benchKey(n) }
 
-// benchKeyIndex reverses benchWireKey, and reports whether the key is one.
 func benchKeyIndex(key string) (int, bool) {
 	rest, ok := strings.CutPrefix(key, gbciKeyPrefix)
 	if !ok {
@@ -50,11 +49,11 @@ func benchKeyIndex(key string) (int, bool) {
 // localTier stands in for the disk cache cmd/go puts in front of this client,
 // which is the only place a look-ahead fetch can land.
 //
-// A benchmark without one measures a client whose look-ahead is switched OFF:
-// expand returns at once when OnBatchEntries is nil, so the pool issues no
-// request at all. cmd/go always installs SharedCache.populate, and with the
-// pool turned on the build's next Get then reads what the pool already put on
-// disk instead of reaching the network.
+// A benchmark without a single measures a client whose look-ahead is switched
+// OFF: expand returns at the same time when OnBatchEntries is nil, so the
+// pool issues no request at all. cmd/go always installs SharedCache.populate,
+// and with the pool turned on the build's next Get then reads what the pool
+// already put on disk instead of reaching the network.
 type localTier struct {
 	mu   sync.Mutex
 	objs map[string]struct{}
@@ -89,9 +88,9 @@ func (t *localTier) take(key string) bool {
 // approximates. Where they ride decides which shape is under test.
 //
 // onBlocking is the old wire shape: the client set prefetch on every
-// critical-path batch, so a request four keys wide came back carrying dozens
-// of bodies nobody was waiting for yet. Reproducing it here rather than
-// reintroducing the flag is what makes the two shapes comparable.
+// critical-path batch, so a request keys wide came back carrying dozens of
+// bodies nobody was waiting for yet. Reproducing it here rather than
+// reintroducing the flag is what makes both shapes comparable.
 //
 // A PrefetchOnly request is the look-ahead pool asking for the window around a
 // seed, off the critical path. Answering it with nothing, as an earlier
@@ -215,11 +214,11 @@ func BenchmarkBuildShape(bench *testing.B) {
 		body[i] = byte(i * 7)
 	}
 
-	// Three shapes. none is the critical path alone, with nothing fetched
-	// ahead of it: the floor a cache must beat. blocking is the old wire
-	// shape, where the speculative bodies ride the request the build is
-	// waiting on. lookahead turns the pool on: it fetches the same window
-	// off the critical path, into the tier the build reads next.
+	// Shapes. none is the critical path alone, with nothing fetched ahead
+	// of it: the floor a cache must beat. blocking is the old wire shape,
+	// where the speculative bodies ride the request the build is waiting
+	// on. lookahead turns the pool on: it fetches the same window off the
+	// critical path, into the tier the build reads next.
 	for _, tc := range []struct {
 		name       string
 		carried    int

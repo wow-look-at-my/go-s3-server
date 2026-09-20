@@ -150,7 +150,6 @@ func NewIndex(storage *Storage) *Index {
 // serializes every PUT on the next read.
 func (idx *Index) SetBlobInterval(d time.Duration) { idx.blobMinInterval.Store(int64(d)) }
 
-// BlobInterval reports the least time between serializations.
 // DisableEntryTracking stops the index maintaining the mtime-sorted entry
 // list and releases what it holds. Call it before serving, from a server
 // whose prefetch is off: NearbyKeys then answers with no candidates, which is
@@ -187,12 +186,11 @@ func (idx *Index) Put(key string, size int64) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	// Append to the unsorted pending buffer, which is O(1). drainEntriesLocked
-	// merges and sorts it for the next reader.
+	// drainEntriesLocked merges and sorts it for the next reader.
 	//
 	// Nothing appends beside this guard. An unguarded append here built the
 	// very list the guard suppresses, so entriesOff saved nothing, and where
-	// tracking was on it recorded every key a second time.
+	// tracking was on it recorded every key another time.
 	if !idx.entriesOff {
 		idx.pendingEntries = append(idx.pendingEntries, indexEntry{compactKey: ck, mtimeUnix: now})
 	}
@@ -401,16 +399,13 @@ func removeHash(s [][gbciHashSize]byte, h [gbciHashSize]byte) [][gbciHashSize]by
 // advances and the caller receives an empty set forever. That is exactly what
 // happened to prefetch, where a client got a single pool of entries and then
 // nothing at all for the rest of its build. skip may be nil.
-func (idx *Index) NearbyKeys(startUnix, endUnix int64, limit int, exclude map[string]bool, skip func(string) bool) []string {
+func (idx *Index) NearbyKeys(startUnix, endUnix int64, limit int, exclude set.Set[string], skip func(string) bool) []string {
 	// The exclusion set arrives keyed by key string; convert it a single
 	// time (it is bounded by the batch request that produced it) so the
 	// scan below can compare compact keys instead of rebuilding a string per candidate.
-	var excluded map[compactKey]bool
-	if len(exclude) > 0 {
-		excluded = make(map[compactKey]bool, len(exclude))
-		for k := range exclude {
-			excluded[newCompactKey(k)] = true
-		}
+	excluded := set.New[compactKey](exclude.Len())
+	for key := range exclude.All() {
+		excluded.Add(newCompactKey(key))
 	}
 
 	// Fast path: nothing pending means the sorted list is current — a read lock
@@ -449,7 +444,7 @@ const nearbyScanFactor = 8
 //
 // Only a survivor is turned into a key string: rebuilding a single per
 // examined candidate is the other allocation this bounds.
-func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded map[compactKey]bool, skip func(string) bool) []string {
+func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded set.Set[compactKey], skip func(string) bool) []string {
 	if limit <= 0 || len(idx.entries) == 0 {
 		return nil
 	}
@@ -476,13 +471,6 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded
 	// the earliest limit of them. With it, the walk continues past the rejects,
 	// so the window advances instead of re-proposing the same nearest keys on
 	// every request.
-	if skip == nil {
-		if len(candidates) > limit {
-			candidates = candidates[:limit]
-		}
-		keys := make([]string, len(candidates))
-		for i, c := range candidates {
-			keys[i] = idx.entries[c.pos].Key()
 	dist := func(pos int) int64 {
 		d := idx.entries[pos].mtimeUnix - mid
 		if d < 0 {
@@ -512,7 +500,7 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded
 			pos, right = right, right+1
 		}
 
-		if excluded[idx.entries[pos].compactKey] {
+		if excluded.Contains(idx.entries[pos].compactKey) {
 			continue
 		}
 		if skip == nil {
@@ -536,6 +524,8 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded
 	return keys
 }
 
+// blobServableLocked reports whether the cached blob may be handed out: it is
+// current, or it is younger than the blob interval. The caller holds idx.mu.
 func (idx *Index) blobServableLocked() bool {
 	if idx.cachedBlob == nil {
 		return false
@@ -543,8 +533,9 @@ func (idx *Index) blobServableLocked() bool {
 	return !idx.dirty.Load() || time.Since(idx.builtAt) < idx.BlobInterval()
 }
 
-// Fast path: if the cached blob is servable (current, or younger than the
-// blob interval), return it under a read lock. Slow path: merge pending into
+// Blob answers the serialized index and its ETag.
+//
+// Fast path: a servable cached blob is returned under a read lock. Slow path: merge pending into
 // hashes, serialize header + body + trailer, cache the result, clear dirty.
 // Callers arriving during a serialization wait on the read lock and all
 // receive the blob it produces, so a burst of GETs costs a single
@@ -624,12 +615,6 @@ func (idx *Index) rebuild(storage *Storage) {
 	indexRebuildDuration.Observe(time.Since(start).Seconds())
 	log.Printf("index: built %d entries (%d hashes) in %v",
 		entries, hashes, time.Since(start).Round(time.Millisecond))
-}
-
-func (idx *Index) entryCount() int {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-	return len(idx.entries) + len(idx.pendingEntries)
 }
 
 // hashCount sizes a rebuild's buffers.

@@ -10,17 +10,14 @@ import (
 	"unsafe"
 
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// indexMaxBytesPerKey and blobMaxBytesPerKey are the ceilings the tests below
-// hold the index to.
+// The ceilings the tests below hold the index to, per indexed key.
 const (
 	indexMaxBytesPerKey = 130.0
-	// With it off, which is what a server with prefetch off runs.
+	// With the mtime list off, which is what a server with prefetch off runs.
 	indexNoEntriesMaxBytesPerKey = 72.0
-	// The blob is a copy of the hash list, so serializing costs a single
-	// hash per key and no more.
-	blobMaxBytesPerKey = 40.0
 )
 
 // The index is the server's largest resident structure by an order of
@@ -77,7 +74,7 @@ func TestIndexPerKeyFootprint(t *testing.T) {
 	require.NotEmpty(t, blob)
 	// NearbyKeys drains the pending entry buffer into the sorted list, which
 	// is the shape the index spends its life in.
-	idx.NearbyKeys(0, time.Now().Add(time.Hour).Unix(), 10, nil, nil)
+	idx.NearbyKeys(0, time.Now().Add(time.Hour).Unix(), 10, set.Set[string]{}, nil)
 
 	after := heapLive()
 	runtime.KeepAlive(idx)
@@ -112,7 +109,7 @@ func TestIndexWithoutEntriesCostsLess(t *testing.T) {
 
 	require.Empty(t, idx.entries)
 	require.Empty(t, idx.pendingEntries)
-	require.Empty(t, idx.NearbyKeys(0, time.Now().Add(time.Hour).Unix(), 10, nil, nil),
+	require.Empty(t, idx.NearbyKeys(0, time.Now().Add(time.Hour).Unix(), 10, set.Set[string]{}, nil),
 		"no list means no candidates, which is what nobody asking for a window gets anyway")
 	require.False(t, idx.EntryTrackingEnabled())
 
@@ -161,11 +158,11 @@ func BenchmarkIndexBlob(b *testing.B) {
 // batch GET that asks for a window.
 func BenchmarkIndexNearbyKeys(b *testing.B) {
 	idx := fillIndex(100_000)
-	idx.NearbyKeys(0, time.Now().Add(time.Hour).Unix(), 1, nil, nil)
+	idx.NearbyKeys(0, time.Now().Add(time.Hour).Unix(), 1, set.Set[string]{}, nil)
 	end := time.Now().Add(time.Hour).Unix()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		idx.NearbyKeys(0, end, maxPrefetchEntries, nil, nil)
+		idx.NearbyKeys(0, end, maxPrefetchEntries, set.Set[string]{}, nil)
 	}
 }

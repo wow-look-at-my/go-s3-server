@@ -29,9 +29,8 @@ const (
 )
 
 type Server struct {
-	config          *Config
-	storage         *Storage
-	prefetchTracker *prefetchTracker
+	config  *Config
+	storage *Storage
 	// sem bounds the requests doing work at the same time. A request whose
 	// remaining work is only a body transfer hands its slot back early
 	// (releaseSlot). Buffered to MaxConcurrentRequests.

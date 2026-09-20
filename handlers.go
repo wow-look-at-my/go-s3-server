@@ -81,6 +81,35 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		return
 	}
 
+	// A cacheprog key is verified by whoever reads it: the client hashes the
+	// body against the outputid before it consumes it, so rot there costs a
+	// single refused fetch. Any other key has no such reader, and this is the
+	// only place its bytes are ever checked. The cost is a hash of the whole
+	// body, paid on a path that serves the occasional arbitrary object rather
+	// than a build's worth of them.
+	if _, indexed := extractActionHash(key); !indexed {
+		ok, verifyErr := verifyStoredDigest(f, meta.Metadata)
+		switch {
+		case verifyErr != nil:
+			log.Printf("stored digest: cannot verify %q, so not serving it: %v", key, verifyErr)
+			getRequestsTotal.WithLabelValues("miss_stored_digest").Inc()
+			writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
+			return
+		case !ok:
+			// The bytes changed after they were written. Nothing here can say
+			// what they should be, so the object goes and the next uploader
+			// replaces it.
+			storedDigestMismatchTotal.WithLabelValues("get").Inc()
+			log.Printf("stored digest: %q no longer hashes to the digest stored with it; evicting", key)
+			if delErr := storage.Delete(key); delErr != nil && !errors.Is(delErr, ErrNotFound) {
+				log.Printf("stored digest: evicting %q: %v", key, delErr)
+			}
+			getRequestsTotal.WithLabelValues("miss_stored_digest").Inc()
+			writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
+			return
+		}
+	}
+
 	if a := auditFromContext(r.Context()); a != nil {
 		a.Label = objectLabel(meta.Metadata)
 	}
@@ -198,6 +227,13 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			writeError(w, 413, "too_large", fmt.Sprintf("object exceeds max size of %d bytes", maxObjectBytes))
+			return
+		}
+		// The uploader's own digest says these are not the bytes it meant to
+		// send. Naming it as the client's request, not this server's fault, is
+		// what makes a retry the obvious answer.
+		if errors.Is(err, ErrStoredDigestMismatch) {
+			writeError(w, 400, "invalid_request", err.Error())
 			return
 		}
 		writeError(w, 500, "internal_error", err.Error())

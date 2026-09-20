@@ -64,6 +64,31 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		return
 	}
 
+	// Every object is checked against the digest recorded with it before it is
+	// served.
+	{
+		ok, verifyErr := verifyStoredDigest(f, meta.Metadata)
+		switch {
+		case verifyErr != nil:
+			log.Printf("stored digest: cannot verify %q, so not serving it: %v", key, verifyErr)
+			getRequestsTotal.WithLabelValues("miss_stored_digest").Inc()
+			writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
+			return
+		case !ok:
+			// The bytes changed after they were written. Nothing here can say
+			// what they should be, so the object goes and the next uploader
+			// replaces it.
+			storedDigestMismatchTotal.WithLabelValues("get").Inc()
+			log.Printf("stored digest: %q no longer hashes to the digest stored with it; evicting", key)
+			if delErr := storage.Delete(key); delErr != nil && !errors.Is(delErr, ErrNotFound) {
+				log.Printf("stored digest: evicting %q: %v", key, delErr)
+			}
+			getRequestsTotal.WithLabelValues("miss_stored_digest").Inc()
+			writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
+			return
+		}
+	}
+
 	// Self-heal: an object with no outputid metadata can never be a cache hit --
 	// the client needs the outputid (the content address) to verify the body, and
 	// without it discards the download and rebuilds -- yet its key stays in
@@ -188,6 +213,13 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			writeError(w, 413, "too_large", fmt.Sprintf("object exceeds max size of %d bytes", maxObjectBytes))
+			return
+		}
+		// The uploader's own digest says these are not the bytes it meant to
+		// send. Naming it as the client's request, not this server's fault, is
+		// what makes a retry the obvious answer.
+		if errors.Is(err, ErrStoredDigestMismatch) {
+			writeError(w, 400, "invalid_request", err.Error())
 			return
 		}
 		writeError(w, 500, "internal_error", err.Error())

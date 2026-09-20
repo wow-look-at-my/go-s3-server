@@ -13,7 +13,7 @@ type Logger interface {
 var logging Logger = discardLogger{}
 
 // SetLogger installs the destination for the client's diagnostics. Call it
-// before the first Client, and pass nil to go back to silence.
+// before the earliest Client, and pass nil to go back to silence.
 func SetLogger(l Logger) {
 	if l == nil {
 		l = discardLogger{}

@@ -206,7 +206,7 @@ func (idx *Index) Put(key string, size int64) {
 	//
 	// Nothing appends beside this guard. An unguarded append here built the
 	// very list the guard suppresses, so entriesOff saved nothing, and where
-	// tracking was on it recorded every key a second time.
+	// tracking was on it recorded every key another time.
 	if !idx.entriesOff {
 		idx.pendingEntries = append(idx.pendingEntries, indexEntry{compactKey: ck, mtimeUnix: now})
 	}
@@ -418,21 +418,18 @@ func removeHash(s [][gbciHashSize]byte, h [gbciHashSize]byte) [][gbciHashSize]by
 // the exclude set and any key skip reports as unwanted.
 //
 // skip is applied DURING selection, not after it. A caller that filters the
-// result instead gets the same keys proposed on every request: once the nearest
-// limit candidates have all been rejected, the window never advances and the
-// caller receives an empty set forever. That is exactly what happened to
-// prefetch, where a client got one pool of entries and then nothing at all for
-// the rest of its build. skip may be nil.
-func (idx *Index) NearbyKeys(startUnix, endUnix int64, limit int, exclude map[string]bool, skip func(string) bool) []string {
-	// The exclusion set arrives keyed by key string; convert it once (it is
-	// bounded by the batch request that produced it) so the scan below can
-	// compare compact keys instead of rebuilding a string per candidate.
-	var excluded map[compactKey]bool
-	if len(exclude) > 0 {
-		excluded = make(map[compactKey]bool, len(exclude))
-		for k := range exclude {
-			excluded[newCompactKey(k)] = true
-		}
+// result instead gets the same keys proposed on every request: a single time
+// the nearest limit candidates have all been rejected, the window never
+// advances and the caller receives an empty set forever. That is exactly what
+// happened to prefetch, where a client got a single pool of entries and then
+// nothing at all for the rest of its build. skip may be nil.
+func (idx *Index) NearbyKeys(startUnix, endUnix int64, limit int, exclude set.Set[string], skip func(string) bool) []string {
+	// The exclusion set arrives keyed by key string; convert it a single
+	// time (it is bounded by the batch request that produced it) so the
+	// scan below can compare compact keys instead of rebuilding a string per candidate.
+	excluded := set.New[compactKey](exclude.Len())
+	for key := range exclude.All() {
+		excluded.Add(newCompactKey(key))
 	}
 
 	// Fast path: nothing pending means the sorted list is current — a read lock
@@ -471,7 +468,7 @@ const nearbyScanFactor = 8
 //
 // Only a survivor is turned into a key string: rebuilding a single per
 // examined candidate is the other allocation this bounds.
-func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded map[compactKey]bool, skip func(string) bool) []string {
+func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded set.Set[compactKey], skip func(string) bool) []string {
 	if limit <= 0 || len(idx.entries) == 0 {
 		return nil
 	}
@@ -494,6 +491,10 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded
 	}) + lo
 	left := right - 1
 
+	// Take the nearest candidates the caller still wants. Without skip this is
+	// the earliest limit of them. With it, the walk continues past the rejects,
+	// so the window advances instead of re-proposing the same nearest keys on
+	// every request.
 	dist := func(pos int) int64 {
 		d := idx.entries[pos].mtimeUnix - mid
 		if d < 0 {
@@ -523,7 +524,7 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded
 			pos, right = right, right+1
 		}
 
-		if excluded[idx.entries[pos].compactKey] {
+		if excluded.Contains(idx.entries[pos].compactKey) {
 			continue
 		}
 		if skip == nil {
@@ -547,8 +548,8 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded
 	return keys
 }
 
-// blobServableLocked reports whether the cached blob answers a GET as it is:
-// there is one, and it is either current or younger than the interval.
+// blobServableLocked reports whether the cached blob may be handed out: it is
+// current, or it is younger than the blob interval. The caller holds idx.mu.
 func (idx *Index) blobServableLocked() bool {
 	if idx.cachedBlob == nil {
 		return false
@@ -649,14 +650,6 @@ func (idx *Index) rebuild(storage *Storage) {
 		entries, hashes, time.Since(start).Round(time.Millisecond))
 }
 
-// entryCount is the current number of indexed objects, used to size the next
-// rebuild's buffers: a cache does not change size much between rebuilds, and
-// growing a million-element slice by doubling costs an extra copy of itself.
-func (idx *Index) entryCount() int {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-	return len(idx.entries) + len(idx.pendingEntries)
-}
 
 // hashCount sizes a rebuild's buffers.
 func (idx *Index) hashCount() int {

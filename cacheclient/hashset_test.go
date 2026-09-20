@@ -59,8 +59,8 @@ func TestHashSetMatchesAMapThroughEveryCompaction(t *testing.T) {
 }
 
 // The sorted slice must stay sorted, because every lookup binary-searches it. A
-// merge that left one element out of place would answer "absent" for a key the
-// set holds, and nothing else in the type would notice.
+// merge that left a single element out of place would answer "absent" for a key
+// the set holds, and nothing else in the type would notice.
 func TestHashSetStaysSortedAcrossMerges(t *testing.T) {
 	s := newHashSet(0)
 	rng := rand.New(rand.NewSource(2))
@@ -103,8 +103,8 @@ func TestHashSetFromSortedFixesAnUnsortedBody(t *testing.T) {
 	assert.False(t, s.Contains(hashN(4)))
 }
 
-// What the type is for: the keys and nothing else. A map charged about eight
-// times the key material to hold the same hashes, which is what put a windows
+// What the type is for: the keys and nothing else. A map charged about times
+// the key material to hold the same hashes, which is what put a windows
 // runner into "Out of memory" with an empty log.
 func TestHashSetHoldsOnlyTheKeyMaterial(t *testing.T) {
 	const n = 50000

@@ -28,7 +28,7 @@ func extraKey() string {
 	return gbciKeyPrefix + hex.EncodeToString(h[:])
 }
 
-// anyKey is one member of a key set.
+// anyKey is a single member of a key set.
 func anyKey(keys set.Set[string]) string {
 	for k := range keys.All() {
 		return k
@@ -37,10 +37,10 @@ func anyKey(keys set.Set[string]) string {
 }
 
 // TestStaleCopyIsServedWhileItRefreshes pins stale-while-revalidate. A disk
-// copy past the max age is installed at once, as non-authoritative, and the
-// revalidation runs behind it. The first use must not wait for a download it
-// does not need: the old load held every Get and Put of the process until the
-// whole blob had arrived.
+// copy past the max age is installed at the same time, as non-authoritative,
+// and the revalidation runs behind it. the earliest use must not wait for a
+// download it does not need: the old load held every Get and Put of the
+// process until the whole blob had arrived.
 func TestStaleCopyIsServedWhileItRefreshes(t *testing.T) {
 	dir := t.TempDir()
 	keys := sevenKeys()
@@ -119,11 +119,11 @@ func TestStaleCopyIsServedWhileItRefreshes(t *testing.T) {
 	require.Equal(t, int32(2), served.Load())
 }
 
-// TestNoCopyGetIsBoundedWhileIndexLoads pins the bound on the one wait left.
-// With no disk copy the first use waits for the index, but only so long: the
-// index is an optimization, never a gate. Here it streams too slowly to
-// finish, as a large index does over a slow link, and a Get must still
-// complete within the bound and fall through to the server.
+// TestNoCopyGetIsBoundedWhileIndexLoads pins the bound on the thing wait
+// left. With no disk copy the earliest use waits for the index, but only so
+// long: the index is an optimization, never a gate. Here it streams too
+// slowly to finish, as a large index does over a slow link, and a Get must
+// still complete within the bound and fall through to the server.
 func TestNoCopyGetIsBoundedWhileIndexLoads(t *testing.T) {
 	t.Serial() // the logger is package state
 	blob := testIndexBlob(64)
@@ -187,9 +187,9 @@ func TestNoCopyGetIsBoundedWhileIndexLoads(t *testing.T) {
 }
 
 // TestConcurrentClientsDownloadIndexOnce pins single-flight across processes
-// that share an IndexDir. Two backends stand in for two go commands: they
-// share no memory, only the directory. The one that takes the lock downloads;
-// the other waits for it and reads what it wrote.
+// that share an IndexDir. backends stand in for go commands: they share no
+// memory, only the directory. the thing that takes the lock downloads; the
+// other waits for it and reads what it wrote.
 func TestConcurrentClientsDownloadIndexOnce(t *testing.T) {
 	dir := t.TempDir()
 	keys := sevenKeys()
@@ -258,8 +258,8 @@ func TestDeadLockHolderIsTakenOver(t *testing.T) {
 }
 
 // TestFailedHolderLeavesCopyNonAuthoritative pins the waiter's side of a
-// download that failed: it tries once itself, and when that fails too it
-// keeps the copy it had, non-authoritative, rather than retrying forever.
+// download that failed: it tries a single time itself, and when that
+// fails too it keeps the copy it had, non-authoritative, rather than retrying forever.
 func TestFailedHolderLeavesCopyNonAuthoritative(t *testing.T) {
 	dir := t.TempDir()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -20,6 +20,17 @@ var hashDebug struct {
 	m map[[HashSize]byte]string
 }
 
+// Verifying reports whether the cache runs in verify mode, under
+// GODEBUG=gocacheverify=1. A consumer that computes cache keys records what
+// produced each one while this is on, so a mismatch names the description
+// rather than two opaque ids.
+func Verifying() bool { return verify }
+
+// HashDebug reports whether GODEBUG=gocachehash=1 asks for every hash to
+// report itself. The consumer computes the hashes, so the consumer prints
+// them.
+func HashDebug() bool { return debugHash }
+
 // RecordHash remembers what produced an id, for the report a mismatch makes.
 // A consumer that computes cache keys calls it under gocacheverify.
 func RecordHash(id [HashSize]byte, description string) {

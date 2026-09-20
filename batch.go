@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // batchGetRequest is the JSON body for POST /_batch/get.
@@ -148,11 +150,11 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 	// Stat is cheap (os.Stat + xattrs); the bodies are streamed later, a single
 	// at a time, so the whole batch never sits in memory.
 	var entries []batchEntry
-	requestedSet := make(map[string]bool, len(lookup))
+	requestedSet := set.New[string](len(lookup))
 	var minMod, maxMod time.Time
 
 	for _, key := range lookup {
-		requestedSet[key] = true
+		requestedSet.Add(key)
 		meta, err := storage.Stat(key)
 		if err != nil {
 			if !errors.Is(err, ErrNotFound) {

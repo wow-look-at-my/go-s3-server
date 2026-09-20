@@ -50,8 +50,8 @@ func (b *WebBackend) getIndividual(actionID, key string, h actionHash) batchResp
 	}
 	rawSize, _ := strconv.ParseInt(resp.Header.Get("X-Cache-Meta-Body-Size"), 10, 64)
 
-	// The header states the length, so the body lands in one exactly-sized
-	// allocation instead of io.ReadAll's doubling.
+	// The header states the length, so the body lands in a single
+	// exactly-sized allocation instead of io.ReadAll's doubling.
 	var compressed []byte
 	if resp.ContentLength >= 0 {
 		compressed = make([]byte, resp.ContentLength)

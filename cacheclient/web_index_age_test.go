@@ -10,9 +10,9 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// TestMain makes the zero IndexMaxAge revalidate on every load. The tests of
-// the revalidation path predate the max age and count requests. The tests of
-// the max age below pass one explicitly.
+// TestMain makes the empty IndexMaxAge revalidate on every load. The tests
+// of the revalidation path predate the max age and count requests. The tests
+// of the max age below pass a single explicitly.
 func TestMain(m *testing.M) {
 	defaultIndexMaxAge = func(string) time.Duration { return -1 }
 	os.Exit(m.Run())
@@ -47,7 +47,7 @@ func TestIndexLoadsOnFirstUse(t *testing.T) {
 	require.Equal(t, 7, b.keys.Len())
 }
 
-// TestYoungDiskCopyIsServedWithoutARequest pins the max age. A second process
+// TestYoungDiskCopyIsServedWithoutARequest pins the max age. another process
 // over a copy younger than it asks the server for nothing, and the copy is
 // authoritative: an absent key misses with no probe.
 func TestYoungDiskCopyIsServedWithoutARequest(t *testing.T) {

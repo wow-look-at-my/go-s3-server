@@ -10,6 +10,7 @@ import (
 	"unsafe"
 
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // indexMaxBytesPerKey and blobMaxBytesPerKey are the ceilings the tests below
@@ -65,7 +66,6 @@ func fillIndexTracking(n int, entries bool) *Index {
 	return idx
 }
 
-//
 // The bound is per key over the whole index: the mtime-sorted entry list, the
 // sorted hash list, and the serialized blob the /_index endpoint serves
 // between rebuilds.
@@ -78,7 +78,7 @@ func TestIndexPerKeyFootprint(t *testing.T) {
 	require.NotEmpty(t, blob)
 	// NearbyKeys drains the pending entry buffer into the sorted list, which
 	// is the shape the index spends its life in.
-	idx.NearbyKeys(0, time.Now().Add(time.Hour).Unix(), 10, nil, nil)
+	idx.NearbyKeys(0, time.Now().Add(time.Hour).Unix(), 10, set.Set[string]{}, nil)
 
 	after := heapLive()
 	runtime.KeepAlive(idx)
@@ -91,6 +91,10 @@ func TestIndexPerKeyFootprint(t *testing.T) {
 
 	require.Less(t, perKey, indexMaxBytesPerKey,
 		"an indexed key must not cost more than %.0f bytes of RAM; see index.go", indexMaxBytesPerKey)
+
+	blobPerKey := float64(len(blob)) / float64(footprintKeys)
+	require.Less(t, blobPerKey, blobMaxBytesPerKey,
+		"the blob is the hash list plus a fixed header and trailer, so a key must cost about one hash in it")
 }
 
 // TestIndexWithoutEntriesCostsLess pins the saving a server with prefetch off
@@ -113,7 +117,7 @@ func TestIndexWithoutEntriesCostsLess(t *testing.T) {
 
 	require.Empty(t, idx.entries)
 	require.Empty(t, idx.pendingEntries)
-	require.Empty(t, idx.NearbyKeys(0, time.Now().Add(time.Hour).Unix(), 10, nil, nil),
+	require.Empty(t, idx.NearbyKeys(0, time.Now().Add(time.Hour).Unix(), 10, set.Set[string]{}, nil),
 		"no list means no candidates, which is what nobody asking for a window gets anyway")
 	require.False(t, idx.EntryTrackingEnabled())
 
@@ -162,11 +166,11 @@ func BenchmarkIndexBlob(b *testing.B) {
 // batch GET that asks for a window.
 func BenchmarkIndexNearbyKeys(b *testing.B) {
 	idx := fillIndex(100_000)
-	idx.NearbyKeys(0, time.Now().Add(time.Hour).Unix(), 1, nil, nil)
+	idx.NearbyKeys(0, time.Now().Add(time.Hour).Unix(), 1, set.Set[string]{}, nil)
 	end := time.Now().Add(time.Hour).Unix()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		idx.NearbyKeys(0, end, maxPrefetchEntries, nil, nil)
+		idx.NearbyKeys(0, end, maxPrefetchEntries, set.Set[string]{}, nil)
 	}
 }

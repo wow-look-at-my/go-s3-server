@@ -87,6 +87,10 @@ func TestIndexPerKeyFootprint(t *testing.T) {
 
 	require.Less(t, perKey, indexMaxBytesPerKey,
 		"an indexed key must not cost more than %.0f bytes of RAM; see index.go", indexMaxBytesPerKey)
+
+	blobPerKey := float64(len(blob)) / float64(footprintKeys)
+	require.Less(t, blobPerKey, blobMaxBytesPerKey,
+		"the blob is the hash list plus a fixed header and trailer, so a key must cost about one hash in it")
 }
 
 // TestIndexWithoutEntriesCostsLess pins the saving a server with prefetch off

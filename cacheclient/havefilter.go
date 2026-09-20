@@ -4,30 +4,24 @@ import "iter"
 
 // What this client already holds, stated in the request.
 //
-// Only the client knows what it kept. The server used to remember what it had
-// SENT each build, which is a different fact and an expensive one: per-build
-// memory, a TTL, an LRU that evicts, and nothing at all after a restart.
+// Only the client knows what it kept.
 //
 // The statement is a Bloom filter over action hashes. A hash is a sha256 and
 // already uniformly distributed, so the filter has no hash function of its
-// own: each of the k bit positions is three bytes read straight out of the
-// hash, modulo the bit count. The server's copy of this arithmetic is in
-// havefilter.go at the repo root, and haveFilterVector pins the two together.
+// own: each of the k bit positions is bytes read straight out of the hash,
+// modulo the bit count. The server's copy of this arithmetic is in
+// havefilter.go at the repo root, and haveFilterVector pins both together.
 //
 // It fails toward sending. The filter's error is a false positive, which says
-// the client holds a key it does not: the server declines to send that one
-// body and the client asks for it by name on the blocking path. Nothing is
-// lost and nothing is answered wrongly. A filter that erred the other way
-// would re-send bodies the client already has, which is the waste this
-// replaces.
+// the client holds a key it does not: the server declines to send that body
+// and the client asks for it by name on the blocking path. Nothing is lost
+// and nothing is answered wrongly. A filter that erred the other way would
+// re-send bodies the client already has, which is the waste this replaces.
 
-// haveFilterHashes is k: how many bit positions each action hash sets. Each
-// one reads three of the hash's 32 bytes.
+// haveFilterHashes is k: how many bit positions each action hash sets.
 const haveFilterHashes = 6
 
-// haveFilterBitsPerKey sizes the filter against what it holds. At 16 bits per
-// key with k=6 the false-positive rate is under a tenth of a percent, and a
-// false positive only costs one un-sent body.
+// haveFilterBitsPerKey sizes the filter against what it holds.
 const haveFilterBitsPerKey = 16
 
 // haveFilterMinBytes and haveFilterMaxBytes bound the filter on the wire. The

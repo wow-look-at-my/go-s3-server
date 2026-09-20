@@ -17,15 +17,15 @@ import (
 // compression itself runs on the prep pool, off the goroutine that just
 // finished a compile, so what it spends is no longer charged to the build.
 //
-// A stored object names its codec in its own first bytes, so a cache holding
-// both is read correctly without consulting metadata, and without a migration.
-// The lz4 reader therefore stays for as long as lz4 objects do.
+// A stored object names its codec in its own earliest bytes, so a cache
+// holding both is read correctly without consulting metadata, and without a
+// migration. The lz4 reader therefore stays for as long as lz4 objects do.
 const (
 	zstdMagic = 0xFD2FB528
 	lz4Magic  = 0x184D2204
 )
 
-// zstdEncoder and zstdDecoder are shared. Building either one costs far more
+// zstdEncoder and zstdDecoder are shared. Building either costs far more
 // than a single object, and EncodeAll and DecodeAll are safe for concurrent
 // use, which is what the prep and look-ahead pools need.
 var (
@@ -34,9 +34,6 @@ var (
 )
 
 func mustZstdEncoder() *zstd.Encoder {
-	// Concurrency 1: the pools above already decide how many objects are in
-	// flight, and a second layer of goroutines per object only competes with
-	// them for the same cores.
 	e, err := zstd.NewWriter(nil,
 		zstd.WithEncoderLevel(zstdLevel()),
 		zstd.WithEncoderConcurrency(1))
@@ -120,8 +117,8 @@ func DecompressSized(data []byte, size int64) ([]byte, error) {
 }
 
 // maxPresizedBody bounds what a declared size may allocate up front. The size
-// comes off the wire, so a corrupt or hostile value must not turn one response
-// into an out-of-memory kill; past this the reader grows as it always did.
+// comes off the wire, so a corrupt or hostile value must not turn a single
+// response into an out-of-memory kill; past this the reader grows as it always did.
 const maxPresizedBody = 1 << 30
 
 // detectObjectType identifies the type of a cache entry from its magic bytes.

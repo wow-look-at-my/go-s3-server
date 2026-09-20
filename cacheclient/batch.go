@@ -23,7 +23,7 @@ type batchGetRequest struct {
 	PrefetchOnly bool `json:"prefetch_only,omitempty"`
 	// Have states what this client already holds, so the server can leave it
 	// out of the window. See havefilter.go. An absent filter asks for
-	// everything, which is what a client too old to send one gets.
+	// everything, which is what a client too old to send a single gets.
 	Have *haveFilter `json:"have,omitempty"`
 }
 
@@ -48,8 +48,8 @@ type BatchEntry struct {
 	Data     []byte
 	Prefetch bool
 	// RawSize is the body's uncompressed length, as the uploader recorded it.
-	// It lets a reader allocate once instead of growing a buffer. Zero when the
-	// object predates the metadata or carries a value that will not parse.
+	// It lets a reader allocate a single time instead of growing a buffer.
+	// empty when the object predates the metadata or carries a value that will not parse.
 	RawSize int64
 }
 
@@ -58,15 +58,13 @@ type BatchEntry struct {
 //
 // It streams because the alternative was the client's largest resident cost. A
 // response carries up to batchMaxKeys requested bodies plus the server's whole
-// prefetch window, several requests are in flight at once, and every `go`
-// process in a `dist test` run builds its own. Nothing bounded the BYTES: the
-// caps upstream and downstream both count ENTRIES, and a count is not a size.
-// That is what put a windows runner into ERROR_COMMITMENT_LIMIT.
+// prefetch window, several requests are in flight at the same time, and every
+// `go` process in a `dist test` run builds its own. Nothing bounded the BYTES:
+// the caps upstream and downstream both count ENTRIES, and a count is not a
+// size. That is what put a windows runner into ERROR_COMMITMENT_LIMIT.
 //
-// The server writes manifest.json as the tar's FIRST member, so an entry's
-// metadata is always known by the time its body arrives. Holding one body
-// rather than the whole tar is what that ordering buys, and it also unblocks a
-// waiting caller as its own body lands instead of after the last one.
+// The server writes manifest.json as the tar's earliest member, so an entry's
+// metadata is always known by the time its body arrives.
 func streamBatchResponse(r io.Reader, fn func(BatchEntry)) error {
 	tr := tar.NewReader(r)
 
@@ -74,13 +72,13 @@ func streamBatchResponse(r io.Reader, fn func(BatchEntry)) error {
 	meta := map[string]*batchGetManifestEntry{}
 
 	readMember := func(tr *tar.Reader, hdr *tar.Header) ([]byte, error) {
-		// The header states the size, so the body lands in one exactly-sized
-		// allocation rather than io.ReadAll's doubling.
+		// The header states the size, so the body lands in a single
+		// exactly-sized allocation rather than io.ReadAll's doubling.
 		raw := make([]byte, hdr.Size)
 		n, err := io.ReadFull(tr, raw)
 		if err != nil {
 			// Say how far it got. A cut response and a server that stopped
-			// after one member both surface as "unexpected EOF", and the
+			// after a single member both surface as "unexpected EOF", and the
 			// counts are what tell them apart. Entries handed over before this
 			// point are already the caller's -- streaming means a truncated
 			// response costs the tail, not the batch.
@@ -99,8 +97,8 @@ func streamBatchResponse(r io.Reader, fn func(BatchEntry)) error {
 		}
 
 		if hdr.Name == "manifest.json" {
-			// The header states the size, so the body lands in one exactly-sized
-			// allocation rather than io.ReadAll's doubling.
+			// The header states the size, so the body lands in a single
+			// exactly-sized allocation rather than io.ReadAll's doubling.
 			raw, err := readMember(tr, hdr)
 			if err != nil {
 				return err
@@ -152,20 +150,14 @@ func parseBatchResponse(r io.Reader) ([]BatchEntry, error) {
 // batchCoalescer collects incoming batchReqs and dispatches each batch as a
 // single HTTP request to the server's batch endpoint.
 //
-// The window is Nagle's rule, not a fixed wait. A caller blocks on its own key,
-// and the build's parallelism decides how many keys are outstanding at once, so
-// sitting a fixed window out bought nothing: a four-way build never offered
-// more than four keys, and all four paid the wait for an answer the server
-// produces in a millisecond. Here the first batch leaves at once, and only what
-// arrives while a request is already in flight rides the next one. Load alone
-// widens a batch, which is the only condition under which a wider batch is
-// worth its latency.
+// The window is Nagle's rule, not a fixed wait. Load alone widens a batch,
+// which is the only condition under which a wider batch is worth its latency.
 func (b *WebBackend) batchCoalescer() {
 	defer close(b.batchDone)
 
 	var pending []batchReq
-	// When the batch's first key arrived. Every caller in the batch has been
-	// blocked since at least this instant, so it is what the window costs.
+	// When the batch's earliest key arrived. Every caller in the batch has
+	// been blocked since at least this instant, so it is what the window costs.
 	var firstQueued time.Time
 	var inFlight atomic.Int64
 	sent := make(chan struct{}, 1)
@@ -301,9 +293,6 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 		return
 	}
 
-	// Each body is answered as it arrives rather than after the last one, so the
-	// response is never resident as a whole and a blocked caller waits only for
-	// its own object.
 	reqByKey := make(map[string]batchReq, len(reqs))
 	for _, r := range reqs {
 		reqByKey[r.key] = r
@@ -338,8 +327,8 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 	b.Pool.Release()
 	if err != nil {
 		logging.Warnf("cacheprog: web batch get: parse: %v", err)
-		// Only the callers still waiting: one already answered must not be sent
-		// a second reply.
+		// Only the callers still waiting: a single already answered must not be
+		// sent another reply.
 		for _, r := range reqByKey {
 			if b.keyKnown(r.hash) {
 				b.MissReadBody.Increment()
@@ -372,12 +361,12 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 }
 
 // verify decompresses a stored body and puts it through every gate before any
-// caller can see it. A body that fails one is a miss: the recompute that
+// caller can see it. A body that fails a single is a miss: the recompute that
 // follows re-uploads it clean.
 //
-// It is the one place the gates live, so a body reaching the build through the
-// look-ahead pool is checked exactly as hard as one the build asked for by
-// name. op names the path for the log line.
+// It is the thing place the gates live, so a body reaching the build through
+// the look-ahead pool is checked exactly as hard as a single the build asked
+// for by name. op names the path for the log line.
 func (b *WebBackend) verify(op, actionID, outputID string, stored []byte, rawSize int64) ([]byte, bool) {
 	// A missing outputid is a metadata gap, not a corrupt body — count it as
 	// such rather than as the checksum mismatch it would become below.
@@ -413,8 +402,8 @@ func (b *WebBackend) verify(op, actionID, outputID string, stored []byte, rawSiz
 		return nil, false
 	}
 	// A module index certifies neither its outputID nor its build id, so a
-	// wrong one is silently fatal at package load. Recomputing it locally
-	// costs nothing.
+	// wrong a single is silently fatal at package load. Recomputing it
+	// locally costs nothing.
 	if IsGoModuleIndex(data) {
 		b.MissModuleIndex.Increment()
 		logging.Warnf("cacheprog: %s %s: refusing module-index blob (unverifiable under this key, len=%d); treating as miss",

@@ -64,30 +64,9 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		return
 	}
 
-	// Self-heal: an object with no outputid metadata can never be a cache hit --
-	// the client needs the outputid (the content address) to verify the body, and
-	// without it discards the download and rebuilds -- yet its key stays in
-	// /_index, so clients skip re-uploading it and every build that needs the
-	// action takes a forced miss. These are leftovers from earlier cache-data
-	// iterations or a data-dir move that stripped xattrs. Repair it in place:
-	// reconstruct the outputid from the body (it IS sha256 of the decompressed
-	// body) and persist it, so the object keeps its bytes + audit trail, stays in
-	// /_index, and serves as a hit. If the body cannot be decompressed (and is
-	// thus unusable by the client anyway), report a clean miss without deleting
-	// anything -- the object is left for the normal eviction policy.
-	if !ensureOutputID(storage, key, meta, f) {
-		getRequestsTotal.WithLabelValues("miss_selfheal_failed").Inc()
-		writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
-		return
-	}
-
-	// A cacheprog key is verified by whoever reads it: the client hashes the
-	// body against the outputid before it consumes it, so rot there costs a
-	// single refused fetch. Any other key has no such reader, and this is the
-	// only place its bytes are ever checked. The cost is a hash of the whole
-	// body, paid on a path that serves the occasional arbitrary object rather
-	// than a build's worth of them.
-	if _, indexed := extractActionHash(key); !indexed {
+	// Every object is checked against the digest recorded with it before it is
+	// served.
+	{
 		ok, verifyErr := verifyStoredDigest(f, meta.Metadata)
 		switch {
 		case verifyErr != nil:
@@ -108,6 +87,23 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 			writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
 			return
 		}
+	}
+
+	// Self-heal: an object with no outputid metadata can never be a cache hit --
+	// the client needs the outputid (the content address) to verify the body, and
+	// without it discards the download and rebuilds -- yet its key stays in
+	// /_index, so clients skip re-uploading it and every build that needs the
+	// action takes a forced miss. These are leftovers from earlier cache-data
+	// iterations or a data-dir move that stripped xattrs. Repair it in place:
+	// reconstruct the outputid from the body (it IS sha256 of the decompressed
+	// body) and persist it, so the object keeps its bytes + audit trail, stays in
+	// /_index, and serves as a hit. If the body cannot be decompressed (and is
+	// thus unusable by the client anyway), report a clean miss without deleting
+	// anything -- the object is left for the normal eviction policy.
+	if !ensureOutputID(storage, key, meta, f) {
+		getRequestsTotal.WithLabelValues("miss_selfheal_failed").Inc()
+		writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
+		return
 	}
 
 	if a := auditFromContext(r.Context()); a != nil {

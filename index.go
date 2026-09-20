@@ -187,8 +187,9 @@ func (idx *Index) Put(key string, size int64) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	// Append to the unsorted pending buffer, which is O(1). drainEntriesLocked
-	// merges and sorts it for the next reader.
+	// Append to the unsorted pending buffer only — O(1). The merge+sort into the
+	// mtime-ordered list is deferred to the next reader (see drainEntriesLocked),
+	// so a burst of concurrent PUTs no longer convoys behind a full re-sort.
 	//
 	// Nothing appends beside this guard. An unguarded append here built the
 	// very list the guard suppresses, so entriesOff saved nothing, and where
@@ -476,13 +477,6 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded
 	// the earliest limit of them. With it, the walk continues past the rejects,
 	// so the window advances instead of re-proposing the same nearest keys on
 	// every request.
-	if skip == nil {
-		if len(candidates) > limit {
-			candidates = candidates[:limit]
-		}
-		keys := make([]string, len(candidates))
-		for i, c := range candidates {
-			keys[i] = idx.entries[c.pos].Key()
 	dist := func(pos int) int64 {
 		d := idx.entries[pos].mtimeUnix - mid
 		if d < 0 {

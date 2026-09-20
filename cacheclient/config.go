@@ -14,7 +14,7 @@ const ConfigEnv = "GO_BUILDCACHE_CONFIG"
 //
 // The server authenticates with HTTP Basic Auth, so the credential fields are
 // username and password. The S3-era spellings are still read, because a
-// consumer's CI configuration outlives any one release.
+// consumer's CI configuration outlives any a single release.
 type envConfig struct {
 	Endpoint string `json:"endpoint"`
 	Bucket   string `json:"bucket"`
@@ -36,7 +36,7 @@ const DefaultBucket = "gobuildcache"
 // is slower and still correct.
 //
 // Every consumer reads the same variable and the same JSON, so the contract
-// lives here rather than once per consumer.
+// lives here rather than a single time per consumer.
 func ConfigFromEnv() WebConfig {
 	raw := os.Getenv(ConfigEnv)
 	if raw == "" {

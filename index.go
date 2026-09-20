@@ -150,7 +150,6 @@ func NewIndex(storage *Storage) *Index {
 // serializes every PUT on the next read.
 func (idx *Index) SetBlobInterval(d time.Duration) { idx.blobMinInterval.Store(int64(d)) }
 
-// BlobInterval reports the least time between serializations.
 // DisableEntryTracking stops the index maintaining the mtime-sorted entry
 // list and releases what it holds. Call it before serving, from a server
 // whose prefetch is off: NearbyKeys then answers with no candidates, which is
@@ -404,12 +403,18 @@ func (idx *Index) NearbyKeys(startUnix, endUnix int64, limit int, exclude set.Se
 	// The exclusion set arrives keyed by key string; convert it a single
 	// time (it is bounded by the batch request that produced it) so the
 	// scan below can compare compact keys instead of rebuilding a string per candidate.
+<<<<<<< HEAD
 	var excluded set.Set[compactKey]
 	if exclude.Len() > 0 {
 		excluded = set.New[compactKey](exclude.Len())
 		for k := range exclude.All() {
 			excluded.Add(newCompactKey(k))
 		}
+=======
+	excluded := set.New[compactKey](exclude.Len())
+	for key := range exclude.All() {
+		excluded.Add(newCompactKey(key))
+>>>>>>> origin/master
 	}
 
 	// Fast path: nothing pending means the sorted list is current — a read lock
@@ -471,6 +476,13 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded
 	}) + lo
 	left := right - 1
 
+<<<<<<< HEAD
+=======
+	// Take the nearest candidates the caller still wants. Without skip this is
+	// the earliest limit of them. With it, the walk continues past the rejects,
+	// so the window advances instead of re-proposing the same nearest keys on
+	// every request.
+>>>>>>> origin/master
 	dist := func(pos int) int64 {
 		d := idx.entries[pos].mtimeUnix - mid
 		if d < 0 {
@@ -524,6 +536,8 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded
 	return keys
 }
 
+// blobServableLocked reports whether the cached blob may be handed out: it is
+// current, or it is younger than the blob interval. The caller holds idx.mu.
 func (idx *Index) blobServableLocked() bool {
 	if idx.cachedBlob == nil {
 		return false
@@ -531,8 +545,9 @@ func (idx *Index) blobServableLocked() bool {
 	return !idx.dirty.Load() || time.Since(idx.builtAt) < idx.BlobInterval()
 }
 
-// Fast path: if the cached blob is servable (current, or younger than the
-// blob interval), return it under a read lock. Slow path: merge pending into
+// Blob answers the serialized index and its ETag.
+//
+// Fast path: a servable cached blob is returned under a read lock. Slow path: merge pending into
 // hashes, serialize header + body + trailer, cache the result, clear dirty.
 // Callers arriving during a serialization wait on the read lock and all
 // receive the blob it produces, so a burst of GETs costs a single

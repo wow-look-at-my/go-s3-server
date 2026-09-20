@@ -198,6 +198,7 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 	// stat, guard and heal work, so a rejected candidate never costs a file
 	// open or an lz4 block decode.
 	var nHeld int
+<<<<<<< HEAD
 	// index skip the ones already sent to this build AS IT SELECTS. Suppression
 	// during selection is what keeps the window moving: filtering the result
 	// afterwards handed back the same nearest maxPrefetchEntries candidates on
@@ -207,6 +208,8 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 	// heal work, so a rejected candidate never costs a file open or an lz4
 	// block decode. Only keys that actually make it into the response are
 	// recorded as sent, so a candidate dropped by the guard stays eligible.
+=======
+>>>>>>> origin/master
 	if req.Prefetch && len(entries) > 0 && !minMod.IsZero() && storage.Index != nil {
 		windowStart := minMod.Add(-prefetchWindow)
 		windowEnd := maxMod.Add(prefetchWindow)

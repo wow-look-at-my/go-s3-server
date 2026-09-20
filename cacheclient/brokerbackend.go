@@ -1,6 +1,9 @@
 package cacheclient
 
-import "time"
+import (
+	"os"
+	"time"
+)
 
 // brokerBackend is the cache as a child process sees it: every call goes to the
 // broker over the socket, and this process never dials the store, never loads
@@ -34,11 +37,21 @@ func (bac *brokerBackend) Get(actionID string) (string, []byte, time.Time, bool)
 	return outputID, data, stamp, false
 }
 
+// PutFile hands the body over by name. The size is read here rather than
+// reported by the broker: a summary that counted the objects and called their
+// bytes zero would read as a build that uploaded nothing.
 func (bac *brokerBackend) PutFile(actionID, outputID, path string) error {
+	size := int64(0)
+	if info, err := os.Stat(path); err == nil {
+		size = info.Size()
+	}
 	if err := bac.link.putFile(actionID, outputID, path); err != nil {
 		return err
 	}
 	bac.stats.Puts.Increment()
+	if size > 0 {
+		bac.stats.PutBytes.Add(uint64(size))
+	}
 	return nil
 }
 

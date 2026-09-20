@@ -159,8 +159,13 @@ func (bkr *broker) handleGet(wri http.ResponseWriter, req *http.Request) {
 	actionID := req.URL.Query().Get("id")
 	flight, mine := bkr.fly.startGet(actionID)
 	if mine {
-		flight.outputID, flight.data, flight.stampNS, flight.miss = bkr.fetch(actionID)
-		bkr.fly.finishGet(actionID, flight)
+		// The close runs whatever the fetch does, a panic included. An owner
+		// that leaves without it strands every waiter on this key for the life
+		// of the build.
+		func() {
+			defer bkr.fly.finishGet(actionID, flight)
+			flight.outputID, flight.data, flight.stampNS, flight.miss = bkr.fetch(actionID)
+		}()
 	} else {
 		select {
 		case <-flight.done:

@@ -17,34 +17,45 @@ func TestFlightsCollapseConcurrentGets(test *testing.T) {
 		test.Fatal("the first ask does not own its flight")
 	}
 
-	var owners int
+	var missed int
 	var count sync.Mutex
 	var waiting sync.WaitGroup
+	// Every asker joins before the owner finishes. Dedup is about asks that
+	// overlap, and an ask that arrives after the answer is a new one by
+	// design, so a test that let them race would be testing the scheduler.
+	var joined sync.WaitGroup
+	joined.Add(askers)
 	for range askers {
 		waiting.Add(1)
 		go func() {
 			defer waiting.Done()
 			flight, mine := fly.startGet("abc")
+			joined.Done()
 			if mine {
+				// A second flight for a key somebody else is already fetching.
+				// It still has to finish: an owner that walks away leaves every
+				// later asker parked on a channel nothing closes.
 				count.Lock()
-				owners++
+				missed++
 				count.Unlock()
+				fly.finishGet("abc", flight)
 				return
 			}
 			<-flight.done
 			if string(flight.data) != "body" {
 				count.Lock()
-				owners++ // a waiter that woke on an unfinished flight
+				missed++ // woke on a flight that carried nothing
 				count.Unlock()
 			}
 		}()
 	}
 
+	joined.Wait()
 	owner.data = []byte("body")
 	fly.finishGet("abc", owner)
 	waiting.Wait()
-	if owners != 0 {
-		test.Errorf("%d of %d askers did not share the first flight", owners, askers)
+	if missed != 0 {
+		test.Errorf("%d of %d askers did not share the first flight", missed, askers)
 	}
 
 	// The key is free again once its flight is done, so the next ask is a new

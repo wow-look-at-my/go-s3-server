@@ -27,7 +27,7 @@ shared:
 				fi
 			}
 			wait_port "$port" /_health
-			# The dashboard is a second listener, so the cache port answering says nothing about it.
+			# The dashboard is another listener, so the cache port answering says nothing about it.
 			dash="$(sed -n 's/.*"dashboard_listen"[[:space:]]*:[[:space:]]*"[^"]*:\([0-9]\{1,\}\)".*/\1/p' "$config")"
 			if [ -n "$dash" ]; then
 				wait_port "$dash" /

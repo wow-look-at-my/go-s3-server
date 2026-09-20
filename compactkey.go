@@ -29,10 +29,7 @@ func (c compactKey) Key() string {
 	if c.raw != "" {
 		return c.raw
 	}
-	// Encoded straight into the buffer that becomes the string. The obvious
-	// spelling, prefix + hex.EncodeToString(hash), allocates the hex string,
-	// then the concatenation, then the result: three per key, on a path that
-	// rebuilds a couple of hundred of them per prefetching request.
+	// Encoded straight into the buffer that becomes the string.
 	b := make([]byte, len(gbciKeyPrefix)+2*gbciHashSize)
 	copy(b, gbciKeyPrefix)
 	hex.Encode(b[len(gbciKeyPrefix):], c.hash[:])

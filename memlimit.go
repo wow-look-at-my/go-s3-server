@@ -140,13 +140,6 @@ func readCgroupMemoryLimit() (int64, bool) {
 // defaultGCPercent is the heap growth target this server installs when the
 // operator has not set GOGC.
 //
-// Go's default is 100: the heap is allowed to double its live size before a
-// cycle. This process holds a large, long-lived live set (the key index is
-// over a hundred megabytes at a million keys) and serves hundreds of requests
-// a second, so at 100 the resident heap sits near twice the index with the
-// request garbage on top, and none of that is a structure anybody can point
-// at. At 50 the same live set targets one and a half times itself.
-//
 // It costs CPU: more frequent cycles over the same live data. That is the
 // right trade here, because the alternative is an OOM kill, and because the
 // live set is mostly a few big slices the collector scans cheaply.
@@ -158,8 +151,8 @@ const defaultGCPercent = 50
 func tuneGC() (applied bool, previous int) {
 	if os.Getenv("GOGC") != "" {
 		// Read nothing and set nothing: SetGCPercent has no read-only form,
-		// and every value it accepts changes the target -- a negative one
-		// turns the collector off entirely.
+		// and every value it accepts changes the target -- a negative a
+		// single turns the collector off entirely.
 		return false, 0
 	}
 	return true, debug.SetGCPercent(defaultGCPercent)

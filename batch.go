@@ -270,6 +270,19 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 			// single as a cache miss, so omitting it is safe.
 			continue
 		}
+		// Same check the single-object GET makes: the digest recorded with the
+		// body decides whether these bytes are the ones that were stored.
+		if ok, verifyErr := verifyStoredDigest(f, e.meta.Metadata); verifyErr != nil || !ok {
+			f.Close()
+			if verifyErr == nil {
+				storedDigestMismatchTotal.WithLabelValues("batch_get").Inc()
+				log.Printf("stored digest: %q no longer hashes to the digest stored with it; evicting", e.key)
+				if delErr := storage.Delete(e.key); delErr != nil && !errors.Is(delErr, ErrNotFound) {
+					log.Printf("stored digest: evicting %q: %v", e.key, delErr)
+				}
+			}
+			continue
+		}
 		err = writeTarEntry(tw, "data/"+e.key, size, f)
 		f.Close()
 		if err != nil {

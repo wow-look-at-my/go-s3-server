@@ -47,6 +47,7 @@ const (
 	sizeHeader   = "Cache-Size"
 	mtimeHeader  = "Cache-Mtime"
 	dirHeader    = "Cache-Dir"
+	tierHeader   = "Cache-Tier"
 )
 
 // brokerServer serves the owner's cache to the processes below it.
@@ -170,8 +171,8 @@ func (bkr *brokerServer) handleEntry(wri http.ResponseWriter, req *http.Request)
 	if mine {
 		func() {
 			defer bkr.fly.finishGet(key, flight)
-			entry, err := bkr.owner.Get(id)
-			flight.entry, flight.miss = entry, err != nil
+			entry, tier, err := bkr.ownerGet(id)
+			flight.entry, flight.tier, flight.miss = entry, tier, err != nil
 		}()
 	} else {
 		select {
@@ -185,7 +186,18 @@ func (bkr *brokerServer) handleEntry(wri http.ResponseWriter, req *http.Request)
 		wri.WriteHeader(http.StatusNoContent)
 		return
 	}
+	wri.Header().Set(tierHeader, flight.tier)
 	writeEntry(wri, flight.entry)
+}
+
+// ownerGet looks an action up in the owner's cache, naming the tier that
+// answered when the owner can report one.
+func (bkr *brokerServer) ownerGet(id ActionID) (Entry, string, error) {
+	if tiered, ok := bkr.owner.(Tiered); ok {
+		return tiered.GetTiered(id)
+	}
+	entry, err := bkr.owner.Get(id)
+	return entry, TierDisk, err
 }
 
 // handlePut stores a body the child names by path. The owner reads it, so the

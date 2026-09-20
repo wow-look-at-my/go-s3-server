@@ -94,16 +94,27 @@ func dialBroker() Cache {
 // Get asks the owner for an action's output. A miss answers the error the
 // contract names, exactly as a local miss does.
 func (c *brokerCache) Get(id ActionID) (Entry, error) {
+	entry, _, err := c.GetTiered(id)
+	return entry, err
+}
+
+// GetTiered is Get, naming the tier the owner answered from.
+func (c *brokerCache) GetTiered(id ActionID) (Entry, string, error) {
 	resp, err := c.link.client.Get("http://broker" + brokerEntry + "?id=" + hex.EncodeToString(id[:]))
 	if err != nil {
-		return Entry{}, &entryNotFoundError{Err: err}
+		return Entry{}, TierOwner, &entryNotFoundError{Err: err}
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return Entry{}, &entryNotFoundError{Err: errBrokerMiss}
+	tier := resp.Header.Get(tierHeader)
+	if tier == "" {
+		tier = TierOwner
 	}
-	return readEntry(resp.Header)
+	if resp.StatusCode != http.StatusOK {
+		return Entry{}, tier, &entryNotFoundError{Err: errBrokerMiss}
+	}
+	entry, err := readEntry(resp.Header)
+	return entry, tier, err
 }
 
 // Put hands a body to the owner by naming the file it sits in. The owner reads

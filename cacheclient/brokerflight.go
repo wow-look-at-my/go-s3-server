@@ -19,6 +19,7 @@ import "sync"
 type getFlight struct {
 	done  chan struct{}
 	entry Entry
+	tier  string
 	miss  bool
 }
 

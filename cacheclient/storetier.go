@@ -39,22 +39,29 @@ func layerStore(disk *DiskCache, store *WebBackend) Cache {
 
 // Get answers from disk, and asks the store only when disk misses.
 func (tier *storeTier) Get(id ActionID) (Entry, error) {
+	entry, _, err := tier.GetTiered(id)
+	return entry, err
+}
+
+// GetTiered is Get, naming which tier answered.
+func (tier *storeTier) GetTiered(id ActionID) (Entry, string, error) {
 	entry, err := tier.DiskCache.Get(id)
 	if err == nil {
 		tier.localHits.Add(1)
 		tier.localHitBytes.Add(entry.Size)
-		return entry, nil
+		return entry, TierDisk, nil
 	}
 	outputID, data, _, miss := tier.store.Get(hex.EncodeToString(id[:]))
 	if miss || data == nil {
-		return Entry{}, err
+		return Entry{}, TierShared, err
 	}
 	out, decodeErr := decodeOutputID(outputID)
 	if decodeErr != nil {
-		return Entry{}, err
+		return Entry{}, TierShared, err
 	}
 	tier.keep(id, out, data)
-	return tier.DiskCache.Get(id)
+	entry, err = tier.DiskCache.Get(id)
+	return entry, TierShared, err
 }
 
 // Put stores locally, then offers the body to the store. The local store is

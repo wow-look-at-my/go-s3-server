@@ -18,8 +18,8 @@ import (
 
 // A build spreads over many processes, and a cache each of them opens for
 // itself charges each of them an index write, a trim, a connection to the
-// store, and an exit held open to drain uploads. the earliest process owns
-// the cache instead, and serves the rest over shared memory.
+// store, and an exit held open to drain uploads. Whichever process opens the
+// cache owns it instead, and serves the rest over shared memory.
 //
 // That leaves a single writer for the directory, so the trim has a single
 // owner. Nothing spins: a send into a ring with room makes no system call, and

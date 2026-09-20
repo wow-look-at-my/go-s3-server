@@ -272,15 +272,13 @@ func TestConfigPrefetchDefaultsOff(t *testing.T) {
 }
 
 // indexedKey is a real cacheprog key: the prefix plus a 64-hex action hash.
-// Suppression addresses keys by that hash, so a test about it cannot use the
+// The filter addresses keys by that hash, so a test about it cannot use the
 // short made-up keys the other batch tests get away with.
-func indexedKey(n int) string {
-	var h [gbciHashSize]byte
-	h[0] = byte(n)
-	h[1] = byte(n >> 8)
-	h[2] = byte(n >> 16)
-	h[3] = 0xa5
-	return gbciKeyPrefix + hex.EncodeToString(h[:])
+//
+// The hash is a real digest rather than the counter in a few leading bytes.
+func indexedKey(num int) string {
+	hash := sha256.Sum256(fmt.Appendf(nil, "indexed-key-%d", num))
+	return gbciKeyPrefix + hex.EncodeToString(hash[:])
 }
 
 // holdFilter is a request's statement that the client holds keys, built the

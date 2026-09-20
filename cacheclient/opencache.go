@@ -1,5 +1,24 @@
 package cacheclient
 
+import "sync/atomic"
+
+// liveTier is the store tier this process owns, if it owns one.
+var liveTier atomic.Pointer[storeTier]
+
+// CloseStore drains this process's uploads and gives up the key index's lock.
+// The directory stays open, so a caller may still read and write it.
+//
+// A consumer calls it as the process exits. Every go command opens the cache,
+// and one that exits holding the index's lock makes the next wait for it. A
+// command that never runs a build therefore has to give it up here, because
+// nothing else will call Close.
+func CloseStore() error {
+	if tier := liveTier.Load(); tier != nil {
+		return tier.closeStore()
+	}
+	return nil
+}
+
 // OpenCache answers the cache this process should use, and it is the whole
 // decision a consumer makes about caching.
 //
@@ -22,7 +41,9 @@ func OpenCache(dir string, store *WebBackend) (Cache, error) {
 	}
 	var owner Cache = disk
 	if store != nil {
-		owner = layerStore(disk, store)
+		tier := layerStore(disk, store)
+		liveTier.Store(tier)
+		owner = tier
 	}
 	serveBroker(owner, dir)
 	return owner, nil

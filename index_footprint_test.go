@@ -10,6 +10,7 @@ import (
 	"unsafe"
 
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // indexMaxBytesPerKey and blobMaxBytesPerKey are the ceilings the tests below

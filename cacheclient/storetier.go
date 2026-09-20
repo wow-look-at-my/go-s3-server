@@ -21,14 +21,14 @@ type storeTier struct {
 	localPuts     atomic.Int64
 	localPutBytes atomic.Int64
 
-	closeOnce  sync.Once
-	closeErr   error
-	storeOnce  sync.Once
-	storeErr   error
+	closeOnce sync.Once
+	closeErr  error
+	storeOnce sync.Once
+	storeErr  error
 }
 
 // layerStore answers the disk cache with the store under it.
-func layerStore(disk *DiskCache, store *WebBackend) Cache {
+func layerStore(disk *DiskCache, store *WebBackend) *storeTier {
 	tier := &storeTier{DiskCache: disk, store: store}
 	// The look-ahead pool has somewhere to put what it fetches, which is what
 	// turns it on: an object lands on disk before the build asks for it, so

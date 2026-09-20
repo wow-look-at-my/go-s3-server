@@ -1,8 +1,6 @@
 package cacheclient
 
 import (
-	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"os"

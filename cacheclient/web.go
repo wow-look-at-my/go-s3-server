@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -43,12 +44,40 @@ type WebConfig struct {
 	IndexMaxAge time.Duration
 }
 
-// IndexMaxAgeDefault is the index max age a zero WebConfig.IndexMaxAge takes.
+// IndexMaxAgeDefault is the floor a zero WebConfig.IndexMaxAge takes outside
+// CI. The run window in indexRunWindow raises it to cover a longer run.
 const IndexMaxAgeDefault = 10 * time.Minute
 
-// defaultIndexMaxAge is what a zero IndexMaxAge resolves to. The package's
-// tests set it negative, so a test of the revalidation path sees a request.
-var defaultIndexMaxAge time.Duration = IndexMaxAgeDefault
+// IndexMaxAgeCI is what a zero WebConfig.IndexMaxAge takes in CI: a disk copy
+// is served however old it is, for the whole run.
+const IndexMaxAgeCI = time.Duration(math.MaxInt64)
+
+// defaultIndexMaxAge resolves a zero IndexMaxAge for the index copy at
+// indexPath. The package's tests replace it with one returning a negative
+// duration, so a test of the revalidation path sees a request.
+var defaultIndexMaxAge = resolveDefaultIndexMaxAge
+
+// resolveDefaultIndexMaxAge is the default index max age for the copy at
+// indexPath: unbounded in CI, and otherwise the longer of the current run's
+// window and IndexMaxAgeDefault.
+func resolveDefaultIndexMaxAge(indexPath string) time.Duration {
+	if runningInCI() {
+		return IndexMaxAgeCI
+	}
+	if w := indexRunWindow(indexPath, time.Now()); w > IndexMaxAgeDefault {
+		return w
+	}
+	return IndexMaxAgeDefault
+}
+
+// resolveIndexMaxAge is the max age this load applies to the copy at
+// indexPath. A caller that set IndexMaxAge gets exactly that, in CI or not.
+func (b *WebBackend) resolveIndexMaxAge(indexPath string) time.Duration {
+	if b.indexMaxAge != 0 {
+		return b.indexMaxAge
+	}
+	return defaultIndexMaxAge(indexPath)
+}
 
 // WebBackend stores cache objects in a remote web server with LZ4 compression.
 // GETs use the server's batch endpoint to fetch entries with prefetch support,
@@ -366,9 +395,6 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	b.knownMiss = newHashSet(0)
 	b.held = newHashSet(0)
 	b.indexMaxAge = cfg.IndexMaxAge
-	if b.indexMaxAge == 0 {
-		b.indexMaxAge = defaultIndexMaxAge
-	}
 	b.indexTiming = defaultIndexTiming()
 	return b, nil
 }

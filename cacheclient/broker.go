@@ -229,4 +229,3 @@ func (bkr *broker) fetch(actionID string) (outputID string, data []byte, stampNS
 	outputID, data, stamp, miss := bkr.back.Get(actionID)
 	return outputID, data, stamp.UnixNano(), miss
 }
-

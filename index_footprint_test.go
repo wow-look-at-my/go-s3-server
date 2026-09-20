@@ -65,7 +65,6 @@ func fillIndexTracking(n int, entries bool) *Index {
 	return idx
 }
 
-//
 // The bound is per key over the whole index: the mtime-sorted entry list, the
 // sorted hash list, and the serialized blob the /_index endpoint serves
 // between rebuilds.

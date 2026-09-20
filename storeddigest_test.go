@@ -15,8 +15,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// bodyPath finds the one stored body under dir, so a test can corrupt it the
-// way a failing disk would: same name, same length, different bytes.
+// bodyPath finds the thing stored body under dir, so a test can corrupt it
+// the way a failing disk would: same name, same length, different bytes.
 func bodyPath(t *testing.T, dir string, size int) string {
 	t.Helper()
 	var found string
@@ -42,9 +42,9 @@ func bodyPath(t *testing.T, dir string, size int) string {
 }
 
 // Every stored object carries a digest of its own bytes, whatever its key and
-// whatever the uploader sent: the server computes one when the upload names
-// none. That is what makes the stamp a property of the cache rather than of a
-// current client.
+// whatever the uploader sent: the server computes a single when the upload
+// names none. That is what makes the stamp a property of the cache rather
+// than of a current client.
 func TestPutStream_StampsDigestOnEveryObject(t *testing.T) {
 	dir := t.TempDir()
 	s, err := NewStorage(dir, WriteOnceConfig{Action: "allow"})
@@ -143,10 +143,10 @@ func TestGetObject_EvictsBodyThatStoppedMatchingItsDigest(t *testing.T) {
 	require.ErrorIs(t, statErr, ErrNotFound, "and it must be evicted, so the next upload replaces it")
 }
 
-// What the check answers, on the three inputs it can get: bytes that still
+// What the check answers, on each inputs it can get: bytes that still
 // match, bytes that stopped matching, and an object stored before the stamp
-// existed. The last one reports good -- missing evidence is not evidence of
-// rot, and treating it as rot would evict every relic in the cache.
+// existed. The last a single reports good -- missing evidence is not
+// evidence of rot, and treating it as rot would evict every relic in the cache.
 func TestVerifyStoredDigest(t *testing.T) {
 	body := []byte("bytes to check against their own digest")
 	sum := sha256.Sum256(body)

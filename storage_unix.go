@@ -27,7 +27,7 @@ func unlockFile(f *os.File) {
 // the content address every client verifies before consuming a body,
 // compression steers both the module-index guards and client decompression,
 // and storedsha256 is this server's own digest of the bytes as stored, the
-// one hash it can check without decompressing anything. A failure
+// thing hash it can check without decompressing anything. A failure
 // persisting any of these fails the PUT — storing the object without them
 // would serve unusable (or unguardable) bytes. Every other metadata key is
 // descriptive provenance (src, pkg, go-version, ...).

@@ -13,7 +13,7 @@ import (
 // storedDigestMetaKey names the sha256 of an object's bytes AS STORED. It
 // travels as ordinary metadata, so it reaches a reader in the usual header.
 //
-// outputid is the other hash an object carries, and the two answer different
+// outputid is the other hash an object carries, and both answer different
 // questions. outputid is the content address of the DECOMPRESSED body, so only
 // a reader that decompresses can check it, and only the client does. This
 // digest describes the exact bytes on disk. So it covers a key the cache
@@ -31,8 +31,8 @@ var ErrStoredDigestMismatch = errors.New("stored digest mismatch")
 func storedDigest(sum []byte) string { return hex.EncodeToString(sum) }
 
 // checkStoredDigest compares a claim against what arrived. An empty claim is
-// no claim: an uploader that names no digest gets the computed one stored for
-// it, which is what puts a hash on every cached item.
+// no claim: an uploader that names no digest gets the computed a single
+// stored for it, which is what puts a hash on every cached item.
 func checkStoredDigest(claimed, computed string) error {
 	if claimed == "" || strings.EqualFold(claimed, computed) {
 		return nil

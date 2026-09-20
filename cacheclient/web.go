@@ -184,6 +184,10 @@ type WebBackend struct {
 	PutRefusedBuildID  AtomicCounter // refused: build-id action mismatch (mis-keyed object)
 	PutRefusedModIndex AtomicCounter // refused: Go module index (never published to the shared cache)
 
+	// broker serves this backend to the processes this one starts, when this
+	// process is the first to reach the store. Nil in every other process.
+	broker *broker
+
 	// maxRetries bounds retries for a transient failure; past the budget the op falls back to a local miss.
 	maxRetries int // bounded retries for transient failures
 
@@ -503,6 +507,10 @@ func (b *WebBackend) ForgetStale(actionID string) {
 // Close drains the batch coalescer and flushes the HTTP error logger.
 
 func (b *WebBackend) Close() error {
+	// The socket goes first. Every child that had work to hand over has exited
+	// by now, because this process started them and waited for them. Serving
+	// past this point would take an object nothing below is left to send.
+	b.broker.stop()
 	// An index load still running is abandoned, and its lock on the disk copy
 	// released for the next process.
 	if l := b.indexLoad.Load(); l != nil {

@@ -64,9 +64,9 @@ type reply struct {
 }
 
 // dialBroker answers the cache this process should use when a live owner is
-// named in the environment. A name outlives the process that made it, so the
-// owner's earliest record is what decides, and it also reports the directory
-// the owner writes into.
+// named in the environment. A name outlives the process that made it, so what
+// decides is the owner's reply, which also reports the directory it writes
+// into.
 func dialBroker() Cache {
 	name := os.Getenv(brokerEnv)
 	if name == "" || os.Getenv(brokerOffEnv) != "" {
@@ -112,7 +112,7 @@ func dialBroker() Cache {
 }
 
 // read hands each reply to whoever is waiting for it. It parks in the ring
-// between replies and wakes when a single lands.
+// between replies, and the arrival of the next reply wakes it.
 func (link *brokerLink) read(ctx context.Context) {
 	defer close(link.done)
 	for {
@@ -218,9 +218,9 @@ func (c *brokerCache) GetTiered(id ActionID) (Entry, string, error) {
 // Put hands a body to the owner by naming the file it sits in. The owner reads
 // it before it answers, so this process may exit as soon as Put returns.
 //
-// A caller that already holds an open file names that file. a single that
-// holds anything else spills to a temporary file earliest: the bytes have
-// to reach another process, and a path is what this protocol carries.
+// A caller that already holds an open file names that file. A caller holding
+// anything else spills to a temporary file: the bytes have to reach another
+// process, and a path is what this protocol carries.
 func (c *brokerCache) Put(id ActionID, file io.ReadSeeker) (OutputID, int64, error) {
 	path, cleanup, err := readerPath(file)
 	if err != nil {

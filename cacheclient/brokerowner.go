@@ -16,10 +16,10 @@ import (
 	ipc "github.com/wow-look-at-my/go-ipc"
 )
 
-// A build is not a single process, and a cache each of its processes opens for
-// itself costs each of them an index write, a trim, a connection to the store,
-// and an exit held open to drain uploads. a single process owns the cache
-// instead, and serves the rest over shared memory.
+// A build spreads over many processes, and a cache each of them opens for
+// itself charges each of them an index write, a trim, a connection to the
+// store, and an exit held open to drain uploads. the earliest process owns
+// the cache instead, and serves the rest over shared memory.
 //
 // That leaves a single writer for the directory, so the trim has a single
 // owner. Nothing spins: a send into a ring with room makes no system call, and
@@ -84,9 +84,9 @@ func endpointName(kind string) string {
 // BrokerEnviron is what a child needs in its environment to find this
 // process's cache, or nothing when this process serves none.
 //
-// A consumer that starts its children with os.Environ needs none of this. a
-// single that builds a curated environment, as the go command does for a test
-// binary, adds these entries to it.
+// A consumer that starts its children with os.Environ needs none of this. A
+// consumer that builds a curated environment, as the go command does for a
+// test binary, adds these entries to it.
 func BrokerEnviron() []string {
 	if bkr := liveBroker.Load(); bkr != nil {
 		return []string{brokerEnv + "=" + bkr.name}
@@ -195,9 +195,8 @@ func (bkr *brokerServer) answer(ctx context.Context, child *ipc.Channel, typ uin
 	}
 }
 
-// lookup answers an action, sharing the earliest asker's work with everyone
-// who asks for the same a single while it runs. The rest park until the
-// close wakes them.
+// lookup answers an action. Everyone who asks for that action while the
+// earliest ask runs shares its result, and parks until the close wakes them.
 func (bkr *brokerServer) lookup(action ActionID) (Entry, string, error) {
 	key := string(action[:])
 	flight, mine := bkr.fly.startGet(key)
@@ -219,7 +218,8 @@ func (bkr *brokerServer) lookup(action ActionID) (Entry, string, error) {
 // store reads the body the child named by path, before it answers, so the
 // child may exit as soon as its Put returns.
 //
-// Children that built the same object offer it at the same time.
+// Children that built the same object offer it at the same time. the
+// earliest offer is the store that happens, so the body is read and stored a single time.
 func (bkr *brokerServer) store(action ActionID, path string) (Entry, error) {
 	key := string(action[:])
 	flight, mine := bkr.fly.startPut(key)

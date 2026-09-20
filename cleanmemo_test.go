@@ -48,11 +48,16 @@ func TestCleanMemo_SkipsReprobeUntilInvalidated(t *testing.T) {
 	require.True(t, storage.keyKnownClean(hash), "the first read must memoize the clean verdict")
 
 	// Swap the on-disk body for a module index WITHOUT going through storage
-	// (os.WriteFile keeps the inode, hence the xattrs). Because the memo was not
-	// invalidated, the next GET must skip the probe and serve the bytes -- the
-	// observable proof that no lz4 decode ran.
+	// (os.WriteFile keeps the inode, hence the outputid and compression xattrs),
+	// re-stamping the stored digest over the new bytes so the object stays
+	// self-consistent and the module-index probe is the only thing a GET could
+	// trip on. Because the memo was not invalidated, the next GET must skip that
+	// probe and serve the bytes -- the observable proof that no lz4 decode ran.
 	poison := lz4Compress(t, incompressibleIndexBody(t, 4096))
+	poisonSum := sha256.Sum256(poison)
 	require.NoError(t, os.WriteFile(storage.keyToPath(key), poison, 0644))
+	require.NoError(t, setMetadata(storage.keyToPath(key),
+		map[string]string{storedDigestMetaKey: storedDigest(poisonSum[:])}))
 
 	evictBefore := testutil.ToFloat64(moduleIndexEvictionsTotal)
 	resp = doRequest(t, ts, "GET", "/testbucket/"+key, nil, nil)

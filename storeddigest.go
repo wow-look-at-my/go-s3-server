@@ -46,7 +46,12 @@ func checkStoredDigest(claimed, computed string) error {
 // The file is rewound afterwards, so a caller that goes on to serve it streams
 // the same bytes this read.
 func verifyStoredDigest(f *os.File, meta map[string]string) (bool, error) {
-	want := meta[storedDigestMetaKey]
+	return bodyMatchesStoredDigest(f, meta[storedDigestMetaKey])
+}
+
+// bodyMatchesStoredDigest is verifyStoredDigest for a caller that holds the
+// recorded digest on its own rather than in a metadata map.
+func bodyMatchesStoredDigest(f *os.File, want string) (bool, error) {
 	if want == "" {
 		return true, nil
 	}

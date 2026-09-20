@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -32,6 +33,24 @@ const BrokerEnv = "GO_BUILDCACHE_BROKER"
 // BrokerOffEnv turns the broker off when it is set to a non-empty value. Every
 // process then reaches the store on its own, which is what a bisect wants.
 const BrokerOffEnv = "GO_BUILDCACHE_BROKER_OFF"
+
+// liveBroker is the broker this process serves, if it serves one.
+var liveBroker atomic.Pointer[broker]
+
+// BrokerAddr is the socket this process serves the cache on, or "" when it
+// serves none. A consumer hands its children a curated environment rather than
+// this process's own, and this is what such an environment must carry:
+//
+//	env = append(env, cacheclient.BrokerEnv+"="+cacheclient.BrokerAddr())
+//
+// Without it each child dials the store and loads an index of its own, which
+// is the cost this whole file exists to remove.
+func BrokerAddr() string {
+	if bkr := liveBroker.Load(); bkr != nil {
+		return bkr.path
+	}
+	return ""
+}
 
 const (
 	brokerPing = "/v1/ping"
@@ -88,10 +107,11 @@ func startBroker(back *WebBackend) *broker {
 		defer close(bkr.done)
 		bkr.srv.Serve(listener)
 	}()
-	// Every process this one starts inherits the variable, and so does every
-	// process those start. That is the whole propagation: a test binary the
-	// build compiles, and the go commands that binary runs, all reach here.
+	// This process's own environment carries the socket. That covers a child
+	// started with os.Environ. A child that never receives the socket dials
+	// the store and loads an index of its own.
 	os.Setenv(BrokerEnv, path)
+	liveBroker.Store(bkr)
 	logging.Infof("cacheprog: build cache broker at %s", path)
 	return bkr
 }

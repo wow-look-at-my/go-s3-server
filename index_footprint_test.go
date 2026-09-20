@@ -13,30 +13,26 @@ import (
 )
 
 // indexMaxBytesPerKey and blobMaxBytesPerKey are the ceilings the tests below
-// hold the index to. They are deliberately close to what the structures
-// actually cost, so growing one is a decision somebody makes here rather than
-// something a 1.7M-key deployment discovers as an OOM.
+// hold the index to.
 const (
-	// With the mtime list on: 32 bytes of hash, 56 of entry, 32 of blob, plus
-	// slack for slice capacity.
 	indexMaxBytesPerKey = 130.0
 	// With it off, which is what a server with prefetch off runs.
 	indexNoEntriesMaxBytesPerKey = 72.0
-	// The blob is a copy of the hash list, so serializing costs one hash per
-	// key and no more.
+	// The blob is a copy of the hash list, so serializing costs a single
+	// hash per key and no more.
 	blobMaxBytesPerKey = 40.0
 )
 
 // The index is the server's largest resident structure by an order of
 // magnitude, and it has no profile in production. These measure it instead:
-// build one of a known size, read the live heap, and divide.
+// build any of a known size, read the live heap, and divide.
 //
 // footprintKeys is small enough to run in a unit test and large enough that
 // the per-key figure is not dominated by fixed overhead.
 const footprintKeys = 200_000
 
-// heapLive is the live heap after a full collection. Two GCs, because the
-// first can leave finalizer-reachable objects the second reclaims.
+// heapLive is the live heap after a full collection. GCs, because the
+// earliest can leave finalizer-reachable objects the next reclaims.
 func heapLive() uint64 {
 	runtime.GC()
 	runtime.GC()
@@ -69,9 +65,6 @@ func fillIndexTracking(n int, entries bool) *Index {
 	return idx
 }
 
-// TestIndexPerKeyFootprint pins what one indexed key costs in RAM, so a
-// regression shows up here rather than as an OOM at 1.7M keys with no heap
-// profile to explain it.
 //
 // The bound is per key over the whole index: the mtime-sorted entry list, the
 // sorted hash list, and the serialized blob the /_index endpoint serves
@@ -80,7 +73,7 @@ func TestIndexPerKeyFootprint(t *testing.T) {
 	before := heapLive()
 	idx := fillIndex(footprintKeys)
 	// Serializing is part of steady state: the blob is held until the next
-	// one replaces it.
+	// a single replaces it.
 	blob, _ := idx.Blob()
 	require.NotEmpty(t, blob)
 	// NearbyKeys drains the pending entry buffer into the sorted list, which
@@ -101,8 +94,8 @@ func TestIndexPerKeyFootprint(t *testing.T) {
 }
 
 // TestIndexWithoutEntriesCostsLess pins the saving a server with prefetch off
-// gets: the mtime list is the largest of the three structures, and nothing
-// reads it when no window is ever selected.
+// gets: the mtime list is the largest of each structures, and nothing reads
+// it when no window is ever selected.
 func TestIndexWithoutEntriesCostsLess(t *testing.T) {
 	before := heapLive()
 	idx := fillIndexTracking(footprintKeys, false)
@@ -128,18 +121,13 @@ func TestIndexWithoutEntriesCostsLess(t *testing.T) {
 	require.Len(t, blob, gbciHeaderSize+footprintKeys*gbciHashSize+sha256.Size)
 }
 
-// TestIndexEntrySize pins the per-entry struct. It is the biggest per-key cost
-// in the process, and a field added to compactKey or indexEntry costs 1.7
-// million times whatever it is.
+// TestIndexEntrySize pins the per-entry struct.
 func TestIndexEntrySize(t *testing.T) {
 	require.Equal(t, uintptr(indexEntryBytes), unsafe.Sizeof(indexEntry{}),
 		"an index entry grew; that is %d bytes per key across the whole cache", indexEntryBytes)
 	require.Equal(t, uintptr(indexHashBytes), unsafe.Sizeof([gbciHashSize]byte{}))
 }
 
-// BenchmarkIndexPut is the per-PUT index cost: a burst of a thousand stores a
-// second runs through here, so an allocation per Put is an allocation per
-// stored object.
 func BenchmarkIndexPut(b *testing.B) {
 	idx := &Index{}
 	keys := make([]string, 1024)
@@ -154,7 +142,7 @@ func BenchmarkIndexPut(b *testing.B) {
 }
 
 // BenchmarkIndexBlob is what a serialization costs, which happens at most
-// once per blob interval but allocates the whole blob when it does.
+// a single time per blob interval but allocates the whole blob when it does.
 func BenchmarkIndexBlob(b *testing.B) {
 	for _, n := range []int{10_000, 100_000} {
 		b.Run(fmt.Sprintf("%dkeys", n), func(b *testing.B) {

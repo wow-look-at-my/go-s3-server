@@ -183,12 +183,9 @@ func (t *prefetchTracker) record(scope string, keys []string) {
 //
 // The tar layout is:
 //
-//	manifest.json                    — index of all entries with metadata
-//	data/<key>                       — raw file content for each entry
-func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, agg *logAggregator, prefetchEnabled bool) {
 //	manifest.json — index of all entries with metadata data/<key> — raw
 //	file content for each entry
-func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tracker *prefetchTracker, agg *logAggregator, prefetchEnabled bool) {
+func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, agg *logAggregator, prefetchEnabled bool) {
 	if r.Method != "GET" && r.Method != "POST" {
 		writeError(w, 405, "method_not_allowed", "method not allowed")
 		return
@@ -267,11 +264,11 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, tr
 	// index skip what the request says the client holds AS IT SELECTS.
 	// Skipping during selection is what keeps the window moving: filtering the
 	// result afterwards handed back the same nearest maxPrefetchEntries
-	// candidates on every request, so once a client had received them it got
-	// prefetched=0 for the rest of its build. The skip is a few bit tests
-	// against the request's own filter, and it runs before the per-key stat,
-	// guard and heal work, so a rejected candidate never costs a file open or
-	// an lz4 block decode.
+	// candidates on every request, so a single time a client had received them
+	// it got prefetched=0 for the rest of its build. The skip is a few bit
+	// tests against the request's own filter, and it runs before the per-key
+	// stat, guard and heal work, so a rejected candidate never costs a file
+	// open or an lz4 block decode.
 	var nHeld int
 	// index skip the ones already sent to this build AS IT SELECTS. Suppression
 	// during selection is what keeps the window moving: filtering the result

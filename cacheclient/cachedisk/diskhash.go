@@ -5,12 +5,11 @@ import "sync"
 // HashSize is the length of a cache key in bytes.
 const HashSize = 32
 
-// debugHash is GODEBUG=gocachehash=1. The consumer computes the keys, so the
-// consumer prints them.
+// debugHash is GODEBUG=gocachehash=1, and the consumer prints under it.
 var debugHash = false
 
-// hashDebug holds what went into each key, under verify mode alone. Two opaque
-// ids say nothing about a mismatch, and this description says everything.
+// hashDebug holds what went into each key, under verify mode alone. A mismatch
+// is reported from it, because two opaque ids say nothing.
 var hashDebug struct {
 	sync.Mutex
 	m map[[HashSize]byte]string

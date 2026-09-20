@@ -127,10 +127,10 @@ const (
 	entrySize = 2 + 1 + hexSize + 1 + hexSize + 1 + 20 + 1 + 20 + 1
 )
 
-// Under GODEBUG=gocacheverify=1 every Get misses, and Put then checks what it
-// is handed against what is stored. An action that is not reproducible then
-// shows up as a mismatch rather than as a hit nobody re-derived.
 var (
+	// Under GODEBUG=gocacheverify=1 every Get misses, and Put then checks what
+	// it is handed against what is stored. An action that is not reproducible
+	// shows up as a mismatch rather than as a hit nobody re-derived.
 	verify        = false
 	errVerifyMode = errors.New("gocacheverify=1")
 )
@@ -271,8 +271,8 @@ func GetBytes(c Cache, id ActionID) ([]byte, Entry, error) {
 	return data, entry, nil
 }
 
-// OutputFile names the file holding an output. A consumer that wants it MAPPED
-// maps this path itself, because how to map a file is a platform's business.
+// OutputFile names the file holding an output. A consumer that wants it
+// MAPPED maps this path itself: how to map a file is a platform's business.
 func (c *DiskCache) OutputFile(out OutputID) string {
 	file := c.fileName(out, "d")
 	c.markUsed(file)
@@ -280,14 +280,14 @@ func (c *DiskCache) OutputFile(out OutputID) string {
 }
 
 const (
-	// A file's mtime is its time of last use, stamped at most this often so a
-	// build does not rewrite every inode it reads.
+	// A file's mtime is its time of last use, stamped no more often than this,
+	// so that a build does not rewrite every inode it reads. A scan runs no
+	// more often than trimInterval, and drops what nothing has read for
+	// trimLimit, where a month of measured reuse ran out
+	// (golang.org/issue/22990).
 	mtimeInterval = 1 * time.Hour
-	// A scan runs at most this often.
-	trimInterval = 24 * time.Hour
-	// A scan drops what nothing has read for this long, which is where a
-	// month of measured reuse ran out (golang.org/issue/22990).
-	trimLimit = 5 * 24 * time.Hour
+	trimInterval  = 24 * time.Hour
+	trimLimit     = 5 * 24 * time.Hour
 )
 
 // markUsed stamps a file, best effort, and reports whether it is a directory.
@@ -407,8 +407,7 @@ func (c *DiskCache) putIndexEntry(id ActionID, out OutputID, size int64, allowVe
 	}
 	_, err = f.WriteString(entry)
 	if err == nil {
-		// Truncate AFTER the write: an O_TRUNC before it would undo an equal
-		// write for as long as this one takes.
+		// AFTER the write: an O_TRUNC undoes an equal write while this one runs.
 		err = f.Truncate(int64(len(entry)))
 	}
 	if closeErr := f.Close(); err == nil {

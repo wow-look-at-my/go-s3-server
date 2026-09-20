@@ -15,12 +15,10 @@ const lockHold = 10 * time.Second
 const lockPoll = 20 * time.Millisecond
 
 // transformFile reads a file, hands its contents to change, and writes back
-// what change answers. Only one process does this at a time. An error from
-// change is returned as it stands, and the file keeps the bytes it had.
-//
-// One file here has two processes writing it: the trim stamp. cmd/go's own
-// lockedfile package is unreachable from this module, so the guarantee comes
-// from a lock file whose writer is whoever creates it.
+// what change answers. One process does this at a time, through a lock file
+// whose writer is whoever creates it, because cmd/go's own lockedfile package
+// is unreachable from this module. An error from change is returned as it
+// stands, and the file keeps its bytes.
 func transformFile(path string, change func([]byte) ([]byte, error)) error {
 	release, err := takeLock(path + ".lock")
 	if err != nil {

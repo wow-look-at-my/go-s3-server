@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -328,14 +329,16 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 		}
 	}
 
-	// An uploader that named no digest gets the computed a single recorded for
-	// it, so the stamp covers every object rather than only the ones a current
-	// client wrote.
-	if meta == nil {
-		meta = map[string]string{}
-	}
-	meta[storedDigestMetaKey] = digest
-	if err := setMetadata(tmpPath, meta); err != nil {
+	// An uploader that named no digest gets the computed digest recorded for
+	// it, so the stamp covers every object rather than the ones a current
+	// client wrote. The caller's map is copied rather than written through: a
+	// caller that reuses a map across objects would otherwise carry the
+	// previous body's digest into the next PUT, where it reads as a claim
+	// about bytes it never described.
+	stored := make(map[string]string, len(meta)+1)
+	maps.Copy(stored, meta)
+	stored[storedDigestMetaKey] = digest
+	if err := setMetadata(tmpPath, stored); err != nil {
 		os.Remove(tmpPath)
 		return err
 	}

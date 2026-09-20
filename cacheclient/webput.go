@@ -13,9 +13,7 @@ import (
 // preparation (guards, lz4, metadata) has already run on a prep worker; the
 // coalescer only frames and ships these.
 //
-// It holds the compressed bytes and nothing else. It used to carry the
-// uncompressed body alongside them, which doubled what a queue of a hundred
-// multi-megabyte objects held, for a field no path after this point read.
+// It holds the compressed bytes and nothing else.
 type putReq struct {
 	actionID   string
 	key        string
@@ -25,16 +23,16 @@ type putReq struct {
 	metadata   map[string]string // manifest metadata: lowercased meta names sans X-Cache-Meta-
 }
 
-// Put stores a cached object, compressed, and returns at once: the guards,
-// the compression and the upload all happen behind it. Uploads are coalesced
-// into /_batch/put tars, because a build stores thousands of objects and a PUT
-// per object saturates the server's admission control.
+// Put stores a cached object, compressed, and returns at the same time: the
+// guards, the compression and the upload all happen behind it. Uploads are
+// coalesced into /_batch/put tars, because a build stores thousands of objects
+// and a PUT per object saturates the server's admission control.
 //
 // It takes the body as bytes rather than a reader because everything it does
 // with them happens on another goroutine: a reader would pin the caller here
 // until the read finished, and the caller is a build goroutine that has
-// somewhere better to be. The one thing Put does synchronously is claim the
-// key, which is what stops two callers uploading the same object.
+// somewhere better to be. the thing thing Put does synchronously is claim
+// the key, which is what stops callers uploading the same object.
 func (b *WebBackend) Put(actionID, outputID string, data []byte) error {
 	return b.enqueuePut(actionID, outputID, data, "")
 }
@@ -46,7 +44,7 @@ func (b *WebBackend) Put(actionID, outputID string, data []byte) error {
 //
 // The file must outlive the upload. Close drains the prep pool and the
 // coalescer, so a caller that closes this backend before deleting the file is
-// safe; one that deletes earlier is not.
+// safe; a single that deletes earlier is not.
 func (b *WebBackend) PutFile(actionID, outputID, path string) error {
 	if path == "" {
 		return fmt.Errorf("web put %s: no path to read the body from", ShortID(actionID))
@@ -55,8 +53,8 @@ func (b *WebBackend) PutFile(actionID, outputID, path string) error {
 }
 
 // enqueuePut claims the key and hands the object to a prep worker. The claim is
-// the one thing that happens on the caller's goroutine, because it is what
-// stops two callers uploading the same object.
+// the thing thing that happens on the caller's goroutine, because it is what
+// stops callers uploading the same object.
 func (b *WebBackend) enqueuePut(actionID, outputID string, data []byte, path string) error {
 	h, ok := parseActionHash(actionID)
 	if !ok {
@@ -88,8 +86,8 @@ func (b *WebBackend) enqueuePut(actionID, outputID string, data []byte, path str
 // prepare turns a claimed object into a queued upload: the guards that decide
 // whether it may be published at all, then lz4, then the metadata. It runs on
 // a prep worker. Compression is the expensive half, and it used to run on the
-// build's own goroutine right after a compile finished -- the one moment that
-// goroutine could have started the next compile instead.
+// build's own goroutine right after a compile finished -- the thing moment
+// that goroutine could have started the next compile instead.
 func (b *WebBackend) prepare(j putJob) {
 	// A file-backed job carries a path, and the body is read here rather than by
 	// the caller. A file that has gone is a dropped upload, not a broken build,

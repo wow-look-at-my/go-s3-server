@@ -10,19 +10,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The budget is meant to be what one pool may hold at once. It is sampled once,
-// before a worker issues its fetch, and the bodies are charged afterwards as the
-// response streams. So every worker can pass an empty-pool check together and
-// then each hold a chunk, and the pool's real peak is the worker count times the
-// chunk rather than the budget.
+// The budget is meant to be what a single pool may hold at the same time. It is
+// sampled a single time, before a worker issues its fetch, and the bodies are
+// charged afterwards as the response streams. So every worker can pass an
+// empty-pool check together and then each hold a chunk, and the pool's real peak
+// is the worker count times the chunk rather than the budget.
 //
-// This drives the real pool at a budget far below one chunk and records what it
-// was holding each time it handed bodies over.
+// This drives the real pool at a budget far below a single chunk and records
+// what it was holding each time it handed bodies over.
 func TestLookAheadPeakStaysInsideItsBudget(t *testing.T) {
 	const (
 		entries   = 64
-		entrySize = 256 << 10 // one chunk of 16 is 4 MB
-		budget    = 1 << 20   // far below a single chunk
+		entrySize = 256 << 10
+		budget    = 1 << 20 // far below a single chunk
 		workers   = 8
 	)
 
@@ -34,10 +34,10 @@ func TestLookAheadPeakStaysInsideItsBudget(t *testing.T) {
 	srv := fakeBatchServer(t, store, meta)
 	defer srv.Close()
 
-	// One key the build asks for, and a window of large bodies behind it. The
-	// bodies must be INCOMPRESSIBLE: charge counts the stored bytes, and lz4
-	// takes a repeating pattern down to nothing, which measures no pressure at
-	// all.
+	// A single key the build asks for, and a window of large bodies behind it.
+	// The bodies must be INCOMPRESSIBLE: charge counts the stored bytes, and
+	// lz4 takes a repeating pattern down to nothing, which measures no
+	// pressure at all.
 	seedKey := "go-buildcache/v1aaaa000000000000"
 	body := make([]byte, entrySize)
 	rng := rand.New(rand.NewPCG(1, 2))

@@ -122,6 +122,15 @@ func reconstructOutputID(storage *Storage, key string, f *os.File) (string, erro
 		f = opened
 	}
 
+	// The digest recorded with the body decides whether these bytes are the ones
+	// that were stored, and a body disagreeing with it yields no content address.
+	if ok, err := bodyMatchesStoredDigest(f, getMetadataValueFd(f, storedDigestMetaKey)); err != nil {
+		return "", fmt.Errorf("check stored digest: %w", err)
+	} else if !ok {
+		storedDigestMismatchTotal.WithLabelValues("selfheal").Inc()
+		return "", fmt.Errorf("%w: body no longer matches the digest stored with it", ErrStoredDigestMismatch)
+	}
+
 	h := sha256.New()
 	zr, release, codec, decErr := decompressingReader(f)
 	if decErr != nil {

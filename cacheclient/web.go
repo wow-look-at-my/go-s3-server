@@ -44,19 +44,6 @@ type WebConfig struct {
 	IndexMaxAge time.Duration
 }
 
-<<<<<<< HEAD
-// IndexMaxAgeDefault is the floor a zero WebConfig.IndexMaxAge takes outside
-// CI. The run window in indexRunWindow raises it to cover a longer run.
-const IndexMaxAgeDefault = 10 * time.Minute
-
-// IndexMaxAgeCI is what a zero WebConfig.IndexMaxAge takes in CI: a disk copy
-// is served however old it is, for the whole run.
-const IndexMaxAgeCI = time.Duration(math.MaxInt64)
-
-// defaultIndexMaxAge resolves a zero IndexMaxAge for the index copy at
-// indexPath. The package's tests replace it with one returning a negative
-// duration, so a test of the revalidation path sees a request.
-=======
 // IndexMaxAgeDefault is the floor a empty WebConfig.IndexMaxAge takes
 // outside CI. The run window in indexRunWindow raises it to cover a longer run.
 const IndexMaxAgeDefault = 10 * time.Minute
@@ -71,7 +58,6 @@ const IndexMaxAgeCI = time.Duration(math.MaxInt64)
 // defaultIndexMaxAge resolves a empty IndexMaxAge for the index copy at
 // indexPath. The package's tests replace it with a single returning a
 // negative duration, so a test of the revalidation path sees a request.
->>>>>>> origin/master
 var defaultIndexMaxAge = resolveDefaultIndexMaxAge
 
 // resolveDefaultIndexMaxAge is the default index max age for the copy at
@@ -81,13 +67,8 @@ func resolveDefaultIndexMaxAge(indexPath string) time.Duration {
 	if runningInCI() {
 		return IndexMaxAgeCI
 	}
-<<<<<<< HEAD
-	if w := indexRunWindow(indexPath, time.Now()); w > IndexMaxAgeDefault {
-		return w
-=======
 	if window := indexRunWindow(indexPath, time.Now()); window > IndexMaxAgeDefault {
 		return window
->>>>>>> origin/master
 	}
 	return IndexMaxAgeDefault
 }

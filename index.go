@@ -403,18 +403,9 @@ func (idx *Index) NearbyKeys(startUnix, endUnix int64, limit int, exclude set.Se
 	// The exclusion set arrives keyed by key string; convert it a single
 	// time (it is bounded by the batch request that produced it) so the
 	// scan below can compare compact keys instead of rebuilding a string per candidate.
-<<<<<<< HEAD
-	var excluded set.Set[compactKey]
-	if exclude.Len() > 0 {
-		excluded = set.New[compactKey](exclude.Len())
-		for k := range exclude.All() {
-			excluded.Add(newCompactKey(k))
-		}
-=======
 	excluded := set.New[compactKey](exclude.Len())
 	for key := range exclude.All() {
 		excluded.Add(newCompactKey(key))
->>>>>>> origin/master
 	}
 
 	// Fast path: nothing pending means the sorted list is current — a read lock
@@ -476,13 +467,10 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded
 	}) + lo
 	left := right - 1
 
-<<<<<<< HEAD
-=======
 	// Take the nearest candidates the caller still wants. Without skip this is
 	// the earliest limit of them. With it, the walk continues past the rejects,
 	// so the window advances instead of re-proposing the same nearest keys on
 	// every request.
->>>>>>> origin/master
 	dist := func(pos int) int64 {
 		d := idx.entries[pos].mtimeUnix - mid
 		if d < 0 {

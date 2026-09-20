@@ -13,11 +13,15 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// The ceilings the tests below hold the index to, per indexed key.
+// indexMaxBytesPerKey and blobMaxBytesPerKey are the ceilings the tests below
+// hold the index to.
 const (
 	indexMaxBytesPerKey = 130.0
-	// With the mtime list off, which is what a server with prefetch off runs.
+	// With it off, which is what a server with prefetch off runs.
 	indexNoEntriesMaxBytesPerKey = 72.0
+	// The blob is a copy of the hash list, so serializing costs a single
+	// hash per key and no more.
+	blobMaxBytesPerKey = 40.0
 )
 
 // The index is the server's largest resident structure by an order of

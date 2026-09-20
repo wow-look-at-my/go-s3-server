@@ -272,16 +272,6 @@ func TestConfigPrefetchDefaultsOff(t *testing.T) {
 }
 
 // indexedKey is a real cacheprog key: the prefix plus a 64-hex action hash.
-<<<<<<< HEAD
-// The Have filter addresses keys by that hash, so a test about it cannot use
-// the short made-up keys the other batch tests get away with.
-//
-// The hash is sha256 of n rather than n written into the leading bytes. A real
-// action ID is a hash and has no such shape.
-func indexedKey(n int) string {
-	h := sha256.Sum256(fmt.Appendf(nil, "indexed-key-%d", n))
-	return gbciKeyPrefix + hex.EncodeToString(h[:])
-=======
 // The filter addresses keys by that hash, so a test about it cannot use the
 // short made-up keys the other batch tests get away with.
 //
@@ -289,7 +279,6 @@ func indexedKey(n int) string {
 func indexedKey(num int) string {
 	hash := sha256.Sum256(fmt.Appendf(nil, "indexed-key-%d", num))
 	return gbciKeyPrefix + hex.EncodeToString(hash[:])
->>>>>>> origin/master
 }
 
 // holdFilter is a request's statement that the client holds keys, built the
@@ -302,15 +291,9 @@ func holdFilter(t *testing.T, size int, keys ...string) *haveFilter {
 	for _, key := range keys {
 		hash, ok := extractActionHash(key)
 		require.True(t, ok, "%q is not an indexed key", key)
-<<<<<<< HEAD
-		for i := 0; i < f.K; i++ {
-			idx := haveFilterBit(h, i, m)
-			f.Bits[idx/8] |= 1 << (idx % 8)
-=======
 		for pos := 0; pos < filter.K; pos++ {
 			idx := haveFilterBit(hash, pos, bits)
 			filter.Bits[idx/8] |= 1 << (idx % 8)
->>>>>>> origin/master
 		}
 	}
 	return filter
@@ -327,15 +310,9 @@ func prefetchedKeys(t *testing.T, ts *httptest.Server, req batchGetRequest) map[
 	require.Equal(t, 200, resp.StatusCode)
 	manifest, _ := parseBatchResponse(t, resp.Body)
 	got := map[string]bool{}
-<<<<<<< HEAD
-	for _, e := range manifest.Entries {
-		if e.Prefetch {
-			got[e.Key] = true
-=======
 	for _, entry := range manifest.Entries {
 		if entry.Prefetch {
 			got[entry.Key] = true
->>>>>>> origin/master
 		}
 	}
 	return got
@@ -370,19 +347,11 @@ func TestBatchGet_PrefetchSkipsWhatTheClientHolds(t *testing.T) {
 	assert.Equal(t, full, again, "the server must hold no memory of what it sent")
 }
 
-<<<<<<< HEAD
-// A client that keeps stating what it received keeps being handed NEW
-// neighbours. Selection skips as it walks the window: filtering the result
-// afterwards re-proposed the same nearest pool on every request, and a real
-// deployment showed prefetched=0 for the rest of a build.
-func TestBatchGet_PrefetchKeepsAdvancingPastSuppressedKeys(t *testing.T) {
-=======
 // A window is only worth sending a single time, so a client that keeps
 // stating what it received keeps being handed NEW neighbours. Selection skips
 // as it walks: filtering the result afterwards re-proposed the same nearest
 // pool on every request, and a real deployment showed prefetched=0 for the rest of a build.
 func TestBatchGet_PrefetchAdvancesAsTheClientStatesMore(t *testing.T) {
->>>>>>> origin/master
 	ts := testSetupPrefetch(t, true)
 	client := ts.Client()
 
@@ -422,11 +391,8 @@ func TestBatchGet_PrefetchAdvancesAsTheClientStatesMore(t *testing.T) {
 	assert.Positive(t, fresh[2], "prefetch must keep advancing while the window holds unstated keys")
 }
 
-<<<<<<< HEAD
-=======
 // haveFilterVectorBits is the filter's bit arithmetic, pinned.
 //
->>>>>>> origin/master
 // cacheclient has its own copy of this filter and its own test asserting this
 // same constant. both implementations cannot import each other, so this
 // vector is what holds them together: change the bit arithmetic on a single

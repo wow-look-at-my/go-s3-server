@@ -84,6 +84,24 @@ func TestDiskCacheKeepsEveryEntry(t *testing.T) {
 	}
 }
 
+// A host with a GODEBUG registry of its own decides, and its answer overrides
+// what this module read out of the environment.
+func TestSetSwitchesOverridesTheEnvironment(t *testing.T) {
+	t.Cleanup(initEnv)
+	initEnv()
+	require.False(t, verify)
+
+	SetSwitches(true, true, true)
+	assert.True(t, verify)
+	assert.True(t, debugHash)
+	assert.True(t, DebugTest)
+
+	SetSwitches(false, false, false)
+	assert.False(t, verify)
+	assert.False(t, debugHash)
+	assert.False(t, DebugTest)
+}
+
 // Verify mode exists to catch an action that is not reproducible. another Put
 // of different bytes under a single key is exactly that, and it panics rather
 // than storing quietly.

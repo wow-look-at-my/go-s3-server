@@ -148,6 +148,14 @@ func initEnv() {
 	DebugTest = godebugOn(settings, "gocachetest")
 }
 
+// SetSwitches takes the switch values from a host that reads GODEBUG through
+// a registry of its own. The go command has one, and a setting it reads there
+// feeds a counter this module cannot reach. So the host decides, and this
+// module's own read of the environment is what a plain consumer gets.
+func SetSwitches(verifyOn, hashOn, testOn bool) {
+	verify, debugHash, DebugTest = verifyOn, hashOn, testOn
+}
+
 // godebugOn reports whether a GODEBUG setting is on in the given value.
 func godebugOn(settings, name string) bool {
 	for field := range strings.SplitSeq(settings, ",") {

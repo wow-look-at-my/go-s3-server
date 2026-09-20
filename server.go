@@ -29,12 +29,12 @@ const (
 )
 
 type Server struct {
-	config          *Config
-	storage         *Storage
-	prefetchTracker *prefetchTracker
-	// sem bounds the requests doing work at the same time. A request whose
-	// remaining work is only a body transfer hands its slot back early
-	// (releaseSlot). Buffered to MaxConcurrentRequests.
+	config  *Config
+	storage *Storage
+	// sem bounds the requests doing work at the same time. A full sem means the
+	// server is at capacity. A request whose remaining work is only a body
+	// transfer hands its slot back early (releaseSlot). Buffered to
+	// MaxConcurrentRequests.
 	sem chan struct{}
 	// mem scales the in-memory caches to fit the process's memory budget. It is
 	// deliberately NOT consulted on the request path: memory pressure changes

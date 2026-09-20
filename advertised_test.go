@@ -176,6 +176,6 @@ func TestIndexRemoveKeys(t *testing.T) {
 	require.True(t, bytes.Contains(blob, hashB[:]))
 
 	// The mtime entries are gone too: nothing nearby except B.
-	keys := idx.NearbyKeys(0, 1<<62, 100, nil, nil)
+	keys := idx.NearbyKeys(0, 1<<62, 100, set.Set[string]{}, nil)
 	require.Equal(t, []string{keyB}, keys)
 }

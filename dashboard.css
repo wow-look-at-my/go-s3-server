@@ -76,11 +76,13 @@ main {
 	grid-template-columns: repeat(4, minmax(0, 1fr));
 	grid-template-areas:
 		"tiles tiles tiles tiles"
+		"projects projects projects projects"
 		"reads traffic tripwires config"
 		"memory traffic tripwires config";
 	align-items: start;
 }
 #tiles { grid-area: tiles; }
+.projects { grid-area: projects; }
 .reads { grid-area: reads; }
 .traffic { grid-area: traffic; }
 .tripwires { grid-area: tripwires; }
@@ -91,6 +93,7 @@ main {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 		grid-template-areas:
 			"tiles tiles"
+			"projects projects"
 			"reads traffic"
 			"tripwires memory"
 			"config config";
@@ -99,7 +102,7 @@ main {
 @media (max-width: 720px) {
 	main {
 		grid-template-columns: minmax(0, 1fr);
-		grid-template-areas: "tiles" "reads" "traffic" "tripwires" "memory" "config";
+		grid-template-areas: "tiles" "projects" "reads" "traffic" "tripwires" "memory" "config";
 	}
 }
 

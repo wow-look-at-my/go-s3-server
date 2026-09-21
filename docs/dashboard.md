@@ -40,6 +40,18 @@ The page reports these carefully:
 - **Cache size** comes from `s3_cache_bytes`. The server writes that gauge at an eviction sweep and every 15 minutes, not on every PUT. Before the first measurement the page says "not measured". It never says `0 B`.
 - **Rates** are computed in the browser, from one poll against the poll before it. A reload starts them over. A counter that goes backwards means the server restarted, so the page clears the history instead of drawing a negative rate.
 
+## The BY PROJECT panel
+
+A shared cache gets one question more than any other. The hit rate reads fine overall, so whose builds are the ones missing?
+
+The panel answers it from `s3_project_objects_total{project,kind}`. The chart is a stacked area: one band per project, each column the total objects per second the cache moved for it. The total and the split that makes it up therefore read off one picture. The table beside it carries the miss rate, which the chart cannot show. A project can be a thin band and still be missing almost everything it asks for.
+
+The bands come from `<perf-graph>`'s stacked mode, which the page fetches from the js-snippets library site at run time. This page can therefore be newer than the component it loaded. When the loaded component has no `pushSeries`, the page says so under the chart. A stacked chart that silently stayed blank reads as "no traffic".
+
+Bands are ordered by name, never by traffic. A band that reorders itself on every poll cannot be followed. Each band's color comes from its own name, so one project is one color on every machine.
+
+The project name arrives on a client header, so `projectLabeller` bounds how many names hold a series of their own. The bound is `maxProjectLabels` in `projectmetrics.go`. A name past it folds into `other` and increments `s3_project_names_folded_total`. Watch `s3_project_names` against that bound. A value near it means the next new project lands in `other`.
+
 The snapshot reports configuration, never credentials. `TestDashboardStatsCarryNoCredentials` holds that line.
 
 ## Authentication: there is none, and that is the point

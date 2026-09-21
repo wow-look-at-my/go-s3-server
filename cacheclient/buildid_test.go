@@ -27,6 +27,13 @@ func archivePkgdefNoBuildID() []byte {
 	return buildAr("__.PKGDEF", []byte(body))
 }
 
+// A mis-keyed object's warning has to name something a reader can act on. The
+// key and both actions are hashes, so the kind is the least it can carry.
+func TestDescribeObjectNamesTheKind(t *testing.T) {
+	require.Equal(t, "go-archive", describeObject(archiveWithBuildID("EPlPwC3MJFgg3YYfTGwl")))
+	require.NotEmpty(t, describeObject([]byte("not an archive at all")))
+}
+
 // hermeticOTel clears the OTEL endpoint so the process-global tracer provider's sync.Once memoizes disabled.
 func hermeticOTel(t *testing.T) { t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "") }
 

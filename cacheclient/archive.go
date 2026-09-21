@@ -18,6 +18,18 @@ func parseImportPath(data []byte) string {
 	return p.readSectionString(pbSectionPkg, 0, pbSyncPkgDef)
 }
 
+// describeObject names an object for a log line: its kind, and the package it
+// carries when it is a compiled archive. A key and a build-id action are both
+// hashes, so a warning that quotes only those says a mis-keyed object exists
+// and nothing about WHICH one.
+func describeObject(data []byte) string {
+	kind := detectObjectType(data)
+	if pkg := parseImportPath(data); pkg != "" {
+		return kind + " " + pkg
+	}
+	return kind
+}
+
 // parseSourceFiles extracts the basenames of the Go source files compiled into
 // a Go ar archive. Returns nil for non-archives or archives without pkgbits.
 func parseSourceFiles(data []byte) []string {

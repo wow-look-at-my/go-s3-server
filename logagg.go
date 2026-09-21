@@ -293,6 +293,10 @@ func provenanceOf(r *http.Request) requestProvenance {
 // The raw size comes from the object's own metadata, and the project from
 // the object or, failing that, from the request that moved it.
 func recordObject(agg *logAggregator, prov requestProvenance, meta map[string]string, wire int64, put, batched bool) {
+	// The metrics are recorded before the log, because verbose mode installs
+	// no aggregator and the dashboard's numbers must not depend on which log
+	// mode the server was started in.
+	noteProjectObject(prov, meta, wire, put)
 	if agg == nil {
 		return
 	}

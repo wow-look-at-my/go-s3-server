@@ -11,6 +11,8 @@ const state = {
 	previous: null, // the last snapshot, for rates
 	peak: 0, // the highest rate this page has seen
 	timer: null,
+	projects: null, // the last per-project totals, for per-project rates
+	projectNames: null, // the band list the chart is set up with
 };
 
 const $ = (id) => document.getElementById(id);
@@ -265,6 +267,104 @@ function drawGauges(stats) {
 	$("inflight-chart").push(value(stats, "cache_http_in_flight_requests"));
 }
 
+// --- by project ---------------------------------------------------------------
+
+// s3_project_objects_total is labelled (project, kind), which the snapshot
+// flattens into series keys spelled "kind=hit,project=go-toolchain" — sorted,
+// so the order of the parts is fixed.
+function labelled(key) {
+	const out = {};
+	for (const part of key.split(",")) {
+		const eq = part.indexOf("=");
+		if (eq > 0) out[part.slice(0, eq)] = part.slice(eq + 1);
+	}
+	return out;
+}
+
+// The stacked chart is a RATE, so it needs samples, the same as the overall
+// request rate. Counters only ever rise, so a drop means the server
+// restarted and the history is about a different process.
+function drawProjects(stats) {
+	const totals = {};
+	for (const [key, v] of Object.entries(series(stats, "s3_project_objects_total"))) {
+		const { project, kind } = labelled(key);
+		if (!project) continue;
+		const row = (totals[project] ||= { hit: 0, lookahead: 0, put: 0, miss: 0 });
+		if (kind in row) row[kind] += v;
+	}
+
+	drawProjectMisses(totals);
+
+	const prev = state.projects;
+	state.projects = { totals, at: stats.generated_at };
+	const chart = $("project-chart");
+	if (!chart) return;
+	// The chart comes from the js-snippets library site at run time, so this
+	// page can be newer than the component it loaded. Say that on the page:
+	// a stacked chart that silently stays blank reads as "no traffic".
+	if (typeof chart.pushSeries !== "function") {
+		$("project-label").textContent =
+			"the loaded <perf-graph> has no stacked-area support, so this chart stays blank until the library site is republished";
+		return;
+	}
+
+	// Names in a fixed order, so a band keeps its place and its color as
+	// projects come and go. Sorted by name, not by traffic: a band that
+	// reorders itself every poll is unreadable.
+	const names = Object.keys(totals).sort();
+	if (!state.projectNames || state.projectNames.join("\u0000") !== names.join("\u0000")) {
+		state.projectNames = names;
+		chart.series = names.map((key) => ({ key }));
+	}
+
+	if (!prev) return;
+	const dt = (new Date(stats.generated_at) - new Date(prev.at)) / 1000;
+	if (dt <= 0) return;
+	const rates = {};
+	let total = 0;
+	for (const name of names) {
+		const was = prev.totals[name];
+		const now = totals[name];
+		const moved = now.hit + now.lookahead + now.put + now.miss - (was ? was.hit + was.lookahead + was.put + was.miss : 0);
+		if (moved < 0) {
+			// The server restarted between samples. Start the history over
+			// rather than draw a negative band.
+			chart.clear();
+			return;
+		}
+		rates[name] = moved / dt;
+		total += rates[name];
+	}
+	chart.pushSeries(rates);
+	$("project-label").textContent = names.length
+		? `${total.toFixed(1)} objects/s across ${names.length} project${names.length === 1 ? "" : "s"}`
+		: "no project has moved an object yet";
+}
+
+// The miss rate is what the chart cannot show: a project can be a thin band
+// and still be missing almost everything it asks for.
+function drawProjectMisses(totals) {
+	const entries = Object.entries(totals)
+		.map(([name, row]) => {
+			const asked = row.hit + row.miss;
+			return [name, row, asked];
+		})
+		.filter(([, , asked]) => asked > 0)
+		.sort((a, b) => b[1].miss / b[2] - a[1].miss / a[2]);
+	if (entries.length === 0) {
+		rows($("project-misses"), [["no project has asked for a key yet", "--", false]]);
+		return;
+	}
+	rows(
+		$("project-misses"),
+		entries.map(([name, row, asked]) => [
+			name,
+			`${percent(row.miss, asked)} of ${count(asked)}`,
+			row.miss / asked > 0.5,
+		]),
+	);
+}
+
 // Every entry here is a number that should be empty, or should be falling.
 // The alert flag turns the value red so a rising a single is visible without
 // reading the labels.
@@ -339,6 +439,7 @@ function draw(stats) {
 	drawReads(stats);
 	drawTraffic(stats);
 	drawGauges(stats);
+	drawProjects(stats);
 	drawTripwires(stats);
 	drawMemory(stats);
 	drawConfig(stats);

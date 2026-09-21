@@ -72,6 +72,23 @@
 			</div>
 		</section>
 
+		<section class="panel projects">
+			<h2>BY PROJECT</h2>
+			<p class="muted note">Whose builds the cache is serving, and whose are missing. A project the cache
+				cannot serve shows as a tall miss band while its hit band stays flat.</p>
+			<div class="stack">
+				<div>
+					<h3>objects per second, stacked by project</h3>
+					<perf-graph id="project-chart" label="objects" unit="/s" min="0" height="120"></perf-graph>
+					<p class="muted" id="project-label">waiting for a second sample</p>
+				</div>
+				<div>
+					<h3>miss rate</h3>
+					<table id="project-misses"><tbody></tbody></table>
+				</div>
+			</div>
+		</section>
+
 		<section class="panel tripwires">
 			<h2>TRIPWIRES</h2>
 			<p class="muted note">Each of these sits at zero, or falls towards it. A rising one is a bug, not load.</p>

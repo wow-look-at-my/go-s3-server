@@ -304,6 +304,10 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 	batchKeysTotal.WithLabelValues("prefetched").Add(float64(nPrefetch))
 	batchKeysTotal.WithLabelValues("client_held").Add(float64(nHeld))
 	batchKeysTotal.WithLabelValues("streamed").Add(float64(streamed))
+	// A key this batch asked for that no entry answers is a miss for the
+	// project that asked. Prefetched entries answer nothing that was asked
+	// for, so they are excluded from the found count here as they are above.
+	noteProjectMiss(prov, len(req.Keys)-(len(entries)-nPrefetch))
 	// Attached to this request's own log line rather than printed as another
 	// line about the same request.
 	auditFromContext(r.Context()).note("batch_get requested=%d found=%d prefetched=%d client_held=%d streamed=%d",

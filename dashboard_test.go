@@ -108,6 +108,28 @@ func TestDashboardStatsNeedNoCredentials(t *testing.T) {
 	assert.InDelta(t, 3, got.Metrics["s3_get_requests_total"].Series["miss_not_found"], 0)
 }
 
+// A labelled counter reaches the page as a series keyed "k=v,k=v", sorted.
+// The page splits that key apart again. The spelling is therefore a contract
+// between the server and the script.
+func TestDashboardStatsCarryThePerProjectSeries(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	objects := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "s3_project_objects_total"}, []string{"project", "kind"})
+	reg.MustRegister(objects)
+	objects.WithLabelValues("github.com/wow-look-at-my/go-toolchain", objKindHit).Add(9)
+	objects.WithLabelValues("github.com/wow-look-at-my/go-toolchain", objKindMiss).Add(1)
+	objects.WithLabelValues("github.com/wow-look-at-my/js-snippets", objKindPut).Add(4)
+
+	d := testDashboard(t, reg)
+	stats, err := d.snapshot()
+	require.NoError(t, err)
+
+	got := stats.Metrics["s3_project_objects_total"].Series
+	require.NotNil(t, got, "the per-project counter reaches the snapshot as a series")
+	assert.InDelta(t, 9, got["kind=hit,project=github.com/wow-look-at-my/go-toolchain"], 0)
+	assert.InDelta(t, 1, got["kind=miss,project=github.com/wow-look-at-my/go-toolchain"], 0)
+	assert.InDelta(t, 4, got["kind=put,project=github.com/wow-look-at-my/js-snippets"], 0)
+}
+
 // The snapshot is built for a browser, so it must not carry a credential from
 // the config it reports.
 func TestDashboardStatsCarryNoCredentials(t *testing.T) {

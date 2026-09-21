@@ -48,5 +48,4 @@ jobs:
       - uses: wow-look-at-my/go-toolchain@master
         with:
           working-directory: cacheclient
-          autorelease: 'false'
 

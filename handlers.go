@@ -42,6 +42,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			getRequestsTotal.WithLabelValues(absentKeyOutcome(storage, key)).Inc()
+			noteProjectMiss(provenanceOf(r), 1)
 			writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
 			return
 		}
@@ -56,10 +57,12 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	switch evictModuleIndexOnRead(storage, key, f, meta) {
 	case guardEvicted:
 		getRequestsTotal.WithLabelValues("miss_module_index_evicted").Inc()
+		noteProjectMiss(provenanceOf(r), 1)
 		writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
 		return
 	case guardPeekError:
 		getRequestsTotal.WithLabelValues("miss_peek_error").Inc()
+		noteProjectMiss(provenanceOf(r), 1)
 		writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
 		return
 	}
@@ -72,6 +75,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		case verifyErr != nil:
 			log.Printf("stored digest: cannot verify %q, so not serving it: %v", key, verifyErr)
 			getRequestsTotal.WithLabelValues("miss_stored_digest").Inc()
+			noteProjectMiss(provenanceOf(r), 1)
 			writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
 			return
 		case !ok:
@@ -84,6 +88,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 				log.Printf("stored digest: evicting %q: %v", key, delErr)
 			}
 			getRequestsTotal.WithLabelValues("miss_stored_digest").Inc()
+			noteProjectMiss(provenanceOf(r), 1)
 			writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
 			return
 		}
@@ -102,6 +107,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	// anything -- the object is left for the normal eviction policy.
 	if !ensureOutputID(storage, key, meta, f) {
 		getRequestsTotal.WithLabelValues("miss_selfheal_failed").Inc()
+		noteProjectMiss(provenanceOf(r), 1)
 		writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
 		return
 	}

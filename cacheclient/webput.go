@@ -106,10 +106,13 @@ func (b *WebBackend) prepare(j putJob) {
 	// Cross-contamination guard: refuse to publish a package under a key that disagrees
 	// with its own build id. The body<->outputID hash alone cannot catch a swapped
 	// (actionID, object) pair, so this is the only defense against poisoning the cache.
+	// The package is named because the key is a hash and the actions are
+	// hashes: a warning carrying only those says a mis-keyed object exists
+	// and nothing about which one, so whoever reads it starts from nothing.
 	if act, ok := BuildIDMatchesAction(j.actionID, j.data); !ok {
 		b.PutRefusedBuildID.Increment()
-		logging.Warnf("cacheprog: web put %s: refusing upload, build-id action mismatch (want action=%s, got action=%s); object does not belong under this key",
-			ShortID(j.actionID), ExpectedBuildIDAction(j.actionID), act)
+		logging.Warnf("cacheprog: web put %s (%s): refusing upload, build-id action mismatch (want action=%s, got action=%s); object does not belong under this key",
+			ShortID(j.actionID), describeObject(j.data), ExpectedBuildIDAction(j.actionID), act)
 		b.removeClaimed(j.hash)
 		return
 	}

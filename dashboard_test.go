@@ -75,12 +75,19 @@ func TestDashboardLoadsItsScriptAsAModule(t *testing.T) {
 
 // The graphs come from the org library at runtime, never vendored, so an
 // upstream fix reaches this page with no change here. sites.pazer.build is the
-// canonical origin; the github.io a single is dead and fails CORS with no status.
+// canonical origin; the github.io one is dead and fails CORS with no status.
+// The /branch/library/ spelling answers 302 with no CORS header, and a failed
+// static import stops dashboard.js before it polls.
 func TestDashboardImportsTheGraphFromTheLibrarySite(t *testing.T) {
+	page, err := dashboardAssets.ReadFile("dashboard.html")
+	require.NoError(t, err)
 	script, err := dashboardAssets.ReadFile("dashboard.js")
 	require.NoError(t, err)
-	assert.Contains(t, string(script), `import "https://sites.pazer.build/js-snippets/branch/library/ui/perf-graph.js"`)
-	assert.NotContains(t, string(script), "wow-look-at-my.github.io")
+	assert.Contains(t, string(page), `<script type="module" src="https://sites.pazer.build/js-snippets/@library/ui/perf-graph.js">`)
+	for name, body := range map[string][]byte{"dashboard.html": page, "dashboard.js": script} {
+		assert.NotContains(t, string(body), "sites.pazer.build/js-snippets/branch/", name)
+		assert.NotContains(t, string(body), "wow-look-at-my.github.io", name)
+	}
 }
 
 // The stats endpoint must answer with no credentials: the dashboard port is

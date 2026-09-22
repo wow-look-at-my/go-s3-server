@@ -2,9 +2,6 @@
 // on the server: a rate is the difference between samples this page took, so
 // a reload starts the rate over and nothing else.
 
-// Registers <perf-graph>. The library site serves it with CORS for any origin.
-import "https://sites.pazer.build/js-snippets/branch/library/ui/perf-graph.js";
-
 const POLL_MS = 1000;
 
 const state = {

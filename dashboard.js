@@ -9,7 +9,7 @@ const state = {
 	peak: 0, // the highest rate this page has seen
 	timer: null,
 	projects: null, // the last per-project totals, for per-project rates
-	projectNames: null, // the band list the chart is set up with
+	projectNames: null,
 };
 
 const $ = (id) => document.getElementById(id);

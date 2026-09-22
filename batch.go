@@ -109,7 +109,7 @@ const maxPrefetchEntries = 200
 // carries only the requested keys, and a prefetch_only request gets an empty
 // manifest.
 //
-// The tar layout is:
+// The tar layout is.
 //
 //	manifest.json — index of all entries with metadata data/<key> — raw
 //	file content for each entry

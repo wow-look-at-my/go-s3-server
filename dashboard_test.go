@@ -74,10 +74,7 @@ func TestDashboardLoadsItsScriptAsAModule(t *testing.T) {
 }
 
 // The graphs come from the org library at runtime, never vendored, so an
-// upstream fix reaches this page with no change here. sites.pazer.build is the
-// canonical origin; the github.io one is dead and fails CORS with no status.
-// The /branch/library/ spelling answers 302 with no CORS header, and a failed
-// static import stops dashboard.js before it polls.
+// upstream fix reaches this page with no change here.
 func TestDashboardImportsTheGraphFromTheLibrarySite(t *testing.T) {
 	page, err := dashboardAssets.ReadFile("dashboard.html")
 	require.NoError(t, err)

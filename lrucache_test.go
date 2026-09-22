@@ -102,7 +102,7 @@ func TestLRU_SetBudgetEvictsImmediately(t *testing.T) {
 // anything has a permanent miss rate, and the overshoot is bounded by the a
 // single entry.
 func TestLRU_OversizedEntryIsStillHeld(t *testing.T) {
-	c := newTestLRU(lruShardCount) // a single byte per
+	c := newTestLRU(lruShardCount)
 	c.Put("k", "a value far larger than the budget")
 	v, ok := c.Get("k")
 	require.True(t, ok)

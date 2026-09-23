@@ -13,7 +13,6 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # A job-level block REPLACES the workflow-level one, so every grant the build needs is listed here.
     permissions:
       id-token: write
       contents: write
@@ -45,7 +44,6 @@ jobs:
       artifact-metadata: write
     steps:
       - uses: actions/checkout@v4
-      # A cold `go mod tidy` here runs about 7 minutes, which leaves the 10-minute default no room for vet and the tests.
       - uses: wow-look-at-my/go-toolchain@master
         with:
           working-directory: cacheclient

@@ -66,9 +66,9 @@ header {
 
 .head-right { display: flex; align-items: center; gap: var(--sp-4); font-size: var(--fs-small); }
 
-/* One screen. The tiles take the top row; four columns hold the panels, with
-   reads over memory in the first. Narrower screens fold to two columns, then
-   one, and only then does the page scroll. */
+/* One screen. The tiles take the top row. The projects panel takes the left
+   half, and the other panels fill the right half. Narrower screens fold to two
+   columns, then one, and only then does the page scroll. */
 main {
 	padding: var(--sp-4) var(--sp-5);
 	display: grid;
@@ -76,11 +76,22 @@ main {
 	grid-template-columns: repeat(4, minmax(0, 1fr));
 	grid-template-areas:
 		"tiles tiles tiles tiles"
-		"projects projects projects projects"
-		"reads traffic tripwires config"
-		"memory traffic tripwires config";
+		"projects projects reads traffic"
+		"projects projects memory traffic"
+		"projects projects tripwires config";
 	align-items: start;
 }
+/* The project list has no upper bound. contain: size stops it from setting
+   the row heights, so the panel takes the height of the right half and its
+   table scrolls inside that height. */
+.projects {
+	contain: size;
+	align-self: stretch;
+	min-height: 24rem;
+	display: flex;
+	flex-direction: column;
+}
+.scroll { flex: 1; min-height: 0; overflow-y: auto; }
 #tiles { grid-area: tiles; }
 .projects { grid-area: projects; }
 .reads { grid-area: reads; }
@@ -98,6 +109,9 @@ main {
 			"tripwires memory"
 			"config config";
 	}
+	/* The panel has its own row here, so the table needs a fixed limit. */
+	.projects { contain: none; min-height: 0; }
+	.scroll { max-height: 24rem; }
 }
 @media (max-width: 720px) {
 	main {

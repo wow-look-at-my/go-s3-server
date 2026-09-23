@@ -2,9 +2,6 @@
 // on the server: a rate is the difference between samples this page took, so
 // a reload starts the rate over and nothing else.
 
-// Registers <perf-graph>. The library site serves it with CORS for any origin.
-import "https://sites.pazer.build/js-snippets/branch/library/ui/perf-graph.js";
-
 const POLL_MS = 1000;
 
 const state = {
@@ -12,7 +9,7 @@ const state = {
 	peak: 0, // the highest rate this page has seen
 	timer: null,
 	projects: null, // the last per-project totals, for per-project rates
-	projectNames: null, // the band list the chart is set up with
+	projectNames: null,
 };
 
 const $ = (id) => document.getElementById(id);

@@ -72,7 +72,6 @@ const until = async (fn, what) => {
 		try {
 			if (await fn()) return;
 		} catch {
-			// not up yet
 		}
 		if (Date.now() > deadline) await die(`timed out waiting for ${what}`);
 		await new Promise((r) => setTimeout(r, 200));

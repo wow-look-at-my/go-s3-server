@@ -87,7 +87,19 @@ func TestDashboardImportsTheGraphFromTheLibrarySite(t *testing.T) {
 	}
 }
 
-// The stats endpoint must answer with no credentials: the dashboard port is
+// "copy json" copies the /api/stats body the page last drew, so the button and
+// its handler must both exist, and the poll must keep the raw text.
+func TestDashboardHasCopyJSONButton(t *testing.T) {
+	page, err := dashboardAssets.ReadFile("dashboard.html")
+	require.NoError(t, err)
+	script, err := dashboardAssets.ReadFile("dashboard.js")
+	require.NoError(t, err)
+	assert.Contains(t, string(page), `<scratch-button id="copy-json"`)
+	assert.Contains(t, string(script), `$("copy-json").addEventListener("click"`)
+	assert.Contains(t, string(script), `state.raw = raw;`)
+	assert.Contains(t, string(script), `await writeClipboard(state.raw);`)
+}
+
 // published through an access proxy, which is where identity is checked.
 func TestDashboardStatsNeedNoCredentials(t *testing.T) {
 	reg := prometheus.NewRegistry()

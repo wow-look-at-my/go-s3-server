@@ -10,6 +10,7 @@ const state = {
 	timer: null,
 	projects: null, // the last per-project totals, for per-project rates
 	projectNames: null,
+	raw: null, // the body of the snapshot on screen, verbatim, for "copy json"
 };
 
 const $ = (id) => document.getElementById(id);
@@ -448,7 +449,9 @@ async function poll() {
 	try {
 		const res = await fetch("/api/stats", { cache: "no-store" });
 		if (!res.ok) throw new Error(`stats endpoint answered ${res.status}`);
-		draw(await res.json());
+		const raw = await res.text();
+		draw(JSON.parse(raw));
+		state.raw = raw;
 	} catch (err) {
 		// A failed poll is reported where the connection state already is. The
 		// page keeps the numbers it drew last, and they are stamped with the
@@ -471,6 +474,41 @@ function schedule() {
 	clearInterval(state.timer);
 	if (live()) state.timer = setInterval(poll, POLL_MS);
 }
+
+// --- copy json --------------------------------------------------------------
+
+// navigator.clipboard exists only in a secure context. The dashboard is often
+// served over plain HTTP on a LAN address, so execCommand is the fallback.
+async function writeClipboard(text) {
+	if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
+	const area = document.createElement("textarea");
+	area.value = text;
+	area.style.position = "fixed";
+	area.style.opacity = "0";
+	document.body.append(area);
+	area.select();
+	const ok = document.execCommand("copy");
+	area.remove();
+	if (!ok) throw new Error("the browser refused the copy");
+}
+
+function flashLabel(el, text) {
+	el.textContent = text;
+	clearTimeout(el.resetTimer);
+	el.resetTimer = setTimeout(() => (el.textContent = "copy json"), 1500);
+}
+
+$("copy-json").addEventListener("click", async () => {
+	const btn = $("copy-json");
+	if (state.raw === null) return flashLabel(btn, "no snapshot yet");
+	try {
+		await writeClipboard(state.raw);
+		flashLabel(btn, "copied");
+	} catch (err) {
+		console.error("copy json failed:", err);
+		flashLabel(btn, "copy failed");
+	}
+});
 
 $("autorefresh").addEventListener("change", () => {
 	schedule();

@@ -428,10 +428,10 @@ func (s *Storage) runSweep(maxAge time.Duration, maxBytes int64) {
 }
 
 // RefreshCacheBytes recomputes the total stored size (a size-only WalkDir; no
-// xattrs, no bodies) and updates the s3_cache_bytes gauge. Runs between sweeps
-// so the gauge tracks growth instead of staying frozen at the last sweep's
-// value for up to the whole eviction interval.
-func (s *Storage) RefreshCacheBytes() {
+// xattrs, no bodies), updates the s3_cache_bytes gauge, and returns the total.
+// Runs between sweeps so the gauge tracks growth instead of staying frozen at
+// the last sweep's value for up to the whole eviction interval.
+func (s *Storage) RefreshCacheBytes() int64 {
 	var total int64
 	filepath.WalkDir(s.dataDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -446,12 +446,24 @@ func (s *Storage) RefreshCacheBytes() {
 		return nil
 	})
 	cacheBytes.Set(float64(total))
+	return total
 }
 
-// RunEvictionLoop sweeps until the process exits. Run it in its own goroutine.
-// the earliest sweep is scheduled from the recorded last sweep (see
-// firstSweepDelay), and each subsequent a single an interval after the
-// previous finished; the size gauge is refreshed on its own faster cadence in between.
+// refreshAndEnforce refreshes the size gauge and sweeps at the same time when
+// the cache is over max_bytes. It reports whether it swept. Without this check,
+// the cache grows past its budget for up to a whole interval between scheduled sweeps.
+func (s *Storage) refreshAndEnforce(maxAge time.Duration, maxBytes int64) bool {
+	total := s.RefreshCacheBytes()
+	if maxBytes <= 0 || total <= maxBytes {
+		return false
+	}
+	log.Printf("eviction: cache is %d bytes, over max_bytes=%d; sweeping now instead of at the next interval", total, maxBytes)
+	s.runSweep(maxAge, maxBytes)
+	return true
+}
+
+// RunEvictionLoop sweeps until the process exits. Run it in its own goroutine. The
+// size check between sweeps starts an early sweep when the cache is over budget.
 func (s *Storage) RunEvictionLoop(maxAge time.Duration, maxBytes int64, interval time.Duration) {
 	next := time.NewTimer(s.firstSweepDelay(interval))
 	defer next.Stop()
@@ -463,7 +475,9 @@ func (s *Storage) RunEvictionLoop(maxAge time.Duration, maxBytes int64, interval
 			s.runSweep(maxAge, maxBytes)
 			next.Reset(interval)
 		case <-refresh.C:
-			s.RefreshCacheBytes()
+			if s.refreshAndEnforce(maxAge, maxBytes) {
+				next.Reset(interval)
+			}
 		}
 	}
 }

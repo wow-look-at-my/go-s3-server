@@ -43,8 +43,6 @@ const (
 )
 
 var (
-	// projectObjectsTotal is the object count. A project's miss rate is
-	// miss / (hit + miss) over this a single metric.
 	projectObjectsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "s3_project_objects_total",
 		Help: "Cache objects moved, by project and kind (hit, lookahead, put, miss).",

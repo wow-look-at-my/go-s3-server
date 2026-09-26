@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -43,9 +41,17 @@ const dashboardBandwidthPath = "/api/bandwidth"
 // can find anything in.
 const dashboardBandwidthTopModules = 5
 
+// metricValue is a metric with no labels (Value) or a labeled metric (Series).
 type metricValue struct {
-	Value  *float64           `json:"value,omitempty"`
-	Series map[string]float64 `json:"series,omitempty"`
+	Value  *float64      `json:"value,omitempty"`
+	Series []seriesPoint `json:"series,omitempty"`
+}
+
+// The labels are an object, so a reader looks a label up by its name and
+// never parses a key.
+type seriesPoint struct {
+	Labels map[string]string `json:"labels"`
+	Value  float64           `json:"value"`
 }
 
 // dashboardServerInfo is the configuration the page shows. It carries no
@@ -235,9 +241,6 @@ func (d *dashboard) snapshot() (*dashboardStats, error) {
 	}, nil
 }
 
-// gatherDashboardMetrics flattens the registry into name -> value. A counter or
-// gauge with no labels becomes a single number. A labeled a single becomes a
-// series keyed by its label set. A histogram contributes "<name>_count" and
 // "<name>_sum", which is what an average duration needs; the buckets stay in
 // /metrics for a real time-series database to read.
 func gatherDashboardMetrics(g prometheus.Gatherer) (map[string]metricValue, error) {
@@ -279,27 +282,14 @@ func addFamily(out map[string]metricValue, name string, metrics []*dto.Metric, v
 			out[name] = metricValue{Value: &v}
 			continue
 		}
-		mv := out[name]
-		if mv.Series == nil {
-			mv.Series = make(map[string]float64, len(metrics))
+		labels := make(map[string]string, len(m.GetLabel()))
+		for _, l := range m.GetLabel() {
+			labels[l.GetName()] = l.GetValue()
 		}
-		mv.Series[seriesKey(m.GetLabel())] += value(m)
+		mv := out[name]
+		mv.Series = append(mv.Series, seriesPoint{Labels: labels, Value: value(m)})
 		out[name] = mv
 	}
-}
-
-// seriesKey names a single labeled series. More than a single label reads as
-// "k=v,k=v", sorted so the key is stable between polls.
-func seriesKey(labels []*dto.LabelPair) string {
-	if len(labels) == 1 {
-		return labels[0].GetValue()
-	}
-	parts := make([]string, 0, len(labels))
-	for _, l := range labels {
-		parts = append(parts, l.GetName()+"="+l.GetValue())
-	}
-	sort.Strings(parts)
-	return strings.Join(parts, ",")
 }
 
 // startDashboardServer serves the dashboard on addr. A bind failure is logged

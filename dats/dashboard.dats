@@ -46,6 +46,13 @@ shared:
 			exit "$status"
 
 tests:
+	- desc: the dashboard script parses as the module the page loads it as
+	  exit: 0
+	  cmd: bash -c 'f="$(mktemp --suffix=.mjs)"; cp dashboard.js "$f"; node --check "$f" && echo parses'
+	  outputs:
+		stdout:
+			- "parses"
+
 	- desc: the dashboard answers on its own port with no credentials, while the cache port still demands them
 	  exit: 0
 	  inputs:
@@ -104,14 +111,14 @@ tests:
 					exit 1
 				fi
 				grep -o '"bucket": "test-cache"' "$stats"
-				grep -o '"hit": 1' "$stats"
+				grep -A2 '"outcome": "hit"' "$stats" | grep -o '"value": 1'
 				grep -o '"s3_index_hashes"' "$stats"
 				echo "no-password $(grep -c testpass "$stats" || true)"
 	  cmd: bash {shared.serve.sh} {inputs.config.json} 19031 {inputs.check.sh}
 	  outputs:
 		stdout:
 			- '"bucket": "test-cache"'
-			- '"hit": 1'
+			- '"value": 1'
 			- '"s3_index_hashes"'
 			- "no-password 0"
 

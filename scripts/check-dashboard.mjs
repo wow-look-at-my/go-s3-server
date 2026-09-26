@@ -1,8 +1,6 @@
 // Browser check for the dashboard's BY PROJECT panel.
 //
 // The Go tests cover the counters and the snapshot. What they cannot reach is
-// the page: that the per-project series becomes a stacked chart, that the
-// bands paint, and that the miss table names the project that is missing.
 // This starts the real server, moves real objects through it under different
 // project headers, and reads the painted pixels back.
 //
@@ -141,8 +139,6 @@ await page.route('https://sites.pazer.build/scratch_ui/**', async (route) => {
 
 await page.goto(`http://127.0.0.1:${DASHBOARD}/`, { waitUntil: 'load' });
 
-// Keep asking for keys that are not there while the page polls, so the miss
-// band and the miss table both have something to report.
 const missing = setInterval(() => {
 	for (let n = 900; n < 910; n++) void get('github.com/wow-look-at-my/gosmopolitan', n);
 	for (let n = 0; n < 6; n++) void get('github.com/wow-look-at-my/go-toolchain', n);
@@ -158,7 +154,7 @@ const report = await page.evaluate(() => {
 		stacked: chart?.stacked ?? null,
 		keys: chart?.series?.map((s) => s.key) ?? [],
 		label: document.getElementById('project-label')?.textContent ?? '',
-		missRows: [...document.querySelectorAll('#project-misses tbody tr')].map((tr) =>
+		hitRows: [...document.querySelectorAll('#project-hit-rates tbody tr')].map((tr) =>
 			[...tr.children].map((td) => td.textContent),
 		),
 		colors: 0,
@@ -181,9 +177,9 @@ check(report.keys.join(',') === [...report.keys].sort().join(','), 'the bands ar
 // Background, gridline, and a single color per band with height.
 check(report.colors >= 3, `the bands paint (${report.colors} distinct colors in one column)`);
 check(/objects\/s across/.test(report.label), `the label reports the total (got "${report.label}")`);
-const gosmo = report.missRows.find((r) => r[0].includes('gosmopolitan'));
-check(gosmo !== undefined, 'the project that only missed is in the miss table');
-check(gosmo === undefined || gosmo[1].startsWith('100.0%'), `it reads as missing everything (got ${gosmo?.[1]})`);
+const gosmo = report.hitRows.find((r) => r[0].includes('gosmopolitan'));
+check(gosmo !== undefined, 'the project that only missed is in the hit-rate table');
+check(gosmo === undefined || gosmo[1].startsWith('0.0%'), `it reads as hitting nothing (got ${gosmo?.[1]})`);
 
 const panel = await page.$('.projects');
 if (panel) await panel.screenshot({ path: process.argv[2] ?? join(work, 'by-project.png') });

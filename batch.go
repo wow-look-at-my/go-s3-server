@@ -140,6 +140,10 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 	// off, a prefetch_only request wants nothing but the window, so it carries
 	// none; every other request carries exactly what it asked for.
 	lookup := req.Keys
+	// A prefetch_only request asks for no key. Its keys are look-ahead anchors,
+	// which the client has already hit, so they count as anchors and never
+	// as requested or missed.
+	anchorsOnly := req.PrefetchOnly
 	if !prefetchEnabled {
 		if req.PrefetchOnly {
 			lookup = nil
@@ -298,20 +302,26 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 		recordObject(agg, prov, e.meta.Metadata, size, false, true)
 	}
 
+	requested, anchors := len(req.Keys), 0
+	if anchorsOnly {
+		requested, anchors = 0, len(req.Keys)
+	}
+	found := len(entries) - nPrefetch
 	batchRequestsTotal.Inc()
-	batchKeysTotal.WithLabelValues("requested").Add(float64(len(req.Keys)))
-	batchKeysTotal.WithLabelValues("found").Add(float64(len(entries) - nPrefetch))
+	batchKeysTotal.WithLabelValues("requested").Add(float64(requested))
+	batchKeysTotal.WithLabelValues("found").Add(float64(found))
+	batchKeysTotal.WithLabelValues("anchors").Add(float64(anchors))
 	batchKeysTotal.WithLabelValues("prefetched").Add(float64(nPrefetch))
 	batchKeysTotal.WithLabelValues("client_held").Add(float64(nHeld))
 	batchKeysTotal.WithLabelValues("streamed").Add(float64(streamed))
 	// A key this batch asked for that no entry answers is a miss for the
 	// project that asked. Prefetched entries answer nothing that was asked
 	// for, so they are excluded from the found count here as they are above.
-	noteProjectMiss(prov, len(req.Keys)-(len(entries)-nPrefetch))
+	noteProjectMiss(prov, requested-found)
 	// Attached to this request's own log line rather than printed as another
 	// line about the same request.
-	auditFromContext(r.Context()).note("batch_get requested=%d found=%d prefetched=%d client_held=%d streamed=%d",
-		len(req.Keys), len(entries)-nPrefetch, nPrefetch, nHeld, streamed)
+	auditFromContext(r.Context()).note("batch_get requested=%d found=%d anchors=%d prefetched=%d client_held=%d streamed=%d",
+		requested, found, anchors, nPrefetch, nHeld, streamed)
 }
 
 // handleBatchPut handles PUT /_batch/put. This endpoint accepts a tar of many

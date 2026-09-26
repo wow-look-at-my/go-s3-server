@@ -33,7 +33,7 @@ The page and its assets are embedded in the binary. There is no asset directory 
 
 `/api/stats` flattens the same Prometheus registry that `/metrics` serves. The dashboard keeps no counters of its own. The page and a scrape can never report different values for one counter.
 
-A counter with no labels becomes one number. A labeled one becomes a series, keyed by its label set. A histogram contributes `<name>_count` and `<name>_sum`, which is what an average needs. The buckets stay in `/metrics` for a time-series database to read.
+A counter with no labels becomes `{"value": N}`. A labeled one becomes `{"series": [{"labels": {"method": "GET", "route": "Index"}, "value": N}, ...]}`, with one entry per label set. A reader looks a label up by name and never parses a key. A histogram contributes `<name>_count` and `<name>_sum`, which is what an average needs. The buckets stay in `/metrics` for a time-series database to read.
 
 The page reports these carefully:
 
@@ -44,7 +44,9 @@ The page reports these carefully:
 
 A shared cache gets one question more than any other. The hit rate reads fine overall, so whose builds are the ones missing?
 
-The panel answers it from `s3_project_objects_total{project,kind}`. The chart is a stacked area: one band per project, each column the total objects per second the cache moved for it. The total and the split that makes it up therefore read off one picture. The table beside it carries the miss rate, which the chart cannot show. A project can be a thin band and still be missing almost everything it asks for.
+The panel answers it from `s3_project_objects_total{project,kind}`. The chart is a stacked area: one band per project, each column the total objects per second the cache moved for it. The total and the split that makes it up therefore read off one picture. The table beside it carries each project's hit rate, `hit / (hit + miss)`, worst first. The chart cannot show that. A project can be a thin band and still hit almost nothing it asks for.
+
+A look-ahead request (`prefetch_only`) names keys the client has just hit, as anchors for the window around them. It asks for none of them. Those keys count as `s3_batch_keys_total{kind="anchors"}`,never as `requested` or as a project miss. Counted as misses, each hit will also read as a miss.
 
 The bands come from `<perf-graph>`'s stacked mode, which the page fetches from the js-snippets library site at run time. This page can therefore be newer than the component it loaded. When the loaded component has no `pushSeries`, the page says so under the chart. A stacked chart that silently stayed blank reads as "no traffic".
 

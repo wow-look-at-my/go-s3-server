@@ -126,6 +126,40 @@ func TestBatchCountersRecorded(t *testing.T) {
 	require.Equal(t, reqsBefore+1, testutil.ToFloat64(batchRequestsTotal))
 }
 
+// TestLookAheadAnchorsAreNotMisses: the client seeds a look-ahead request only
+// with keys it just hit. With prefetch on or off, those keys must not count as
+// requested or as project misses, or every hit also reads as a miss.
+func TestLookAheadAnchorsAreNotMisses(t *testing.T) {
+	if !inOwnProcess(t) {
+		return
+	}
+
+	for _, prefetch := range []bool{false, true} {
+		ts := testSetupPrefetch(t, prefetch)
+		client := ts.Client()
+
+		kind := func(k string) float64 { return testutil.ToFloat64(batchKeysTotal.WithLabelValues(k)) }
+		requestedBefore, foundBefore, anchorsBefore := kind("requested"), kind("found"), kind("anchors")
+		missesBefore := testutil.ToFloat64(projectObjectsTotal.WithLabelValues(unknownProject, objKindMiss))
+
+		anchor := "go-buildcache/v1" + strings.Repeat("4", 64)
+		putObject(t, client, ts.URL, anchor, []byte("x"), map[string]string{"Outputid": "o"})
+
+		reqBody, _ := json.Marshal(batchGetRequest{Keys: []string{anchor}, Prefetch: true, PrefetchOnly: true})
+		resp, err := doBatchGet(client, ts.URL+"/testbucket/_batch/get", reqBody)
+		require.NoError(t, err)
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		require.Equal(t, 200, resp.StatusCode)
+
+		assert.Equal(t, requestedBefore, kind("requested"), "prefetch=%v: an anchor is not a requested key", prefetch)
+		assert.Equal(t, foundBefore, kind("found"), "prefetch=%v", prefetch)
+		assert.Equal(t, anchorsBefore+1, kind("anchors"), "prefetch=%v: the anchor is counted as an anchor", prefetch)
+		assert.Equal(t, missesBefore, testutil.ToFloat64(projectObjectsTotal.WithLabelValues(unknownProject, objKindMiss)),
+			"prefetch=%v: an anchor is not a project miss", prefetch)
+	}
+}
+
 // TestIndexGauges: the index size gauges track puts and serializations.
 func TestIndexGauges(t *testing.T) {
 	if !inOwnProcess(t) {

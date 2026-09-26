@@ -121,9 +121,9 @@ func TestDashboardStatsNeedNoCredentials(t *testing.T) {
 	assert.Equal(t, "test-cache", got.Server.Bucket)
 	assert.Greater(t, got.UptimeSeconds, 60.0)
 	assert.InDelta(t, 4096, *got.Metrics["s3_cache_bytes"].Value, 0)
-	gets := got.Metrics["s3_get_requests_total"].Series
-	assert.InDelta(t, 7, seriesValue(t, gets, map[string]string{"outcome": "hit"}), 0)
-	assert.InDelta(t, 3, seriesValue(t, gets, map[string]string{"outcome": "miss_not_found"}), 0)
+	outcomes := got.Metrics["s3_get_requests_total"].Series
+	assert.InDelta(t, 7, seriesValue(t, outcomes, map[string]string{"outcome": "hit"}), 0)
+	assert.InDelta(t, 3, seriesValue(t, outcomes, map[string]string{"outcome": "miss_not_found"}), 0)
 }
 
 // seriesValue returns the value of the single series whose labels are exactly want.

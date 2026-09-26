@@ -5,6 +5,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 	"time"
 
@@ -53,6 +54,7 @@ func TestDashboardServesPageAndAssets(t *testing.T) {
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		require.Equal(t, http.StatusOK, rec.Code, path)
 		assert.Equal(t, want, rec.Header().Get("Content-Type"), path)
+		assert.Equal(t, "no-cache", rec.Header().Get("Cache-Control"), "%s: a cached page with a newer script breaks the page", path)
 		assert.NotEmpty(t, rec.Body.Bytes(), path)
 	}
 
@@ -88,7 +90,31 @@ func TestDashboardImportsTheGraphFromTheLibrarySite(t *testing.T) {
 	}
 }
 
-// "copy json" copies the /api/stats body the page last drew, so the button and
+// Every element the script looks up by id must be in the page. A missing a
+// single throws inside draw(), and every poll after it fails.
+func TestDashboardScriptIDsExistInThePage(t *testing.T) {
+	page, err := dashboardAssets.ReadFile("dashboard.html")
+	require.NoError(t, err)
+	script, err := dashboardAssets.ReadFile("dashboard.js")
+	require.NoError(t, err)
+	ids := regexp.MustCompile(`\$\("([a-z0-9-]+)"\)`).FindAllStringSubmatch(string(script), -1)
+	require.NotEmpty(t, ids)
+	for _, m := range ids {
+		assert.Contains(t, string(page), `id="`+m[1]+`"`, "dashboard.js looks up #%s, which dashboard.html does not have", m[1])
+	}
+}
+
+// A failed poll must show in the red banner, not only in the muted footer.
+func TestDashboardShowsPollErrorsInABanner(t *testing.T) {
+	page, err := dashboardAssets.ReadFile("dashboard.html")
+	require.NoError(t, err)
+	script, err := dashboardAssets.ReadFile("dashboard.js")
+	require.NoError(t, err)
+	assert.Contains(t, string(page), `<div id="poll-error" class="poll-error" role="alert" hidden></div>`)
+	assert.Contains(t, string(script), `banner.hidden = false;`)
+	assert.Contains(t, string(script), `$("poll-error").hidden = true;`)
+}
+
 // its handler must both exist, and the poll must keep the raw text.
 func TestDashboardHasCopyJSONButton(t *testing.T) {
 	page, err := dashboardAssets.ReadFile("dashboard.html")

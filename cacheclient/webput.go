@@ -144,12 +144,12 @@ func (b *WebBackend) prepare(j putJob) {
 	// server compares it against the bytes it receives and refuses a body the
 	// transfer changed, rather than storing it for a reader to discover.
 	meta := map[string]string{
-		"outputid":          j.outputID,
-		StoredDigestMetaKey: StoredDigest(compressed),
-		"object-type":       detectObjectType(j.data),
-		"body-size":         strconv.Itoa(len(j.data)),
-		"compression":       "zstd",
-		"created":           time.Now().UTC().Format(time.RFC3339),
+		"outputid":            j.outputID,
+		StoredDigestMetaKey:   StoredDigest(compressed),
+		"object-type":         detectObjectType(j.data),
+		"body-size":           strconv.Itoa(len(j.data)),
+		"compression":         "zstd",
+		"created":             time.Now().UTC().Format(time.RFC3339),
 	}
 	if b.version != "" {
 		meta["toolchain-version"] = b.version

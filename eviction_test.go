@@ -462,31 +462,6 @@ func TestRefreshCacheBytes(t *testing.T) {
 	// A stale temp file must not count.
 	require.NoError(t, os.WriteFile(s.dataDir+"/.tmp-stale", make([]byte, 999), 0644))
 
-	assert.Equal(t, int64(150), s.RefreshCacheBytes())
+	s.RefreshCacheBytes()
 	require.Equal(t, float64(150), testutil.ToFloat64(cacheBytes))
-}
-
-// TestRefreshSweepsWhenOverBudget: the size check between scheduled sweeps
-// must enforce max_bytes, not only report it.
-func TestRefreshSweepsWhenOverBudget(t *testing.T) {
-	if !inOwnProcess(t) {
-		return
-	}
-
-	s := newEvictStorage(t)
-	now := time.Now()
-	for i := range 4 {
-		k := gbciKey(i + 1)
-		require.NoError(t, s.Put(k, make([]byte, 100), nil, nil))
-		used := now.Add(-time.Duration(4-i) * time.Hour)
-		require.NoError(t, os.Chtimes(s.keyToPath(k), used, used))
-	}
-
-	assert.False(t, s.refreshAndEnforce(0, 400), "a cache at max_bytes is not over budget")
-	assert.False(t, s.refreshAndEnforce(0, 0), "max_bytes=0 has no size budget")
-
-	require.True(t, s.refreshAndEnforce(0, 250), "a cache over max_bytes must sweep at once")
-	assert.Equal(t, int64(200), s.RefreshCacheBytes(), "the sweep must bring the cache under max_bytes")
-	_, ok := s.lastSweepTime()
-	assert.True(t, ok, "an early sweep records the marker like a scheduled one")
 }

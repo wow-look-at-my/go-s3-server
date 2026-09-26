@@ -442,11 +442,14 @@ async function poll() {
 		const raw = await res.text();
 		draw(JSON.parse(raw));
 		state.raw = raw;
+		$("poll-error").hidden = true;
 	} catch (err) {
-		// A failed poll is reported where the connection state already is. The
-		// page keeps the numbers it drew last, and they are stamped with the
-		// time they came from.
+		// The numbers on the page are now stale, so the failure goes in a red banner.
+		console.error("poll failed:", err);
 		setState("unreachable", "bad");
+		const banner = $("poll-error");
+		banner.textContent = `last poll failed at ${new Date().toLocaleTimeString()}: ${err.message}. The numbers below are from the last poll that worked.`;
+		banner.hidden = false;
 		$("footer-note").textContent = `last poll failed: ${err.message}. `;
 	}
 }

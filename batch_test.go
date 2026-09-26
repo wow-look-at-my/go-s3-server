@@ -424,8 +424,7 @@ func TestHaveFilterVector(t *testing.T) {
 // which the client then asks for by name; the other direction would re-send
 // bodies it already has.
 func TestHaveFilterFailsTowardSending(t *testing.T) {
-	// Everything stated must read back as held. This is the direction that
-	// must never fail, because a miss here re-sends what the client has.
+	// Everything stated must read back as held.
 	stated := make([]string, 256)
 	for i := range stated {
 		stated[i] = indexedKey(i)
@@ -532,7 +531,6 @@ func TestBatchGet_AcceptsPOST(t *testing.T) {
 // TestBatchGet_SingleOpenPerServedKey pins the double-open fix: serving a batch
 // of N found keys performs exactly N storage "get" operations (the phase-2
 // streaming opens). The guard peek and the self-heal use raw opens that are
-// neither counted as ops nor recorded as access, so they no longer double
 // every key's metrics or stamp last-access onto keys that are never served.
 func TestBatchGet_SingleOpenPerServedKey(t *testing.T) {
 	if !inOwnProcess(t) {

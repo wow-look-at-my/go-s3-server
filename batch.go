@@ -111,8 +111,8 @@ const maxPrefetchEntries = 200
 //
 // The tar layout is.
 //
-//	manifest.json — index of all entries with metadata data/<key> — raw
-//	file content for each entry
+//	manifest.json                    — index of all entries with metadata
+//	data/<key>                       — raw file content for each entry
 func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, agg *logAggregator, prefetchEnabled bool) {
 	if r.Method != "GET" && r.Method != "POST" {
 		writeError(w, 405, "method_not_allowed", "method not allowed")

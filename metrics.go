@@ -96,14 +96,13 @@ var (
 // Batch metrics
 var (
 	// batchKeysTotal breaks down /_batch/get volume: requested (keys asked
-	// for), found (requested keys served), prefetched (extra entries included),
 	// client_held (prefetch candidates the REQUEST said the client already
 	// holds), streamed (bodies actually written into the tar). A falling
 	// found/requested ratio is the earliest "cache is fickle" indicator;
 	// previously these numbers were log-only and required grepping server logs.
 	batchKeysTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "s3_batch_keys_total",
-		Help: "Batch GET key counts by kind: requested, found, prefetched, client_held, streamed.",
+		Help: "Batch GET key counts by kind: requested, found, anchors (look-ahead keys, not asked for), prefetched, client_held, streamed.",
 	}, []string{"kind"})
 
 	// nearbyScanExhaustedTotal counts prefetch selections that ran out of scan

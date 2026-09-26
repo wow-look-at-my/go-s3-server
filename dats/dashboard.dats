@@ -104,14 +104,14 @@ tests:
 					exit 1
 				fi
 				grep -o '"bucket": "test-cache"' "$stats"
-				grep -o '"hit": 1' "$stats"
+				grep -A2 '"outcome": "hit"' "$stats" | grep -o '"value": 1'
 				grep -o '"s3_index_hashes"' "$stats"
 				echo "no-password $(grep -c testpass "$stats" || true)"
 	  cmd: bash {shared.serve.sh} {inputs.config.json} 19031 {inputs.check.sh}
 	  outputs:
 		stdout:
 			- '"bucket": "test-cache"'
-			- '"hit": 1'
+			- '"value": 1'
 			- '"s3_index_hashes"'
 			- "no-password 0"
 

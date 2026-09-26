@@ -23,12 +23,23 @@ function value(stats, name) {
 	const m = stats.metrics[name];
 	if (!m) return 0;
 	if (typeof m.value === "number") return m.value;
-	return sum(m.series);
+	return points(stats, name).reduce((a, p) => a + p.value, 0);
 }
 
-function series(stats, name) {
+// A labeled metric is a list of {labels, value}.
+function points(stats, name) {
 	const m = stats.metrics[name];
-	return m && m.series ? m.series : {};
+	return m && m.series ? m.series : [];
+}
+
+// byLabel totals a labeled metric by the value of a single label.
+function byLabel(stats, name, label) {
+	const out = {};
+	for (const p of points(stats, name)) {
+		const k = p.labels[label];
+		out[k] = (out[k] || 0) + p.value;
+	}
+	return out;
 }
 
 function sum(obj) {
@@ -149,13 +160,13 @@ function setState(text, led) {
 // client goes; a single-object GET is an older client, and it counts only when
 // there is no batch traffic to report.
 function hitRateTile(stats) {
-	const kinds = series(stats, "s3_batch_keys_total");
+	const kinds = byLabel(stats, "s3_batch_keys_total", "kind");
 	const requested = kinds.requested || 0;
 	if (requested) {
 		const found = kinds.found || 0;
 		return tile("hit rate", percent(found, requested), `${count(found)} of ${count(requested)} keys asked for in batches`);
 	}
-	const outcomes = series(stats, "s3_get_requests_total");
+	const outcomes = byLabel(stats, "s3_get_requests_total", "outcome");
 	const reads = sum(outcomes);
 	const hits = outcomes.hit || 0;
 	return tile("hit rate", reads ? percent(hits, reads) : "--", `${count(hits)} of ${count(reads)} single GETs`);
@@ -176,13 +187,13 @@ function drawTiles(stats) {
 		cacheSizeTile(cacheBytes, budget, indexed),
 		tile("keys advertised", count(indexed), "action hashes in /_index"),
 		tile("slots in use", `${count(admitted)} / ${count(limit)}`, `${count(inFlight)} in flight; ${shed}`, rejected ? "warn" : ""),
-		tile("batch requests", count(value(stats, "s3_batch_requests_total")), `${count(series(stats, "s3_batch_keys_total").streamed || 0)} bodies streamed`),
+		tile("batch requests", count(value(stats, "s3_batch_requests_total")), `${count(byLabel(stats, "s3_batch_keys_total", "kind").streamed || 0)} bodies streamed`),
 		tile("evicted", count(value(stats, "s3_evictions_total")), `${bytes(value(stats, "s3_evicted_bytes_total"))} reclaimed`),
 	]);
 }
 
 function drawReads(stats) {
-	const outcomes = series(stats, "s3_get_requests_total");
+	const outcomes = byLabel(stats, "s3_get_requests_total", "outcome");
 	const total = sum(outcomes) || 1;
 	const tone = (k) => (k === "hit" ? "good" : k === "miss_not_found" ? "" : "bad");
 	fill(
@@ -193,23 +204,19 @@ function drawReads(stats) {
 	);
 	$("single-gets").hidden = !Object.keys(outcomes).length;
 
-	const kinds = series(stats, "s3_batch_keys_total");
+	const kinds = byLabel(stats, "s3_batch_keys_total", "kind");
 	const requested = kinds.requested || 0;
 	const scale = Math.max(requested, ...Object.values(kinds), 1);
 	fill(
 		$("batch-kinds"),
-		["requested", "found", "prefetched", "client_held", "streamed"].map((k) =>
+		["requested", "found", "anchors", "prefetched", "client_held", "streamed"].map((k) =>
 			bar(k, kinds[k] || 0, scale, k === "found" ? "good" : "", k === "found" && requested ? `${count(kinds[k] || 0)}  ${percent(kinds[k] || 0, requested)}` : undefined),
 		),
 	);
 }
 
 function drawTraffic(stats) {
-	const byRoute = {};
-	for (const [key, v] of Object.entries(series(stats, "cache_http_requests_total"))) {
-		const route = (key.split(",").find((p) => p.startsWith("route=")) || "route=?").slice(6);
-		byRoute[route] = (byRoute[route] || 0) + v;
-	}
+	const byRoute = byLabel(stats, "cache_http_requests_total", "route");
 	const entries = Object.entries(byRoute).sort((a, b) => b[1] - a[1]);
 	const max = entries.length ? entries[0][1] : 1;
 	fill(
@@ -231,7 +238,7 @@ function push(id, v) {
 // stands. The rate is the exception: the server reports a counter, and a
 // rate is the difference between samples this page took.
 function drawRate(stats) {
-	const total = sum(series(stats, "cache_http_requests_total"));
+	const total = value(stats, "cache_http_requests_total");
 	const prev = state.previous;
 	state.previous = { total, generated_at: stats.generated_at };
 	if (!prev) return;
@@ -259,7 +266,7 @@ function drawRate(stats) {
 // neither needs a previous sample and both start drawing on the earliest
 // poll. The batch series is the same a single hitRateTile reads, for the same reason.
 function drawGauges(stats) {
-	const kinds = series(stats, "s3_batch_keys_total");
+	const kinds = byLabel(stats, "s3_batch_keys_total", "kind");
 	const requested = kinds.requested || 0;
 	if (requested) $("hit-chart").push(((kinds.found || 0) / requested) * 100);
 	$("inflight-chart").push(value(stats, "cache_http_in_flight_requests"));
@@ -267,31 +274,19 @@ function drawGauges(stats) {
 
 // --- by project ---------------------------------------------------------------
 
-// s3_project_objects_total is labelled (project, kind), which the snapshot
-// flattens into series keys spelled "kind=hit,project=go-toolchain" — sorted,
-// so the order of the parts is fixed.
-function labelled(key) {
-	const out = {};
-	for (const part of key.split(",")) {
-		const eq = part.indexOf("=");
-		if (eq > 0) out[part.slice(0, eq)] = part.slice(eq + 1);
-	}
-	return out;
-}
-
-// The stacked chart is a RATE, so it needs samples, the same as the overall
+ is a RATE, so it needs samples, the same as the overall
 // request rate. Counters only ever rise, so a drop means the server
 // restarted and the history is about a different process.
 function drawProjects(stats) {
 	const totals = {};
-	for (const [key, v] of Object.entries(series(stats, "s3_project_objects_total"))) {
-		const { project, kind } = labelled(key);
+	for (const { labels, value: v } of points(stats, "s3_project_objects_total")) {
+		const { project, kind } = labels;
 		if (!project) continue;
 		const row = (totals[project] ||= { hit: 0, lookahead: 0, put: 0, miss: 0 });
 		if (kind in row) row[kind] += v;
 	}
 
-	drawProjectMisses(totals);
+	drawProjectHitRates(totals);
 
 	const prev = state.projects;
 	state.projects = { totals, at: stats.generated_at };
@@ -339,26 +334,23 @@ function drawProjects(stats) {
 		: "no project has moved an object yet";
 }
 
-// The miss rate is what the chart cannot show: a project can be a thin band
-// and still be missing almost everything it asks for.
-function drawProjectMisses(totals) {
+// The hit rate is what the chart cannot show: a project can be a thin band
+// and still hit almost nothing it asks for. The worst rate is at the top.
+function drawProjectHitRates(totals) {
 	const entries = Object.entries(totals)
-		.map(([name, row]) => {
-			const asked = row.hit + row.miss;
-			return [name, row, asked];
-		})
+		.map(([name, row]) => [name, row, row.hit + row.miss])
 		.filter(([, , asked]) => asked > 0)
-		.sort((a, b) => b[1].miss / b[2] - a[1].miss / a[2]);
+		.sort((a, b) => a[1].hit / a[2] - b[1].hit / b[2]);
 	if (entries.length === 0) {
-		rows($("project-misses"), [["no project has asked for a key yet", "--", false]]);
+		rows($("project-hit-rates"), [["no project has asked for a key yet", "--", false]]);
 		return;
 	}
 	rows(
-		$("project-misses"),
+		$("project-hit-rates"),
 		entries.map(([name, row, asked]) => [
 			name,
-			`${percent(row.miss, asked)} of ${count(asked)}`,
-			row.miss / asked > 0.5,
+			`${percent(row.hit, asked)} of ${count(asked)}`,
+			row.hit / asked < 0.5,
 		]),
 	);
 }
@@ -367,19 +359,19 @@ function drawProjectMisses(totals) {
 // The alert flag turns the value red so a rising a single is visible without
 // reading the labels.
 function drawTripwires(stats) {
-	const outcomes = series(stats, "s3_get_requests_total");
+	const outcomes = byLabel(stats, "s3_get_requests_total", "outcome");
 	const unservable = outcomes.miss_advertised_unservable || 0;
 	const entries = [
 		["advertised but unservable GETs", count(unservable), unservable > 0],
 		["self-heal failures (key de-advertised)", count(value(stats, "s3_self_heal_failures_total")), value(stats, "s3_self_heal_failures_total") > 0],
 		["outputid mismatches repaired", count(value(stats, "s3_outputid_mismatch_total")), value(stats, "s3_outputid_mismatch_total") > 0],
 		["self-heal repairs (one-time per object)", count(value(stats, "s3_self_heal_repairs_total")), false],
-		["module indexes refused on PUT", count(sum(series(stats, "s3_put_refusals_total"))), false],
+		["module indexes refused on PUT", count(value(stats, "s3_put_refusals_total")), false],
 		["module indexes evicted on read", count(value(stats, "s3_module_index_evictions_total")), false],
 		["requests shed at capacity", count(value(stats, "s3_http_rejected_total")), value(stats, "s3_http_rejected_total") > 0],
 		["auth failures", count(value(stats, "cache_auth_failures_total")), false],
 		["metadata xattrs dropped", count(value(stats, "s3_metadata_xattrs_dropped_total")), value(stats, "s3_metadata_xattrs_dropped_total") > 0],
-		["deprecated S3 requests", count(sum(series(stats, "s3_deprecated_requests_total"))), false],
+		["deprecated S3 requests", count(value(stats, "s3_deprecated_requests_total")), false],
 		["memory-pressure shrinks", count(value(stats, "s3_memory_shrinks_total")), false],
 	];
 	rows($("tripwires"), entries);
@@ -394,8 +386,8 @@ function drawMemory(stats) {
 	} else {
 		nodes.push(para("no process memory limit discovered, so caches use fixed default budgets"));
 	}
-	const held = series(stats, "s3_cache_memory_bytes");
-	const budgets = series(stats, "s3_cache_memory_budget_bytes");
+	const held = byLabel(stats, "s3_cache_memory_bytes", "cache");
+	const budgets = byLabel(stats, "s3_cache_memory_budget_bytes", "cache");
 	for (const [name, v] of Object.entries(held).sort()) {
 		const budget = budgets[name] || 0;
 		nodes.push(bar(`cache: ${name}`, v, budget, "", `${bytes(v)} of ${bytes(budget)}`));

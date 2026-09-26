@@ -144,6 +144,8 @@ func (d *dashboard) servePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", contentType)
+	// The page and its script must come from the same build. A cached page with a newer script breaks the page.
+	w.Header().Set("Cache-Control", "no-cache")
 	_, _ = w.Write(body)
 }
 

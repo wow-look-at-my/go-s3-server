@@ -48,6 +48,16 @@ h3 {
 code, .n, .value, td.n { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
 .muted { color: var(--text-muted); }
+
+.poll-error {
+	margin: var(--sp-3) var(--sp-5) 0;
+	padding: var(--sp-3);
+	border: 1px solid var(--danger);
+	background: var(--bg);
+	color: var(--danger);
+	font-family: var(--font-mono);
+}
+.poll-error[hidden] { display: none; }
 .note { font-size: var(--fs-tiny); margin: calc(var(--sp-2) * -1) 0 var(--sp-3); }
 
 header {

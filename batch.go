@@ -300,6 +300,13 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 		// failed above never reached the client and must not appear in the
 		// rate.
 		recordObject(agg, prov, e.meta.Metadata, size, false, true)
+		// The bandwidth chart is attributed one entry at a time, for the same
+		// reason: a batch carries entries from as many modules as the build
+		// touches, so the response as a whole has no single module to charge.
+		bandwidthFromContext(r.Context()).record(bandwidthSample{
+			module: projectOf(e.meta.Metadata, prov),
+			bytes:  size,
+		})
 	}
 
 	requested, anchors := len(req.Keys), 0

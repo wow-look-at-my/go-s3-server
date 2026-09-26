@@ -236,3 +236,86 @@ func TestGatherFlattensHistogramsAndMultiLabelSeries(t *testing.T) {
 	assert.InDelta(t, 1.0, *got["cache_op_seconds_sum"].Value, 0.001)
 	assert.InDelta(t, 1, seriesValue(t, got["cache_http_requests_total"].Series, map[string]string{"method": "GET", "route": "GetObject", "status": "200"}), 0)
 }
+
+// The bandwidth endpoint is what the page's chart polls: a fixed window of
+// buckets, the top modules by bytes with a remainder for the rest, and the index
+// fetches kept out of every module's bytes. The store it reads is filled the way
+// the serve paths fill it, so what is asserted here is the shipped accounting.
+func TestDashboardBandwidthEndpointShape(t *testing.T) {
+	d := testDashboard(t, prometheus.NewRegistry())
+	store, _ := testBandwidthStore(testBandwidthEpoch)
+	d.bandwidth = store
+
+	for module, n := range map[string]int64{
+		"example.com/one":   700,
+		"example.com/two":   600,
+		"example.com/three": 500,
+		"example.com/four":  400,
+		"example.com/five":  300,
+		"example.com/six":   200,
+		"example.com/seven": 100,
+	} {
+		store.record(bandwidthSample{module: module, bytes: n})
+	}
+	store.record(bandwidthSample{index: true, bytes: 4096})
+
+	rec := httptest.NewRecorder()
+	d.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, dashboardBandwidthPath, nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	assert.NotEmpty(t, rec.Header().Get("Cache-Control"), "the page polls this; a cached answer is a stale chart")
+
+	var got dashboardBandwidth
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Equal(t, bandwidthBucketSeconds, got.BucketSeconds)
+	assert.Equal(t, bandwidthRetentionSeconds, got.RetentionSeconds)
+	require.Len(t, got.Points, bandwidthBucketCount, "one point per bucket, so the axis covers the whole window")
+	assert.Equal(t, []string{
+		"example.com/one",
+		"example.com/two",
+		"example.com/three",
+		"example.com/four",
+		"example.com/five",
+		bandwidthOtherModule,
+	}, got.Bands, "the top modules by bytes, then the remainder")
+
+	newest := got.Points[len(got.Points)-1]
+	assert.Equal(t, testBandwidthEpoch.Unix(), newest.Start)
+	assert.Equal(t, int64(700+600+500+400+300+200+100+4096), newest.Total, "every byte served in that second, the index included")
+	assert.Equal(t, int64(4096), newest.Index, "an index fetch is a series of its own")
+	assert.Equal(t, int64(200+100), newest.Modules[bandwidthOtherModule], "the modules past the cut are summed")
+	assert.Equal(t, int64(700), newest.Modules["example.com/one"])
+
+	// Every byte is in exactly one band, and the index series sits beside them
+	// at the total the chart's axis is scaled to.
+	var bands int64
+	for _, n := range newest.Modules {
+		bands += n
+	}
+	assert.Equal(t, newest.Total, bands+newest.Index)
+
+	// The quiet seconds of the window are points too: empty, not missing, so
+	// the axis does not move as traffic arrives.
+	assert.Zero(t, got.Points[0].Total)
+	assert.Equal(t, testBandwidthEpoch.Unix()-int64(bandwidthBucketCount-1), got.Points[0].Start)
+}
+
+// A dashboard built on a server with no accounting still answers the endpoint:
+// the page then draws an empty chart rather than reporting an error beside the
+// numbers that did load.
+func TestDashboardBandwidthEndpointAnswersWithoutAStore(t *testing.T) {
+	d := testDashboard(t, prometheus.NewRegistry())
+	require.Nil(t, d.bandwidth, "a server built without the accounting")
+
+	rec := httptest.NewRecorder()
+	d.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, dashboardBandwidthPath, nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var got dashboardBandwidth
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Len(t, got.Points, bandwidthBucketCount)
+	assert.Equal(t, []string{bandwidthOtherModule}, got.Bands)
+	for _, point := range got.Points {
+		assert.Zero(t, point.Total)
+	}
+}

@@ -433,6 +433,177 @@ function draw(stats) {
 	drawConfig(stats);
 }
 
+// --- bandwidth chart --------------------------------------------------------
+
+// The bandwidth chart is drawn on the page's own canvas rather than by another
+// <perf-graph>: that element draws ONE scalar series, and this chart is a stack
+// of them, one per module, with the index fetches as one more. Nothing is
+// imported for it.
+
+// One alpha per module band over the accent the page already uses. A stack does
+// not overlap, so an alpha ramp reads as a value ramp and the whole chart stays
+// in the one accent the design language reserves for "this is the thing you are
+// looking at". The index series is not a module, so it takes the neutral.
+const BAND_ALPHA = [0.95, 0.76, 0.6, 0.47, 0.37];
+const OTHER_ALPHA = 0.2;
+const INDEX_ALPHA = 0.6;
+
+const bandwidth = { series: null };
+
+// token reads one of the design language's custom properties off an element.
+// The value is handed to the canvas as it stands, so a token that is not a
+// literal colour is checked first: a canvas ignores a colour it cannot parse,
+// which would leave the plot painted in whatever was set last.
+function token(ctx, el, name, fallback) {
+	const value = getComputedStyle(el).getPropertyValue(name).trim();
+	if (!value) return fallback;
+	const previous = ctx.fillStyle;
+	ctx.fillStyle = fallback;
+	ctx.fillStyle = value;
+	const resolved = ctx.fillStyle;
+	ctx.fillStyle = previous;
+	return resolved === fallback ? fallback : resolved;
+}
+
+// The last band the endpoint ranks is always the remainder, so the chart can
+// tell it apart from a named module without knowing what the server calls it.
+function bandAlpha(bands, index) {
+	return index === bands.length - 1 ? OTHER_ALPHA : BAND_ALPHA[index % BAND_ALPHA.length];
+}
+
+// swatch is the colour the canvas drew a band in, as a stylesheet value: a
+// canvas has to be handed a real colour, and a legend swatch does not, so the
+// mix is left to the browser, over the same token at the same alpha.
+function swatch(anchor, alpha) {
+	return `color-mix(in srgb, var(${anchor}) ${Math.round(alpha * 100)}%, transparent)`;
+}
+
+function legendItem(colour, label, n) {
+	const item = document.createElement("span");
+	item.className = "item";
+	const dot = document.createElement("span");
+	dot.className = "swatch";
+	dot.style.background = colour;
+	const name = document.createElement("span");
+	name.textContent = label;
+	const value = document.createElement("span");
+	value.className = "n";
+	value.textContent = bytes(n);
+	item.append(dot, name, value);
+	return item;
+}
+
+// drawBandwidth stacks the bands the endpoint ranked, with the index above
+// them, over an axis scaled to the busiest second in the window. Because the
+// bands and the index add up to the total, the top of the stack IS the total
+// bandwidth the axis stands for.
+function drawBandwidth() {
+	const canvas = $("bandwidth-chart");
+	// Named around the module-level series() helper: this is the whole window,
+	// not one of the snapshot's labeled series.
+	const chart = bandwidth.series;
+	if (!canvas || !chart || !chart.points) return;
+	const ctx = canvas.getContext("2d");
+	if (!ctx) return;
+
+	const dpr = typeof devicePixelRatio === "number" && devicePixelRatio > 0 ? devicePixelRatio : 1;
+	const cssW = canvas.clientWidth || 640;
+	const cssH = canvas.clientHeight || 140;
+	canvas.width = Math.max(1, Math.round(cssW * dpr));
+	canvas.height = Math.max(1, Math.round(cssH * dpr));
+	ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+	ctx.clearRect(0, 0, cssW, cssH);
+
+	const points = chart.points;
+	const bands = chart.bands || [];
+	const grid = token(ctx, canvas, "--border-light", "#1e222c");
+	const label = token(ctx, canvas, "--text-muted", "#6b7280");
+	const strong = token(ctx, canvas, "--text-bright", "#e8ecf4");
+	const accent = token(ctx, canvas, "--accent", "#ffae00");
+	ctx.font = "10px " + token(ctx, canvas, "--font-mono", "monospace");
+
+	let busiest = 0;
+	for (const point of points) if (point.total > busiest) busiest = point.total;
+
+	const plotTop = 2;
+	const plotBottom = cssH - 2;
+	const scale = busiest > 0 ? (plotBottom - plotTop) / busiest : 0;
+	const barWidth = points.length ? cssW / points.length : cssW;
+
+	// The axis: the top of the scale and its middle, ruled and labelled. The top
+	// is the total bandwidth the stack reaches, which is what the chart is read
+	// against; the baseline is zero and needs no label.
+	ctx.textAlign = "right";
+	ctx.textBaseline = "bottom";
+	for (const [level, colour] of [[0, strong], [0.5, label]]) {
+		const y = Math.round(plotTop + level * (plotBottom - plotTop)) + 0.5;
+		ctx.strokeStyle = grid;
+		ctx.beginPath();
+		ctx.moveTo(0, y);
+		ctx.lineTo(cssW, y);
+		ctx.stroke();
+		ctx.fillStyle = colour;
+		ctx.fillText(bytes(busiest * (1 - level)) + "/s", cssW - 3, y - 1);
+	}
+	ctx.strokeStyle = grid;
+	ctx.beginPath();
+	ctx.moveTo(0, plotBottom + 0.5);
+	ctx.lineTo(cssW, plotBottom + 0.5);
+	ctx.stroke();
+
+	// The stack. A band with bytes in it is drawn at least a device pixel tall,
+	// so a module that served anything at all is on the chart however small its
+	// share, and a band with nothing in it is drawn nowhere.
+	const totals = new Map();
+	points.forEach((point, i) => {
+		const x = i * barWidth;
+		let top = plotBottom;
+		bands.forEach((band, b) => {
+			const n = (point.modules && point.modules[band]) || 0;
+			if (!n) return;
+			totals.set(band, (totals.get(band) || 0) + n);
+			const h = Math.max(1 / dpr, n * scale);
+			ctx.globalAlpha = bandAlpha(bands, b);
+			ctx.fillStyle = accent;
+			ctx.fillRect(x, top - h, barWidth, h);
+			top -= h;
+		});
+		if (point.index) {
+			totals.set("index", (totals.get("index") || 0) + point.index);
+			const h = Math.max(1 / dpr, point.index * scale);
+			ctx.globalAlpha = INDEX_ALPHA;
+			ctx.fillStyle = label;
+			ctx.fillRect(x, top - h, barWidth, h);
+		}
+	});
+	ctx.globalAlpha = 1;
+
+	// The key, in the stack's own order, carrying what each band served over the
+	// whole window: the same ranking the endpoint cut the top modules by.
+	let served = 0;
+	for (const point of points) served += point.total;
+	const legend = bands.map((band, b) => legendItem(swatch("--accent", bandAlpha(bands, b)), band, totals.get(band) || 0));
+	legend.push(legendItem(swatch("--text-muted", INDEX_ALPHA), "index fetches", totals.get("index") || 0));
+	fill($("bandwidth-legend"), legend);
+
+	// The numbers the shape stands for, so the chart is not the only way to read
+	// the window it covers.
+	$("bandwidth-note").textContent = `peak ${bytes(busiest)}/s, ${bytes(served)} over the last ${count(chart.retention_seconds)}s, in ${count(chart.bucket_seconds)}s buckets`;
+}
+
+// The bandwidth series has its own endpoint, and so its own failure: a chart
+// that cannot be drawn must not blank the tiles that could.
+async function pollBandwidth() {
+	try {
+		const res = await fetch("/api/bandwidth", { cache: "no-store" });
+		if (!res.ok) throw new Error(`bandwidth endpoint answered ${res.status}`);
+		bandwidth.series = await res.json();
+		drawBandwidth();
+	} catch (err) {
+		$("bandwidth-note").textContent = `bandwidth unavailable: ${err.message}`;
+	}
+}
+
 // --- polling ----------------------------------------------------------------
 
 async function poll() {
@@ -452,6 +623,10 @@ async function poll() {
 		banner.hidden = false;
 		$("footer-note").textContent = `last poll failed: ${err.message}. `;
 	}
+	// The bandwidth series comes from its own endpoint, so it is polled on its
+	// own terms: its failure is a note under its own chart, never the state of a
+	// page whose numbers all arrived.
+	await pollBandwidth();
 }
 
 // The toggle is a custom element whose module is deferred, and this script is

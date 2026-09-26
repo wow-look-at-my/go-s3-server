@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -120,13 +121,25 @@ func TestDashboardStatsNeedNoCredentials(t *testing.T) {
 	assert.Equal(t, "test-cache", got.Server.Bucket)
 	assert.Greater(t, got.UptimeSeconds, 60.0)
 	assert.InDelta(t, 4096, *got.Metrics["s3_cache_bytes"].Value, 0)
-	assert.InDelta(t, 7, got.Metrics["s3_get_requests_total"].Series["hit"], 0)
-	assert.InDelta(t, 3, got.Metrics["s3_get_requests_total"].Series["miss_not_found"], 0)
+	outcomes := got.Metrics["s3_get_requests_total"].Series
+	assert.InDelta(t, 7, seriesValue(t, outcomes, map[string]string{"outcome": "hit"}), 0)
+	assert.InDelta(t, 3, seriesValue(t, outcomes, map[string]string{"outcome": "miss_not_found"}), 0)
 }
 
-// A labelled counter reaches the page as a series keyed "k=v,k=v", sorted.
-// The page splits that key apart again. The spelling is therefore a contract
-// between the server and the script.
+// seriesValue returns the value of the single series whose labels are exactly want.
+func seriesValue(t *testing.T, series []seriesPoint, want map[string]string) float64 {
+	t.Helper()
+	for _, p := range series {
+		if maps.Equal(p.Labels, want) {
+			return p.Value
+		}
+	}
+	require.Failf(t, "no series with these labels", "want %v in %v", want, series)
+	return 0
+}
+
+// A labelled counter reaches the page as a list of series, each carrying its
+// labels as an object. The page reads a label by name and never parses a key.
 func TestDashboardStatsCarryThePerProjectSeries(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	objects := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "s3_project_objects_total"}, []string{"project", "kind"})
@@ -141,9 +154,15 @@ func TestDashboardStatsCarryThePerProjectSeries(t *testing.T) {
 
 	got := stats.Metrics["s3_project_objects_total"].Series
 	require.NotNil(t, got, "the per-project counter reaches the snapshot as a series")
-	assert.InDelta(t, 9, got["kind=hit,project=github.com/wow-look-at-my/go-toolchain"], 0)
-	assert.InDelta(t, 1, got["kind=miss,project=github.com/wow-look-at-my/go-toolchain"], 0)
-	assert.InDelta(t, 4, got["kind=put,project=github.com/wow-look-at-my/js-snippets"], 0)
+	assert.InDelta(t, 9, seriesValue(t, got, map[string]string{"kind": "hit", "project": "github.com/wow-look-at-my/go-toolchain"}), 0)
+	assert.InDelta(t, 1, seriesValue(t, got, map[string]string{"kind": "miss", "project": "github.com/wow-look-at-my/go-toolchain"}), 0)
+	assert.InDelta(t, 4, seriesValue(t, got, map[string]string{"kind": "put", "project": "github.com/wow-look-at-my/js-snippets"}), 0)
+
+	// The wire shape itself: labels are an object, never a "k=v,k=v" key.
+	body, err := json.Marshal(stats.Metrics["s3_project_objects_total"])
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `{"labels":{"kind":"hit","project":"github.com/wow-look-at-my/go-toolchain"},"value":9}`)
+	assert.NotContains(t, string(body), "kind=")
 }
 
 // The snapshot is built for a browser, so it must not carry a credential from
@@ -189,5 +208,5 @@ func TestGatherFlattensHistogramsAndMultiLabelSeries(t *testing.T) {
 	require.NoError(t, err)
 	assert.InDelta(t, 2, *got["cache_op_seconds_count"].Value, 0)
 	assert.InDelta(t, 1.0, *got["cache_op_seconds_sum"].Value, 0.001)
-	assert.InDelta(t, 1, got["cache_http_requests_total"].Series["method=GET,route=GetObject,status=200"], 0)
+	assert.InDelta(t, 1, seriesValue(t, got["cache_http_requests_total"].Series, map[string]string{"method": "GET", "route": "GetObject", "status": "200"}), 0)
 }

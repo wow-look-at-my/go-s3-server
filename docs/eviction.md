@@ -91,8 +91,7 @@ that rolls more often than the interval — which is the production model — ne
 swept at all. A schedule that swept on every boot meant walking the whole disk
 on every rolling update.
 
-The `s3_cache_bytes` gauge is refreshed every 15 minutes on its own cadence, so
-it is not stale by up to a whole interval.
+The `s3_cache_bytes` gauge is refreshed every minutes on its own cadence. So it is not stale by up to a whole interval. When that refresh finds the cache over `max_bytes`, it sweeps at once and restarts the interval. The size budget therefore holds to within minutes of growth, not a whole interval.
 
 ## Configuration
 

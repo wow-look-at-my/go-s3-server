@@ -46,6 +46,13 @@ shared:
 			exit "$status"
 
 tests:
+	- desc: the dashboard script parses as the module the page loads it as
+	  exit: 0
+	  cmd: bash -c 'f="$(mktemp --suffix=.mjs)"; cp dashboard.js "$f"; node --check "$f" && echo parses'
+	  outputs:
+		stdout:
+			- "parses"
+
 	- desc: the dashboard answers on its own port with no credentials, while the cache port still demands them
 	  exit: 0
 	  inputs:

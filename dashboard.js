@@ -274,9 +274,7 @@ function drawGauges(stats) {
 
 // --- by project ---------------------------------------------------------------
 
- is a RATE, so it needs samples, the same as the overall
-// request rate. Counters only ever rise, so a drop means the server
-// restarted and the history is about a different process.
+// The chart is a rate. A counter that drops means the server restarted.
 function drawProjects(stats) {
 	const totals = {};
 	for (const { labels, value: v } of points(stats, "s3_project_objects_total")) {

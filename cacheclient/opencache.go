@@ -31,7 +31,7 @@ func CloseStore() error {
 // A child that cannot reach the owner opens the directory itself. A slower
 // build is the cost of that; a build that stops is not.
 func OpenCache(dir string, store *WebBackend) (Cache, error) {
-	if child := dialBroker(); child != nil {
+	if child := dialBroker(dir); child != nil {
 		return child, nil
 	}
 	disk, err := Open(dir)

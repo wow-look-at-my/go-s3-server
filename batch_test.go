@@ -8,7 +8,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,8 +39,8 @@ func doBatchGet(client *http.Client, url string, body []byte) (*http.Response, e
 	return doBatchGetAs(client, url, body, "")
 }
 
-// doBatchGetAs issues a batch GET as one named build. An empty build sends no
-// header, which is the older client the scope has to keep working for.
+// doBatchGetAs issues a batch GET as a single named build. An empty build
+// sends no header, which is the older client the scope has to keep working for.
 func doBatchGetAs(client *http.Client, url string, body []byte, build string) (*http.Response, error) {
 	req, err := http.NewRequest("GET", url, bytes.NewReader(body))
 	if err != nil {
@@ -80,12 +84,12 @@ func TestBatchGet_Basic(t *testing.T) {
 	ts := testSetup(t)
 	client := ts.Client()
 
-	// Upload three entries.
+	// Upload entries.
 	putObject(t, client, ts.URL, "cache/v1aaa", []byte("data-a"), map[string]string{"Outputid": "out-a"})
 	putObject(t, client, ts.URL, "cache/v1bbb", []byte("data-b"), map[string]string{"Outputid": "out-b"})
 	putObject(t, client, ts.URL, "cache/v1ccc", []byte("data-c"), map[string]string{"Outputid": "out-c"})
 
-	// Batch GET two of them.
+	// Batch GET of them.
 	reqBody, _ := json.Marshal(batchGetRequest{
 		Keys: []string{"cache/v1aaa", "cache/v1ccc"},
 	})
@@ -120,9 +124,9 @@ func TestBatchGet_SelfHealRepairsMissingOutputID(t *testing.T) {
 	ts := testSetup(t)
 	client := ts.Client()
 
-	// One good entry (has outputid) and one relic (lz4 body, no outputid
-	// metadata). Self-heal only applies to indexed cacheprog keys
-	// (go-buildcache/v1<64-hex>), so the relic must use that form.
+	// A single good entry (has outputid) and a single relic (lz4 body,
+	// no outputid metadata). Self-heal only applies to indexed cacheprog
+	// keys (go-buildcache/v1<64-hex>), so the relic must use that form.
 	goodKey := "go-buildcache/v1" + strings.Repeat("a", 64)
 	putObject(t, client, ts.URL, goodKey, []byte("good"), map[string]string{"Outputid": "g"})
 
@@ -196,150 +200,266 @@ func TestBatchGet_EmptyRequest(t *testing.T) {
 	assert.Equal(t, 400, resp.StatusCode)
 }
 
-func TestBatchGet_PrefetchSuppression(t *testing.T) {
+// batchGetManifestFor issues a single batch request and returns its
+// manifest and bodies.
+func batchGetManifestFor(t *testing.T, ts *httptest.Server, req batchGetRequest) (batchGetManifest, map[string][]byte) {
+	t.Helper()
+	body, err := json.Marshal(req)
+	require.NoError(t, err)
+	resp, err := doBatchGet(ts.Client(), ts.URL+"/testbucket/_batch/get", body)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode)
+	return parseBatchResponse(t, resp.Body)
+}
+
+// With the server's prefetch config off, which is the default, the client's
+// flags change nothing: a batch carries exactly the requested keys, even from
+// a client that still sets prefetch on the request its build is blocked on,
+// and a look-ahead request for the window alone comes back empty.
+func TestBatchGet_PrefetchOffIgnoresClientFlags(t *testing.T) {
 	ts := testSetup(t)
 	client := ts.Client()
+	putObject(t, client, ts.URL, "cache/v1off1", []byte("data1"), map[string]string{"Outputid": "o1"})
+	putObject(t, client, ts.URL, "cache/v1off2", []byte("data2"), map[string]string{"Outputid": "o2"})
+	putObject(t, client, ts.URL, "cache/v1off3", []byte("data3"), map[string]string{"Outputid": "o3"})
 
-	// Upload a cluster of entries close together in time.
-	putObject(t, client, ts.URL, "cache/v1key1", []byte("data1"), map[string]string{"Outputid": "o1"})
-	putObject(t, client, ts.URL, "cache/v1key2", []byte("data2"), map[string]string{"Outputid": "o2"})
-	putObject(t, client, ts.URL, "cache/v1key3", []byte("data3"), map[string]string{"Outputid": "o3"})
+	manifest, data := batchGetManifestFor(t, ts, batchGetRequest{Keys: []string{"cache/v1off1"}, Prefetch: true})
+	require.Len(t, manifest.Entries, 1, "only the requested key, whatever the client asked for")
+	assert.Equal(t, "cache/v1off1", manifest.Entries[0].Key)
+	assert.False(t, manifest.Entries[0].Prefetch)
+	assert.Equal(t, map[string][]byte{"cache/v1off1": []byte("data1")}, data)
 
-	batchURL := ts.URL + "/testbucket/_batch/get"
+	manifest, data = batchGetManifestFor(t, ts, batchGetRequest{Keys: []string{"cache/v1off1"}, Prefetch: true, PrefetchOnly: true})
+	assert.Empty(t, manifest.Entries, "a request for the window alone gets an empty manifest")
+	assert.Empty(t, data)
+}
 
-	// First request: ask for key1 with prefetch. The server should return key1
-	// plus key2 and key3 as prefetch.
-	req1, _ := json.Marshal(batchGetRequest{Keys: []string{"cache/v1key1"}, Prefetch: true})
-	resp1, err := doBatchGet(client, batchURL, req1)
-	require.NoError(t, err)
-	defer resp1.Body.Close()
-	require.Equal(t, 200, resp1.StatusCode)
-	manifest1, _ := parseBatchResponse(t, resp1.Body)
-	require.GreaterOrEqual(t, len(manifest1.Entries), 2, "first request should include prefetch entries")
+// With prefetch on, a look-ahead request gets the window around its anchor
+// and not the anchor itself.
+func TestBatchGet_PrefetchOnWindowOnly(t *testing.T) {
+	ts := testSetupPrefetch(t, true)
+	client := ts.Client()
+	putObject(t, client, ts.URL, "cache/v1on1", []byte("data1"), map[string]string{"Outputid": "o1"})
+	putObject(t, client, ts.URL, "cache/v1on2", []byte("data2"), map[string]string{"Outputid": "o2"})
+	putObject(t, client, ts.URL, "cache/v1on3", []byte("data3"), map[string]string{"Outputid": "o3"})
 
-	// Collect which keys were prefetched in the first response.
-	prefetchedInFirst := map[string]bool{}
-	for _, e := range manifest1.Entries {
-		if e.Prefetch {
-			prefetchedInFirst[e.Key] = true
-		}
-	}
-	require.NotEmpty(t, prefetchedInFirst, "first request should have prefetched some entries")
-
-	// Second request: ask for key2 (a different key in the same cluster) with prefetch.
-	// The tracker should suppress keys already sent in the first response.
-	req2, _ := json.Marshal(batchGetRequest{Keys: []string{"cache/v1key2"}, Prefetch: true})
-	resp2, err := doBatchGet(client, batchURL, req2)
-	require.NoError(t, err)
-	defer resp2.Body.Close()
-	require.Equal(t, 200, resp2.StatusCode)
-	manifest2, _ := parseBatchResponse(t, resp2.Body)
-
-	// None of the prefetch entries from the first response should reappear as
-	// prefetch in the second response.
-	for _, e := range manifest2.Entries {
-		if e.Prefetch {
-			assert.False(t, prefetchedInFirst[e.Key],
-				"key %q was already prefetched in first response; should be suppressed", e.Key)
-		}
+	manifest, data := batchGetManifestFor(t, ts, batchGetRequest{Keys: []string{"cache/v1on1"}, Prefetch: true, PrefetchOnly: true})
+	require.NotEmpty(t, manifest.Entries, "the window around the anchor is served")
+	for _, e := range manifest.Entries {
+		assert.NotEqual(t, "cache/v1on1", e.Key, "the anchor is not sent back")
+		assert.True(t, e.Prefetch)
+		assert.Contains(t, data, e.Key)
 	}
 }
 
-// Suppression ends with the build that earned it. It was scoped to the user
-// for five minutes, and one user runs several builds in five minutes: the
-// first build was handed the window and every build after it was handed an
-// empty one, so a second build in a row fetched every object on its critical
-// path and finished slower than a build with no cache at all.
-func TestBatchGet_PrefetchSuppressionIsPerBuild(t *testing.T) {
-	ts := testSetup(t)
-	client := ts.Client()
-
-	putObject(t, client, ts.URL, "cache/v1b1", []byte("data1"), map[string]string{"Outputid": "o1"})
-	putObject(t, client, ts.URL, "cache/v1b2", []byte("data2"), map[string]string{"Outputid": "o2"})
-	putObject(t, client, ts.URL, "cache/v1b3", []byte("data3"), map[string]string{"Outputid": "o3"})
-
-	batchURL := ts.URL + "/testbucket/_batch/get"
-	body, _ := json.Marshal(batchGetRequest{Keys: []string{"cache/v1b1"}, Prefetch: true})
-
-	prefetchedBy := func(build string) map[string]bool {
-		resp, err := doBatchGetAs(client, batchURL, body, build)
+// The config field is off unless the file turns it on.
+func TestConfigPrefetchDefaultsOff(t *testing.T) {
+	dir := t.TempDir()
+	load := func(extra map[string]any) *Config {
+		path := filepath.Join(dir, "config.json")
+		fields := map[string]any{"bucket": "b", "data_dir": dir, "disable_auth": true}
+		maps.Copy(fields, extra)
+		body, err := json.Marshal(fields)
 		require.NoError(t, err)
-		defer resp.Body.Close()
-		require.Equal(t, 200, resp.StatusCode)
-		manifest, _ := parseBatchResponse(t, resp.Body)
-		got := map[string]bool{}
-		for _, e := range manifest.Entries {
-			if e.Prefetch {
-				got[e.Key] = true
-			}
-		}
-		return got
+		require.NoError(t, os.WriteFile(path, body, 0o644))
+		cfg, err := LoadConfig(path)
+		require.NoError(t, err)
+		return cfg
 	}
-
-	first := prefetchedBy("build-one")
-	require.NotEmpty(t, first, "the first build must be given a window")
-
-	// Same user, same keys, same instant: only the build differs.
-	second := prefetchedBy("build-two")
-	assert.Equal(t, first, second, "a second build must be given the same window, not an empty one")
-
-	// Within one build, suppression still holds, or a build receives the same
-	// pool on every look-ahead request for its whole run.
-	assert.Empty(t, prefetchedBy("build-one"), "a repeat request from one build stays suppressed")
+	assert.False(t, load(nil).Prefetch)
+	assert.True(t, load(map[string]any{"prefetch": true}).Prefetch)
 }
 
-// Suppression must not stop prefetch. Selection skips already-sent keys as it
-// walks the window, so a client keeps being handed NEW neighbours. Filtering
-// the result afterwards instead re-proposed the same nearest pool on every
-// request: a real deployment showed prefetched=0 and suppressed=200 on every
-// batch after a client's first one, for the rest of its build.
-func TestBatchGet_PrefetchKeepsAdvancingPastSuppressedKeys(t *testing.T) {
-	ts := testSetup(t)
+// indexedKey is a real cacheprog key: the prefix plus a 64-hex action hash.
+// The filter addresses keys by that hash, so a test about it cannot use the
+// short made-up keys the other batch tests get away with.
+//
+// The hash is a real digest rather than the counter in a few leading bytes.
+func indexedKey(num int) string {
+	hash := sha256.Sum256(fmt.Appendf(nil, "indexed-key-%d", num))
+	return gbciKeyPrefix + hex.EncodeToString(hash[:])
+}
+
+// holdFilter is a request's statement that the client holds keys, built the
+// way the client builds it: k positions per hash, bytes of the hash each,
+// modulo the bit count.
+func holdFilter(t *testing.T, size int, keys ...string) *haveFilter {
+	t.Helper()
+	filter := &haveFilter{Bits: make([]byte, size), K: 6}
+	bits := uint32(len(filter.Bits) * 8)
+	for _, key := range keys {
+		hash, ok := extractActionHash(key)
+		require.True(t, ok, "%q is not an indexed key", key)
+		for pos := 0; pos < filter.K; pos++ {
+			idx := haveFilterBit(hash, pos, bits)
+			filter.Bits[idx/8] |= 1 << (idx % 8)
+		}
+	}
+	return filter
+}
+
+// prefetchedKeys issues a single batch and returns the keys the window carried.
+func prefetchedKeys(t *testing.T, ts *httptest.Server, req batchGetRequest) map[string]bool {
+	t.Helper()
+	body, err := json.Marshal(req)
+	require.NoError(t, err)
+	resp, err := doBatchGet(ts.Client(), ts.URL+"/testbucket/_batch/get", body)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode)
+	manifest, _ := parseBatchResponse(t, resp.Body)
+	got := map[string]bool{}
+	for _, entry := range manifest.Entries {
+		if entry.Prefetch {
+			got[entry.Key] = true
+		}
+	}
+	return got
+}
+
+// A key the request says the client holds is not sent; a request that states
+// nothing is sent the whole window. The server remembers neither.
+func TestBatchGet_PrefetchSkipsWhatTheClientHolds(t *testing.T) {
+	ts := testSetupPrefetch(t, true)
 	client := ts.Client()
 
-	// The window has to hold enough unsent keys for every round to have
+	anchor, held, other := indexedKey(1), indexedKey(2), indexedKey(3)
+	for i, key := range []string{anchor, held, other} {
+		putObject(t, client, ts.URL, key, []byte("data"), map[string]string{"Outputid": fmt.Sprintf("o%d", i)})
+	}
+
+	full := prefetchedKeys(t, ts, batchGetRequest{Keys: []string{anchor}, Prefetch: true})
+	require.True(t, full[held], "a client that states nothing is sent the whole window")
+	require.True(t, full[other])
+
+	stated := prefetchedKeys(t, ts, batchGetRequest{
+		Keys:     []string{anchor},
+		Prefetch: true,
+		Have:     holdFilter(t, 1024, held),
+	})
+	assert.False(t, stated[held], "a key the request says the client holds must not be sent")
+	assert.True(t, stated[other], "the rest of the window still is")
+
+	// The server kept nothing: the same request with no filter is answered in
+	// full again, however many times it is asked.
+	again := prefetchedKeys(t, ts, batchGetRequest{Keys: []string{anchor}, Prefetch: true})
+	assert.Equal(t, full, again, "the server must hold no memory of what it sent")
+}
+
+// A window is only worth sending a single time, so a client that keeps
+// stating what it received keeps being handed NEW neighbours. Selection skips
+// as it walks: filtering the result afterwards re-proposed the same nearest
+// pool on every request, and a real deployment showed prefetched=0 for the rest of a build.
+func TestBatchGet_PrefetchAdvancesAsTheClientStatesMore(t *testing.T) {
+	ts := testSetupPrefetch(t, true)
+	client := ts.Client()
+
+	// The window has to hold enough unstated keys for every round to have
 	// something to advance to. Each round can carry maxPrefetchEntries.
 	const rounds = 3
 	const total = rounds*maxPrefetchEntries + 10
+	keys := make([]string, total)
 	for i := range total {
-		key := fmt.Sprintf("cache/v1adv%05d", i)
-		putObject(t, client, ts.URL, key, []byte(key), map[string]string{"Outputid": fmt.Sprintf("o%d", i)})
+		keys[i] = indexedKey(i)
+		putObject(t, client, ts.URL, keys[i], []byte(keys[i]), map[string]string{"Outputid": fmt.Sprintf("o%d", i)})
 	}
 
-	batchURL := ts.URL + "/testbucket/_batch/get"
 	seen := set.New[string]()
 	fresh := make([]int, 0, rounds)
-
 	for round := range rounds {
-		body, err := json.Marshal(batchGetRequest{
-			Keys:     []string{fmt.Sprintf("cache/v1adv%05d", round)},
-			Prefetch: true,
-		})
-		require.NoError(t, err)
-		resp, err := doBatchGet(client, batchURL, body)
-		require.NoError(t, err)
-		manifest, _ := parseBatchResponse(t, resp.Body)
-		resp.Body.Close()
-
+		// Everything the client has received so far, stated in the request.
+		var have []string
+		for k := range seen.All() {
+			have = append(have, k)
+		}
+		req := batchGetRequest{Keys: []string{keys[round]}, Prefetch: true}
+		if len(have) > 0 {
+			req.Have = holdFilter(t, 8192, have...)
+		}
 		n := 0
-		for _, e := range manifest.Entries {
-			if !e.Prefetch {
-				continue
-			}
-			assert.False(t, seen.Contains(e.Key), "round %d re-sent %q, which suppression should have skipped", round, e.Key)
-			seen.Add(e.Key)
+		for key := range prefetchedKeys(t, ts, req) {
+			assert.False(t, seen.Contains(key), "round %d re-sent %q, which the request said the client holds", round, key)
+			seen.Add(key)
 			n++
 		}
 		fresh = append(fresh, n)
 	}
 
 	assert.Positive(t, fresh[0], "the first request must prefetch")
-	assert.Positive(t, fresh[1], "the second request must still prefetch: selection has to walk past the suppressed keys, not stop at them")
-	assert.Positive(t, fresh[2], "prefetch must keep advancing while the window holds unsent keys")
+	assert.Positive(t, fresh[1], "the second must still prefetch: selection walks past the stated keys, not stops at them")
+	assert.Positive(t, fresh[2], "prefetch must keep advancing while the window holds unstated keys")
+}
+
+// haveFilterVectorBits is the filter's bit arithmetic, pinned.
+//
+// cacheclient has its own copy of this filter and its own test asserting this
+// same constant. both implementations cannot import each other, so this
+// vector is what holds them together: change the bit arithmetic on a single
+// side and any of both tests fails, rather than suppression silently going
+// wrong on the wire.
+const haveFilterVectorBits = "c2643f18fd57b6aa9bb7cb286f32b9ee7c655c83b95e78ca11591a166bd6658a"
+
+func TestHaveFilterVector(t *testing.T) {
+	f := &haveFilter{Bits: make([]byte, 32), K: 3}
+	m := uint32(len(f.Bits) * 8)
+	for _, fill := range []byte{1, 2, 3, 4} {
+		var h [gbciHashSize]byte
+		for i := range h {
+			h[i] = fill
+		}
+		for i := 0; i < f.K; i++ {
+			idx := haveFilterBit(h, i, m)
+			f.Bits[idx/8] |= 1 << (idx % 8)
+		}
+		require.True(t, f.contains(h))
+	}
+	sum := sha256.Sum256(f.Bits)
+	require.Equal(t, haveFilterVectorBits, hex.EncodeToString(sum[:]),
+		"the wire filter's bit arithmetic changed; cacheclient's copy must change with it")
+}
+
+// The filter's errors are false positives and nothing else: it never says a
+// client lacks a key it stated. A false positive costs a single un-sent body,
+// which the client then asks for by name; the other direction would re-send
+// bodies it already has.
+func TestHaveFilterFailsTowardSending(t *testing.T) {
+	// Everything stated must read back as held. This is the direction that
+	// must never fail, because a miss here re-sends what the client has.
+	stated := make([]string, 256)
+	for i := range stated {
+		stated[i] = indexedKey(i)
+	}
+	f := holdFilter(t, 1024, stated...)
+	for _, key := range stated {
+		h, _ := extractActionHash(key)
+		require.True(t, f.contains(h), "the filter must never lose a key it was given")
+	}
+
+	// A key never stated may still read as held, and at this loading it
+	// usually does not.
+	var falsePositives int
+	const probes = 4096
+	for i := range probes {
+		h, _ := extractActionHash(indexedKey(1_000_000 + i))
+		if f.contains(h) {
+			falsePositives++
+		}
+	}
+	assert.Less(t, falsePositives, probes/100, "got %d false positives in %d probes", falsePositives, probes)
+
+	// An absent or malformed filter states nothing at all, so such a client is
+	// sent everything rather than nothing.
+	h, _ := extractActionHash(stated[0])
+	var absent *haveFilter
+	assert.False(t, absent.contains(h), "no filter means the client stated nothing")
+	assert.False(t, (&haveFilter{}).contains(h), "an empty filter states nothing")
+	assert.False(t, (&haveFilter{Bits: f.Bits, K: 0}).contains(h), "k=0 is malformed, not a claim to hold everything")
+	assert.False(t, (&haveFilter{Bits: f.Bits, K: haveFilterMaxHashes + 1}).contains(h), "a k past the hash's bytes is malformed")
 }
 
 func TestBatchGet_Prefetch(t *testing.T) {
-	ts := testSetup(t)
+	ts := testSetupPrefetch(t, true)
 	client := ts.Client()
 
 	// Upload entries with similar modification times (they're uploaded sequentially so close together).
@@ -350,7 +470,7 @@ func TestBatchGet_Prefetch(t *testing.T) {
 	// Wait to create a time gap, then upload an unrelated entry.
 	time.Sleep(100 * time.Millisecond)
 
-	// Request only one entry with prefetch enabled.
+	// Request only a single entry with prefetch enabled.
 	reqBody, _ := json.Marshal(batchGetRequest{
 		Keys:     []string{"cache/v1one"},
 		Prefetch: true,

@@ -63,7 +63,6 @@ func isSidecarName(name string) bool {
 
 func lockExclusive(f *os.File) error {
 	// On Windows, use LockFileEx via syscall for exclusive locking.
-	// For simplicity, we use a zero-byte range lock which is sufficient.
 	return lockFileWindows(f)
 }
 
@@ -109,8 +108,8 @@ func setMetadataFd(f *os.File, meta map[string]string) error {
 	return setMetadata(f.Name(), meta)
 }
 
-// getMetadataValueFd reads one metadata value via the sidecar of the open
-// file's path ("" if absent).
+// getMetadataValueFd reads a single metadata value via the sidecar of the
+// open file's path ("" if absent).
 func getMetadataValueFd(f *os.File, key string) string {
 	meta := &ObjectMeta{Metadata: map[string]string{}}
 	getMetadata(f.Name(), meta)

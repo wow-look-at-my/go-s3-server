@@ -27,6 +27,13 @@ func archivePkgdefNoBuildID() []byte {
 	return buildAr("__.PKGDEF", []byte(body))
 }
 
+// A mis-keyed object's warning has to name something a reader can act on. The
+// key and both actions are hashes, so the kind is the least it can carry.
+func TestDescribeObjectNamesTheKind(t *testing.T) {
+	require.Equal(t, "go-archive", describeObject(archiveWithBuildID("EPlPwC3MJFgg3YYfTGwl")))
+	require.NotEmpty(t, describeObject([]byte("not an archive at all")))
+}
+
 // hermeticOTel clears the OTEL endpoint so the process-global tracer provider's sync.Once memoizes disabled.
 func hermeticOTel(t *testing.T) { t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "") }
 
@@ -141,6 +148,7 @@ func TestWebBackend_GetRejectsBuildIDMismatch(t *testing.T) {
 	primeIndex(b, actionID)
 
 	contains := func() bool {
+		b.ensureIndex()
 		b.keysMu.RLock()
 		defer b.keysMu.RUnlock()
 		return b.keys.Contains(hashOf(actionID))
@@ -195,6 +203,7 @@ func TestWebBackend_GetRejectsStrippedBuildID(t *testing.T) {
 	require.Equal(t, uint32(1), b.MissBuildID.Load())
 	require.Equal(t, uint32(0), b.Stats.Hits.Load())
 
+	b.ensureIndex()
 	b.keysMu.RLock()
 	stillKnown := b.keys.Contains(hashOf(actionID))
 	b.keysMu.RUnlock()
@@ -303,6 +312,7 @@ func TestWebBackend_PutRefusesBuildIDMismatch(t *testing.T) {
 	require.Equal(t, 0, putHits, "poison must never be uploaded to the shared cache")
 	require.Equal(t, uint32(0), b.Stats.Puts.Load())
 
+	b.ensureIndex()
 	b.keysMu.RLock()
 	claimed := b.keys.Contains(hashOf(actionID))
 	b.keysMu.RUnlock()

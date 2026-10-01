@@ -39,7 +39,7 @@ func TestDecompressReadsBothCodecs(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, body, got)
 
-			// The sized path is the one every hit takes, and it must agree.
+			// The sized path is the thing every hit takes, and it must agree.
 			got, err = DecompressSized(stored, int64(len(body)))
 			require.NoError(t, err)
 			require.Equal(t, body, got)
@@ -68,7 +68,6 @@ func TestZstdCarriesFewerBytesThanLz4(t *testing.T) {
 		"zstd=%d lz4=%d: the codec exists to shrink the wire", len(zstd), len(old))
 }
 
-// A body that is neither frame must not be mistaken for one.
 func TestDecompressRefusesGarbage(t *testing.T) {
 	_, err := Decompress([]byte("not a compressed frame at all"))
 	require.Error(t, err)

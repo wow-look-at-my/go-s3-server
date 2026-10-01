@@ -5,15 +5,14 @@ import (
 	"time"
 )
 
-// batchTiming records what a batch GET costs the caller, split into the two
+// batchTiming records what a batch GET costs the caller, split into both
 // halves that pull in opposite directions.
 //
 // A batch GET is synchronous: every caller blocks until its batch returns. So
 // the coalescer can never hold more keys than there are blocked callers, which
-// is the build's parallelism, NOT batchMaxKeys. In a real deployment the GET
-// batches topped out at 4 keys with the mode sitting exactly on 4, the
-// GOMAXPROCS of the runner. batchMaxKeys was unreachable by construction, and
-// every batch flushed on the coalescing timer instead of on the count.
+// is the build's parallelism, NOT batchMaxKeys. batchMaxKeys was unreachable
+// by construction, and every batch flushed on the coalescing timer instead of
+// on the count.
 //
 // That makes the window a straight trade: wait, against the round trips the
 // wait saves. Server-side handling was about 1ms, but a caller pays the round
@@ -23,7 +22,7 @@ import (
 type batchTiming struct {
 	batches   atomic.Uint64
 	keys      atomic.Uint64
-	waitNanos atomic.Uint64 // first key queued -> batch dispatched
+	waitNanos atomic.Uint64 // earliest key queued -> batch
 	tripNanos atomic.Uint64 // request issued -> response consumed
 
 	// Look-ahead's own round trips. They are counted apart from the ones above
@@ -77,8 +76,7 @@ func (bt BatchTimings) KeysPerBatch() float64 {
 }
 
 // WaitShare reports the fraction of batch GET latency that was coalescing
-// wait rather than the round trip it exists to amortize. A share near 1 means
-// the window costs more than the requests it saves.
+// wait rather than the round trip it exists to amortize.
 func (bt BatchTimings) WaitShare() float64 {
 	total := bt.WaitMillis + bt.RoundTripMillis
 	if total == 0 {

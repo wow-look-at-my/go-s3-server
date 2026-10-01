@@ -100,7 +100,7 @@ func TestLz4LeadingBytes_UndecidableShapes(t *testing.T) {
 	})
 	t.Run("wrong-version", func(t *testing.T) {
 		bad := append([]byte(nil), frame...)
-		bad[4] = (bad[4] & 0x3f) | 0x80 // version bits = 10
+		bad[4] = (bad[4] & 0x3f) | 0x80
 		_, ok := lz4LeadingBytes(bad, 10)
 		require.False(t, ok)
 	})
@@ -118,15 +118,15 @@ func TestLz4LeadingBytes_UndecidableShapes(t *testing.T) {
 }
 
 // TestLz4HasPrefix_ShortLiteralRunDecides: a literal run shorter than the magic
-// still settles the common case, because a compiled object diverges from
-// "go index v" within its first few bytes. Only a run that MATCHES so far is
+// still settles the common case, because a compiled object diverges from "go
+// index v" within its earliest few bytes. Only a run that MATCHES so far is
 // undecidable.
 func TestLz4HasPrefix_ShortLiteralRunDecides(t *testing.T) {
 	shortRun := func(t *testing.T, lead string, litLen int) []byte {
 		t.Helper()
 		var b []byte
 		b = binary.LittleEndian.AppendUint32(b, lz4FrameMagic)
-		b = append(b, 0x60, 0x70, 0x00) // FLG (version 1, B.Indep), BD, HC
+		b = append(b, 0x60, 0x70, 0x00)
 		block := []byte{byte(litLen << 4)}
 		block = append(block, lead...)
 		b = binary.LittleEndian.AppendUint32(b, uint32(len(block)))

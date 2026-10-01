@@ -4,7 +4,7 @@ package cacheclient
 // drive the key grammar and the read guards without a live remote: a pack
 // store's prefetch ordering, a local tier's refusal of a module index. Those
 // tests cannot reach unexported fields across a module boundary, and standing
-// up an HTTP server to seed one key would test the server instead.
+// up an HTTP server to seed a single key would test the server instead.
 
 // NewBareBackend returns a backend that talks to no remote and fetches no
 // index. Its key grammar and its guards work; Get and Put do not.
@@ -12,11 +12,15 @@ func NewBareBackend(prefix string) *WebBackend {
 	if prefix == "" {
 		prefix = "go-buildcache/"
 	}
-	return &WebBackend{
-		prefix:    prefix,
-		keys:      newHashSet(0),
-		knownMiss: newHashSet(0),
+	b := &WebBackend{
+		prefix:      prefix,
+		keys:        newHashSet(0),
+		knownMiss:   newHashSet(0),
+		indexTiming: defaultIndexTiming(),
 	}
+	// The index is spent up front: there is no remote to load a single from.
+	b.indexOnce.Do(func() {})
+	return b
 }
 
 // MarkPresent records that the remote holds actionID, the same claim a Put
@@ -26,8 +30,9 @@ func (b *WebBackend) MarkPresent(actionID string) {
 	if !ok {
 		return
 	}
+	b.ensureIndex()
 	b.keysMu.Lock()
-	b.keys.Add(h)
+	b.addKeyLocked(h)
 	b.keysMu.Unlock()
 }
 

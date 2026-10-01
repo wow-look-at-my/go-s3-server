@@ -2,6 +2,7 @@ package cacheclient
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -194,4 +195,182 @@ func TestBatchGetRequest_JSONShape(t *testing.T) {
 	data, err := json.Marshal(batchGetRequest{Keys: []string{"a", "b"}, Prefetch: true})
 	require.NoError(t, err)
 	require.JSONEq(t, `{"keys":["a","b"],"prefetch":true}`, string(data))
+}
+
+// A bulk-transfer client must not carry an absolute request deadline.
+// http.Client.Timeout spans the whole request INCLUDING the body read, so it
+// kills a transfer that is making perfect progress purely for being large. A
+// batch get is tens of megabytes and the key index is larger, and at the
+// bandwidth a remote CI runner gets, those died mid-body every time. Liveness
+// belongs to the transport's ResponseHeaderTimeout, which bounds a server that
+// never answers without bounding a single that answers slowly.
+func TestWebBackend_NoAbsoluteRequestDeadline(t *testing.T) {
+	b, err := NewWebBackend(WebConfig{
+		Bucket: "testbucket", Endpoint: "http://127.0.0.1:1",
+		AccessKey: "k", SecretKey: "s",
+	})
+	require.NoError(t, err)
+	defer b.Close()
+
+	require.Zero(t, b.client.Timeout,
+		"an absolute deadline truncates a healthy bulk transfer; bound the headers, never the body")
+
+	tr, ok := b.client.Transport.(*http.Transport)
+	require.True(t, ok, "the transport is what carries the liveness bounds")
+	require.NotZero(t, tr.ResponseHeaderTimeout,
+		"a server that never answers must still be bounded")
+}
+
+// The bound is on SILENCE, not on duration: a body that keeps delivering bytes
+// must complete however long it runs. this runs well past the window in total
+// while never pausing longer than it.
+func TestWebBackend_SlowButProgressingBodyCompletes(t *testing.T) {
+	t.Serial() // stallTimeout is package state
+	old := stallTimeout
+	stallTimeout = 150 * time.Millisecond
+	defer func() { stallTimeout = old }()
+
+	const chunks, chunkSize = 12, 32 << 10
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		for i := 0; i < chunks; i++ {
+			w.Write(make([]byte, chunkSize))
+			w.(http.Flusher).Flush()
+			time.Sleep(40 * time.Millisecond) // under the window, every time
+		}
+	}))
+	defer srv.Close()
+
+	b := testBackend(t, srv.URL)
+	defer b.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/slow", nil)
+	require.NoError(t, err)
+	resp, err := b.doRetryGET(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	n, err := io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err, "steady progress must never expire, whatever the total")
+	require.Equal(t, int64(chunks*chunkSize), n)
+	require.Greater(t, chunks*40*time.Millisecond, stallTimeout,
+		"the transfer has to outlast the window for this to prove anything")
+}
+
+// A body that goes quiet for longer than the window is abandoned, and the error
+// says why rather than surfacing a bare context cancellation.
+func TestWebBackend_StalledBodyIsAbandoned(t *testing.T) {
+	t.Serial() // stallTimeout is package state
+	old := stallTimeout
+	stallTimeout = 150 * time.Millisecond
+	defer func() { stallTimeout = old }()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write(make([]byte, 1024))
+		w.(http.Flusher).Flush()
+		time.Sleep(2 * time.Second) // silence, well past the window
+	}))
+	defer srv.Close()
+
+	b := testBackend(t, srv.URL)
+	defer b.Close()
+
+	req, err := http.NewRequest("GET", srv.URL+"/stall", nil)
+	require.NoError(t, err)
+	resp, err := b.doRetryGET(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	_, err = io.Copy(io.Discard, resp.Body)
+	require.Error(t, err, "silence past the window must not hang forever")
+	require.Contains(t, err.Error(), "no progress", "the error names the cause")
+}
+
+// TestWebBackend_ShedQuietsTheWholeBackend is the regression for retries
+// amplifying an overload.
+func TestWebBackend_ShedQuietsTheWholeBackend(t *testing.T) {
+	const ops = 20
+
+	var requests atomic.Int64
+	var overloaded atomic.Bool
+	overloaded.Store(true)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if overloaded.Load() {
+			w.Header().Set("Retry-After", "1")
+			w.Header().Set("X-Cache-Error-Code", "overloaded")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			io.WriteString(w, "overloaded: server is at capacity, retry after a moment\n")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	b := testBackend(t, srv.URL)
+	defer b.Close()
+	require.Equal(t, defaultMaxRetries, b.maxRetries)
+
+	// get runs on other goroutines too, so it reports rather than asserts.
+	get := func() (int, error) {
+		req, err := http.NewRequest("GET", srv.URL+"/testbucket/key", nil)
+		if err != nil {
+			return 0, err
+		}
+		resp, err := b.doRetryGET(req)
+		if err != nil {
+			return 0, err
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return resp.StatusCode, nil
+	}
+	type result struct {
+		status int
+		err    error
+	}
+	results := make(chan result, ops+1)
+	run := func() {
+		status, err := get()
+		results <- result{status, err}
+	}
+
+	// The earliest shed starts the quiet period.
+	go run()
+	require.Eventually(t, func() bool { return b.shedRemaining() > 0 }, 5*time.Second, time.Millisecond)
+
+	for i := 0; i < ops; i++ {
+		go run()
+	}
+	for i := 0; i < ops+1; i++ {
+		r := <-results
+		require.NoError(t, r.err)
+		require.Equal(t, http.StatusServiceUnavailable, r.status, "every held-back operation still ends as a shed")
+	}
+
+	perOpBudget := int64(1 + defaultMaxRetries)
+	require.Less(t, requests.Load(), int64(ops),
+		"%d operations sent %d requests into an overload; without the shared quiet period each sends up to %d",
+		ops+1, requests.Load(), perOpBudget)
+	require.Positive(t, b.ShedWaits.Load(), "attempts inside the quiet period are held back, unsent")
+
+	// The quiet period is a pause, never a disable: a single time it
+	// passes and the server recovers, the next operation is sent and served.
+	overloaded.Store(false)
+	require.Eventually(t, func() bool { return b.shedRemaining() <= 0 }, 5*time.Second, 10*time.Millisecond)
+	before := requests.Load()
+	status, err := get()
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, before+1, requests.Load(), "a recovered server gets exactly one request per operation")
+}
+
+func testBackend(t *testing.T, endpoint string) *WebBackend {
+	t.Helper()
+	b, err := NewWebBackend(WebConfig{
+		Bucket: "testbucket", Endpoint: endpoint, AccessKey: "k", SecretKey: "s",
+	})
+	require.NoError(t, err)
+	return b
 }

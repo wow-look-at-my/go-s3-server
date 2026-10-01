@@ -8,63 +8,49 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
-// retryAfterSeconds is the Retry-After value sent with a 503 when the server is
-// shedding load, telling clients how long to back off before retrying.
 const retryAfterSeconds = 2
 
 // healthPath is the unauthenticated liveness/readiness probe. It is answered
 // before authentication and admission control so an orchestrator (e.g.
 // docker-updater's health-check / pre-check) or a reverse proxy can poll it
-// without credentials and without consuming a concurrency slot. It reports
-// 503 once a graceful shutdown has begun (see Server.BeginShutdown) so a
-// health-checking proxy or load balancer in front (if any) takes this instance
-// out of rotation; the listener is closed by Shutdown regardless, so the drain
-// itself does not depend on the probe being watched.
+// without credentials and without consuming a concurrency slot.
 const healthPath = "/_health"
 
-// The same contract at the paths docker-updater discovers by itself, with no
-// label to configure -- RFC 8615 reserves /.well-known/ for exactly that. Only
-// the status code is read, so health is an alias of /_health rather than a
-// second implementation of "is it up" that could disagree with the first.
+// Only the status code is read, so health is an alias of /_health rather than
+// another implementation of "is it up" that could disagree with the earliest.
 const (
 	wellKnownHealthPath    = "/.well-known/docker-updater/health"
 	wellKnownPreUpdatePath = "/.well-known/docker-updater/pre-update"
 )
 
 type Server struct {
-	config          *Config
-	storage         *Storage
-	prefetchTracker *prefetchTracker
-	// sem bounds concurrent in-flight requests. A full sem means the server is
-	// at capacity, so excess requests are shed with 503 + Retry-After rather
-	// than queued until memory is exhausted (the OOM a fronting proxy reports as
-	// a 502). Buffered to MaxConcurrentRequests.
+	config  *Config
+	storage *Storage
+	// sem bounds the requests doing work at the same time. A full sem means the
+	// server is at capacity. A request whose remaining work is only a body
+	// transfer hands its slot back early (releaseSlot). Buffered to
+	// MaxConcurrentRequests.
 	sem chan struct{}
 	// mem scales the in-memory caches to fit the process's memory budget. It is
 	// deliberately NOT consulted on the request path: memory pressure changes
 	// how much the server remembers, never whether it answers.
 	mem *memController
-	// verboseLog prints one line per request. In normal mode the per-second
-	// aggregator below is the access log instead.
+	// verboseLog prints a single line per request.
 	verboseLog bool
-	// logAgg counts objects into per-second lines. It is nil in verbose mode,
-	// where every request already prints itself.
+	// It is nil in verbose mode, where every request already prints itself.
 	logAgg *logAggregator
 	// shuttingDown is set by BeginShutdown when a termination signal is received.
-	// While set, the health endpoint reports 503 so an orchestrator or reverse
-	// proxy stops routing new requests here as http.Server.Shutdown drains the
-	// in-flight ones.
 	shuttingDown atomic.Bool
 }
 
 func NewServer(cfg *Config, storage *Storage) *Server {
 	// Apply resource-limit defaults here too (not just in LoadConfig) so a Config
-	// built directly — e.g. in tests — still gets a sanely-sized concurrency
-	// limit and object cap instead of a zero-capacity (always-shedding) semaphore.
+	// built directly — e.g.
 	if cfg.MaxConcurrentRequests <= 0 {
 		cfg.MaxConcurrentRequests = defaultMaxConcurrentRequests
 	}
@@ -72,12 +58,11 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 		cfg.MaxObjectBytes = defaultMaxObjectBytes
 	}
 	s := &Server{
-		config:          cfg,
-		storage:         storage,
-		prefetchTracker: newPrefetchTracker(),
-		sem:             make(chan struct{}, cfg.MaxConcurrentRequests),
-		mem:             newMemController(memoryBudget),
-		verboseLog:      cfg.LogMode == logModeVerbose,
+		config:     cfg,
+		storage:    storage,
+		sem:        make(chan struct{}, cfg.MaxConcurrentRequests),
+		mem:        newMemController(memoryBudget),
+		verboseLog: cfg.LogMode == logModeVerbose,
 	}
 	if !s.verboseLog {
 		s.logAgg = newLogAggregator()
@@ -93,14 +78,12 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 			s.mem.Register(cleanMemoKind, storage.cleanKeys.Budget(), storage.cleanKeys)
 		}
 	}
-	s.mem.Register(prefetchTrackerKind, s.prefetchTracker.sent.Budget(), s.prefetchTracker.sent)
 	return s
 }
 
-// BeginShutdown marks the server as draining, so the health endpoint starts
-// reporting 503. Call it just before http.Server.Shutdown: an orchestrator or
-// reverse proxy watching /_health then stops sending new requests to this
-// instance while Shutdown lets the in-flight ones finish.
+// Call it just before http.Server.Shutdown: an orchestrator or reverse proxy
+// watching /_health then stops sending new requests to this instance while
+// Shutdown lets the in-flight ones finish.
 func (s *Server) BeginShutdown() {
 	s.shuttingDown.Store(true)
 }
@@ -115,8 +98,8 @@ type auditInfo struct {
 	Label     string // decoded object description (type, package, go version, target)
 	// Detail is what the handler wants said about this request, appended to
 	// the request's own verbose line. A handler that logs its own summary line
-	// prints the same request twice under two spellings, which is what made
-	// the verbose log unreadable.
+	// prints the same request again under spellings, which is what made the
+	// verbose log unreadable.
 	Detail string
 }
 
@@ -130,6 +113,34 @@ func (a *auditInfo) note(format string, v ...any) {
 }
 
 type auditKey struct{}
+
+// admission is a single request's hold on a concurrency slot. release is
+// idempotent, so a handler can hand the slot back early and the deferred
+// release in ServeHTTP is then a no-op.
+type admission struct {
+	sem  chan struct{}
+	once sync.Once
+}
+
+func (a *admission) release() {
+	a.once.Do(func() {
+		<-a.sem
+		httpAdmittedRequests.Dec()
+	})
+}
+
+type admissionKey struct{}
+
+// releaseSlot hands the request's concurrency slot back before a transfer that
+// holds no per-request memory: a shared, already-built index blob, or a body
+// sent from an open file. The slot bounds the work a request does. It is a
+// no-op when the request holds no slot, as a handler invoked directly in a
+// test does.
+func releaseSlot(r *http.Request) {
+	if a, ok := r.Context().Value(admissionKey{}).(*admission); ok {
+		a.release()
+	}
+}
 
 func auditFromContext(ctx context.Context) *auditInfo {
 	if v, ok := ctx.Value(auditKey{}).(*auditInfo); ok {
@@ -165,10 +176,7 @@ func clientIP(r *http.Request) string {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Liveness/readiness probe, answered before logging, metrics, authentication,
 	// and admission control: a frequent orchestrator/proxy poll must not spam the
-	// access log, skew metrics, need credentials, or consume a concurrency
-	// slot. While draining it returns 503 so a health-checking proxy/LB in front
-	// (if any) stops routing here; in-flight requests finish either way because
-	// Shutdown closes the listener.
+	// access log, skew metrics, need credentials, or consume a concurrency slot.
 	if r.URL.Path == healthPath || r.URL.Path == wellKnownHealthPath {
 		if s.shuttingDown.Load() {
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
@@ -180,11 +188,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// "May I be replaced right now?" -- answered here for the same reasons as
-	// the probe above, and 200 unless already draining. A cache miss costs a
-	// rebuild, never data: nothing this server holds is unrecoverable, and an
-	// upload interrupted mid-flight is retried by the client. Holding updates
-	// back for in-flight requests would be pure downside, so it does not.
+	// What build is serving, answered before the auth gate for the same
+	// reasons as the probe. It never drains: a version is true either way.
+	if r.URL.Path == versionPath {
+		handleVersion(w)
+		return
+	}
+
+	// A cache miss costs a rebuild, never data: nothing this server holds is
+	// unrecoverable, and an upload interrupted mid-flight is retried by the
+	// client. Holding updates back for in-flight requests would be pure
+	// downside, so it does not.
 	if r.URL.Path == wellKnownPreUpdatePath {
 		if s.shuttingDown.Load() {
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
@@ -200,15 +214,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer httpInFlightRequests.Dec()
 
 	rec := &statusRecorder{ResponseWriter: w, statusCode: 200}
+	defer guardStall(w, r, rec)()
 	route := "Other"
 	ip := clientIP(r)
 	ua := r.UserAgent()
 	username := anonymousUser
 	defer func() {
 		duration := time.Since(start)
-		// Verbose prints this request, once, with whatever the handler had to
-		// add. Normal prints nothing here: the second-by-second lines from the
-		// aggregator are the access log in that mode.
+		// Verbose prints this request, a single time, with whatever the
+		// handler had to add.
 		if s.verboseLog {
 			label, detail := "", ""
 			if a := auditFromContext(r.Context()); a != nil {
@@ -221,23 +235,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			log.Printf("req method=%s path=%s%s client_ip=%s user=%s user_agent=%q status=%d bytes=%d duration_ms=%d%s",
 				r.Method, r.URL.Path, label, ip, username, ua,
-				rec.statusCode, rec.bytesWritten, duration.Milliseconds(), detail)
+				rec.statusCode, rec.bytesWritten.Load(), duration.Milliseconds(), detail)
 		}
 		httpRequestsTotal.WithLabelValues(r.Method, route, statusStr(rec.statusCode)).Inc()
 		httpRequestDuration.WithLabelValues(r.Method, route).Observe(duration.Seconds())
-		httpResponseSize.WithLabelValues(r.Method, route).Observe(float64(rec.bytesWritten))
+		httpResponseSize.WithLabelValues(r.Method, route).Observe(float64(rec.bytesWritten.Load()))
 		if r.ContentLength > 0 {
 			httpRequestSize.WithLabelValues(r.Method, route).Observe(float64(r.ContentLength))
 		}
 	}()
 
-	// Admission control: if the server is already at capacity, shed this request
-	// with 503 + Retry-After instead of accepting unbounded concurrency and
-	// risking an OOM (which a fronting proxy would surface as a 502). The slot is
-	// held for the whole request and released on return.
+	// The slot is released on return, or earlier by a handler whose remaining
+	// work is a body transfer that holds no per-request memory (see releaseSlot).
+	slot := &admission{sem: s.sem}
 	select {
 	case s.sem <- struct{}{}:
-		defer func() { <-s.sem }()
+		httpAdmittedRequests.Inc()
+		defer slot.release()
 	default:
 		route = "Overload"
 		httpRejectedTotal.Inc()
@@ -262,7 +276,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		UserAgent: ua,
 		Timestamp: start,
 	}
-	r = r.WithContext(context.WithValue(r.Context(), auditKey{}, audit))
+	ctx := context.WithValue(r.Context(), auditKey{}, audit)
+	r = r.WithContext(context.WithValue(ctx, admissionKey{}, slot))
 
 	// Parse path: /{bucket}/{key...} or /{bucket}
 	path := strings.TrimPrefix(r.URL.Path, "/")
@@ -289,7 +304,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// lookup (GET-with-a-body is proxy-hostile); GET stays accepted for
 		// existing clients.
 		route = "BatchGet"
-		handleBatchGet(rec, r, s.storage, s.prefetchTracker, s.logAgg)
+		handleBatchGet(rec, r, s.storage, s.logAgg, s.config.Prefetch)
 	case r.Method == "GET" && key != "":
 		route = "GetObject"
 		handleGetObject(rec, r, s.storage, key, s.logAgg)

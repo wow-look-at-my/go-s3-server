@@ -49,6 +49,7 @@ func testSetupWithAuth(t *testing.T) (*httptest.Server, *Config) {
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
 	require.Nil(t, err)
+	storage.Index.SetBlobInterval(0) // a GET after a PUT sees the PUT
 	t.Cleanup(func() { storage.Close() })
 
 	srv := NewServer(cfg, storage)
@@ -257,11 +258,11 @@ func TestDisableAuth(t *testing.T) {
 }
 
 // TestAuthNotBypassedByEmptyCredential is a regression for the auth-bypass
-// bug where authenticate() short-circuited to success on the first credential
-// entry with an empty username and password. Even if someone bypasses
-// LoadConfig and constructs a Config directly with an empty credential,
-// authenticate() MUST still require valid Basic Auth when DisableAuth is
-// false.
+// bug where authenticate() short-circuited to success on the earliest
+// credential entry with an empty username and password. Even if someone
+// bypasses LoadConfig and constructs a Config directly with an empty
+// credential, authenticate() MUST still require valid Basic Auth when
+// DisableAuth is false.
 func TestAuthNotBypassedByEmptyCredential(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{

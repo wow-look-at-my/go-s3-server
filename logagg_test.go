@@ -11,8 +11,6 @@ import (
 	"github.com/wow-look-at-my/go-s3-server/cacheclient"
 )
 
-// captureAggregator returns an aggregator whose clock and output the test
-// drives, so a second can be crossed without waiting for one.
 func captureAggregator(t *testing.T, clock *time.Time) (*logAggregator, func() []string) {
 	t.Helper()
 	var mu sync.Mutex
@@ -36,15 +34,12 @@ func TestLogAggregatorReportsOneLinePerActiveSecond(t *testing.T) {
 	clock := time.Unix(1_700_000_000, 0)
 	a, lines := captureAggregator(t, &clock)
 
-	// One second of traffic: two puts and three gets, most of it batched.
 	a.Record(objectEvent{put: true, wire: 1000, raw: 4000, rawKnown: true, project: "example.com/alpha"})
 	a.Record(objectEvent{put: true, batched: true, wire: 1000, raw: 4000, rawKnown: true, project: "example.com/alpha"})
 	a.Record(objectEvent{batched: true, wire: 500, raw: 2000, rawKnown: true, project: "example.com/beta"})
 	a.Record(objectEvent{batched: true, wire: 500, raw: 2000, rawKnown: true, project: "example.com/beta"})
 	a.Record(objectEvent{batched: true, wire: 1000, raw: 4000, rawKnown: true, project: "example.com/alpha"})
 
-	// Nothing is emitted while the second is still open: a partial second
-	// would report a rate over an interval that has not elapsed.
 	a.flush(false)
 	assert.Empty(t, lines(), "a second still in progress must not be reported")
 
@@ -56,11 +51,10 @@ func TestLogAggregatorReportsOneLinePerActiveSecond(t *testing.T) {
 	line := got[0]
 	assert.Contains(t, line, "put=2")
 	assert.Contains(t, line, "get=3")
-	// Four of the five objects moved through a batch endpoint.
+	// Of the objects moved through a batch endpoint.
 	assert.Contains(t, line, "batched=80%")
 	assert.Contains(t, line, "compressed=3.9KiB/s")
 	assert.Contains(t, line, "uncompressed=16KiB/s")
-	// 4000 compressed against 16000 uncompressed.
 	assert.Contains(t, line, "ratio=25%")
 	assert.Contains(t, line, "projects=example.com/alpha, example.com/beta")
 	assert.NotContains(t, line, "sized=", "every object declared a size, so there is no coverage caveat to print")
@@ -132,7 +126,7 @@ func TestNilAggregatorRecordsNothing(t *testing.T) {
 }
 
 // The server names the provenance headers itself so the client stays out of
-// its dependency graph. That only holds if the two spellings agree, which is
+// its dependency graph. That only holds if both spellings agree, which is
 // what this pins -- in a test, where importing the client costs nothing.
 func TestProvenanceHeadersMatchTheClient(t *testing.T) {
 	assert.Equal(t, cacheclient.HeaderModule, headerModule)

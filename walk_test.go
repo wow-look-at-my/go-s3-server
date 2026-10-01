@@ -51,10 +51,7 @@ func TestWalkReturnsEveryObjectWithMetadata(t *testing.T) {
 }
 
 func TestWalkHasNoCap(t *testing.T) {
-	// The old List took a maxKeys, and both callers faked "everything" with an
-	// arbitrary huge number -- one of them 1000000, which would have silently
-	// truncated the index rebuild of a larger cache. There is no cap to get
-	// wrong now: every stored object comes back.
+	// There is no cap to get wrong now: every stored object comes back.
 	s := newTestStorage(t)
 	const count = 2500
 	for i := range count {
@@ -75,7 +72,7 @@ func TestWalkHasNoCap(t *testing.T) {
 func TestWalkSkipsNonObjects(t *testing.T) {
 	// The lock file, the cache-version stamp, in-flight temp files and Windows
 	// metadata sidecars all live in the data dir but are not objects. Listing
-	// one would advertise a phantom key in /_index and hand the eviction
+	// a single would advertise a phantom key in /_index and hand the eviction
 	// sweeper a file it must not touch.
 	s := newTestStorage(t)
 	require.NoError(t, s.Put("real-object", []byte("body"), nil, nil))
@@ -98,8 +95,8 @@ func TestWalkEmptyStore(t *testing.T) {
 	assert.Empty(t, objects)
 }
 
-// hex64 builds a 64-character hex string of one repeated digit, so a key can
-// look like a real cacheprog action hash.
+// hex64 builds a 64-character hex string of a single repeated digit, so a
+// key can look like a real cacheprog action hash.
 func hex64(c byte) string {
 	b := make([]byte, 64)
 	for i := range b {
@@ -108,12 +105,8 @@ func hex64(c byte) string {
 	return string(b)
 }
 
-// TestNoBucketLevelListingRoute pins what actually retired issue #18. The
-// reported cliff was a paginated ListObjectsV2 endpoint whose every page
-// re-walked and re-stat'd the whole tree, so populating a 103k-key client
-// index took ~60s across ~104 round-trips. That endpoint is gone: the protocol
-// is no longer S3-shaped, and a client now populates its index from the
-// precomputed /_index blob in ONE request.
+// That endpoint is gone: the protocol is no longer S3-shaped, and a client now
+// populates its index from the precomputed /_index blob in a single request.
 //
 // This asserts the shape that makes the cliff structurally impossible. A
 // future listing endpoint is a legitimate thing to want -- but it must not be

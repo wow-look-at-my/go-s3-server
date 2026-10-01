@@ -11,6 +11,14 @@ type WebSummary struct {
 	Hits uint32 `json:"hits"`
 	Puts uint32 `json:"puts"`
 
+	// Wire bytes moved, which is what a transfer budget is spent on: a body
+	// travels compressed, so a count of objects says nothing about its cost.
+	HitBytes uint64 `json:"hit_bytes"`
+	PutBytes uint64 `json:"put_bytes"`
+	// IndexBytes is what the startup index cost. Every process pays it before
+	// it can tell a hit from a miss, so it is not part of either total above.
+	IndexBytes uint64 `json:"index_bytes"`
+
 	// GET miss reasons; miss_checksum/miss_buildid/miss_modindex are the poison tripwires (a served object a guard refused).
 	MissNotInIndex  uint32 `json:"miss_not_in_index"`
 	MissHTTP404     uint32 `json:"miss_http_404"`
@@ -28,6 +36,12 @@ type WebSummary struct {
 	SkippedNotInIndex   uint32 `json:"skipped_not_in_index"`
 	SkippedBatchBackoff uint32 `json:"skipped_batch_backoff"`
 	Reclaimed404        uint32 `json:"reclaimed_404"`
+
+	// What the server's prefetch window carried on the blocking path, and how
+	// much of it the local tier kept. Offered with nothing stored means the
+	// window is being paid for and thrown away.
+	PrefetchOffered uint32 `json:"prefetch_offered"`
+	PrefetchStored  uint32 `json:"prefetch_stored"`
 
 	// PUT non-upload outcomes. put_refused_modindex reads empty normally (handlePut refuses earlier); a count is a local gap.
 	PutSkippedKnown    uint32 `json:"put_skipped_known"`
@@ -57,9 +71,15 @@ func (ws WebSummary) MissTotal() uint32 {
 // individually from live atomics, so a snapshot taken while operations are in
 // flight is approximate; taken after Close it is exact.
 func (b *WebBackend) SummarySnapshot() WebSummary {
+	b.keysMu.RLock()
+	indexKeys, authoritative := b.indexKeysAtStart, b.indexAuthoritative
+	b.keysMu.RUnlock()
 	return WebSummary{
 		Hits:                b.Stats.Hits.Load(),
 		Puts:                b.Stats.Puts.Load(),
+		HitBytes:            b.Stats.HitBytes.Load(),
+		PutBytes:            b.Stats.PutBytes.Load(),
+		IndexBytes:          b.indexBytes.Load(),
 		MissNotInIndex:      b.MissNotInIndex.Load(),
 		MissHTTP404:         b.MissHTTP404.Load(),
 		MissHTTPError:       b.MissHTTPError.Load(),
@@ -74,11 +94,13 @@ func (b *WebBackend) SummarySnapshot() WebSummary {
 		SkippedNotInIndex:   b.SkippedNotInIndex.Load(),
 		SkippedBatchBackoff: b.SkippedBatchBackoff.Load(),
 		Reclaimed404:        b.Reclaimed404.Load(),
+		PrefetchOffered:     b.PrefetchOffered.Load(),
+		PrefetchStored:      b.PrefetchStored.Load(),
 		PutSkippedKnown:     b.PutSkippedKnown.Load(),
 		PutRefusedModIndex:  b.PutRefusedModIndex.Load(),
 		PutRefusedBuildID:   b.PutRefusedBuildID.Load(),
-		IndexKeys:           b.indexKeysAtStart,
-		IndexAuthoritative:  b.indexAuthoritative,
+		IndexKeys:           indexKeys,
+		IndexAuthoritative:  authoritative,
 		Batch:               b.batchTiming.snapshot(),
 	}
 }

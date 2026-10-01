@@ -6,7 +6,7 @@ import "bytes"
 const goModuleIndexMagic = "go index v"
 
 // A module index blob binds to no action key and carries no build id, so a
-// mis-keyed one silently breaks a build. The client refuses it on GET and PUT.
+// mis-keyed a single silently breaks a build. The client refuses it on GET and PUT.
 func IsGoModuleIndex(body []byte) bool {
 	return bytes.HasPrefix(body, []byte(goModuleIndexMagic))
 }

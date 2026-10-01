@@ -12,8 +12,7 @@ import (
 )
 
 // withBudget runs f with the process memory budget overridden, restoring it
-// afterwards. The budget is a package var resolved once at startup, so this is
-// how a test asks "what would this server do in a 512 MiB container".
+// afterwards.
 func withBudget(t *testing.T, budget int64, f func()) {
 	t.Helper()
 	prev := memoryBudget
@@ -22,11 +21,8 @@ func withBudget(t *testing.T, budget int64, f func()) {
 	f()
 }
 
-// TestDetectMemoryBudget_UsesRuntimeLimit: the authoritative ceiling is the
-// runtime's own limit -- GOMEMLIMIT, or whatever go-toolchain's injected cgroup
-// guard installed -- so the server and the GC agree on one number instead of
-// computing two.
 func TestDetectMemoryBudget_UsesRuntimeLimit(t *testing.T) {
+	t.Serial() // the memory limit and cgroupMemoryLimitPaths are process state
 	prev := debug.SetMemoryLimit(-1)
 	t.Cleanup(func() { debug.SetMemoryLimit(prev) })
 
@@ -49,6 +45,7 @@ func TestDetectMemoryBudget_UsesRuntimeLimit(t *testing.T) {
 // injected guard, including both spellings of "no limit": v2's literal "max"
 // and v1's saturated sentinel.
 func TestReadCgroupMemoryLimit(t *testing.T) {
+	t.Serial() // cgroupMemoryLimitPaths is package state
 	for _, tc := range []struct {
 		name    string
 		content string
@@ -116,9 +113,9 @@ func newTestController(budget int64, inUse *int64, now *time.Time) *memControlle
 	return c
 }
 
-// TestMemController_ShrinksCachesUnderPressure is the requirement in one test:
-// when memory climbs, the server holds LESS. Nothing else changes -- there is
-// no request path here to change.
+// TestMemController_ShrinksCachesUnderPressure is the requirement in a single
+// test: when memory climbs, the server holds LESS. Nothing else changes --
+// there is no request path here to change.
 func TestMemController_ShrinksCachesUnderPressure(t *testing.T) {
 	const budget = 1000
 	inUse := int64(0)
@@ -129,12 +126,12 @@ func TestMemController_ShrinksCachesUnderPressure(t *testing.T) {
 	c.Register("test", 100, cache)
 	require.EqualValues(t, 100, cache.budget, "a registered cache starts fully grown")
 
-	inUse = 500 // 50%: nothing to do
+	inUse = 500
 	c.poll()
 	require.EqualValues(t, 100, cache.budget)
 	require.EqualValues(t, 1, c.Scale())
 
-	inUse = 900 // 90%: over the shrink threshold
+	inUse = 900
 	c.poll()
 	require.EqualValues(t, 50, cache.budget, "pressure must halve the budget")
 	require.EqualValues(t, 50, cache.Bytes(), "and the cache must actually have evicted down to it")
@@ -144,8 +141,8 @@ func TestMemController_ShrinksCachesUnderPressure(t *testing.T) {
 	c.poll()
 	require.EqualValues(t, 25, cache.budget)
 
-	// Inside the cooldown, nothing moves -- one burst must not walk the caches
-	// straight to their floor.
+	// Inside the cooldown, nothing moves -- a single burst must not walk the
+	// caches straight to their floor.
 	c.poll()
 	require.EqualValues(t, 25, cache.budget)
 }
@@ -180,10 +177,10 @@ func TestMemController_GrowsBackAfterPressure(t *testing.T) {
 	require.EqualValues(t, 1000, cache.budget)
 }
 
-// TestMemController_FloorsAndWarns: once the caches are as small as they go,
-// there is nothing left for the server to give up -- the remaining memory is
-// the index and in-flight work. The controller must stop shrinking (rather than
-// spin) and say so, because that is the one case only the operator can fix.
+// TestMemController_FloorsAndWarns: a single time the caches are as small as
+// they go, there is nothing left for the server to give up -- the remaining
+// memory is the index and in-flight work. The controller must stop shrinking
+// (rather than spin) and say so, because that is the a single case only the operator can fix.
 func TestMemController_FloorsAndWarns(t *testing.T) {
 	inUse := int64(990)
 	now := time.Now()
@@ -220,9 +217,9 @@ func TestMemController_NoBudgetDoesNothing(t *testing.T) {
 	}
 }
 
-// TestMemSampler_ReadsRuntimeMemory: the sampled quantity must be the one
-// GOMEMLIMIT governs (mapped minus released), not a heap-only figure that
-// misses stacks and runtime metadata.
+// TestMemSampler_ReadsRuntimeMemory: the sampled quantity must be the a
+// single GOMEMLIMIT governs (mapped minus released), not a heap-only
+// figure that misses stacks and runtime metadata.
 func TestMemSampler_ReadsRuntimeMemory(t *testing.T) {
 	s := newMemSampler()
 	first := s.read()
@@ -258,9 +255,6 @@ func TestMemController_ShrinkEvictsRealCaches(t *testing.T) {
 	inUse := int64(900)
 	now := time.Now()
 	c := newTestController(1000, &inUse, &now)
-	// Register at what the cache actually holds, so shrinking bites: the real
-	// server's full budget is a share of a container's memory, which on a test
-	// fixture is far more than these 200 entries occupy.
 	before := storage.metaCache.Bytes()
 	c.Register(metaCacheKind, before, storage.metaCache)
 	for i := 0; i < 12; i++ {
@@ -285,6 +279,7 @@ func TestMemController_ShrinkEvictsRealCaches(t *testing.T) {
 // cgroup number -- a ceiling nothing enforced, which reads as "GOMEMLIMIT is
 // not set" to anyone diagnosing an OOM from the metric.
 func TestMemoryBudgetIsTheEnforcedCeiling(t *testing.T) {
+	t.Serial() // the memory limit and memoryBudget are process state
 	prev := debug.SetMemoryLimit(-1)
 	t.Cleanup(func() { debug.SetMemoryLimit(prev) })
 

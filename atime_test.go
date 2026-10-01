@@ -70,11 +70,11 @@ func TestEvictionHonorsFilesystemAccessTime(t *testing.T) {
 	require.NoError(t, s.Put(hot, []byte("hot"), nil, nil))
 	require.NoError(t, s.Put(cold, []byte("cold"), nil, nil))
 
-	// Both written long ago; the hot one was READ an hour ago. The access time
-	// is set explicitly rather than by reading the file, so this asserts what
-	// eviction does with the timestamp on every filesystem -- a read-driven
-	// version would quietly skip wherever the mount does not advance atime, and
-	// a test that skips is a test that proves nothing.
+	// Both written long ago; the hot a single was READ an hour ago. The access
+	// time is set explicitly rather than by reading the file, so this asserts
+	// what eviction does with the timestamp on every filesystem -- a
+	// read-driven version would quietly skip wherever the mount does not
+	// advance atime, and a test that skips is a test that proves nothing.
 	now := time.Now()
 	old := now.Add(-48 * time.Hour)
 	require.NoError(t, os.Chtimes(s.keyToPath(hot), now.Add(-time.Hour), old))
@@ -92,8 +92,8 @@ func TestEvictionHonorsFilesystemAccessTime(t *testing.T) {
 
 // TestReadAdvancesAccessTime closes the loop the test above deliberately does
 // not depend on: that an ordinary GET is what moves the access time in the
-// first place. It asserts against this filesystem's real behavior, which the
-// startup probe reports -- so it checks the two agree instead of skipping.
+// earliest place. It asserts against this filesystem's real behavior, which
+// the startup probe reports -- so it checks both agree instead of skipping.
 func TestReadAdvancesAccessTime(t *testing.T) {
 	s := newEvictStorage(t)
 	key := gbciKey(3)

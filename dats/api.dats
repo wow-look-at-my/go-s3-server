@@ -3,8 +3,8 @@ $schema: https://github.com/wow-look-at-my/dats/schema.json
 shared:
 	files:
 		serve.sh: |
-			# Runs one check script against a server this starts and stops.
-			# usage: serve.sh <config.json> <port> <check.sh>
+			# Runs a single check script against a server this starts and
+			# stops. usage: serve.sh <config.json> <port> <check.sh>
 			set -euo pipefail
 			config="$1"
 			port="$2"
@@ -26,7 +26,7 @@ shared:
 			fi
 			# A failing check gets the server's log too. Without this a check
 			# that cannot reach a server which HAD answered reports only its own
-			# exit status, and the one process that knows why says nothing.
+			# exit status, and the a single process that knows why says nothing.
 			status=0
 			bash "$check" || status=$?
 			if [ "$status" -ne 0 ]; then
@@ -151,7 +151,7 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19016","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:19016","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","index_blob_interval":"0s","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
 				base=http://127.0.0.1:19016/test-cache
@@ -210,6 +210,25 @@ tests:
 		stdout:
 			- "status 200"
 			- "body ok"
+
+	- desc: the version probe answers before the auth gate with the build's own information
+	  exit: 0
+	  inputs:
+		files:
+			config.json: '{"listen":"127.0.0.1:19019","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			check.sh: |
+				set -euo pipefail
+				body="$(mktemp)"
+				code=$(curl -s -o "$body" -w '%{http_code}' http://127.0.0.1:19019/_version)
+				echo "status $code"
+				echo "keys $(jq -r 'keys | join(",")' "$body")"
+				echo "go $(jq -r '.go' "$body")"
+	  cmd: bash {shared.serve.sh} {inputs.config.json} 19019 {inputs.check.sh}
+	  outputs:
+		stdout:
+			- "status 200"
+			- "keys go,modified,revision,time,version"
+			- "go go1."
 
 	- desc: a wrong password, an unknown user and no credentials at all are each refused
 	  exit: 0

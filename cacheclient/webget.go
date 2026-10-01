@@ -53,8 +53,8 @@ func (b *WebBackend) getIndividual(actionID, key string, h actionHash) batchResp
 	}
 	rawSize, _ := strconv.ParseInt(resp.Header.Get("X-Cache-Meta-Body-Size"), 10, 64)
 
-	// The header states the length, so the body lands in one exactly-sized
-	// allocation instead of io.ReadAll's doubling.
+	// The header states the length, so the body lands in a single
+	// exactly-sized allocation instead of io.ReadAll's doubling.
 	var compressed []byte
 	if resp.ContentLength >= 0 {
 		compressed = make([]byte, resp.ContentLength)
@@ -104,6 +104,8 @@ func (b *WebBackend) getIndividual(actionID, key string, h actionHash) batchResp
 	}
 
 	b.Stats.Hits.Increment()
+	b.Stats.HitBytes.Add(uint64(len(compressed)))
+	b.noteHeld(h)
 	return batchResp{outputID: outputID, data: data, t: t}
 }
 
@@ -154,6 +156,6 @@ func (b *WebBackend) getBatch(actionID, key string, h actionHash) batchResp {
 // when the upload fails, so it can be retried on the next attempt.
 func (b *WebBackend) removeClaimed(h actionHash) {
 	b.keysMu.Lock()
-	b.keys.Remove(h)
+	b.dropKeyLocked(h)
 	b.keysMu.Unlock()
 }

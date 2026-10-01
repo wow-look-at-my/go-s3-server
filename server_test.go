@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -32,6 +34,19 @@ func TestHealthEndpointOK(t *testing.T) {
 	require.Equal(t, "ok\n", rec.Body.String())
 }
 
+func TestVersionEndpointAnswersWithoutCredentials(t *testing.T) {
+	s := newHealthTestServer()
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, versionPath, nil))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	var got buildVersion
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, runtime.Version(), got.Go, "the toolchain is known to every build, stamped or not")
+}
+
 func TestHealthEndpointReportsDraining(t *testing.T) {
 	s := newHealthTestServer()
 	s.BeginShutdown()
@@ -46,7 +61,6 @@ func TestHealthEndpointReportsDraining(t *testing.T) {
 func TestHealthEndpointBypassesAuthGate(t *testing.T) {
 	s := newHealthTestServer()
 
-	// A normal request without credentials is rejected with 403...
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/testbucket/some/key", nil))
 	require.Equal(t, http.StatusForbidden, rec.Code)
@@ -60,9 +74,7 @@ func TestHealthEndpointBypassesAuthGate(t *testing.T) {
 func TestHealthEndpointBypassesAdmissionControl(t *testing.T) {
 	cfg := &Config{Bucket: "testbucket", DisableAuth: true, MaxConcurrentRequests: 1}
 	s := NewServer(cfg, nil)
-	// Saturate the concurrency limiter: no slots remain free, so a normal request
-	// would be shed with 503 Overload. The probe is handled before admission
-	// control, so it must still succeed.
+	// The probe is handled before admission control, so it must still succeed.
 	s.sem <- struct{}{}
 
 	rec := httptest.NewRecorder()
@@ -70,9 +82,9 @@ func TestHealthEndpointBypassesAdmissionControl(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 
-// docker-updater discovers these two paths on its own, reads only the status
+// docker-updater discovers these paths on its own, reads only the status
 // code, and carries no credential. They sit alongside /_health so they clear
-// the same three gates: auth, admission control, and the access log.
+// the same gates: auth, admission control, and the access log.
 func TestWellKnownUpdateChecksAnswerUnauthenticated(t *testing.T) {
 	s := newHealthTestServer()
 

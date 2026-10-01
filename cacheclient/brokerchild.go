@@ -66,8 +66,9 @@ type reply struct {
 // dialBroker answers the cache this process should use when a live owner is
 // named in the environment. A name outlives the process that made it, so what
 // decides is the owner's reply, which also reports the directory it writes
-// into.
-func dialBroker() Cache {
+// into. An owner of another directory is refused: this process was asked for
+// dir, and a command that sets its own GOCACHE must get that cache.
+func dialBroker(dir string) Cache {
 	name := os.Getenv(brokerEnv)
 	if name == "" || os.Getenv(brokerOffEnv) != "" {
 		return nil
@@ -93,13 +94,12 @@ func dialBroker() Cache {
 		return nil
 	}
 	typ, rec, err := channel.Recv(ctx)
-	if err != nil || typ != stDir || len(rec) == 0 {
+	if err != nil || typ != stDir || len(rec) == 0 || filepath.Clean(string(rec)) != filepath.Clean(dir) {
 		stop()
 		channel.Close()
 		channel.Unlink()
 		return nil
 	}
-	dir := string(rec)
 	link := &brokerLink{
 		channel: channel,
 		waiting: make(map[uint64]chan reply),

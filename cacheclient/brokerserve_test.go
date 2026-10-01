@@ -35,7 +35,7 @@ func serveOwner(t *testing.T, dir string) (owner Cache, child Cache) {
 	t.Cleanup(StopBroker)
 	require.NotEmpty(t, os.Getenv(brokerEnv), "the owner must name its endpoint in the environment")
 
-	child = dialBroker()
+	child = dialBroker(dir)
 	require.NotNil(t, child, "a process that finds a live owner must become a child")
 	t.Cleanup(func() { child.Close() })
 	return disk, child
@@ -125,7 +125,21 @@ func TestBrokerSharesOneLookupAndOneStore(t *testing.T) {
 func TestBrokerDeadNameMakesTheNextProcessTheOwner(t *testing.T) {
 	t.Setenv(brokerOffEnv, "")
 	t.Setenv(brokerEnv, "gobuildcache-nobody-holds-this")
-	assert.Nil(t, dialBroker(), "a name nobody answers must not be dialed")
+	assert.Nil(t, dialBroker(t.TempDir()), "a name nobody answers must not be dialed")
+}
+
+// A process that sets its own GOCACHE under a build must get that cache. The
+// owner serves another directory, so the process opens its own.
+func TestBrokerOwnerOfAnotherDirectoryIsRefused(t *testing.T) {
+	serveOwner(t, t.TempDir())
+	assert.Nil(t, dialBroker(t.TempDir()), "a child must not write into a directory it did not ask for")
+
+	mine := t.TempDir()
+	cache, err := OpenCache(mine, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { cache.Close() })
+	_, isChild := cache.(*brokerCache)
+	assert.False(t, isChild, "OpenCache must open the directory it was given")
 }
 
 // The off switch is what a bisect of a broker-shaped problem wants: every

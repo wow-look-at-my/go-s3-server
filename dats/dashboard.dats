@@ -135,3 +135,50 @@ tests:
 	  outputs:
 		stdout:
 			- "dashboard-port 000"
+
+	- desc: the bandwidth endpoint reports the served bytes as module bands, a remainder, and a separate index series
+	  exit: 0
+	  inputs:
+		files:
+			config.json: '{"listen":"127.0.0.1:19033","dashboard_listen":"127.0.0.1:19133","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			check.sh: |
+				set -euo pipefail
+				base=http://127.0.0.1:19033/test-cache
+				auth=testuser:testpass
+				# Two modules' bodies. The objects carry no module metadata, so
+				# the attribution is the header the client sends about itself,
+				# which is the derivation the access log's projects already use.
+				curl -sf -u "$auth" -X PUT -H 'X-Cache-Module: example.com/one' --data-binary 'aaaa' "$base/plain/v1one0000000000001" > /dev/null
+				curl -sf -u "$auth" -H 'X-Cache-Module: example.com/one' "$base/plain/v1one0000000000001" > /dev/null
+				curl -sf -u "$auth" -X PUT -H 'X-Cache-Module: example.com/two' --data-binary 'bbbbbbbb' "$base/plain/v1two0000000000001" > /dev/null
+				curl -sf -u "$auth" -H 'X-Cache-Module: example.com/two' "$base/plain/v1two0000000000001" > /dev/null
+				# An index blob, pulled whole, is the series that belongs to no
+				# module: a whole fleet reads the same one.
+				curl -sf -u "$auth" -X PUT --data-binary 'x' "$base/go-buildcache/v1$(printf 'a%.0s' $(seq 64))" > /dev/null
+				curl -sf -u "$auth" "$base/_index" -o /dev/null
+				series="$(mktemp)"
+				curl -sf http://127.0.0.1:19133/api/bandwidth -o "$series"
+				# The window is fixed, so the chart's axis does not move.
+				grep -q '"bucket_seconds": 1' "$series" && echo "bucket-seconds 1" || echo "bucket-seconds other"
+				grep -q '"retention_seconds": 300' "$series" && echo "retention-seconds 300" || echo "retention-seconds other"
+				# One point per bucket, filled in whether or not it served anything.
+				echo "points $(grep -c '"t":' "$series" || true)"
+				grep -q '"(other)"' "$series" && echo "remainder band" || echo "remainder missing"
+				# Each module's band is exactly the body the GET sent it, so the
+				# index bytes were not folded into it.
+				one="$(sed -n 's/.*"example.com\/one": \([0-9][0-9]*\).*/\1/p' "$series" | sort -n | tail -1 || true)"
+				two="$(sed -n 's/.*"example.com\/two": \([0-9][0-9]*\).*/\1/p' "$series" | sort -n | tail -1 || true)"
+				echo "module-one ${one:-0} bytes"
+				echo "module-two ${two:-0} bytes"
+				index="$(sed -n 's/.*"index": \([0-9][0-9]*\).*/\1/p' "$series" | sort -n | tail -1 || true)"
+				test "${index:-0}" -gt 0 && echo "index-series bytes" || echo "index-series empty"
+	  cmd: bash {shared.serve.sh} {inputs.config.json} 19033 {inputs.check.sh}
+	  outputs:
+		stdout:
+			- "bucket-seconds 1"
+			- "retention-seconds 300"
+			- "points 300"
+			- "remainder band"
+			- "module-one 4 bytes"
+			- "module-two 8 bytes"
+			- "index-series bytes"

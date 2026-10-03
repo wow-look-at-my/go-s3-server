@@ -21,8 +21,8 @@ shared:
 					sleep 0.1
 				done
 				if [ -z "$ok" ]; then
-					echo "the server never answered on port $p" >&2
-					sed 's/^/server: /' "$log" >&2
+					echo "the server never answered on port $p"
+					while IFS= read -r line; do echo "server: $line"; done < "$log"
 					return 1
 				fi
 			}
@@ -37,14 +37,22 @@ shared:
 			# exit status, and the a single process that knows why says nothing.
 			status=0
 			bash "$check" || status=$?
+			# On stdout, because that is what a failing test reports back.
 			if [ "$status" -ne 0 ]; then
-				echo "the check exited $status" >&2
-				kill -0 "$server" 2>/dev/null || echo "the server had already exited" >&2
-				sed 's/^/server: /' "$log" >&2
+				echo "the check exited $status"
+				kill -0 "$server" 2>/dev/null || echo "the server had already exited"
+				while IFS= read -r line; do echo "server: $line"; done < "$log"
 			fi
 			exit "$status"
 
 tests:
+	- desc: the dashboard script parses as the module the page loads it as
+	  exit: 0
+	  cmd: bash -c 'f="$(mktemp --suffix=.mjs)"; cp dashboard.js "$f"; node --check "$f" && echo parses'
+	  outputs:
+		stdout:
+			- "parses"
+
 	- desc: the dashboard answers on its own port with no credentials, while the cache port still demands them
 	  exit: 0
 	  inputs:
@@ -54,11 +62,17 @@ tests:
 				set -euo pipefail
 				dash=http://127.0.0.1:19130
 				# The dashboard binds in its own goroutine, so the cache port
-				# answering does not mean this port is up yet.
+				# answering does not mean this port is up yet. Say so when it
+				# never opens, rather than ending the script with no output.
+				up=""
 				for _ in $(seq 1 100); do
-					curl -so /dev/null "$dash/_health" && break
+					if curl -so /dev/null "$dash/_health"; then up=yes; break; fi
 					sleep 0.1
 				done
+				if [ -z "$up" ]; then
+					echo "the dashboard never opened 19130"
+					exit 1
+				fi
 				echo "cache-anonymous $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:19030/test-cache/anon/v1test000000000001)"
 				echo "page $(curl -s -o /dev/null -w '%{http_code}' "$dash/")"
 				echo "css $(curl -s -o /dev/null -w '%{http_code}' "$dash/dashboard.css")"
@@ -91,16 +105,20 @@ tests:
 				curl -sf -u "$auth" -X PUT --data-binary 'dashboard body' "$base/plain/v1test000000000001" > /dev/null
 				curl -sf -u "$auth" "$base/plain/v1test000000000001" > /dev/null
 				stats="$(mktemp)"
-				curl -sf http://127.0.0.1:19131/api/stats -o "$stats"
+				code=$(curl -s -o "$stats" -w '%{http_code}' http://127.0.0.1:19131/api/stats)
+				if [ "$code" != "200" ]; then
+					echo "the stats endpoint answered $code"
+					exit 1
+				fi
 				grep -o '"bucket": "test-cache"' "$stats"
-				grep -o '"hit": 1' "$stats"
+				grep -A2 '"outcome": "hit"' "$stats" | grep -o '"value": 1'
 				grep -o '"s3_index_hashes"' "$stats"
 				echo "no-password $(grep -c testpass "$stats" || true)"
 	  cmd: bash {shared.serve.sh} {inputs.config.json} 19031 {inputs.check.sh}
 	  outputs:
 		stdout:
 			- '"bucket": "test-cache"'
-			- '"hit": 1'
+			- '"value": 1'
 			- '"s3_index_hashes"'
 			- "no-password 0"
 

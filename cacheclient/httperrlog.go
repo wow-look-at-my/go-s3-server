@@ -122,7 +122,7 @@ func (l *httpErrLogger) Record(op string, status int, id, body string) {
 //
 // It reports no prefetch count. These are the requests the build is blocked
 // on, and they ask for exactly the keys they need: the window rides the
-// look-ahead pool's own requests instead. Printing a count that is zero by
+// look-ahead pool's own requests instead. Printing a count that is empty by
 // construction read as a dead prefetch on every build.
 func (l *httpErrLogger) RecordBatchHTTP(keysRequested, entriesReturned int, dur time.Duration) {
 	if l == nil {
@@ -170,16 +170,16 @@ func (l *httpErrLogger) flush() {
 	l.groups = map[httpErrKey]*httpErrGroup{}
 	l.batchHTTP = map[batchHTTPKey]*batchHTTPGroup{}
 	l.mu.Unlock()
-	// A failure goes to the writer this logger captured, which is the one
+	// A failure goes to the writer this logger captured, which is the thing
 	// destination SetLogger cannot reach. A consumer that wants its build's
 	// output clean still has to hear that the cache stopped working.
 	for k, g := range groups {
 		fmt.Fprintln(l.w, formatGroup(k, g))
 	}
-	// A batch summary is not a failure. It says the cache is working, once per
-	// flush for the life of the process, so it goes through the Logger like
-	// every other routine line and the consumer decides whether to print it.
-	// On the writer it was unreachable by SetLogger, and a consumer whose
+	// A batch summary is not a failure. It says the cache is working, a single
+	// time per flush for the life of the process, so it goes through the Logger
+	// like every other routine line and the consumer decides whether to print
+	// it. On the writer it was unreachable by SetLogger, and a consumer whose
 	// output is DATA -- a go command somebody parses -- had no way to quiet it.
 	for k, g := range batchHTTP {
 		logging.Infof("%s", formatBatchHTTPGroup(k, g))

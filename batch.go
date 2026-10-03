@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // batchGetRequest is the JSON body for POST /_batch/get.
@@ -107,7 +109,7 @@ const maxPrefetchEntries = 200
 // carries only the requested keys, and a prefetch_only request gets an empty
 // manifest.
 //
-// The tar layout is:
+// The tar layout is.
 //
 //	manifest.json                    — index of all entries with metadata
 //	data/<key>                       — raw file content for each entry
@@ -138,6 +140,10 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 	// off, a prefetch_only request wants nothing but the window, so it carries
 	// none; every other request carries exactly what it asked for.
 	lookup := req.Keys
+	// A prefetch_only request asks for no key. Its keys are look-ahead anchors,
+	// which the client has already hit, so they count as anchors and never
+	// as requested or missed.
+	anchorsOnly := req.PrefetchOnly
 	if !prefetchEnabled {
 		if req.PrefetchOnly {
 			lookup = nil
@@ -148,11 +154,11 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 	// Stat is cheap (os.Stat + xattrs); the bodies are streamed later, a single
 	// at a time, so the whole batch never sits in memory.
 	var entries []batchEntry
-	requestedSet := make(map[string]bool, len(lookup))
+	requestedSet := set.New[string](len(lookup))
 	var minMod, maxMod time.Time
 
 	for _, key := range lookup {
-		requestedSet[key] = true
+		requestedSet.Add(key)
 		meta, err := storage.Stat(key)
 		if err != nil {
 			if !errors.Is(err, ErrNotFound) {
@@ -268,6 +274,19 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 			// single as a cache miss, so omitting it is safe.
 			continue
 		}
+		// Same check the single-object GET makes: the digest recorded with the
+		// body decides whether these bytes are the ones that were stored.
+		if ok, verifyErr := verifyStoredDigest(f, e.meta.Metadata); verifyErr != nil || !ok {
+			f.Close()
+			if verifyErr == nil {
+				storedDigestMismatchTotal.WithLabelValues("batch_get").Inc()
+				log.Printf("stored digest: %q no longer hashes to the digest stored with it; evicting", e.key)
+				if delErr := storage.Delete(e.key); delErr != nil && !errors.Is(delErr, ErrNotFound) {
+					log.Printf("stored digest: evicting %q: %v", e.key, delErr)
+				}
+			}
+			continue
+		}
 		err = writeTarEntry(tw, "data/"+e.key, size, f)
 		f.Close()
 		if err != nil {
@@ -283,16 +302,26 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 		recordObject(agg, prov, e.meta.Metadata, size, false, true)
 	}
 
+	requested, anchors := len(req.Keys), 0
+	if anchorsOnly {
+		requested, anchors = 0, len(req.Keys)
+	}
+	found := len(entries) - nPrefetch
 	batchRequestsTotal.Inc()
-	batchKeysTotal.WithLabelValues("requested").Add(float64(len(req.Keys)))
-	batchKeysTotal.WithLabelValues("found").Add(float64(len(entries) - nPrefetch))
+	batchKeysTotal.WithLabelValues("requested").Add(float64(requested))
+	batchKeysTotal.WithLabelValues("found").Add(float64(found))
+	batchKeysTotal.WithLabelValues("anchors").Add(float64(anchors))
 	batchKeysTotal.WithLabelValues("prefetched").Add(float64(nPrefetch))
 	batchKeysTotal.WithLabelValues("client_held").Add(float64(nHeld))
 	batchKeysTotal.WithLabelValues("streamed").Add(float64(streamed))
+	// A key this batch asked for that no entry answers is a miss for the
+	// project that asked. Prefetched entries answer nothing that was asked
+	// for, so they are excluded from the found count here as they are above.
+	noteProjectMiss(prov, requested-found)
 	// Attached to this request's own log line rather than printed as another
 	// line about the same request.
-	auditFromContext(r.Context()).note("batch_get requested=%d found=%d prefetched=%d client_held=%d streamed=%d",
-		len(req.Keys), len(entries)-nPrefetch, nPrefetch, nHeld, streamed)
+	auditFromContext(r.Context()).note("batch_get requested=%d found=%d anchors=%d prefetched=%d client_held=%d streamed=%d",
+		requested, found, anchors, nPrefetch, nHeld, streamed)
 }
 
 // handleBatchPut handles PUT /_batch/put. This endpoint accepts a tar of many

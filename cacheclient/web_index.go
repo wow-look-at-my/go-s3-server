@@ -17,10 +17,8 @@ import (
 	"time"
 )
 
-// Bounded by SILENCE, never by total duration. The index is tens of megabytes
-// and a remote runner streams it at a few hundred kilobytes a second, so any
-// wall-clock ceiling kills a healthy transfer for being big. Exhaustion falls
-// back to a non-authoritative key set; batch-probing stays on.
+// Bounded by SILENCE, never by total duration. Exhaustion falls back to a
+// non-authoritative key set; batch-probing stays on.
 var (
 	indexHeaderBudget = 10 * time.Second
 	indexStallTimeout = 10 * time.Second
@@ -38,21 +36,15 @@ const hashSize = 32
 // gbciHashSize is the size the wire header states. It must equal hashSize.
 const gbciHashSize = hashSize
 
-// actionHash is an action ID in the form the client indexes by: the raw 32
-// bytes, not the 64 hex characters behind a prefix that the wire uses. It is a
-// comparable array, so a set of them is one flat allocation rather than one
-// string per entry.
+// It is a comparable array, so a set of them is a single flat allocation
+// rather than a single string per entry.
 type actionHash = [hashSize]byte
 
 // parseActionHash decodes a hex action ID into the bytes the client indexes
-// by. A cmd/go action ID is always 32 bytes, so it fills the array exactly.
+// by.
 //
-// A shorter hex id lands left-aligned and zero-extended rather than being
-// refused. Such an id cannot come from the wire -- the index format is 32
-// bytes per entry, and every key the server names is 64 hex characters -- so
-// it is always a consumer's own synthetic id, and it only ever has to match
-// itself. Refusing it would break that consumer for a strictness the format
-// already enforces everywhere it matters.
+// Refusing it would break that consumer for a strictness the format already
+// enforces everywhere it matters.
 //
 // Anything that is not even-length hex, or is longer than an action ID, is not
 // an id at all, and no round trip is owed to it.
@@ -103,8 +95,8 @@ func (b *WebBackend) indexCachePath() string {
 // above, and those are what a hung server trips; ctx is cancelled only when
 // the backend closes.
 //
-// Each outcome logs once here. The consumer's stderr carries only the Warnf
-// lines unless it asks for the routine ones.
+// Each outcome logs a single time here. The consumer's stderr carries only
+// the Warnf lines unless it asks for the routine ones.
 func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex) (*hashSet, bool) {
 	diskBlob, diskKeys, diskETag := disk.blob, disk.keys, disk.etag
 
@@ -160,7 +152,7 @@ func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex
 	return keys, true
 }
 
-// diskIndex is the index's disk copy as one read found it.
+// diskIndex is the index's disk copy as a single read found it.
 type diskIndex struct {
 	blob []byte   // the raw copy; nil when missing or invalid
 	keys *hashSet // its parsed keys; empty when blob is nil
@@ -169,8 +161,8 @@ type diskIndex struct {
 	// and gain claims after that, so a report on the copy uses this instead.
 	count int
 	// mtime is when the copy was written or last confirmed current, and the
-	// zero time when there is no file at all. A change in it is how another
-	// process's refresh shows up here.
+	// empty time when there is no file at all. A change in it is how
+	// another process's refresh shows up here.
 	mtime time.Time
 }
 
@@ -204,11 +196,10 @@ func (b *WebBackend) readDiskIndex(path string) diskIndex {
 // with at most indexFetchRetries retries (further capped by the configured
 // retry policy). Returns:
 //
-//	body, http.StatusOK, nil          for a served blob
-//	nil,  http.StatusNotModified, nil for a validated disk copy
-//	nil,  <statusCode>, err           for a bad HTTP status (status preserved
-//	                                  so the caller can classify it)
-//	nil,  no status, err              for any transport failure
+//	body, http.StatusOK, nil for a served blob nil, http.StatusNotModified,
+//	nil for a validated disk copy nil, <statusCode>, err for a bad HTTP
+//	status (status preserved so the caller can classify it) nil, no status,
+//	err for any transport failure
 func (b *WebBackend) fetchIndexBlob(ctx context.Context, ifNoneMatch string) ([]byte, int, error) {
 	// Watchdog re-arms per body read: bytes keep it alive, silence fires it and cancels the request.
 	ctx, cancel := context.WithCancel(ctx)
@@ -279,8 +270,8 @@ func (s *stallGuardedReader) Read(p []byte) (int, error) {
 
 // writeIndexBlob persists a GBCI v1 blob via a temp file private to this
 // writer and an atomic rename, so processes sharing the directory never
-// interleave into one file. Best-effort: a stale on-disk cache only forces a
-// fresh GET next time.
+// interleave into a single file. Best-effort: a stale on-disk cache only
+// forces a fresh GET next time.
 func (b *WebBackend) writeIndexBlob(path string, blob []byte) {
 	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp*")
 	if err != nil {

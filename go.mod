@@ -33,6 +33,9 @@ require (
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
+	github.com/wow-look-at-my/go-ipc v0.0.0 // indirect
+	github.com/wow-look-at-my/go-mmap v0.0.0 // indirect
+	github.com/wow-look-at-my/go-shm v0.0.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	google.golang.org/protobuf v1.36.8 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

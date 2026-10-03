@@ -14,8 +14,8 @@ const versionPath = "/_version"
 // buildVersion is what /_version reports. Every field comes from the binary's
 // own build information, so a deploy cannot claim a version it is not.
 type buildVersion struct {
-	Version  string `json:"version"`  // the main module's version, or (devel)
-	Revision string `json:"revision"` // the VCS commit the build came from
+	Version  string `json:"version"` // the main module's version, or (devel)
+	Revision string `json:"revision"`
 	Time     string `json:"time"`
 	Modified bool   `json:"modified"` // the tree had uncommitted changes
 	Go       string `json:"go"`       // the Go toolchain that built it

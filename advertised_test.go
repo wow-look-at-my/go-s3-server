@@ -10,6 +10,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // getOutcome reads the s3_get_requests_total counter for a single outcome label.
@@ -176,6 +177,6 @@ func TestIndexRemoveKeys(t *testing.T) {
 	require.True(t, bytes.Contains(blob, hashB[:]))
 
 	// The mtime entries are gone too: nothing nearby except B.
-	keys := idx.NearbyKeys(0, 1<<62, 100, nil, nil)
+	keys := idx.NearbyKeys(0, 1<<62, 100, set.Set[string]{}, nil)
 	require.Equal(t, []string{keyB}, keys)
 }

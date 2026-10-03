@@ -37,8 +37,11 @@
 			<scratch-badge variant="off"><scratch-led id="state-led" state="accent" live></scratch-led><span id="state-text">connecting</span></scratch-badge>
 			<span id="uptime" class="muted"></span>
 			<scratch-toggle id="autorefresh" checked>live</scratch-toggle>
+			<scratch-button id="copy-json" aria-label="copy the /api/stats snapshot on screen as JSON">copy json</scratch-button>
 		</div>
 	</header>
+
+	<div id="poll-error" class="poll-error" role="alert" hidden></div>
 
 	<main>
 		<section class="row" id="tiles"></section>
@@ -70,6 +73,17 @@
 					<p class="muted" id="rate-label">waiting for a second sample</p>
 				</div>
 			</div>
+		</section>
+
+		<section class="panel projects">
+			<h2>BY PROJECT</h2>
+			<p class="muted note">Whose builds the cache is serving, and whose are missing. A project the cache
+				cannot serve shows as a tall miss band while its hit band stays flat.</p>
+			<h3>objects per second, stacked by project</h3>
+			<perf-graph id="project-chart" label="objects" unit="/s" min="0" height="120"></perf-graph>
+			<p class="muted" id="project-label">waiting for a second sample</p>
+			<h3>hit rate</h3>
+			<div class="scroll"><table id="project-hit-rates"><tbody></tbody></table></div>
 		</section>
 
 		<section class="panel tripwires">

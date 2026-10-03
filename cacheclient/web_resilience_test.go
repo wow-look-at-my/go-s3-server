@@ -203,7 +203,7 @@ func TestBatchGetRequest_JSONShape(t *testing.T) {
 // batch get is tens of megabytes and the key index is larger, and at the
 // bandwidth a remote CI runner gets, those died mid-body every time. Liveness
 // belongs to the transport's ResponseHeaderTimeout, which bounds a server that
-// never answers without bounding one that answers slowly.
+// never answers without bounding a single that answers slowly.
 func TestWebBackend_NoAbsoluteRequestDeadline(t *testing.T) {
 	b, err := NewWebBackend(WebConfig{
 		Bucket: "testbucket", Endpoint: "http://127.0.0.1:1",
@@ -222,8 +222,8 @@ func TestWebBackend_NoAbsoluteRequestDeadline(t *testing.T) {
 }
 
 // The bound is on SILENCE, not on duration: a body that keeps delivering bytes
-// must complete however long it runs. This one runs well past the window in
-// total while never pausing longer than it.
+// must complete however long it runs. this runs well past the window in total
+// while never pausing longer than it.
 func TestWebBackend_SlowButProgressingBodyCompletes(t *testing.T) {
 	t.Serial() // stallTimeout is package state
 	old := stallTimeout
@@ -288,12 +288,7 @@ func TestWebBackend_StalledBodyIsAbandoned(t *testing.T) {
 }
 
 // TestWebBackend_ShedQuietsTheWholeBackend is the regression for retries
-// amplifying an overload. Every operation used to retry a shed on its own
-// schedule, so N concurrent operations sent up to N*(1+maxRetries) requests to
-// a server that had just said it was full. One shed's Retry-After now quiets
-// every operation on the backend: those that arrive inside the quiet period
-// wait it out without sending, and each still ends with the 503 it would have
-// got, so callers account for it as a shed.
+// amplifying an overload.
 func TestWebBackend_ShedQuietsTheWholeBackend(t *testing.T) {
 	const ops = 20
 
@@ -341,7 +336,7 @@ func TestWebBackend_ShedQuietsTheWholeBackend(t *testing.T) {
 		results <- result{status, err}
 	}
 
-	// The first shed starts the quiet period.
+	// The earliest shed starts the quiet period.
 	go run()
 	require.Eventually(t, func() bool { return b.shedRemaining() > 0 }, 5*time.Second, time.Millisecond)
 
@@ -360,8 +355,8 @@ func TestWebBackend_ShedQuietsTheWholeBackend(t *testing.T) {
 		ops+1, requests.Load(), perOpBudget)
 	require.Positive(t, b.ShedWaits.Load(), "attempts inside the quiet period are held back, unsent")
 
-	// The quiet period is a pause, never a disable: once it passes and the
-	// server recovers, the next operation is sent and served.
+	// The quiet period is a pause, never a disable: a single time it
+	// passes and the server recovers, the next operation is sent and served.
 	overloaded.Store(false)
 	require.Eventually(t, func() bool { return b.shedRemaining() <= 0 }, 5*time.Second, 10*time.Millisecond)
 	before := requests.Load()

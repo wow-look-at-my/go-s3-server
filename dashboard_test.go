@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 	"time"
 
@@ -52,6 +54,7 @@ func TestDashboardServesPageAndAssets(t *testing.T) {
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		require.Equal(t, http.StatusOK, rec.Code, path)
 		assert.Equal(t, want, rec.Header().Get("Content-Type"), path)
+		assert.Equal(t, "no-cache", rec.Header().Get("Cache-Control"), "%s: a cached page with a newer script breaks the page", path)
 		assert.NotEmpty(t, rec.Body.Bytes(), path)
 	}
 
@@ -74,16 +77,56 @@ func TestDashboardLoadsItsScriptAsAModule(t *testing.T) {
 }
 
 // The graphs come from the org library at runtime, never vendored, so an
-// upstream fix reaches this page with no change here. sites.pazer.build is the
-// canonical origin; the github.io a single is dead and fails CORS with no status.
+// upstream fix reaches this page with no change here.
 func TestDashboardImportsTheGraphFromTheLibrarySite(t *testing.T) {
+	page, err := dashboardAssets.ReadFile("dashboard.html")
+	require.NoError(t, err)
 	script, err := dashboardAssets.ReadFile("dashboard.js")
 	require.NoError(t, err)
-	assert.Contains(t, string(script), `import "https://sites.pazer.build/js-snippets/branch/library/ui/perf-graph.js"`)
-	assert.NotContains(t, string(script), "wow-look-at-my.github.io")
+	assert.Contains(t, string(page), `<script type="module" src="https://sites.pazer.build/js-snippets/@library/ui/perf-graph.js">`)
+	for name, body := range map[string][]byte{"dashboard.html": page, "dashboard.js": script} {
+		assert.NotContains(t, string(body), "sites.pazer.build/js-snippets/branch/", name)
+		assert.NotContains(t, string(body), "wow-look-at-my.github.io", name)
+	}
 }
 
-// The stats endpoint must answer with no credentials: the dashboard port is
+// Every element the script looks up by id must be in the page. A missing a
+// single throws inside draw(), and every poll after it fails.
+func TestDashboardScriptIDsExistInThePage(t *testing.T) {
+	page, err := dashboardAssets.ReadFile("dashboard.html")
+	require.NoError(t, err)
+	script, err := dashboardAssets.ReadFile("dashboard.js")
+	require.NoError(t, err)
+	ids := regexp.MustCompile(`\$\("([a-z0-9-]+)"\)`).FindAllStringSubmatch(string(script), -1)
+	require.NotEmpty(t, ids)
+	for _, m := range ids {
+		assert.Contains(t, string(page), `id="`+m[1]+`"`, "dashboard.js looks up #%s, which dashboard.html does not have", m[1])
+	}
+}
+
+// A failed poll must show in the red banner, not only in the muted footer.
+func TestDashboardShowsPollErrorsInABanner(t *testing.T) {
+	page, err := dashboardAssets.ReadFile("dashboard.html")
+	require.NoError(t, err)
+	script, err := dashboardAssets.ReadFile("dashboard.js")
+	require.NoError(t, err)
+	assert.Contains(t, string(page), `<div id="poll-error" class="poll-error" role="alert" hidden></div>`)
+	assert.Contains(t, string(script), `banner.hidden = false;`)
+	assert.Contains(t, string(script), `$("poll-error").hidden = true;`)
+}
+
+// its handler must both exist, and the poll must keep the raw text.
+func TestDashboardHasCopyJSONButton(t *testing.T) {
+	page, err := dashboardAssets.ReadFile("dashboard.html")
+	require.NoError(t, err)
+	script, err := dashboardAssets.ReadFile("dashboard.js")
+	require.NoError(t, err)
+	assert.Contains(t, string(page), `<scratch-button id="copy-json"`)
+	assert.Contains(t, string(script), `$("copy-json").addEventListener("click"`)
+	assert.Contains(t, string(script), `state.raw = raw;`)
+	assert.Contains(t, string(script), `await writeClipboard(state.raw);`)
+}
+
 // published through an access proxy, which is where identity is checked.
 func TestDashboardStatsNeedNoCredentials(t *testing.T) {
 	reg := prometheus.NewRegistry()
@@ -104,8 +147,48 @@ func TestDashboardStatsNeedNoCredentials(t *testing.T) {
 	assert.Equal(t, "test-cache", got.Server.Bucket)
 	assert.Greater(t, got.UptimeSeconds, 60.0)
 	assert.InDelta(t, 4096, *got.Metrics["s3_cache_bytes"].Value, 0)
-	assert.InDelta(t, 7, got.Metrics["s3_get_requests_total"].Series["hit"], 0)
-	assert.InDelta(t, 3, got.Metrics["s3_get_requests_total"].Series["miss_not_found"], 0)
+	outcomes := got.Metrics["s3_get_requests_total"].Series
+	assert.InDelta(t, 7, seriesValue(t, outcomes, map[string]string{"outcome": "hit"}), 0)
+	assert.InDelta(t, 3, seriesValue(t, outcomes, map[string]string{"outcome": "miss_not_found"}), 0)
+}
+
+// seriesValue returns the value of the single series whose labels are exactly want.
+func seriesValue(t *testing.T, series []seriesPoint, want map[string]string) float64 {
+	t.Helper()
+	for _, p := range series {
+		if maps.Equal(p.Labels, want) {
+			return p.Value
+		}
+	}
+	require.Failf(t, "no series with these labels", "want %v in %v", want, series)
+	return 0
+}
+
+// A labelled counter reaches the page as a list of series, each carrying its
+// labels as an object. The page reads a label by name and never parses a key.
+func TestDashboardStatsCarryThePerProjectSeries(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	objects := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "s3_project_objects_total"}, []string{"project", "kind"})
+	reg.MustRegister(objects)
+	objects.WithLabelValues("github.com/wow-look-at-my/go-toolchain", objKindHit).Add(9)
+	objects.WithLabelValues("github.com/wow-look-at-my/go-toolchain", objKindMiss).Add(1)
+	objects.WithLabelValues("github.com/wow-look-at-my/js-snippets", objKindPut).Add(4)
+
+	d := testDashboard(t, reg)
+	stats, err := d.snapshot()
+	require.NoError(t, err)
+
+	got := stats.Metrics["s3_project_objects_total"].Series
+	require.NotNil(t, got, "the per-project counter reaches the snapshot as a series")
+	assert.InDelta(t, 9, seriesValue(t, got, map[string]string{"kind": "hit", "project": "github.com/wow-look-at-my/go-toolchain"}), 0)
+	assert.InDelta(t, 1, seriesValue(t, got, map[string]string{"kind": "miss", "project": "github.com/wow-look-at-my/go-toolchain"}), 0)
+	assert.InDelta(t, 4, seriesValue(t, got, map[string]string{"kind": "put", "project": "github.com/wow-look-at-my/js-snippets"}), 0)
+
+	// The wire shape itself: labels are an object, never a "k=v,k=v" key.
+	body, err := json.Marshal(stats.Metrics["s3_project_objects_total"])
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `{"labels":{"kind":"hit","project":"github.com/wow-look-at-my/go-toolchain"},"value":9}`)
+	assert.NotContains(t, string(body), "kind=")
 }
 
 // The snapshot is built for a browser, so it must not carry a credential from
@@ -151,5 +234,5 @@ func TestGatherFlattensHistogramsAndMultiLabelSeries(t *testing.T) {
 	require.NoError(t, err)
 	assert.InDelta(t, 2, *got["cache_op_seconds_count"].Value, 0)
 	assert.InDelta(t, 1.0, *got["cache_op_seconds_sum"].Value, 0.001)
-	assert.InDelta(t, 1, got["cache_http_requests_total"].Series["method=GET,route=GetObject,status=200"], 0)
+	assert.InDelta(t, 1, seriesValue(t, got["cache_http_requests_total"].Series, map[string]string{"method": "GET", "route": "GetObject", "status": "200"}), 0)
 }

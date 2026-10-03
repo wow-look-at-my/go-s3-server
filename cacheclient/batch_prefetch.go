@@ -37,16 +37,16 @@ func (b *WebBackend) heldFilter() *haveFilter {
 // hands its windows to, which is the consumer's local tier. What arrives there
 // is a body the build has not asked for yet and may well ask for next.
 //
-// Two things keep that from charging the critical path. The hand-off runs on
-// its own goroutine, after every caller in the batch has its answer, so no
-// build goroutine waits on a decompress for a body it did not want. And the
-// bytes held between reading an entry and handing it over are bounded by
+// Things keep that from charging the critical path. The hand-off runs on its
+// own goroutine, after every caller in the batch has its answer, so no build
+// goroutine waits on a decompress for a body it did not want. And the bytes
+// held between reading an entry and handing it over are bounded by
 // prefetchBudget, because a response's window is whatever the server chose to
 // send and a count of entries is not a size.
 
 // prefetchBudget bounds the bytes of unrequested bodies a backend holds at
-// once. A limit of zero or less is unbounded, which is what a directly
-// constructed backend, asking for no bound, gets.
+// the same time. A limit of empty or less is unbounded, which is what a
+// directly constructed backend, asking for no bound, gets.
 type prefetchBudget struct {
 	held  atomic.Int64
 	limit int64
@@ -73,8 +73,8 @@ func (p *prefetchBudget) release(n int64) {
 	p.held.Add(-n)
 }
 
-// prefetchSink holds the unrequested entries of ONE batch response until the
-// batch has answered everybody it owes.
+// prefetchSink holds the unrequested entries of a single batch response
+// until the batch has answered everybody it owes.
 type prefetchSink struct {
 	b       *WebBackend
 	entries []BatchEntry
@@ -115,8 +115,8 @@ func (s *prefetchSink) deliver() {
 }
 
 // storePrefetched puts each entry through the gates a requested body passes
-// and hands the survivors over in chunks. A body that fails one is dropped
-// here, so nothing the consumer stores is unverified.
+// and hands the survivors over in chunks. A body that fails a single is
+// dropped here, so nothing the consumer stores is unverified.
 //
 // The chunking is the look-ahead pool's, for the same reason: the consumer
 // sees a bounded slice rather than whatever the server chose to send.

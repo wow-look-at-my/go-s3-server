@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 func nearbyIndex(n int) *Index {
@@ -31,7 +32,7 @@ func nearbyKeyNum(t *testing.T, key string) int {
 // closest in time to the ones the build just asked for.
 func TestNearbyKeysReturnsNearestFirst(t *testing.T) {
 	idx := nearbyIndex(100)
-	got := idx.NearbyKeys(20, 40, 5, nil, nil)
+	got := idx.NearbyKeys(20, 40, 5, set.Set[string]{}, nil)
 	require.Len(t, got, 5)
 
 	nums := make([]int, len(got))
@@ -59,7 +60,7 @@ func abs(n int) int {
 // Nothing outside the window is ever offered, whatever the limit asks for.
 func TestNearbyKeysStaysInsideTheWindow(t *testing.T) {
 	idx := nearbyIndex(100)
-	got := idx.NearbyKeys(40, 44, 50, nil, nil)
+	got := idx.NearbyKeys(40, 44, 50, set.Set[string]{}, nil)
 	require.Len(t, got, 5, "the window holds exactly five entries")
 	for _, k := range got {
 		n := nearbyKeyNum(t, k)
@@ -67,15 +68,15 @@ func TestNearbyKeysStaysInsideTheWindow(t *testing.T) {
 		require.LessOrEqual(t, n, 44)
 	}
 
-	require.Empty(t, idx.NearbyKeys(1000, 2000, 10, nil, nil), "an empty window offers nothing")
-	require.Empty(t, idx.NearbyKeys(0, 10, 0, nil, nil), "a zero limit asks for nothing")
+	require.Empty(t, idx.NearbyKeys(1000, 2000, 10, set.Set[string]{}, nil), "an empty window offers nothing")
+	require.Empty(t, idx.NearbyKeys(0, 10, 0, set.Set[string]{}, nil), "a zero limit asks for nothing")
 }
 
 // The requested keys are the anchor, not a candidate: a key the caller named
 // is never offered back to it as a neighbour.
 func TestNearbyKeysExcludesTheRequestedKeys(t *testing.T) {
 	idx := nearbyIndex(100)
-	exclude := map[string]bool{footprintKey(30): true, footprintKey(31): true}
+	exclude := set.Of(footprintKey(30), footprintKey(31))
 	got := idx.NearbyKeys(20, 40, 4, exclude, nil)
 	require.Len(t, got, 4)
 	for _, k := range got {
@@ -90,15 +91,15 @@ func TestNearbyKeysExcludesTheRequestedKeys(t *testing.T) {
 // that already holds the nearest keys is still handed new ones.
 func TestNearbyKeysWalksPastSkippedKeys(t *testing.T) {
 	idx := nearbyIndex(100)
-	held := map[int]bool{29: true, 30: true, 31: true}
+	held := set.Of[int](29, 30, 31)
 	var examined int
-	got := idx.NearbyKeys(0, 60, 3, nil, func(key string) bool {
+	got := idx.NearbyKeys(0, 60, 3, set.Set[string]{}, func(key string) bool {
 		examined++
-		return held[nearbyKeyNum(t, key)]
+		return held.Contains(nearbyKeyNum(t, key))
 	})
 	require.Len(t, got, 3)
 	for _, k := range got {
-		require.False(t, held[nearbyKeyNum(t, k)], "a skipped key must not be offered")
+		require.False(t, held.Contains(nearbyKeyNum(t, k)), "a skipped key must not be offered")
 	}
 	require.Equal(t, 6, examined, "the three held keys plus the three offered")
 }
@@ -106,7 +107,7 @@ func TestNearbyKeysWalksPastSkippedKeys(t *testing.T) {
 func TestNearbyKeysStopsAtTheScanBudget(t *testing.T) {
 	idx := nearbyIndex(10000)
 	var examined int
-	got := idx.NearbyKeys(0, 10000, 10, nil, func(string) bool {
+	got := idx.NearbyKeys(0, 10000, 10, set.Set[string]{}, func(string) bool {
 		examined++
 		return true // the client holds everything
 	})
@@ -123,7 +124,7 @@ func TestNearbyKeysAllocatesOnlyItsResult(t *testing.T) {
 	idx := nearbyIndex(keys)
 	var got []string
 	allocs := testing.AllocsPerRun(3, func() {
-		got = idx.NearbyKeys(0, int64(keys), limit, nil, nil)
+		got = idx.NearbyKeys(0, int64(keys), limit, set.Set[string]{}, nil)
 	})
 	require.Len(t, got, limit)
 	// A single slice for the result plus a single string per key returned.
@@ -141,7 +142,7 @@ func BenchmarkNearbyKeysWideWindow(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {
-				idx.NearbyKeys(0, int64(keys), maxPrefetchEntries, nil, nil)
+				idx.NearbyKeys(0, int64(keys), maxPrefetchEntries, set.Set[string]{}, nil)
 			}
 		})
 	}

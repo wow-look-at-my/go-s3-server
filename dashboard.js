@@ -2,15 +2,15 @@
 // on the server: a rate is the difference between samples this page took, so
 // a reload starts the rate over and nothing else.
 
-// Registers <perf-graph>. The library site serves it with CORS for any origin.
-import "https://sites.pazer.build/js-snippets/branch/library/ui/perf-graph.js";
-
 const POLL_MS = 1000;
 
 const state = {
 	previous: null, // the last snapshot, for rates
 	peak: 0, // the highest rate this page has seen
 	timer: null,
+	projects: null, // the last per-project totals, for per-project rates
+	projectNames: null,
+	raw: null, // the body of the snapshot on screen, verbatim, for "copy json"
 };
 
 const $ = (id) => document.getElementById(id);
@@ -23,12 +23,23 @@ function value(stats, name) {
 	const m = stats.metrics[name];
 	if (!m) return 0;
 	if (typeof m.value === "number") return m.value;
-	return sum(m.series);
+	return points(stats, name).reduce((a, p) => a + p.value, 0);
 }
 
-function series(stats, name) {
+// A labeled metric is a list of {labels, value}.
+function points(stats, name) {
 	const m = stats.metrics[name];
-	return m && m.series ? m.series : {};
+	return m && m.series ? m.series : [];
+}
+
+// byLabel totals a labeled metric by the value of a single label.
+function byLabel(stats, name, label) {
+	const out = {};
+	for (const p of points(stats, name)) {
+		const k = p.labels[label];
+		out[k] = (out[k] || 0) + p.value;
+	}
+	return out;
 }
 
 function sum(obj) {
@@ -149,13 +160,13 @@ function setState(text, led) {
 // client goes; a single-object GET is an older client, and it counts only when
 // there is no batch traffic to report.
 function hitRateTile(stats) {
-	const kinds = series(stats, "s3_batch_keys_total");
+	const kinds = byLabel(stats, "s3_batch_keys_total", "kind");
 	const requested = kinds.requested || 0;
 	if (requested) {
 		const found = kinds.found || 0;
 		return tile("hit rate", percent(found, requested), `${count(found)} of ${count(requested)} keys asked for in batches`);
 	}
-	const outcomes = series(stats, "s3_get_requests_total");
+	const outcomes = byLabel(stats, "s3_get_requests_total", "outcome");
 	const reads = sum(outcomes);
 	const hits = outcomes.hit || 0;
 	return tile("hit rate", reads ? percent(hits, reads) : "--", `${count(hits)} of ${count(reads)} single GETs`);
@@ -176,13 +187,13 @@ function drawTiles(stats) {
 		cacheSizeTile(cacheBytes, budget, indexed),
 		tile("keys advertised", count(indexed), "action hashes in /_index"),
 		tile("slots in use", `${count(admitted)} / ${count(limit)}`, `${count(inFlight)} in flight; ${shed}`, rejected ? "warn" : ""),
-		tile("batch requests", count(value(stats, "s3_batch_requests_total")), `${count(series(stats, "s3_batch_keys_total").streamed || 0)} bodies streamed`),
+		tile("batch requests", count(value(stats, "s3_batch_requests_total")), `${count(byLabel(stats, "s3_batch_keys_total", "kind").streamed || 0)} bodies streamed`),
 		tile("evicted", count(value(stats, "s3_evictions_total")), `${bytes(value(stats, "s3_evicted_bytes_total"))} reclaimed`),
 	]);
 }
 
 function drawReads(stats) {
-	const outcomes = series(stats, "s3_get_requests_total");
+	const outcomes = byLabel(stats, "s3_get_requests_total", "outcome");
 	const total = sum(outcomes) || 1;
 	const tone = (k) => (k === "hit" ? "good" : k === "miss_not_found" ? "" : "bad");
 	fill(
@@ -193,23 +204,19 @@ function drawReads(stats) {
 	);
 	$("single-gets").hidden = !Object.keys(outcomes).length;
 
-	const kinds = series(stats, "s3_batch_keys_total");
+	const kinds = byLabel(stats, "s3_batch_keys_total", "kind");
 	const requested = kinds.requested || 0;
 	const scale = Math.max(requested, ...Object.values(kinds), 1);
 	fill(
 		$("batch-kinds"),
-		["requested", "found", "prefetched", "client_held", "streamed"].map((k) =>
+		["requested", "found", "anchors", "prefetched", "client_held", "streamed"].map((k) =>
 			bar(k, kinds[k] || 0, scale, k === "found" ? "good" : "", k === "found" && requested ? `${count(kinds[k] || 0)}  ${percent(kinds[k] || 0, requested)}` : undefined),
 		),
 	);
 }
 
 function drawTraffic(stats) {
-	const byRoute = {};
-	for (const [key, v] of Object.entries(series(stats, "cache_http_requests_total"))) {
-		const route = (key.split(",").find((p) => p.startsWith("route=")) || "route=?").slice(6);
-		byRoute[route] = (byRoute[route] || 0) + v;
-	}
+	const byRoute = byLabel(stats, "cache_http_requests_total", "route");
 	const entries = Object.entries(byRoute).sort((a, b) => b[1] - a[1]);
 	const max = entries.length ? entries[0][1] : 1;
 	fill(
@@ -231,7 +238,7 @@ function push(id, v) {
 // stands. The rate is the exception: the server reports a counter, and a
 // rate is the difference between samples this page took.
 function drawRate(stats) {
-	const total = sum(series(stats, "cache_http_requests_total"));
+	const total = value(stats, "cache_http_requests_total");
 	const prev = state.previous;
 	state.previous = { total, generated_at: stats.generated_at };
 	if (!prev) return;
@@ -259,29 +266,110 @@ function drawRate(stats) {
 // neither needs a previous sample and both start drawing on the earliest
 // poll. The batch series is the same a single hitRateTile reads, for the same reason.
 function drawGauges(stats) {
-	const kinds = series(stats, "s3_batch_keys_total");
+	const kinds = byLabel(stats, "s3_batch_keys_total", "kind");
 	const requested = kinds.requested || 0;
 	if (requested) $("hit-chart").push(((kinds.found || 0) / requested) * 100);
 	$("inflight-chart").push(value(stats, "cache_http_in_flight_requests"));
+}
+
+// --- by project ---------------------------------------------------------------
+
+// The chart is a rate. A counter that drops means the server restarted.
+function drawProjects(stats) {
+	const totals = {};
+	for (const { labels, value: v } of points(stats, "s3_project_objects_total")) {
+		const { project, kind } = labels;
+		if (!project) continue;
+		const row = (totals[project] ||= { hit: 0, lookahead: 0, put: 0, miss: 0 });
+		if (kind in row) row[kind] += v;
+	}
+
+	drawProjectHitRates(totals);
+
+	const prev = state.projects;
+	state.projects = { totals, at: stats.generated_at };
+	const chart = $("project-chart");
+	if (!chart) return;
+	// The chart comes from the js-snippets library site at run time, so this
+	// page can be newer than the component it loaded. Say that on the page:
+	// a stacked chart that silently stays blank reads as "no traffic".
+	if (typeof chart.pushSeries !== "function") {
+		$("project-label").textContent =
+			"the loaded <perf-graph> has no stacked-area support, so this chart stays blank until the library site is republished";
+		return;
+	}
+
+	// Names in a fixed order, so a band keeps its place and its color as
+	// projects come and go. Sorted by name, not by traffic: a band that
+	// reorders itself every poll is unreadable.
+	const names = Object.keys(totals).sort();
+	if (!state.projectNames || state.projectNames.join("\u0000") !== names.join("\u0000")) {
+		state.projectNames = names;
+		chart.series = names.map((key) => ({ key }));
+	}
+
+	if (!prev) return;
+	const dt = (new Date(stats.generated_at) - new Date(prev.at)) / 1000;
+	if (dt <= 0) return;
+	const rates = {};
+	let total = 0;
+	for (const name of names) {
+		const was = prev.totals[name];
+		const now = totals[name];
+		const moved = now.hit + now.lookahead + now.put + now.miss - (was ? was.hit + was.lookahead + was.put + was.miss : 0);
+		if (moved < 0) {
+			// The server restarted between samples. Start the history over
+			// rather than draw a negative band.
+			chart.clear();
+			return;
+		}
+		rates[name] = moved / dt;
+		total += rates[name];
+	}
+	chart.pushSeries(rates);
+	$("project-label").textContent = names.length
+		? `${total.toFixed(1)} objects/s across ${names.length} project${names.length === 1 ? "" : "s"}`
+		: "no project has moved an object yet";
+}
+
+// The hit rate is what the chart cannot show: a project can be a thin band
+// and still hit almost nothing it asks for. The worst rate is at the top.
+function drawProjectHitRates(totals) {
+	const entries = Object.entries(totals)
+		.map(([name, row]) => [name, row, row.hit + row.miss])
+		.filter(([, , asked]) => asked > 0)
+		.sort((a, b) => a[1].hit / a[2] - b[1].hit / b[2]);
+	if (entries.length === 0) {
+		rows($("project-hit-rates"), [["no project has asked for a key yet", "--", false]]);
+		return;
+	}
+	rows(
+		$("project-hit-rates"),
+		entries.map(([name, row, asked]) => [
+			name,
+			`${percent(row.hit, asked)} of ${count(asked)}`,
+			row.hit / asked < 0.5,
+		]),
+	);
 }
 
 // Every entry here is a number that should be empty, or should be falling.
 // The alert flag turns the value red so a rising a single is visible without
 // reading the labels.
 function drawTripwires(stats) {
-	const outcomes = series(stats, "s3_get_requests_total");
+	const outcomes = byLabel(stats, "s3_get_requests_total", "outcome");
 	const unservable = outcomes.miss_advertised_unservable || 0;
 	const entries = [
 		["advertised but unservable GETs", count(unservable), unservable > 0],
 		["self-heal failures (key de-advertised)", count(value(stats, "s3_self_heal_failures_total")), value(stats, "s3_self_heal_failures_total") > 0],
 		["outputid mismatches repaired", count(value(stats, "s3_outputid_mismatch_total")), value(stats, "s3_outputid_mismatch_total") > 0],
 		["self-heal repairs (one-time per object)", count(value(stats, "s3_self_heal_repairs_total")), false],
-		["module indexes refused on PUT", count(sum(series(stats, "s3_put_refusals_total"))), false],
+		["module indexes refused on PUT", count(value(stats, "s3_put_refusals_total")), false],
 		["module indexes evicted on read", count(value(stats, "s3_module_index_evictions_total")), false],
 		["requests shed at capacity", count(value(stats, "s3_http_rejected_total")), value(stats, "s3_http_rejected_total") > 0],
 		["auth failures", count(value(stats, "cache_auth_failures_total")), false],
 		["metadata xattrs dropped", count(value(stats, "s3_metadata_xattrs_dropped_total")), value(stats, "s3_metadata_xattrs_dropped_total") > 0],
-		["deprecated S3 requests", count(sum(series(stats, "s3_deprecated_requests_total"))), false],
+		["deprecated S3 requests", count(value(stats, "s3_deprecated_requests_total")), false],
 		["memory-pressure shrinks", count(value(stats, "s3_memory_shrinks_total")), false],
 	];
 	rows($("tripwires"), entries);
@@ -296,8 +384,8 @@ function drawMemory(stats) {
 	} else {
 		nodes.push(para("no process memory limit discovered, so caches use fixed default budgets"));
 	}
-	const held = series(stats, "s3_cache_memory_bytes");
-	const budgets = series(stats, "s3_cache_memory_budget_bytes");
+	const held = byLabel(stats, "s3_cache_memory_bytes", "cache");
+	const budgets = byLabel(stats, "s3_cache_memory_budget_bytes", "cache");
 	for (const [name, v] of Object.entries(held).sort()) {
 		const budget = budgets[name] || 0;
 		nodes.push(bar(`cache: ${name}`, v, budget, "", `${bytes(v)} of ${bytes(budget)}`));
@@ -339,6 +427,7 @@ function draw(stats) {
 	drawReads(stats);
 	drawTraffic(stats);
 	drawGauges(stats);
+	drawProjects(stats);
 	drawTripwires(stats);
 	drawMemory(stats);
 	drawConfig(stats);
@@ -350,12 +439,17 @@ async function poll() {
 	try {
 		const res = await fetch("/api/stats", { cache: "no-store" });
 		if (!res.ok) throw new Error(`stats endpoint answered ${res.status}`);
-		draw(await res.json());
+		const raw = await res.text();
+		draw(JSON.parse(raw));
+		state.raw = raw;
+		$("poll-error").hidden = true;
 	} catch (err) {
-		// A failed poll is reported where the connection state already is. The
-		// page keeps the numbers it drew last, and they are stamped with the
-		// time they came from.
+		// The numbers on the page are now stale, so the failure goes in a red banner.
+		console.error("poll failed:", err);
 		setState("unreachable", "bad");
+		const banner = $("poll-error");
+		banner.textContent = `last poll failed at ${new Date().toLocaleTimeString()}: ${err.message}. The numbers below are from the last poll that worked.`;
+		banner.hidden = false;
 		$("footer-note").textContent = `last poll failed: ${err.message}. `;
 	}
 }
@@ -373,6 +467,41 @@ function schedule() {
 	clearInterval(state.timer);
 	if (live()) state.timer = setInterval(poll, POLL_MS);
 }
+
+// --- copy json --------------------------------------------------------------
+
+// navigator.clipboard exists only in a secure context. The dashboard is often
+// served over plain HTTP on a LAN address, so execCommand is the fallback.
+async function writeClipboard(text) {
+	if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
+	const area = document.createElement("textarea");
+	area.value = text;
+	area.style.position = "fixed";
+	area.style.opacity = "0";
+	document.body.append(area);
+	area.select();
+	const ok = document.execCommand("copy");
+	area.remove();
+	if (!ok) throw new Error("the browser refused the copy");
+}
+
+function flashLabel(el, text) {
+	el.textContent = text;
+	clearTimeout(el.resetTimer);
+	el.resetTimer = setTimeout(() => (el.textContent = "copy json"), 1500);
+}
+
+$("copy-json").addEventListener("click", async () => {
+	const btn = $("copy-json");
+	if (state.raw === null) return flashLabel(btn, "no snapshot yet");
+	try {
+		await writeClipboard(state.raw);
+		flashLabel(btn, "copied");
+	} catch (err) {
+		console.error("copy json failed:", err);
+		flashLabel(btn, "copy failed");
+	}
+});
 
 $("autorefresh").addEventListener("change", () => {
 	schedule();

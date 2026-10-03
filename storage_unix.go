@@ -24,12 +24,14 @@ func unlockFile(f *os.File) {
 }
 
 // metadataProtectedKeys are load-bearing for the cache protocol: outputid is
-// the content address every client verifies before consuming a body, and
-// compression steers both the module-index guards and client decompression.
-// A failure persisting any of these fails the PUT — storing the object
-// without them would serve unusable (or unguardable) bytes. Every other
-// metadata key is descriptive provenance (src, pkg, go-version, ...).
-var metadataProtectedKeys = set.Of("outputid", "compression")
+// the content address every client verifies before consuming a body,
+// compression steers both the module-index guards and client decompression,
+// and storedsha256 is this server's own digest of the bytes as stored, the
+// thing hash it can check without decompressing anything. A failure
+// persisting any of these fails the PUT — storing the object without them
+// would serve unusable (or unguardable) bytes. Every other metadata key is
+// descriptive provenance (src, pkg, go-version, ...).
+var metadataProtectedKeys = set.Of("outputid", "compression", storedDigestMetaKey)
 
 // setMetadata persists user metadata as xattrs. Protected keys are written
 // earliest (so they claim xattr space) and any error on them fails the

@@ -212,7 +212,7 @@ func TestGetBatch_SeedsLookAheadWhichFeedsThePopulator(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// The entry the build wants, and one more the server will offer alongside.
+	// The entry the build wants, and a single more the server will offer alongside.
 	compressed1, _ := Compress([]byte("entry one"))
 	compressed2, _ := Compress([]byte("entry two"))
 	store["go-buildcache/v1aaaa000000000001"] = compressed1
@@ -449,14 +449,8 @@ func TestGet_CoalescesConcurrentRequestsIntoOneHTTPRequest(t *testing.T) {
 	// Coalescing must fold hundreds of callers into a handful of requests. Both
 	// bounds below are far from what this actually measures, on purpose.
 	//
-	// The exact count is scheduler noise. The window is Nagle's rule: the first
-	// batch leaves the moment it exists rather than sitting out a fixed 10ms, so
-	// it carries however many of the 200 goroutines had arrived by then. That is
-	// three requests on an idle machine and six on a loaded one, and an assertion
-	// pinned to the low end fails on a busy runner while measuring nothing about
-	// the client. What cannot happen with coalescing working is a request per
-	// caller. A tenth of the callers is an order of magnitude away from either
-	// answer, so it separates them under any interleaving.
+	// The exact count is scheduler noise. What cannot happen with coalescing
+	// working is a request per caller.
 	calls := atomic.LoadInt32(&batchHTTPCalls)
 	require.LessOrEqual(t, calls, int32(N/10),
 		"expected ≤%d HTTP requests for %d parallel Gets, got %d (no client-side batching)", N/10, N, calls)

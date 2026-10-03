@@ -149,7 +149,7 @@ func TestPutObject_RefusesModuleIndex(t *testing.T) {
 	hdr := map[string]string{
 		"X-Amz-Meta-Outputid":    "deadbeef",
 		"X-Amz-Meta-Compression": "lz4",
-		"X-Amz-Meta-Object-Type": "unknown", // what old clients tag an index as
+		"X-Amz-Meta-Object-Type": "unknown",
 	}
 	resp := doRequest(t, ts, "PUT", idxKey, lz4Compress(t, index), hdr)
 	require.Equal(t, 200, resp.StatusCode, "an index PUT is accepted on the wire")

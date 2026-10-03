@@ -48,6 +48,16 @@ h3 {
 code, .n, .value, td.n { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
 .muted { color: var(--text-muted); }
+
+.poll-error {
+	margin: var(--sp-3) var(--sp-5) 0;
+	padding: var(--sp-3);
+	border: 1px solid var(--danger);
+	background: var(--bg);
+	color: var(--danger);
+	font-family: var(--font-mono);
+}
+.poll-error[hidden] { display: none; }
 .note { font-size: var(--fs-tiny); margin: calc(var(--sp-2) * -1) 0 var(--sp-3); }
 
 header {
@@ -66,9 +76,9 @@ header {
 
 .head-right { display: flex; align-items: center; gap: var(--sp-4); font-size: var(--fs-small); }
 
-/* One screen. The tiles take the top row; four columns hold the panels, with
-   reads over memory in the first. Narrower screens fold to two columns, then
-   one, and only then does the page scroll. */
+/* One screen. The tiles take the top row. The projects panel takes the left
+   half, and the other panels fill the right half. Narrower screens fold to two
+   columns, then one, and only then does the page scroll. */
 main {
 	padding: var(--sp-4) var(--sp-5);
 	display: grid;
@@ -76,11 +86,24 @@ main {
 	grid-template-columns: repeat(4, minmax(0, 1fr));
 	grid-template-areas:
 		"tiles tiles tiles tiles"
-		"reads traffic tripwires config"
-		"memory traffic tripwires config";
+		"projects projects reads traffic"
+		"projects projects memory traffic"
+		"projects projects tripwires config";
 	align-items: start;
 }
+/* The project list has no upper bound. contain: size stops it from setting
+   the row heights, so the panel takes the height of the right half and its
+   table scrolls inside that height. */
+.projects {
+	contain: size;
+	align-self: stretch;
+	min-height: 24rem;
+	display: flex;
+	flex-direction: column;
+}
+.scroll { flex: 1; min-height: 0; overflow-y: auto; }
 #tiles { grid-area: tiles; }
+.projects { grid-area: projects; }
 .reads { grid-area: reads; }
 .traffic { grid-area: traffic; }
 .tripwires { grid-area: tripwires; }
@@ -91,15 +114,19 @@ main {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 		grid-template-areas:
 			"tiles tiles"
+			"projects projects"
 			"reads traffic"
 			"tripwires memory"
 			"config config";
 	}
+	/* The panel has its own row here, so the table needs a fixed limit. */
+	.projects { contain: none; min-height: 0; }
+	.scroll { max-height: 24rem; }
 }
 @media (max-width: 720px) {
 	main {
 		grid-template-columns: minmax(0, 1fr);
-		grid-template-areas: "tiles" "reads" "traffic" "tripwires" "memory" "config";
+		grid-template-areas: "tiles" "projects" "reads" "traffic" "tripwires" "memory" "config";
 	}
 }
 

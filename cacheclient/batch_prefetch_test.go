@@ -15,14 +15,14 @@ import (
 )
 
 // prefetchFixture is a server that answers a batch with the keys it was asked
-// for PLUS one the caller never named, which is what the real server's
+// for PLUS a single the caller never named, which is what the real server's
 // prefetch window looks like from the client.
 type prefetchFixture struct {
 	srv *httptest.Server
 	// bodies are the stored objects, already compressed, by key.
 	bodies map[string][]byte
 	// outputIDs is what each key advertises, so a test can advertise a wrong
-	// one and make the body corrupt.
+	// a single and make the body corrupt.
 	outputIDs map[string]string
 	// rawSizes is each body's uncompressed length.
 	rawSizes map[string]int64
@@ -35,7 +35,7 @@ type prefetchFixture struct {
 }
 
 // testActionID is a full-length action ID, which is what ActionIDFromKey
-// requires: a short one is not a cache key at all.
+// requires: a short a single is not a cache key at all.
 func testActionID(fill byte) string {
 	var h [hashSize]byte
 	for i := range h {
@@ -162,7 +162,7 @@ func (l *sinkTier) len() int {
 
 // TestBatchStoresUnrequestedEntry is the whole point: a body the batch carried
 // that nobody asked for lands in the local tier, verified, and the build can
-// then have it without a second request to the server.
+// then have it without another request to the server.
 func TestBatchStoresUnrequestedEntry(t *testing.T) {
 	wantedID := testActionID(0x11)
 	spareID := testActionID(0x22)
@@ -197,9 +197,7 @@ func TestBatchStoresUnrequestedEntry(t *testing.T) {
 	require.Equal(t, 1, f.batchCount(), "serving it must cost no second request")
 }
 
-// TestBatchRejectsCorruptUnrequestedEntry pins the gate. An unrequested body
-// is checked exactly as hard as a requested one, so a corrupt one is dropped
-// rather than written into the local tier under a key the build trusts.
+// TestBatchRejectsCorruptUnrequestedEntry pins the gate.
 func TestBatchRejectsCorruptUnrequestedEntry(t *testing.T) {
 	wantedID := testActionID(0x33)
 	spareID := testActionID(0x44)
@@ -211,7 +209,7 @@ func TestBatchRejectsCorruptUnrequestedEntry(t *testing.T) {
 	b.OnBatchEntries = local.sink
 
 	f.store(b.KeyPrefix(), wantedID, "a good body", testOutputID("a good body"))
-	// Advertised as one object, stored as another.
+	// Advertised as a single object, stored as another.
 	spareKey := f.store(b.KeyPrefix(), spareID, "a body that is not what it claims", testOutputID("what it claims to be"))
 	f.extra = spareKey
 

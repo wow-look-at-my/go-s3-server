@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// realIndexMaxAgeDefault restores the real default resolver for one test.
-// TestMain replaces it for the tests that predate the default.
+// realIndexMaxAgeDefault restores the real default resolver for a single
+// test. TestMain replaces it for the tests that predate the default.
 func realIndexMaxAgeDefault(t *testing.T) {
 	t.Helper()
 	prev := defaultIndexMaxAge
@@ -18,9 +18,9 @@ func realIndexMaxAgeDefault(t *testing.T) {
 	t.Cleanup(func() { defaultIndexMaxAge = prev })
 }
 
-// seedDiskIndex fetches the index once into dir and returns the copy's path.
-// The fetch is forced with an explicit max age, so the default under test is
-// not what put the copy there.
+// seedDiskIndex fetches the index a single time into dir and returns the
+// copy's path. The fetch is forced with an explicit max age, so the default
+// under test is not what put the copy there.
 func seedDiskIndex(t *testing.T, f *indexFixture, dir string) string {
 	t.Helper()
 	cfg := WebConfig{Bucket: "bk", Endpoint: f.srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: dir, IndexMaxAge: -1}
@@ -61,8 +61,8 @@ func TestCIDefaultIndexMaxAgeDoesNotExpire(t *testing.T) {
 	require.Greater(t, IndexMaxAgeCI, 100*365*24*time.Hour, "the CI default outlives any run")
 }
 
-// TestCIDefaultServesAnOldCopyWithNoRequest is the CI rule end to end. A
-// second process over a day-old copy asks the server for nothing.
+// TestCIDefaultServesAnOldCopyWithNoRequest is the CI rule end to end.
+// another process over a day-old copy asks the server for nothing.
 func TestCIDefaultServesAnOldCopyWithNoRequest(t *testing.T) {
 	realIndexMaxAgeDefault(t)
 	stubCI(t, map[string]string{"GITHUB_ACTIONS": "true"})
@@ -95,7 +95,7 @@ func TestNonCIDefaultExpires(t *testing.T) {
 	require.Equal(t, int32(1), f.hits304.Load(), "a copy past the window is revalidated")
 }
 
-// TestNonCIDefaultFloor pins the floor. A copy older than five minutes is
+// TestNonCIDefaultFloor pins the floor. A copy older than minutes is
 // still served in a run that has only just started.
 func TestNonCIDefaultFloor(t *testing.T) {
 	realIndexMaxAgeDefault(t)
@@ -133,7 +133,7 @@ func TestRunWindowOutlivesTheFloor(t *testing.T) {
 
 // TestNewRunRevalidates pins where a run ends. A marker untouched for longer
 // than the idle gap belongs to a finished run, so the next process starts a
-// new one and a copy past the floor is revalidated.
+// new a single and a copy past the floor is revalidated.
 func TestNewRunRevalidates(t *testing.T) {
 	realIndexMaxAgeDefault(t)
 	stubCI(t, nil)
@@ -186,8 +186,6 @@ func TestExplicitIndexMaxAgeWinsOutsideCI(t *testing.T) {
 	require.True(t, b.indexAuthoritative)
 }
 
-// TestIndexRunWindow pins the marker itself: a first use starts a run, a use
-// inside the idle gap continues it, and a use past the gap starts a new one.
 func TestIndexRunWindow(t *testing.T) {
 	stubCI(t, nil)
 	path := t.TempDir() + "/index.bin"

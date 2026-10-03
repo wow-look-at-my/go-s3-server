@@ -7,13 +7,11 @@ import (
 	"time"
 )
 
-// indexRunIdle is the gap in index use past which the recorded run is taken
-// to be over and the next use starts a new one. A build's go commands follow
-// each other far closer than this.
+// A build's go commands follow each other far closer than this.
 const indexRunIdle = 5 * time.Minute
 
 // indexRunMarkerPath is where the run marker for an index copy lives. It sits
-// beside the copy, so every process sharing an IndexDir shares one run.
+// beside the copy, so every process sharing an IndexDir shares a single run.
 func indexRunMarkerPath(indexPath string) string {
 	return indexPath + ".run"
 }
@@ -23,8 +21,8 @@ func indexRunMarkerPath(indexPath string) string {
 //
 // The run is the marker beside the copy: its content is when the run began,
 // its mtime is when the index was last used. A marker untouched for longer
-// than indexRunIdle belongs to a finished run, so this use begins a new one
-// and the window is zero.
+// than indexRunIdle belongs to a finished run, so this use begins a new a
+// single and the window is empty.
 func indexRunWindow(indexPath string, now time.Time) time.Duration {
 	path := indexRunMarkerPath(indexPath)
 	start := now

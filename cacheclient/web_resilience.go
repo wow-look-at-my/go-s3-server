@@ -31,14 +31,14 @@ const (
 )
 
 // stallTimeout bounds SILENCE, never total duration. Responses here are bulk: a
-// batch get runs to tens of megabytes and the key index further still. One that
-// keeps delivering bytes is healthy however long it takes, and one that stops
-// delivering is not, so the clock measures the gap between reads instead of the
-// whole transfer. A var, so a test can shorten it like the index budgets.
+// batch get runs to tens of megabytes and the key index further still. a single
+// that keeps delivering bytes is healthy however long it takes, and a single
+// that stops delivering is not, so the clock measures the gap between reads
+// instead of the whole transfer. A var, so a test can shorten it like the index budgets.
 var stallTimeout = 30 * time.Second
 
 // guardedBody re-arms a watchdog on every read, so a body that keeps flowing
-// never expires while one that goes quiet is cancelled. Close stops the
+// never expires while a single that goes quiet is cancelled. Close stops the
 // watchdog and releases the request context that carries it.
 type guardedBody struct {
 	io.ReadCloser
@@ -71,8 +71,8 @@ func (g *guardedBody) Close() error {
 // An empty-but-healthy response is not a backend failure: the backoff is purely a
 // "nothing here to fetch" optimization, orthogonal to the per-op retry path.
 //
-// The notice is routine, so it is Info. A build with new code misses on every
-// one of its own packages, and a disk copy of the index served as
+// The notice is routine, so it is Info. A build with new code misses on each
+// of its own packages, and a disk copy of the index served as
 // non-authoritative probes each of them: the threshold trips on most builds.
 // A consumer whose stderr is compared, as go test does, must not see it.
 func (b *WebBackend) noteBatchEntries(n int) {
@@ -180,9 +180,6 @@ func (b *WebBackend) doRetryPUT(req *http.Request, body []byte) (*http.Response,
 const heldBackBody = "overloaded: not sent; the server asked for quiet with Retry-After"
 
 // heldBackResponse stands in for the shed the server would have answered.
-// It is a 503 like the real one, so every caller accounts for it the way it
-// accounts for a shed: through its status handling and the coalesced error
-// log, never a per-operation warning.
 func heldBackResponse(req *http.Request) *http.Response {
 	return &http.Response{
 		Status:        "503 Service Unavailable",
@@ -227,7 +224,7 @@ func (b *WebBackend) shedRemaining() time.Duration {
 //
 // A Retry-After on a transient answer is a request for quiet to the whole
 // process, not only to the operation that got it. Every concurrent operation
-// here talks to the same server, so each one retrying on its own schedule
+// here talks to the same server, so each retrying on its own schedule
 // multiplied the load on a server that had just said it was full. An attempt
 // that falls in the quiet period is not sent: it waits the period out (plus
 // jitter, so the waiters do not return together) and counts against the
@@ -257,7 +254,7 @@ func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response,
 				req.Body = body
 			}
 		}
-		// One watchdog per attempt, armed on the context the attempt runs
+		// A single watchdog per attempt, armed on the context the attempt runs
 		// under. It survives past this function only on the success path, where
 		// the returned body owns it and the reads re-arm it.
 		ctx, cancel := context.WithCancel(req.Context())
@@ -296,8 +293,8 @@ func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response,
 }
 
 // sleepQuiet waits out the server's quiet period plus full jitter over the
-// attempt's backoff, so the operations held back by one shed do not all
-// return in the same instant. It returns early on shutdown.
+// attempt's backoff, so the operations held back by a single shed do not
+// all return in the same instant. It returns early on shutdown.
 func (b *WebBackend) sleepQuiet(attempt int, quiet time.Duration) {
 	jitter := retryBaseDelay << attempt
 	if jitter > retryMaxDelay || jitter <= 0 {

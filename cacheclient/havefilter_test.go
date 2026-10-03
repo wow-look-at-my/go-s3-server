@@ -10,8 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// vectorHash is the test vector's input: a hash filled from a single byte, so
-// both implementations of the filter can build the same one.
 func vectorHash(fill byte) actionHash {
 	var h actionHash
 	for i := range h {
@@ -20,13 +18,10 @@ func vectorHash(fill byte) actionHash {
 	return h
 }
 
-// haveFilterVectorBits is the filter over vectorHash(1..4) in 32 bytes at k=3,
-// as a hex sha256 of the bit array.
-//
 // The server has its own copy of this filter, in havefilter.go at the repo
 // root, and its own test asserting this same constant. A change to the bit
-// arithmetic on one side and not the other fails one of the two tests instead
-// of silently making suppression wrong on the wire.
+// arithmetic on a single side and not the other fails any of both tests
+// instead of silently making suppression wrong on the wire.
 const haveFilterVectorBits = "c2643f18fd57b6aa9bb7cb286f32b9ee7c655c83b95e78ca11591a166bd6658a"
 
 func TestHaveFilterVector(t *testing.T) {
@@ -46,8 +41,8 @@ func TestHaveFilterVector(t *testing.T) {
 
 // TestHaveFilterNeverLosesAKey pins the direction the filter fails in. A key
 // it was given must always read back as held: the error is a false positive,
-// which costs one un-sent body, never a false negative, which would re-send a
-// body the client already has.
+// which costs a single un-sent body, never a false negative, which would
+// re-send a body the client already has.
 func TestHaveFilterNeverLosesAKey(t *testing.T) {
 	hashes := make([]actionHash, 500)
 	for i := range hashes {
@@ -72,8 +67,8 @@ func TestHaveFilterNeverLosesAKey(t *testing.T) {
 }
 
 // TestHaveFilterSizing pins the wire bounds. A tiny held set still gets a
-// floor rather than a handful of saturated bytes, and a huge one is capped
-// rather than sending a megabyte on every prefetch request.
+// floor rather than a handful of saturated bytes, and a huge a single is
+// capped rather than sending a megabyte on every prefetch request.
 func TestHaveFilterSizing(t *testing.T) {
 	require.Equal(t, haveFilterMinBytes, haveFilterBytes(1))
 	require.Equal(t, haveFilterMaxBytes, haveFilterBytes(1<<20))

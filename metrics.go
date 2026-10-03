@@ -81,19 +81,28 @@ var (
 		Name: "s3_put_refusals_total",
 		Help: "Uploads accepted on the wire but refused storage, by reason (e.g. module_index).",
 	}, []string{"reason"})
+
+	// stage="put" is an upload whose bytes disagreed with the digest its own
+	// metadata claimed, so the wire corrupted it between client and disk.
+	// stage="get" is a stored body that stopped matching the digest taken when
+	// it was written, which is this cache's only sighting of bit rot. either
+	// moving is a fault somewhere else, never here.
+	storedDigestMismatchTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "s3_stored_digest_mismatch_total",
+		Help: "Objects whose bytes disagreed with their stored sha256, by stage (put, get).",
+	}, []string{"stage"})
 )
 
 // Batch metrics
 var (
 	// batchKeysTotal breaks down /_batch/get volume: requested (keys asked
-	// for), found (requested keys served), prefetched (extra entries included),
 	// client_held (prefetch candidates the REQUEST said the client already
 	// holds), streamed (bodies actually written into the tar). A falling
 	// found/requested ratio is the earliest "cache is fickle" indicator;
 	// previously these numbers were log-only and required grepping server logs.
 	batchKeysTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "s3_batch_keys_total",
-		Help: "Batch GET key counts by kind: requested, found, prefetched, client_held, streamed.",
+		Help: "Batch GET key counts by kind: requested, found, anchors (look-ahead keys, not asked for), prefetched, client_held, streamed.",
 	}, []string{"kind"})
 
 	// nearbyScanExhaustedTotal counts prefetch selections that ran out of scan

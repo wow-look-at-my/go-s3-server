@@ -33,7 +33,7 @@ func TestConfigFromEnv_DefaultBucket(t *testing.T) {
 }
 
 // The S3-era field names still configure a client, because a consumer's CI
-// configuration outlives any one release of this module.
+// configuration outlives any a single release of this module.
 func TestConfigFromEnv_DeprecatedS3Spellings(t *testing.T) {
 	t.Setenv(ConfigEnv, encodeConfig(t,
 		`{"endpoint":"e","key_id":"u","access_key":"p","region":"us-east-1"}`))
@@ -58,8 +58,6 @@ func TestConfigFromEnv_Base64Dialects(t *testing.T) {
 	}
 }
 
-// A configuration that cannot authenticate is no remote, not a broken one: the
-// build proceeds against the local cache alone.
 func TestConfigFromEnv_RejectsIncomplete(t *testing.T) {
 	for name, raw := range map[string]string{
 		"no endpoint":    `{"username":"u","password":"p"}`,

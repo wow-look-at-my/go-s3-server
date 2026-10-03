@@ -186,7 +186,9 @@ func (idx *Index) Put(key string, size int64) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	// drainEntriesLocked merges and sorts it for the next reader.
+	// Append to the unsorted pending buffer only — O(1). The merge+sort into the
+	// mtime-ordered list is deferred to the next reader (see drainEntriesLocked),
+	// so a burst of concurrent PUTs no longer convoys behind a full re-sort.
 	//
 	// Nothing appends beside this guard. An unguarded append here built the
 	// very list the guard suppresses, so entriesOff saved nothing, and where

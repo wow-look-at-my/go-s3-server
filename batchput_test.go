@@ -48,8 +48,8 @@ func parseBatchPutResponse(t testing.TB, resp *http.Response) batchPutResponse {
 	return out
 }
 
-// TestBatchPut_StoresMultipleObjects covers the happy path: a tar of three
-// normal objects is accepted in one request, each is reported "stored", and each
+// TestBatchPut_StoresMultipleObjects covers the happy path: a tar of normal
+// objects is accepted in a single request, each is reported "stored", and each
 // round-trips via a single GET with the correct body + outputid metadata and is
 // advertised in /_index.
 func TestBatchPut_StoresMultipleObjects(t *testing.T) {
@@ -209,7 +209,6 @@ func TestBatchPut_WriteOnceConflict(t *testing.T) {
 	require.Equal(t, original, got, "a write_once conflict must not overwrite the stored body")
 }
 
-// TestBatchPut_MalformedTar covers the whole-request 400 for an unparseable body.
 func TestBatchPut_MalformedTar(t *testing.T) {
 	ts := testSetup(t)
 
@@ -220,14 +219,12 @@ func TestBatchPut_MalformedTar(t *testing.T) {
 	resp.Body.Close()
 }
 
-// TestBatchPut_MissingManifest covers the whole-request 400 when the first tar
-// member is not manifest.json.
 func TestBatchPut_MissingManifest(t *testing.T) {
 	ts := testSetup(t)
 
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	// First member is a data member, not manifest.json.
+	// Earliest member is a data member, not manifest.json.
 	data := []byte("body")
 	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "data/go-buildcache/v1" + strings.Repeat("a", 64), Size: int64(len(data)), Mode: 0644}))
 	_, err := tw.Write(data)
@@ -241,8 +238,6 @@ func TestBatchPut_MissingManifest(t *testing.T) {
 	resp.Body.Close()
 }
 
-// TestBatchPut_DataMemberWithoutManifestEntry covers the whole-request 400 when
-// a data member has no corresponding manifest entry.
 func TestBatchPut_DataMemberWithoutManifestEntry(t *testing.T) {
 	ts := testSetup(t)
 
@@ -268,8 +263,6 @@ func TestBatchPut_DataMemberWithoutManifestEntry(t *testing.T) {
 	resp.Body.Close()
 }
 
-// TestBatchPut_ManifestEntryWithoutDataMember covers the whole-request 400 when
-// a manifest entry has no matching data member.
 func TestBatchPut_ManifestEntryWithoutDataMember(t *testing.T) {
 	ts := testSetup(t)
 
@@ -282,7 +275,7 @@ func TestBatchPut_ManifestEntryWithoutDataMember(t *testing.T) {
 	mdata, _ := json.Marshal(manifest)
 	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "manifest.json", Size: int64(len(mdata)), Mode: 0644}))
 	_, _ = tw.Write(mdata)
-	// Only the first key has a data member.
+	// Only the earliest key has a data member.
 	b := lz4Compress(t, []byte("body"))
 	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "data/" + present, Size: int64(len(b)), Mode: 0644}))
 	_, _ = tw.Write(b)
@@ -295,8 +288,6 @@ func TestBatchPut_ManifestEntryWithoutDataMember(t *testing.T) {
 	resp.Body.Close()
 }
 
-// TestBatchPut_TooManyEntries covers the over-cap rejection (413) when the
-// manifest declares more than maxBatchKeys entries.
 func TestBatchPut_TooManyEntries(t *testing.T) {
 	ts := testSetup(t)
 

@@ -2,8 +2,14 @@ package cacheclient
 
 import (
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,12 +19,14 @@ import (
 
 // shrinkIndexBudgets temporarily replaces the index-fetch budgets and
 // returns a restore func. Tests use it instead of poking the vars directly so
-// no test can leave a shortened budget behind for the tests after it.
-func shrinkIndexBudgets(header, stall, ceiling time.Duration) func() {
-	oh, os, oc := indexHeaderBudget, indexStallTimeout, indexFetchCeiling
-	indexHeaderBudget, indexStallTimeout, indexFetchCeiling = header, stall, ceiling
+// no test can leave a shortened budget behind for the tests after it. The
+// budgets are package state, so the test runs alone while they are shrunk.
+func shrinkIndexBudgets(t *testing.T, header, stall time.Duration) func() {
+	t.Serial()
+	oh, os := indexHeaderBudget, indexStallTimeout
+	indexHeaderBudget, indexStallTimeout = header, stall
 	return func() {
-		indexHeaderBudget, indexStallTimeout, indexFetchCeiling = oh, os, oc
+		indexHeaderBudget, indexStallTimeout = oh, os
 	}
 }
 
@@ -72,7 +80,7 @@ func TestLoadOrFetchIndex_SlowButSteadyBodySucceeds(t *testing.T) {
 	defer srv.Close()
 
 	// A single deadline over the whole transfer would kill it mid-stream; only a per-chunk bound finishes it.
-	defer shrinkIndexBudgets(200*time.Millisecond, 200*time.Millisecond, 30*time.Second)()
+	defer shrinkIndexBudgets(t, 200*time.Millisecond, 200*time.Millisecond)()
 
 	b, err := NewWebBackend(WebConfig{
 		Bucket: "bk", Endpoint: srv.URL,
@@ -81,6 +89,7 @@ func TestLoadOrFetchIndex_SlowButSteadyBodySucceeds(t *testing.T) {
 	require.NoError(t, err)
 	defer b.Close()
 
+	b.ensureIndex()
 	require.True(t, b.indexAuthoritative,
 		"a healthy server that keeps streaming must yield an AUTHORITATIVE index — "+
 			"a non-authoritative set disables index routing and costs the run its remote hits")
@@ -113,7 +122,7 @@ func TestLoadOrFetchIndex_StalledBodyAbandoned(t *testing.T) {
 	defer srv.Close()
 	defer close(release)
 
-	defer shrinkIndexBudgets(2*time.Second, 150*time.Millisecond, 10*time.Second)()
+	defer shrinkIndexBudgets(t, 2*time.Second, 150*time.Millisecond)()
 
 	start := time.Now()
 	b, err := NewWebBackend(WebConfig{
@@ -126,7 +135,188 @@ func TestLoadOrFetchIndex_StalledBodyAbandoned(t *testing.T) {
 
 	require.Less(t, elapsed, 5*time.Second,
 		"a stalled body must be abandoned on the stall window, not on the 30s client timeout")
+	b.ensureIndex()
 	require.False(t, b.indexAuthoritative,
 		"an abandoned index fetch must leave the key set non-authoritative so batch probing stays enabled")
 	require.Equal(t, 0, b.keys.Len())
+}
+
+// levelLogger keeps Infof and Warnf apart, so a test can assert on the level
+// a message went out at. The client logs from its own goroutines, so every
+// access holds the mutex.
+type levelLogger struct {
+	mu         sync.Mutex
+	info, warn []string
+}
+
+func (l *levelLogger) Infof(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.info = append(l.info, fmt.Sprintf(format, args...))
+}
+
+func (l *levelLogger) Warnf(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.warn = append(l.warn, fmt.Sprintf(format, args...))
+}
+
+func (*levelLogger) Debugf(string, ...any) {}
+
+// Info is every Infof line so far, a single per line.
+func (l *levelLogger) Info() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Join(l.info, "\n")
+}
+
+// Warn is every Warnf line so far, a single per line.
+func (l *levelLogger) Warn() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Join(l.warn, "\n")
+}
+
+// TestLoadOrFetchIndex_StalledRefreshOverDiskCopyIsRoutine pins the level of
+// a refresh that stalls while a disk copy exists. Every go command on a busy
+// host can hit that stall, and the build keeps its key set, so the report is
+// routine rather than a warning on the build's stderr.
+func TestLoadOrFetchIndex_StalledRefreshOverDiskCopyIsRoutine(t *testing.T) {
+	t.Serial() // the logger is package state
+	t.Setenv("TMPDIR", t.TempDir())
+
+	blob := testIndexBlob(64)
+	release := make(chan struct{})
+	var served atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/_index") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if served.Add(1) == 1 {
+			w.Header().Set("ETag", `"v1"`)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(blob)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			_, _ = w.Write(blob[:16])
+			f.Flush()
+		}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	cfg := WebConfig{Bucket: "bk", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s"}
+	first, err := NewWebBackend(cfg)
+	require.NoError(t, err)
+	first.Close()
+	first.ensureIndex()
+	require.True(t, first.indexAuthoritative, "the first load must persist a disk copy for the second to refresh")
+
+	defer shrinkIndexBudgets(t, 2*time.Second, 150*time.Millisecond)()
+	logs := &levelLogger{}
+	SetLogger(logs)
+	t.Cleanup(func() { SetLogger(nil) })
+
+	b, err := NewWebBackend(cfg)
+	require.NoError(t, err)
+	defer b.Close()
+
+	b.awaitIndex()
+	require.False(t, b.indexAuthoritative)
+	require.Equal(t, 64, b.keys.Len(), "a stalled refresh keeps the disk copy's keys")
+	require.Empty(t, logs.Warn(), "a stalled refresh over a disk copy is not a warning")
+	require.Contains(t, logs.Info(), "web index refresh: abandoned")
+	require.Contains(t, logs.Info(), "using 64 cached keys")
+}
+
+// deadlineSpy records whether the request it forwards carried an absolute
+// deadline.
+type deadlineSpy struct {
+	rt          http.RoundTripper
+	hadDeadline atomic.Bool
+	seen        atomic.Bool
+}
+
+func (d *deadlineSpy) RoundTrip(req *http.Request) (*http.Response, error) {
+	_, ok := req.Context().Deadline()
+	d.hadDeadline.Store(ok)
+	d.seen.Store(true)
+	return d.rt.RoundTrip(req)
+}
+
+// TestLoadOrFetchIndex_RequestCarriesNoDeadline pins the absence of a
+// wall-clock ceiling over the index load. The stall and header budgets bound a
+// hung server instead, and they are what this asserts is the ONLY bound: a
+// deadline on the request is a single this test cannot wait out, so it checks
+// for the deadline rather than for the timeout it would cause.
+func TestLoadOrFetchIndex_RequestCarriesNoDeadline(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+
+	blob := testIndexBlob(8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/_index") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("ETag", `"v1"`)
+		_, _ = w.Write(blob)
+	}))
+	defer srv.Close()
+
+	b, err := NewWebBackend(WebConfig{
+		Bucket: "bk", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s",
+	})
+	require.NoError(t, err)
+	defer b.Close()
+
+	spy := &deadlineSpy{rt: b.client.Transport}
+	b.client.Transport = spy
+
+	b.ensureIndex()
+	require.True(t, spy.seen.Load(), "the index fetch must actually have gone out")
+	require.False(t, spy.hadDeadline.Load(),
+		"the index request must carry no absolute deadline -- a slow but steady "+
+			"multi-megabyte index would die on it however healthy the server is")
+	require.True(t, b.indexAuthoritative)
+	require.Equal(t, 8, b.keys.Len())
+}
+
+// TestIndexDirHoldsTheDiskCopy pins where the index lands when a consumer
+// names a directory: there, and not in the temporary directory.
+func TestIndexDirHoldsTheDiskCopy(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	blob := testIndexBlob(8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/_index") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("ETag", `"v1"`)
+		_, _ = w.Write(blob)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	b, err := NewWebBackend(WebConfig{
+		Bucket: "bk", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: dir,
+	})
+	require.NoError(t, err)
+	defer b.Close()
+	b.ensureIndex()
+
+	require.Equal(t, dir, filepath.Dir(b.indexCachePath()))
+	_, err = os.Stat(b.indexCachePath())
+	require.NoError(t, err, "the index disk copy is written under IndexDir")
+	entries, err := os.ReadDir(os.TempDir())
+	require.NoError(t, err)
+	for _, e := range entries {
+		require.NotContains(t, e.Name(), "gocache-web-index-", "nothing lands in the temporary directory")
+	}
 }

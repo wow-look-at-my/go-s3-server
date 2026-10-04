@@ -79,6 +79,7 @@ func TestWebBackend_EmptyBatchBackoffStopsProbing(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer b.Close()
+	b.ensureIndex()
 	require.False(t, b.indexAuthoritative, "fetch failure => non-authoritative => probing enabled")
 	require.Equal(t, 4, b.emptyBatchBackoffThreshold)
 
@@ -135,6 +136,7 @@ func TestWebBackend_BackoffResetsOnNonEmptyBatch(t *testing.T) {
 	require.NoError(t, err)
 	defer b.Close()
 	// fakeBatchServer 404s on /_index, so cold keys take the batch-probe path this test exercises.
+	b.ensureIndex()
 	require.False(t, b.indexAuthoritative)
 
 	// Interleave: a few cold (empty-batch) keys, then a hot key that resets the
@@ -160,4 +162,35 @@ func TestWebBackend_BackoffResetsOnNonEmptyBatch(t *testing.T) {
 		"a non-empty batch every few requests must keep the streak below threshold")
 	require.Equal(t, uint32(0), b.SkippedBatchBackoff.Load(),
 		"batch probing must stay enabled, so no backoff skips")
+}
+
+// TestEmptyBatchBackoffNoticeIsRoutine pins the level of the backoff notice.
+// A build with new code trips the threshold on its own misses, and a consumer
+// that compares stderr must not see a warning for that.
+func TestEmptyBatchBackoffNoticeIsRoutine(t *testing.T) {
+	t.Serial() // the logger is package state
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("GO_TOOLCHAIN_CACHE_EMPTY_BATCH_BACKOFF", "2")
+	var batchGets, puts atomic.Int64
+	srv := emptyIndexServer(t, &batchGets, &puts, nil)
+	defer srv.Close()
+
+	logs := &levelLogger{}
+	SetLogger(logs)
+	t.Cleanup(func() { SetLogger(nil) })
+
+	b, err := NewWebBackend(WebConfig{
+		Bucket: "testbucket", Endpoint: srv.URL,
+		AccessKey: "key", SecretKey: "secret",
+	})
+	require.NoError(t, err)
+	defer b.Close()
+
+	for i := 0; i < 4; i++ {
+		_, _, _, _, _, _, err := b.getTest(fmt.Sprintf("%016x", 0xb0120000+i))
+		require.NoError(t, err)
+	}
+	require.True(t, b.batchProbingDisabled.Load())
+	require.Contains(t, logs.Info(), "empty batches", "the notice is routine, so it is Info")
+	require.NotContains(t, logs.Warn(), "empty batches", "the notice must not reach a compared stderr")
 }

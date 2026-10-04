@@ -3,8 +3,8 @@ $schema: https://github.com/wow-look-at-my/dats/schema.json
 shared:
 	files:
 		serve.sh: |
-			# Runs one check script against a server this starts and stops.
-			# usage: serve.sh <config.json> <port> <check.sh>
+			# Runs a single check script against a server this starts and
+			# stops. usage: serve.sh <config.json> <port> <check.sh>
 			set -euo pipefail
 			config="$1"
 			port="$2"
@@ -26,7 +26,7 @@ shared:
 			fi
 			# A failing check gets the server's log too. Without this a check
 			# that cannot reach a server which HAD answered reports only its own
-			# exit status, and the one process that knows why says nothing.
+			# exit status, and the a single process that knows why says nothing.
 			status=0
 			bash "$check" || status=$?
 			if [ "$status" -ne 0 ]; then

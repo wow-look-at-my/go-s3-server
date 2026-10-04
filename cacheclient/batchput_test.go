@@ -97,6 +97,7 @@ func newTestBackend(t *testing.T, url string) *WebBackend {
 
 // claimed reports whether the optimistic index claim for actionID is still held.
 func claimed(b *WebBackend, actionID string) bool {
+	b.ensureIndex()
 	b.keysMu.RLock()
 	defer b.keysMu.RUnlock()
 	return b.keys.Contains(hashOf(actionID))

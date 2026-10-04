@@ -17,7 +17,7 @@ import (
 
 // benchBody builds a body shaped like a real compiled Go object: an ar archive
 // header, then a mix of compressible and incompressible bytes, so lz4 produces
-// several blocks' worth of realistic work rather than one degenerate run.
+// several blocks' worth of realistic work rather than a single degenerate run.
 func benchBody(tb testing.TB, size int) []byte {
 	raw := make([]byte, size)
 	_, err := rand.Read(raw[size/2:])
@@ -53,8 +53,8 @@ func benchMeta(body []byte) map[string]string {
 // BenchmarkPutObjectBySize measures the single-PUT store path across the object
 // sizes a real build produces. The module-index guard has to decide whether the
 // upload is a Go module index, and how it does that is the size-sensitive part:
-// decoding the whole first lz4 block scales with the object, reading the frame
-// header and first literal run does not.
+// decoding the whole earliest lz4 block scales with the object, reading the
+// frame header and earliest literal run does not.
 func BenchmarkPutObjectBySize(b *testing.B) {
 	for _, size := range []int{8 << 10, 256 << 10, 1 << 20} {
 		b.Run(fmt.Sprintf("%dKiB", size>>10), func(b *testing.B) {
@@ -84,9 +84,7 @@ func BenchmarkPutObjectBySize(b *testing.B) {
 	}
 }
 
-// BenchmarkBatchGetWarm is the server's busiest path: the client coalesces up
-// to 128 keys into one /_batch/get, and a warm CI cache answers nearly all of
-// them. Every key costs a stat, a metadata read, the guard, and a body stream.
+// Every key costs a stat, a metadata read, the guard, and a body stream.
 func BenchmarkBatchGetWarm(b *testing.B) {
 	const nKeys = 128
 	dir := b.TempDir()
@@ -105,11 +103,10 @@ func BenchmarkBatchGetWarm(b *testing.B) {
 	}
 	reqBody, err := json.Marshal(batchGetRequest{Keys: keys})
 	require.NoError(b, err)
-	tracker := newPrefetchTracker()
 
 	// Warm the known-clean memo exactly as steady-state traffic would.
 	rec := httptest.NewRecorder()
-	handleBatchGet(rec, httptest.NewRequest("POST", "/testbucket/_batch/get", bytes.NewReader(reqBody)), storage, tracker, nil)
+	handleBatchGet(rec, httptest.NewRequest("POST", "/testbucket/_batch/get", bytes.NewReader(reqBody)), storage, nil, false)
 	require.Equal(b, 200, rec.Code)
 
 	b.SetBytes(int64(len(payload)) * nKeys)
@@ -118,15 +115,15 @@ func BenchmarkBatchGetWarm(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		req := httptest.NewRequest("POST", "/testbucket/_batch/get", bytes.NewReader(reqBody))
 		rec := httptest.NewRecorder()
-		handleBatchGet(rec, req, storage, tracker, nil)
+		handleBatchGet(rec, req, storage, nil, false)
 		require.Equal(b, 200, rec.Code)
 		require.Greater(b, rec.Body.Len(), nKeys*len(payload))
 	}
 }
 
 // BenchmarkStatMetadata isolates the per-key metadata read every served key
-// pays (twice, before the batch path stopped re-reading it): one listxattr plus
-// a read per attribute.
+// pays (again, before the batch path stopped re-reading it): a single listxattr
+// plus a read per attribute.
 func BenchmarkStatMetadata(b *testing.B) {
 	dir := b.TempDir()
 	storage, err := NewStorage(dir, WriteOnceConfig{Action: "allow"})

@@ -8,9 +8,9 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// Shims that keep a test's own vocabulary -- a reader, a key string, seven
+// Shims that keep a test's own vocabulary -- a reader, a key string,
 // return values -- from having to change everywhere the client's internals
-// did. Each one calls the real code path; none of them stands in for it.
+// did. each calls the real code path; none of them stands in for it.
 
 // hashOf is parseActionHash for a test that knows its id is well formed.
 func hashOf(actionID string) actionHash {
@@ -32,6 +32,26 @@ func keySetToHashes(keys set.Set[string]) *hashSet {
 		s.Add(hashOfKey(k))
 	}
 	return s
+}
+
+// awaitIndex is ensureIndex plus the wait for any background half of the
+// load, for a test that asserts on what the load finally installed.
+func (b *WebBackend) awaitIndex() {
+	b.ensureIndex()
+	if l := b.indexLoad.Load(); l != nil {
+		<-l.done
+	}
+}
+
+// shortenIndexWaits sets the earliest use's wait and the lock pacing, for a
+// test that cannot spend the defaults. Call it before the earliest use.
+func (b *WebBackend) shortenIndexWaits(wait, lockStale time.Duration) {
+	b.indexTiming = indexTiming{
+		wait:          wait,
+		lockHeartbeat: lockStale / 4,
+		lockStale:     lockStale,
+		lockPoll:      5 * time.Millisecond,
+	}
 }
 
 // getTest is Get in the shape the tests were written against.

@@ -21,19 +21,14 @@ import (
 const ownProcessEnv = "GO_S3_SERVER_ISOLATED_TEST"
 
 // inOwnProcess reports whether the caller is the child process that runs this
-// test alone. In the parent it re-executes the test binary for this one test,
-// waits, and reports false; the caller must then return without running the
-// body. A failure in the child becomes a failure here.
+// test alone. In the parent it re-executes the test binary for this a single
+// test, waits, and reports false; the caller must then return without running
+// the body. A failure in the child becomes a failure here.
 //
 // Every metric in this package is a process-global collector, so a before/after
 // pair counts what a concurrent test does as well. A separate process starts
-// with those counters at zero and nothing else writing them, which buys the
+// with those counters at empty and nothing else writing them, which buys the
 // isolation without making the rest of the suite wait.
-//
-// The isolation comes from the exec, not from a fork: a fork(2) child would
-// inherit a copy of the counters as they stood, contamination included, and Go
-// cannot safely fork without exec anyway (the child gets only the calling
-// thread, and any lock the runtime's other threads held stays held).
 func inOwnProcess(t *testing.T) bool {
 	t.Helper()
 	if os.Getenv(ownProcessEnv) == t.Name() {
@@ -48,12 +43,11 @@ func inOwnProcess(t *testing.T) bool {
 }
 
 func TestMetricsServer(t *testing.T) {
-	// A CounterVec exports nothing until it has a child, so a scrape can only
-	// name these once somebody has recorded one. Waiting for another test to do
-	// it makes the assertion depend on which tests ran first, and top-level
-	// tests here run in parallel: this failed with the http vec still empty.
-	// Touching them is what makes the series exist. Values go unasserted, and
-	// every test that measures a delta already runs in its own process.
+	// Waiting for another test to do it makes the assertion depend on which
+	// tests ran and top-level tests here run in parallel: this failed with the
+	// http vec still empty. Touching them is what makes the series exist.
+	// Values go unasserted, and every test that measures a delta already runs
+	// in its own process.
 	httpRequestsTotal.WithLabelValues("GET", "metrics-endpoint-probe", "200").Add(0)
 	storageOpsTotal.WithLabelValues("metrics-endpoint-probe", "ok").Add(0)
 
@@ -130,6 +124,40 @@ func TestBatchCountersRecorded(t *testing.T) {
 	require.Equal(t, foundBefore+1, kind("found"))
 	require.Equal(t, streamedBefore+1, kind("streamed"))
 	require.Equal(t, reqsBefore+1, testutil.ToFloat64(batchRequestsTotal))
+}
+
+// TestLookAheadAnchorsAreNotMisses: the client seeds a look-ahead request only
+// with keys it just hit. With prefetch on or off, those keys must not count as
+// requested or as project misses, or every hit also reads as a miss.
+func TestLookAheadAnchorsAreNotMisses(t *testing.T) {
+	if !inOwnProcess(t) {
+		return
+	}
+
+	for _, prefetch := range []bool{false, true} {
+		ts := testSetupPrefetch(t, prefetch)
+		client := ts.Client()
+
+		kind := func(k string) float64 { return testutil.ToFloat64(batchKeysTotal.WithLabelValues(k)) }
+		requestedBefore, foundBefore, anchorsBefore := kind("requested"), kind("found"), kind("anchors")
+		missesBefore := testutil.ToFloat64(projectObjectsTotal.WithLabelValues(unknownProject, objKindMiss))
+
+		anchor := "go-buildcache/v1" + strings.Repeat("4", 64)
+		putObject(t, client, ts.URL, anchor, []byte("x"), map[string]string{"Outputid": "o"})
+
+		reqBody, _ := json.Marshal(batchGetRequest{Keys: []string{anchor}, Prefetch: true, PrefetchOnly: true})
+		resp, err := doBatchGet(client, ts.URL+"/testbucket/_batch/get", reqBody)
+		require.NoError(t, err)
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		require.Equal(t, 200, resp.StatusCode)
+
+		assert.Equal(t, requestedBefore, kind("requested"), "prefetch=%v: an anchor is not a requested key", prefetch)
+		assert.Equal(t, foundBefore, kind("found"), "prefetch=%v", prefetch)
+		assert.Equal(t, anchorsBefore+1, kind("anchors"), "prefetch=%v: the anchor is counted as an anchor", prefetch)
+		assert.Equal(t, missesBefore, testutil.ToFloat64(projectObjectsTotal.WithLabelValues(unknownProject, objKindMiss)),
+			"prefetch=%v: an anchor is not a project miss", prefetch)
+	}
 }
 
 // TestIndexGauges: the index size gauges track puts and serializations.

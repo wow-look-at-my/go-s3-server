@@ -17,7 +17,7 @@ import (
 func collectStoredBodies(t *testing.T) (*WebBackend, map[string][]byte, *sync.Mutex) {
 	t.Helper()
 	hermeticOTel(t)
-	t.Setenv("GO_TOOLCHAIN_CACHE_PUT_WINDOW_MS", "5000") // one batch, flushed on Close
+	t.Setenv("GO_TOOLCHAIN_CACHE_PUT_WINDOW_MS", "5000") // a single batch, flushed on
 
 	var mu sync.Mutex
 	got := map[string][]byte{}

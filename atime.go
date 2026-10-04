@@ -5,10 +5,10 @@ package main
 // Eviction drops the least recently USED entries, and the only record of a read
 // that outlives the process is the filesystem's access time. The kernel
 // advances it whenever a body is read; under the default relatime it moves at
-// most once a day, which is the resolution a multi-day eviction window needs,
-// and -- unlike the in-memory access map, which starts empty on every restart
-// -- it survives restarts. Without it a hot object written months ago looks
-// idle to the first sweep after a restart and is evicted while still in use.
+// most a single time a day, which is the resolution a multi-day eviction window
+// needs, and -- unlike the in-memory access map, which starts empty on every
+// restart -- it survives restarts. Without it a hot object written months ago
+// looks idle to the earliest sweep after a restart and is evicted while still in use.
 //
 // Not every filesystem records it (noatime mounts, platforms whose file info
 // carries no access time), so the server probes the actual data_dir at startup
@@ -23,10 +23,7 @@ import (
 	"time"
 )
 
-// atimeProbeAge backdates the probe file before the test read. Any backdate
-// satisfies relatime (which updates when mtime or ctime is not older than
-// atime); exceeding relatime's one-day window as well means the probe does not
-// depend on which of those rules the kernel applies.
+// atimeProbeAge backdates the probe file before the test read.
 const atimeProbeAge = 48 * time.Hour
 
 // atimeIsRecorded reports whether reading a file in dir advances its access
@@ -69,8 +66,8 @@ func atimeIsRecorded(dir string) (bool, error) {
 
 // lastUsedUnix is when an object was last used: the later of its write time,
 // the filesystem's access time, and any access this process recorded in memory.
-// Each source can be missing, and taking the maximum means a missing one only
-// ever makes an entry look older, never younger.
+// Each source can be missing, and taking the maximum means a missing a single
+// only ever makes an entry look older, never younger.
 func lastUsedUnix(obj ListObject, memAccess int64) int64 {
 	used := obj.LastModified.Unix()
 	if !obj.LastAccess.IsZero() {

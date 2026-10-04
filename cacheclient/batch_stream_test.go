@@ -104,7 +104,7 @@ func TestStreamBatchResponseDropsAnUnnamedBody(t *testing.T) {
 // A response cut mid-body costs the tail, not the batch: whatever was handed
 // over before the cut is already the caller's. The error says how far the last
 // member got, because "unexpected EOF" alone cannot tell a response that
-// stopped one byte short from one that died on its first body.
+// stopped a single byte short from a single that died on its earliest body.
 func TestStreamBatchResponseKeepsWhatArrivedBeforeATruncation(t *testing.T) {
 	const bodies, size = 4, 4096
 	blob := bigBatch(t, bodies, size)

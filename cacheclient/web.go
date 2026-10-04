@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -31,6 +32,54 @@ type WebConfig struct {
 	Version   string // go-toolchain version, stored as object metadata
 	Module    string // main module path, stored as object metadata (provenance)
 	Target    string // GOOS/GOARCH this build is producing, sent as provenance
+	// IndexDir is where the key index's disk copy lives. Empty means the
+	// process temporary directory. A consumer whose builds share a cache
+	// directory but not a temporary directory points it at the cache.
+	IndexDir string
+	// IndexMaxAge is how long a disk copy of the index is served as
+	// authoritative with no request to the server. An older copy is still
+	// served at the same time, as non-authoritative, while a refresh runs in
+	// the background. empty takes IndexMaxAgeDefault. A negative value
+	// revalidates on every load.
+	IndexMaxAge time.Duration
+}
+
+// IndexMaxAgeDefault is the floor a empty WebConfig.IndexMaxAge takes
+// outside CI. The run window in indexRunWindow raises it to cover a longer run.
+const IndexMaxAgeDefault = 10 * time.Minute
+
+// IndexMaxAgeCI is what a empty WebConfig.IndexMaxAge takes in CI: a disk
+// copy is served however old it is, for the whole run. A CI run builds a
+// single time from a fresh checkout, so a copy taken at its start describes
+// the store as well at the end as it did at the start, and re-fetching tens
+// of megabytes in the middle of it buys nothing.
+const IndexMaxAgeCI = time.Duration(math.MaxInt64)
+
+// defaultIndexMaxAge resolves a empty IndexMaxAge for the index copy at
+// indexPath. The package's tests replace it with a single returning a
+// negative duration, so a test of the revalidation path sees a request.
+var defaultIndexMaxAge = resolveDefaultIndexMaxAge
+
+// resolveDefaultIndexMaxAge is the default index max age for the copy at
+// indexPath: unbounded in CI, and otherwise the longer of the current run's
+// window and IndexMaxAgeDefault.
+func resolveDefaultIndexMaxAge(indexPath string) time.Duration {
+	if runningInCI() {
+		return IndexMaxAgeCI
+	}
+	if window := indexRunWindow(indexPath, time.Now()); window > IndexMaxAgeDefault {
+		return window
+	}
+	return IndexMaxAgeDefault
+}
+
+// resolveIndexMaxAge is the max age this load applies to the copy at
+// indexPath. A caller that set IndexMaxAge gets exactly that, in CI or not.
+func (b *WebBackend) resolveIndexMaxAge(indexPath string) time.Duration {
+	if b.indexMaxAge != 0 {
+		return b.indexMaxAge
+	}
+	return defaultIndexMaxAge(indexPath)
 }
 
 // WebBackend stores cache objects in a remote web server with LZ4 compression.
@@ -49,6 +98,18 @@ type WebBackend struct {
 	version   string // go-toolchain version for object metadata
 	module    string // main module path for object metadata (provenance)
 	target    string // GOOS/GOARCH this build produces, for request provenance
+	indexDir  string // where the key index's disk copy lives; empty is os.TempDir
+	// indexMaxAge is how long the disk copy is served with no request. The
+	// index loads on the earliest Get or Put, under indexOnce, so a go
+	// command that never touches the cache never pays for it.
+	indexMaxAge time.Duration
+	indexOnce   sync.Once
+	// indexTiming bounds the earliest use's wait for an index and paces the
+	// lock that keeps processes sharing IndexDir to a single download.
+	indexTiming indexTiming
+	// indexLoad is the load running in the background, or nil before the
+	// earliest use. See web_index_load.go.
+	indexLoad atomic.Pointer[indexLoad]
 	// moduleLate carries a module path learned after the backend was built. A
 	// consumer often knows its endpoint before it knows which module it is
 	// building, and the requests in between still deserve an attribution.
@@ -57,20 +118,22 @@ type WebBackend struct {
 	Pool       ConcurrencyTracker // HTTP connection pool usage (shared across all Servers)
 	Latency    *LatencyStats      // optional; set by Server for sub-operation tracking
 	keysMu     sync.RWMutex
-	// keys holds RAW ACTION HASHES, not cache-key strings. A key string is the
-	// same 32-byte hash written as 64 hex characters behind a fixed prefix, so
-	// a string set costs about three times the memory and charges a hex encode
-	// and an allocation per entry to build. A large cache is hundreds of
-	// thousands of entries, and that set is built at startup before the build
-	// does anything at all.
+	// keys holds RAW ACTION HASHES, not cache-key strings. A large cache is
+	// hundreds of thousands of entries, and that set is built at startup
+	// before the build does anything at all.
 	keys       *hashSet // known keys, from the startup index fetch + Put claims
 	indexEmpty bool     // remote index was empty at startup: nothing to batch-probe for
 	// indexAuthoritative marks a fresh, server-confirmed index: an absent key can then miss without a probe.
 	indexAuthoritative bool
 	// indexKeysAtStart is the key count from the startup index fetch, reported in WebSummary to flag a dead remote.
 	indexKeysAtStart int
-	missesMu         sync.RWMutex
-	knownMiss        *hashSet // keys confirmed absent from remote this session
+	// keysJournal records the claims and drops made while a background index
+	// load runs, so the set it installs keeps them. Nil when no load runs.
+	keysJournal *keysJournal
+	// indexBytes is what that fetch cost on the wire, which no hit or put total covers.
+	indexBytes AtomicBytes
+	missesMu   sync.RWMutex
+	knownMiss  *hashSet // keys confirmed absent from remote this session
 
 	// emptyBatchBackoffThreshold: after this many empty batches in a row, stop probing for the run (an unset value disables).
 	emptyBatchBackoffThreshold int          // an unset value disables the backoff
@@ -82,12 +145,12 @@ type WebBackend struct {
 	// the build. Leaving it nil turns look-ahead off entirely: with nowhere to
 	// put an object nobody has asked for yet, fetching it is pure cost. That is
 	// not hypothetical -- the pool's ancestor rode every batch response and its
-	// entries went straight to the garbage collector, because the one consumer
-	// never set this.
+	// entries went straight to the garbage collector, because the thing
+	// consumer never set this.
 	//
-	// Entries arrive on the pool's own goroutines, several at once, and carry
-	// COMPRESSED bodies: a consumer that already holds an object locally drops
-	// it without paying to decompress it. Verify anything kept with Verify.
+	// Entries arrive on the pool's own goroutines, several at the same time,
+	// and carry COMPRESSED bodies: a consumer that already holds an object
+	// locally drops it without paying to decompress it. Verify anything kept with Verify.
 	OnBatchEntries func(entries []BatchEntry)
 
 	// Miss reason counters for diagnostics.
@@ -108,6 +171,31 @@ type WebBackend struct {
 	RawBytes        AtomicCounter
 	CompressedBytes AtomicCounter
 
+	// PrefetchOffered counts entries a batch response carried that nobody in
+	// that batch asked for. It is the client's view of what the server's
+	// prefetch window is actually costing.
+	PrefetchOffered AtomicCounter
+
+	// PrefetchStored counts those entries that passed the read gates and were
+	// handed to OnBatchEntries. The gap to PrefetchOffered is what the client
+	// threw away: no sink, no budget, or a body that failed a gate.
+	PrefetchStored AtomicCounter
+
+	// heldMu guards held.
+	heldMu sync.RWMutex
+	// held is the action hashes whose bodies this process actually has: every
+	// object it received and verified, and every object it uploaded. It is NOT
+	// the index, which says what the server has. A prefetch request states it
+	// so the server can skip what this build is not going to need.
+	held *hashSet
+
+	// prefetchHold bounds the bytes of unrequested bodies this backend is
+	// carrying between reading them off a response and handing them over.
+	prefetchHold prefetchBudget
+	// prefetchWG tracks the hand-offs still running, so Close does not return
+	// while a consumer callback is in flight.
+	prefetchWG sync.WaitGroup
+
 	// SkippedEmptyIndex counts clean misses skipped because the startup index was empty.
 	SkippedEmptyIndex AtomicCounter
 
@@ -127,6 +215,13 @@ type WebBackend struct {
 
 	// maxRetries bounds retries for a transient failure; past the budget the op falls back to a local miss.
 	maxRetries int // bounded retries for transient failures
+
+	// shedUntil is the UnixNano time until which the server asked for quiet: a
+	// transient answer carrying Retry-After sets it. Until then no attempt from
+	// this backend is sent (see doRetry).
+	shedUntil atomic.Int64
+	// ShedWaits counts attempts held back, unsent, because the server had asked for quiet.
+	ShedWaits AtomicCounter
 
 	errLog *httpErrLogger
 
@@ -212,16 +307,13 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		TLSClientConfig: &tls.Config{},
-		// HTTP/1.1, deliberately. HTTP/2 multiplexes every request onto ONE TCP
-		// connection, so MaxConnsPerHost below stops meaning anything: the pool
-		// holds one connection with one congestion window, and throughput ramps
-		// at whatever that single window opens at. This workload is many
-		// independent blobs and wants many independent windows, which is what
-		// the connection pool gives it once nothing collapses them.
+		// This workload is many independent blobs and wants many independent
+		// windows, which is what the connection pool gives it a single time
+		// nothing collapses them.
 		//
-		// H2's advantages -- header compression, one handshake -- are worth
-		// little here: the requests are few and large, and the bodies dwarf the
-		// headers.
+		// H2's advantages -- header compression, a single handshake -- are
+		// worth little here: the requests are few and large, and the bodies
+		// dwarf the headers.
 		ForceAttemptHTTP2:     false,
 		TLSNextProto:          map[string]func(string, *tls.Conn) http.RoundTripper{},
 		MaxIdleConns:          MaxConnsPerHost,
@@ -235,8 +327,18 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	b := &WebBackend{
 		maxRetries:                 envInt("GO_TOOLCHAIN_CACHE_MAX_RETRIES", defaultMaxRetries),
 		emptyBatchBackoffThreshold: envInt("GO_TOOLCHAIN_CACHE_EMPTY_BATCH_BACKOFF", defaultEmptyBatchBackoff),
+		// NO absolute Timeout. http.Client.Timeout is a deadline over the WHOLE
+		// request, body included, so it kills a transfer that is making perfect
+		// progress purely for being big. This client's responses are bulk: a
+		// batch get is tens of megabytes and the key index is larger still. At
+		// the bandwidth a remote CI runner actually gets, anything past about
+		// megabytes could not finish inside the old deadline, and each of them
+		// died mid-body and was retried from the start.
+		//
+		// Liveness is the transport's job instead: ResponseHeaderTimeout above
+		// bounds a server that never answers, which is what a deadline here was
+		// reaching for. The index fetch adds its own stall guard on top.
 		client: &http.Client{
-			Timeout:   30 * time.Second,
 			Transport: transport,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
@@ -270,9 +372,10 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 		version:   cfg.Version,
 		module:    cfg.Module,
 		target:    cfg.Target,
+		indexDir:  cfg.IndexDir,
 	}
 
-	b.errLog = newHTTPErrLogger(os.Stderr, httpErrFlushInterval)
+	b.errLog = newHTTPErrLogger(loggerWriter{}, httpErrFlushInterval)
 	b.batchReqCh = make(chan batchReq, batchReqChBuf)
 	b.batchStop = make(chan struct{})
 	b.batchDone = make(chan struct{})
@@ -283,15 +386,15 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	go b.batchPutCoalescer()
 	b.prep = newPrepPool(b)
 	b.lookAhead = newLookAhead(b)
-	b.keys, b.indexAuthoritative = b.loadOrFetchIndex()
-	b.indexEmpty = b.keys.Len() == 0
-	b.indexKeysAtStart = b.keys.Len()
+	// The same knob bounds both speculative paths, since both hold bodies the
+	// build never asked for.
+	b.prefetchHold.limit = lookAheadBudget()
 	b.knownMiss = newHashSet(0)
-	if b.indexAuthoritative {
-		logging.Infof("cacheprog: web index: %d keys", b.keys.Len())
-	} else {
-		logging.Warnf("cacheprog: web index: fetch failed; using %d cached keys (batch probing enabled)", b.keys.Len())
-	}
+	b.held = newHashSet(0)
+	// Empty stays empty. The default depends on the copy's own path and on
+	// how long this run has been going, which is known at load time and not here.
+	b.indexMaxAge = cfg.IndexMaxAge
+	b.indexTiming = defaultIndexTiming()
 	return b, nil
 }
 
@@ -328,6 +431,7 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 	if !ok {
 		return "", nil, time.Time{}, true
 	}
+	b.ensureIndex()
 	if b.keyKnown(h) {
 		r := b.getBatch(actionID, b.key(actionID), h)
 		return r.outputID, r.data, r.t, r.miss
@@ -343,9 +447,12 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 		return "", nil, time.Time{}, true
 	}
 
-	if b.indexAuthoritative {
+	b.keysMu.RLock()
+	authoritative, empty := b.indexAuthoritative, b.indexEmpty
+	b.keysMu.RUnlock()
+	if authoritative {
 		// Authoritative index already says the key is absent: miss without a probe.
-		if b.indexEmpty {
+		if empty {
 			b.SkippedEmptyIndex.Increment()
 		} else {
 			b.SkippedNotInIndex.Increment()
@@ -383,9 +490,10 @@ func (b *WebBackend) ActionIDFromKey(key string) (string, bool) {
 	return id, true
 }
 
-// keyKnown reports whether the hash is in the known-keys set (the startup
-// index plus optimistic Put claims).
+// keyKnown reports whether the hash is in the known-keys set (the index plus
+// optimistic Put claims).
 func (b *WebBackend) keyKnown(h actionHash) bool {
+	b.ensureIndex()
 	b.keysMu.RLock()
 	defer b.keysMu.RUnlock()
 	return b.keys.Contains(h)
@@ -395,11 +503,10 @@ func (b *WebBackend) keyKnown(h actionHash) bool {
 // response) for a key. It drops any stale index claim so Put re-uploads instead of
 // skipping, and marks the key knownMiss so Gets stop re-asking this run.
 func (b *WebBackend) reclaimAbsent(h actionHash) bool {
+	b.ensureIndex()
 	b.keysMu.Lock()
 	removed := b.keys.Contains(h)
-	if removed {
-		b.keys.Remove(h)
-	}
+	b.dropKeyLocked(h)
 	b.keysMu.Unlock()
 	if removed {
 		b.Reclaimed404.Increment()
@@ -421,7 +528,13 @@ func (b *WebBackend) ForgetStale(actionID string) {
 // Close drains the batch coalescer and flushes the HTTP error logger.
 
 func (b *WebBackend) Close() error {
-	// The prep pool first, since it still owes the coalescer every object it holds.
+	// An index load still running is abandoned, and its lock on the disk copy
+	// released for the next process.
+	if l := b.indexLoad.Load(); l != nil {
+		l.cancel()
+		<-l.done
+	}
+	// The prep pool since it still owes the coalescer every object it holds.
 	b.prep.Close()
 	// Flush the PUT coalescer up front: an unflushed upload was claimed in the index but never stored.
 	if b.putBatchStop != nil {
@@ -429,12 +542,15 @@ func (b *WebBackend) Close() error {
 		<-b.putBatchDone
 	}
 	// The GET coalescer before the look-ahead, because a batch SEEDS the
-	// look-ahead as its last act. Closing the pool first dropped every seed an
-	// in-flight batch was about to make, silently and on timing alone.
+	// look-ahead as its last act. Closing the pool earliest dropped every seed
+	// an in-flight batch was about to make, silently and on timing alone.
 	if b.batchStop != nil {
 		close(b.batchStop)
 		<-b.batchDone
 	}
+	// The coalescer is done, so no further hand-off can start; the ones running
+	// still owe the consumer their callback.
+	b.prefetchWG.Wait()
 	// Now nothing can seed it, so what it holds is all it will ever hold.
 	b.lookAhead.Close()
 	if b.errLog != nil {
@@ -451,8 +567,7 @@ func (b *WebBackend) GetStats() *CacheStats { return &b.Stats }
 // something an operator can act on. A key says nothing about who wanted it; the
 // module says which project's build is running, the target says which port it
 // is building for, and the kind separates the requests a build is blocked on
-// from the ones the look-ahead pool made on its own. Without that last one a
-// server cannot tell a slow build from a busy one.
+// from the ones the look-ahead pool made on its own.
 func (b *WebBackend) signRequest(req *http.Request) {
 	req.SetBasicAuth(b.accessKey, b.secretKey)
 	if module := b.moduleName(); module != "" {
@@ -476,7 +591,7 @@ func (b *WebBackend) SetModule(path string) {
 	}
 }
 
-// moduleName is the configured module path, or one set later.
+// moduleName is the configured module path, or a single set later.
 func (b *WebBackend) moduleName() string {
 	if p := b.moduleLate.Load(); p != nil {
 		return *p
@@ -491,22 +606,17 @@ const (
 	HeaderTarget    = "X-Cache-Target"    // GOOS/GOARCH the build is producing
 	HeaderClient    = "X-Cache-Client"    // this client's wire version
 	HeaderKind      = "X-Cache-Kind"      // KindCritical or KindLookAhead
-	HeaderBuild     = "X-Cache-Build"     // one build, so prefetch suppression ends with it
+	HeaderBuild     = "X-Cache-Build"     // a single build, so prefetch suppression ends
 )
 
 // buildID names this process's build. It is random per process, and it exists
 // for the server's prefetch suppression.
 //
-// The server must not hand one look-ahead request the same window it just
-// handed the last one, so it remembers what it sent. What it remembered was the
-// USER, for five minutes, and a user runs many builds in five minutes: the
-// first build got the window and every build after it got an empty one, so a
-// second build in a row fell back to fetching every object on its critical
-// path. Scoped to the build, suppression still moves the window within a build
-// and ends when the build does.
+// Scoped to the build, suppression still moves the window within a build and
+// ends when the build does.
 //
-// A collision costs one build a suppressed window, so a failed read of the
-// system source falls back to the clock and the pid rather than to a constant.
+// A collision costs a single build a suppressed window, so a failed read of
+// the system source falls back to the clock and the pid rather than to a constant.
 var buildID = newBuildID()
 
 func newBuildID() string {
@@ -518,7 +628,7 @@ func newBuildID() string {
 }
 
 // Request kinds. A server that cannot tell these apart cannot tell a build
-// that is waiting from one that is merely reading ahead.
+// that is waiting from a single that is merely reading ahead.
 const (
 	KindCritical  = "critical"
 	KindLookAhead = "look-ahead"

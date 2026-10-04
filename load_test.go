@@ -21,8 +21,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// loadTestKey returns a deterministic cacheprog-style key (go-buildcache/v1 +
-// 64 hex) for index n.
 func loadTestKey(n int) string {
 	h := sha256.Sum256([]byte(fmt.Sprintf("load-key-%d", n)))
 	return "go-buildcache/v1" + hex.EncodeToString(h[:])
@@ -43,10 +41,10 @@ func newLoadTestServer(t *testing.T, maxConcurrent int) (*httptest.Server, *Stor
 	return ts, st
 }
 
-// consumeTar reads a batch-get tar response one entry at a time, discarding each
-// body, and returns the total bytes seen. Reading entry-by-entry both validates
-// that the streamed tar is well-formed under load and keeps the client's own
-// memory bounded, so the process-heap assertion reflects the server.
+// consumeTar reads a batch-get tar response a single entry at a time, discarding
+// each body, and returns the total bytes seen. Reading entry-by-entry both
+// validates that the streamed tar is well-formed under load and keeps the
+// client's own memory bounded, so the process-heap assertion reflects the server.
 func consumeTar(r io.Reader) (int64, int, error) {
 	tr := tar.NewReader(r)
 	var total int64
@@ -72,11 +70,7 @@ func consumeTar(r io.Reader) (int64, int, error) {
 
 // TestLoad_ConcurrentMatrixStreamsWithBoundedMemory emulates the CI matrix that
 // OOM-killed the server: many concurrent clients each batch-fetching hundreds of
-// sizable objects plus interleaved PUTs. The server must (1) never return a 5xx,
-// and (2) keep its heap bounded far below the total bytes served — proof that
-// bodies are streamed, not all buffered. Pre-fix (every batch body buffered into
-// one slice) the live heap would track concurrent-batches × batch-bytes (~1.5
-// GiB here); post-fix it stays flat.
+// sizable objects plus interleaved PUTs.
 func TestLoad_ConcurrentMatrixStreamsWithBoundedMemory(t *testing.T) {
 	if testing.Short() {
 		t.Skip("load test skipped in -short mode")
@@ -90,12 +84,8 @@ func TestLoad_ConcurrentMatrixStreamsWithBoundedMemory(t *testing.T) {
 		batchSize  = 400
 		putsPerCl  = 10
 	)
-	// If every batch body were buffered (the pre-fix behavior), the server would
-	// hold clients*batchSize*objSize of live bodies at the synchronized peak:
-	//   16 * 400 * 256 KiB = 1.6 GiB — far above heapCap below.
 
-	// Pre-populate the cache. st.Put streams to disk, so this does not buffer
-	// 600 objects in memory.
+	// Pre-populate the cache.
 	body := bytes.Repeat([]byte{'x'}, objSize)
 	keys := make([]string, numObjects)
 	for i := 0; i < numObjects; i++ {
@@ -148,8 +138,8 @@ func TestLoad_ConcurrentMatrixStreamsWithBoundedMemory(t *testing.T) {
 		}
 	}
 
-	// Barrier so all clients hit the server at once, maximizing the concurrent
-	// peak the sampler must catch (and that buffering would balloon).
+	// Barrier so all clients hit the server at the same time, maximizing the
+	// concurrent peak the sampler must catch (and that buffering would balloon).
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	client := &http.Client{Timeout: 120 * time.Second}
@@ -221,10 +211,6 @@ func TestLoad_ConcurrentMatrixStreamsWithBoundedMemory(t *testing.T) {
 		peak/(1024*1024), heapCap/(1024*1024), atomic.LoadInt64(&totalServed)/(1024*1024))
 }
 
-// TestLoad_OverloadShedsWith503 proves the backpressure path: when the server is
-// at its concurrency limit, excess requests are shed with 503 + Retry-After
-// (the signal clients back off on) instead of being queued until the process
-// OOMs — the failure a fronting proxy would otherwise surface as a 502.
 func TestLoad_OverloadShedsWith503(t *testing.T) {
 	if !inOwnProcess(t) {
 		return
@@ -252,7 +238,6 @@ func TestLoad_OverloadShedsWith503(t *testing.T) {
 		return testutil.ToFloat64(httpInFlightRequests) >= 1
 	}, 5*time.Second, 5*time.Millisecond, "the blocking PUT should hold the only slot")
 
-	// A second request must be shed immediately with 503 + Retry-After.
 	resp, err := http.Get(ts.URL + "/testbucket/go-buildcache/v1" + strings.Repeat("b", 64))
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -276,10 +261,10 @@ func TestLoad_OverloadShedsWith503(t *testing.T) {
 // caches as hard as it can, every single request is still answered correctly.
 //
 // A cache server exists to answer. If it refuses under load, every client it
-// refuses rebuilds anyway -- having first paid for the round trip -- so a cache
-// that sheds is worse than no cache at all. Memory pressure is allowed to make
-// the server slower (a cold cache means more syscalls per request); it is never
-// allowed to make it unavailable.
+// refuses rebuilds anyway -- having earliest paid for the round trip -- so a
+// cache that sheds is worse than no cache at all. Memory pressure is allowed to
+// make the server slower (a cold cache means more syscalls per request); it is
+// never allowed to make it unavailable.
 func TestLoad_MemoryPressureNeverRefusesService(t *testing.T) {
 	if testing.Short() {
 		t.Skip("load test skipped in -short mode")
@@ -398,7 +383,7 @@ func TestLoad_MemoryPressureNeverRefusesService(t *testing.T) {
 					}
 					// The body must be byte-for-byte right: a cache under
 					// pressure that starts serving truncated or wrong bodies
-					// would be far worse than one that refused.
+					// would be far worse than a single that refused.
 					if rerr != nil || !bytes.Equal(got, body) {
 						wrong.Add(1)
 						continue

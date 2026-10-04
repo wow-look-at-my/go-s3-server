@@ -18,20 +18,17 @@ func newTestLogger(buf *bytes.Buffer) *httpErrLogger {
 	return newHTTPErrLogger(buf, time.Hour)
 }
 
-// captureLogger installs a Logger for one test and returns what it collected.
-// A batch summary goes there rather than to the writer, so the consumer can
-// decide whether its build's output carries it.
+// captureLogger installs a Logger for a single test and returns what it
+// collected. A batch summary goes there rather than to the writer, so the
+// consumer can decide whether its build's output carries it.
 type captureLogger struct {
 	mu   sync.Mutex
 	sb   strings.Builder
 	prev Logger
 }
 
-// captureMu serializes the capture. logging is one package variable, so two
-// tests that install a capture at once share whichever one landed last: the
-// second test's lines go to the first test's buffer, and the first test reads
-// an empty one. Both then fail on somebody else's output. A mutex held for the
-// whole test gives each one the variable to itself.
+// captureMu serializes the capture. Both then fail on somebody else's output.
+// A mutex held for the whole test gives each the variable to itself.
 //
 // It is a mutex rather than t.Serial because this module is consumed by trees
 // built with a stock toolchain, which has no such method. It is also narrower:
@@ -40,6 +37,7 @@ var captureMu sync.Mutex
 
 func newCaptureLogger(t *testing.T) *captureLogger {
 	t.Helper()
+	t.Serial() // the logger is package state
 	captureMu.Lock()
 	c := &captureLogger{prev: logging}
 	SetLogger(c)
@@ -230,8 +228,8 @@ func TestHTTPErrLogger_ConcurrentRecord(t *testing.T) {
 func TestHTTPErrLogger_NilReceiver(t *testing.T) {
 	var l *httpErrLogger
 	// A nil receiver has no writer, so it reports straight to the package
-	// logger. Capturing that is what keeps these two lines out of whatever
-	// buffer a test running beside this one installed.
+	// logger. Capturing that is what keeps these lines out of whatever
+	// buffer a test running beside this installed.
 	cap := newCaptureLogger(t)
 	require.NotPanics(t, func() {
 		l.Record("web put", 502, "aabbccdd", "boom")
@@ -240,6 +238,51 @@ func TestHTTPErrLogger_NilReceiver(t *testing.T) {
 	require.Contains(t, cap.String(), "web put aabbccdd: HTTP 502: boom")
 	require.Contains(t, cap.String(), "web batch get ccddeeff: HTTP 502")
 }
+
+// The aggregated summaries must reach the installed Logger, not a stream of
+// the client's own choosing. A consumer whose stdout is a protocol channel,
+// or whose stderr is read by its own tests, gets silence until it asks --
+// which is the package contract, and which the summaries used to sidestep by
+// holding os.Stderr directly.
+func TestLoggerWriter_SummariesGoToTheInstalledLogger(t *testing.T) {
+	t.Serial() // the logger is package state
+	var got []string
+	SetLogger(recordingLogger{&got})
+	t.Cleanup(func() { SetLogger(nil) })
+
+	l := newHTTPErrLogger(loggerWriter{}, time.Hour)
+	l.Record("web put", 404, "aabbccdd", "404 page not found")
+	require.NoError(t, l.Close())
+
+	require.Len(t, got, 1)
+	require.Contains(t, got[0], "web put")
+	require.Contains(t, got[0], "404")
+	require.NotContains(t, got[0], "\n", "each summary line is one message")
+}
+
+// With no Logger installed the same summaries go nowhere at all.
+func TestLoggerWriter_SilentWithNoLogger(t *testing.T) {
+	t.Serial() // the logger is package state
+	SetLogger(nil)
+	l := newHTTPErrLogger(loggerWriter{}, time.Hour)
+	require.NotPanics(t, func() {
+		l.Record("web put", 404, "aabbccdd", "404 page not found")
+		require.NoError(t, l.Close())
+	})
+}
+
+// recordingLogger collects Warnf messages so a test can assert on them.
+type recordingLogger struct{ msgs *[]string }
+
+func (r recordingLogger) Infof(format string, args ...any) {
+	*r.msgs = append(*r.msgs, fmt.Sprintf(format, args...))
+}
+
+func (r recordingLogger) Warnf(format string, args ...any) {
+	*r.msgs = append(*r.msgs, fmt.Sprintf(format, args...))
+}
+
+func (recordingLogger) Debugf(string, ...any) {}
 
 func TestHTTPErrLogger_ShortIDSafe(t *testing.T) {
 	var buf bytes.Buffer
@@ -252,8 +295,8 @@ func TestHTTPErrLogger_ShortIDSafe(t *testing.T) {
 }
 
 // A batch summary reaches the Logger, never the captured writer. It says the
-// cache is working, once per flush for the whole process, and a consumer whose
-// own output is data somebody parses has to be able to quiet it.
+// cache is working, a single time per flush for the whole process, and a
+// consumer whose own output is data somebody parses has to be able to quiet it.
 func TestHTTPErrLogger_BatchHTTPSingleHit(t *testing.T) {
 	var buf bytes.Buffer
 	l := newTestLogger(&buf)
@@ -333,9 +376,9 @@ func TestHTTPErrLogger_BatchHTTPNilReceiver(t *testing.T) {
 	})
 }
 
-// One flush carries both kinds, and they part company by destination: the
-// failure to the writer, the summary to the Logger. That split is the whole
-// point -- a consumer can quiet the second without losing the first.
+// A single flush carries both kinds, and they part company by destination:
+// the failure to the writer, the summary to the Logger. That split is the
+// whole point -- a consumer can quiet the next without losing the earliest.
 func TestHTTPErrLogger_MixedHTTPErrAndBatchHTTP(t *testing.T) {
 	var buf bytes.Buffer
 	l := newTestLogger(&buf)

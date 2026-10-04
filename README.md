@@ -86,6 +86,7 @@ All flags except `--config` override the corresponding config file value.
 | `credentials` | array | — | yes (unless `disable_auth: true`) | One or more `username`/`password` pairs. Both fields must be non-empty. |
 | `max_concurrent_requests` | int | `128` | no | Max in-flight requests; excess is shed with `503 + Retry-After`. `0` → default. |
 | `max_object_bytes` | int | `1073741824` (1 GiB) | no | Max single PUT body; larger uploads get `413`. The body is streamed to disk, so this guards disk, not memory. `0` → default. |
+| `prefetch` | bool | `false` | no | If `true`, `/_batch/get` adds keys stored near the requested ones; while `false` it returns only the requested keys and ignores the client's `prefetch`/`prefetch_only`. |
 | `eviction` | object | `{"max_bytes":53687091200,"interval":"24h"}` | no | Automatic pruning of the cache (see below). |
 | `log_mode` | string | `normal` | no | Access log shape. `normal` prints one aggregated line per active second; `verbose` prints one line per request. See [Logging](#logging). |
 | `dashboard_listen` | string | `:9002` | no | Operator dashboard, on its own port. `""` disables it. It answers without credentials, so front it with an access proxy — see [Dashboard](#dashboard). |
@@ -237,7 +238,7 @@ This server is built to absorb the concurrent load of a parallel CI matrix (many
 - **Observability.** When `--metrics-listen` is set, `/metrics` exposes request, storage, in-flight, and rejection counters, plus:
   - `s3_get_requests_total{outcome}` — every single-object GET by outcome: `hit`, `miss_not_found`, `miss_advertised_unservable` (a 404 on a key `/_index` currently advertises — the index/store-divergence signature that must stay at ~0), `miss_module_index_evicted`, `miss_peek_error`, `miss_selfheal_failed`.
   - `s3_put_refusals_total{reason}` — uploads accepted on the wire but refused storage (e.g. `module_index`). This moving during CI activity is the PUT guard's liveness proof.
-  - `s3_batch_requests_total` and `s3_batch_keys_total{kind}` (`requested`/`found`/`prefetched`/`suppressed`/`streamed`) — batch volume. A falling found/requested ratio is the earliest cache-degradation signal.
+  - `s3_batch_requests_total` and `s3_batch_keys_total{kind}` (`requested`/`found`/`anchors`/`prefetched`/`client_held`/`streamed`) — batch volume. `anchors` are look-ahead keys, which ask for nothing and never count as requested. A falling found/requested ratio is the earliest cache-degradation signal.
   - index gauges `s3_index_entries`, `s3_index_hashes`, `s3_index_pending_hashes` and `s3_index_rebuild_duration_seconds`.
   - eviction counters (`s3_evictions_total`, `s3_evicted_bytes_total`) and the cache size `s3_cache_bytes` (refreshed every 15 minutes, not just at sweep end).
   - self-heal counters: `s3_self_heal_repairs_total` (outputid-less relics repaired in place on read), `s3_self_heal_failures_total` (unrepairable bodies, de-advertised so consumers re-upload), and `s3_outputid_mismatch_total` (a stored outputid found disagreeing with its body hash — stale-stamp corruption, repaired in place).

@@ -49,7 +49,7 @@ func TestCompressionAdvisory(t *testing.T) {
 			assert.Contains(t, msg, "WARNING")
 			assert.Contains(t, msg, "tank/cache")
 			// The point is not "you have compression on" but "it is the
-			// SECOND pass over the same bytes", plus the exact fix.
+			// next pass over the same bytes", plus the exact fix.
 			assert.Contains(t, msg, "SECOND time")
 			assert.Contains(t, msg, "zfs set compression=off tank/cache")
 		})

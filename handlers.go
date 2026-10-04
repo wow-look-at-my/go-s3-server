@@ -26,13 +26,6 @@ func writeError(w http.ResponseWriter, httpStatus int, code, message string) {
 	fmt.Fprintf(w, "%s: %s\n", code, message)
 }
 
-// absentKeyOutcome classifies a GET 404 for a key with no object on disk: a
-// plain miss_not_found, or — when the key's action hash is CURRENTLY advertised
-// in /_index — miss_advertised_unservable. The latter is the index/store-
-// divergence signature (an advertised key every client is told to skip
-// re-uploading, yet nobody can fetch): it should be ~0 always, and counting it
-// at serve time is what makes a recurrence of the historical "404s on indexed
-// keys" incidents visible server-side instead of only in client logs.
 func absentKeyOutcome(storage *Storage, key string) string {
 	if h, ok := extractActionHash(key); ok && storage.Index != nil && storage.Index.Contains(h) {
 		return "miss_advertised_unservable"
@@ -49,6 +42,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			getRequestsTotal.WithLabelValues(absentKeyOutcome(storage, key)).Inc()
+			noteProjectMiss(provenanceOf(r), 1)
 			writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
 			return
 		}
@@ -57,27 +51,47 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	}
 	defer f.Close()
 
-	// Refuse + evict a stored Go module-index blob on read. The PutObject guard
-	// only blocks NEW indexes; one already on disk (uploaded before that guard, or
-	// surviving because the one-time v3 startup purge already ran) would otherwise
-	// be served verbatim here and re-advertised in /_index forever, and the client
-	// -- which never re-uploads an index and has no remote DELETE -- refuses and
-	// re-fetches it on every build. evictModuleIndexOnRead detects it, evicts it
-	// (dropping the file and the /_index entry), and signals a miss; the peek is
-	// non-destructive (it rewinds f), so the non-index serve path below reads the
-	// body from byte 0 unchanged. This is orthogonal to the outputid self-heal --
-	// an index carries an outputid, so ensureOutputID would happily pass it -- and
-	// must run first. A miss recomputes the index locally on the client, so 404
-	// (the normal not-found path) is exactly right.
+	// Refuse + evict a stored Go module-index blob on read. This is orthogonal to
+	// the outputid self-heal -- an index carries an outputid, so ensureOutputID
+	// would happily pass it -- and must run earliest.
 	switch evictModuleIndexOnRead(storage, key, f, meta) {
 	case guardEvicted:
 		getRequestsTotal.WithLabelValues("miss_module_index_evicted").Inc()
+		noteProjectMiss(provenanceOf(r), 1)
 		writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
 		return
 	case guardPeekError:
 		getRequestsTotal.WithLabelValues("miss_peek_error").Inc()
+		noteProjectMiss(provenanceOf(r), 1)
 		writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
 		return
+	}
+
+	// Every object is checked against the digest recorded with it before it is
+	// served.
+	{
+		ok, verifyErr := verifyStoredDigest(f, meta.Metadata)
+		switch {
+		case verifyErr != nil:
+			log.Printf("stored digest: cannot verify %q, so not serving it: %v", key, verifyErr)
+			getRequestsTotal.WithLabelValues("miss_stored_digest").Inc()
+			noteProjectMiss(provenanceOf(r), 1)
+			writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
+			return
+		case !ok:
+			// The bytes changed after they were written. Nothing here can say
+			// what they should be, so the object goes and the next uploader
+			// replaces it.
+			storedDigestMismatchTotal.WithLabelValues("get").Inc()
+			log.Printf("stored digest: %q no longer hashes to the digest stored with it; evicting", key)
+			if delErr := storage.Delete(key); delErr != nil && !errors.Is(delErr, ErrNotFound) {
+				log.Printf("stored digest: evicting %q: %v", key, delErr)
+			}
+			getRequestsTotal.WithLabelValues("miss_stored_digest").Inc()
+			noteProjectMiss(provenanceOf(r), 1)
+			writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
+			return
+		}
 	}
 
 	// Self-heal: an object with no outputid metadata can never be a cache hit --
@@ -93,6 +107,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	// anything -- the object is left for the normal eviction policy.
 	if !ensureOutputID(storage, key, meta, f) {
 		getRequestsTotal.WithLabelValues("miss_selfheal_failed").Inc()
+		noteProjectMiss(provenanceOf(r), 1)
 		writeError(w, 404, "not_found", fmt.Sprintf("the specified key does not exist: %s", key))
 		return
 	}
@@ -105,6 +120,10 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 
 	emitObjectHeaders(w, meta)
 	w.WriteHeader(200)
+	// The guards are done. What is left is a copy from the open file through a
+	// fixed buffer, which holds no per-request memory, so it runs without an
+	// admission slot.
+	releaseSlot(r)
 	// Stream the body, logging DISK-side failures. The status is already
 	// written, so an error here truncates the response; the client's hash
 	// check refuses the partial body, but without a log the server would be
@@ -125,7 +144,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 // the shared header surface of GET and HEAD responses.
 func emitObjectHeaders(w http.ResponseWriter, meta *ObjectMeta) {
 	for k, v := range meta.Metadata {
-		// Capitalize first letter of metadata key
+		// Capitalize earliest letter of metadata key
 		name := k
 		if len(name) > 0 {
 			name = strings.ToUpper(name[:1]) + name[1:]
@@ -163,7 +182,7 @@ func handleHeadObject(w http.ResponseWriter, r *http.Request, storage *Storage, 
 
 func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string, maxObjectBytes int64, agg *logAggregator) {
 	meta := make(map[string]string)
-	// Native metadata headers first.
+	// Native metadata headers earliest.
 	for k, vals := range r.Header {
 		lk := strings.ToLower(k)
 		if strings.HasPrefix(lk, nativeMetaPrefix) {
@@ -189,9 +208,7 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 
 	audit := auditMapFromContext(r)
 
-	// Cap a single upload and stream it straight to disk. PutStream never
-	// buffers the whole body, so concurrent large PUTs no longer multiply into
-	// the heap; MaxBytesReader bounds a runaway/oversized upload (413).
+	// Cap a single upload and stream it straight to disk.
 	body := http.MaxBytesReader(w, r.Body, maxObjectBytes)
 
 	// storeOneObject does the peek-refuse + write_once + store work shared with
@@ -199,12 +216,16 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	// contract here.
 	status, err := storeOneObject(storage, key, body, meta, audit)
 	if err != nil {
-		// A MaxBytesReader overflow surfaces as a *http.MaxBytesError from either
-		// the peek read or the streamed copy: report it as 413, the single-PUT
-		// over-limit contract.
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			writeError(w, 413, "too_large", fmt.Sprintf("object exceeds max size of %d bytes", maxObjectBytes))
+			return
+		}
+		// The uploader's own digest says these are not the bytes it meant to
+		// send. Naming it as the client's request, not this server's fault, is
+		// what makes a retry the obvious answer.
+		if errors.Is(err, ErrStoredDigestMismatch) {
+			writeError(w, 400, "invalid_request", err.Error())
 			return
 		}
 		writeError(w, 500, "internal_error", err.Error())
@@ -212,21 +233,16 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	}
 	switch status {
 	case storeStatusConflict:
-		// A write_once conflict. Report it as 409 (the single-PUT contract); the
-		// batch path instead records "conflict" as an accepted per-object result.
+		// A write_once conflict.
 		writeError(w, 409, "conflict", "object already exists with different content")
 		return
 	case storeStatusStored:
 		if a := auditFromContext(r.Context()); a != nil {
 			a.Label = objectLabel(meta)
 		}
-		// A chunked upload declares no length. The body was streamed, so the
-		// count is unknown here rather than zero -- max(0) keeps it out of the
-		// byte rate instead of inventing a size.
+		// A chunked upload declares no length.
 		recordObject(agg, provenanceOf(r), meta, max(r.ContentLength, 0), true, false)
 	}
-	// stored and dropped (module index) are both 200/no-error to the client: a
-	// dropped index is a no-op (the client recomputes it locally on the miss).
 	w.WriteHeader(200)
 }
 
@@ -241,59 +257,46 @@ const (
 	storeStatusError    = "error"    // an I/O or store failure for this object
 )
 
-// storeOneObject is the shared store path used by BOTH handlePutObject (one
-// object per request) and handleBatchPut (many objects in one tar). Factoring it
-// out keeps the module-index refusal, write_once handling, and audit/index
-// bookkeeping identical across the two endpoints so they cannot drift.
+// storeOneObject is the shared store path used by BOTH handlePutObject (a single
+// object per request) and handleBatchPut (many objects in a single tar).
+// Factoring it out keeps the module-index refusal, write_once handling, and
+// audit/index bookkeeping identical across both endpoints so they cannot drift.
 //
-// It refuses Go module-index blobs (see looksLikeGoModuleIndex): they cannot be
-// verified against their key and a mis-keyed one poisons every consumer's build,
-// so this shared cache must never hold one. It peeks a bounded but block-sized
-// prefix -- enough to cover a real index's first lz4 block, since the magic only
-// decodes once the whole first block is present (a fixed 512-byte peek truncated
-// the single-block bodies the client sends and missed every real index; see
-// modindex.go). The peeked bytes are stitched back in front of the unread rest
-// so a non-index body is still stored intact and large bodies keep streaming. A
-// dropped index is a no-op for the client (it recomputes the index locally on
-// the resulting miss), so it is reported as a clean "dropped", not an error.
+// It peeks a bounded but block-sized prefix -- enough to cover a real index's
+// earliest lz4 block, since the magic only decodes a single time the whole
+// earliest block is present (a fixed 512-byte peek truncated the single-block
+// bodies the client sends and missed every real index; see modindex.go). The
+// peeked bytes are stitched back in front of the unread rest so a non-index body
+// is still stored intact and large bodies keep streaming. A dropped index is a
+// no-op for the client (it recomputes the index locally on the resulting miss),
+// so it is reported as a clean "dropped", not an error.
 //
 // The peek read SELF-SIZES to the bytes actually present rather than
-// pre-allocating the full indexPutPeekBytes cap on every call. io.ReadAll grows
-// its buffer from the body's real size (a typical ~8 KiB object allocates ~8-16
-// KiB), while io.LimitReader caps the worst case (a large body) at exactly
-// indexPutPeekBytes -- identical detection input, but without the per-PUT 1 MiB
-// allocation. That fixed cap-sized allocation was a measured regression: ~1 MiB
-// churned per PUT (vs ~body size) made a CI burst of ~7000 PUTs thrash GC and
-// saturate the admission-control sem, shedding PUTs with 503 so nothing got
-// stored/indexed and the next build saw an empty /_index (hits=0). LimitReader
+// pre-allocating the full indexPutPeekBytes cap on every call. LimitReader
 // keeps the detection bytes identical to the old cap; the cap stays generous so
-// a real index's first block is always covered.
+// a real index's earliest block is always covered.
 //
 // Returns (status, err). On a write_once conflict it returns (conflict, nil) --
 // an accepted, non-error outcome the caller classifies. On any other store
 // failure it returns (error, err) so the caller can surface the error (single
-// PUT) or record it per object and continue (batch). A returned err may wrap a
-// *http.MaxBytesError when body is a bounded reader; the caller decides whether
-// that maps to 413.
+// PUT) or record it per object and continue (batch).
 func storeOneObject(storage *Storage, key string, body io.Reader, meta, audit map[string]string) (string, error) {
 	peek, peekErr := io.ReadAll(io.LimitReader(body, int64(indexPutPeekBytes)))
 	if peekErr != nil {
 		return storeStatusError, peekErr
 	}
 	if looksLikeGoModuleIndex(peek, meta["compression"]) {
-		// Count + log the refusal. This used to be completely silent, which is
-		// the exact blind spot that hid the 512-byte-peek bug: a broken guard
-		// looks identical to a quiet one. Clients build module indexes all the
-		// time, so an occasionally-nonzero counter during CI activity is the
-		// live proof the guard works; refusals are rare enough (the client-side
-		// guard blocks most uploads first) that a per-event log line is cheap
-		// and names the offending key for forensics. Living here, the counter
-		// covers BOTH the single-PUT and the batch-put refusal paths.
+		// Count + log the refusal. Clients build module indexes all the time,
+		// so an occasionally-nonzero counter during CI activity is the live
+		// proof the guard works; refusals are rare enough (the client-side
+		// guard blocks most uploads earliest) that a per-event log line is
+		// cheap and names the offending key for forensics. Living here, the
+		// counter covers BOTH the single-PUT and the batch-put refusal paths.
 		putRefusalsTotal.WithLabelValues("module_index").Inc()
 		log.Printf("put guard: refused module-index upload for %q (accepted, stored nothing; client recomputes locally)", key)
 		// Drain any remaining bytes so a streaming writer (the single-PUT client)
 		// completes cleanly; the batch caller passes a bounded per-member reader,
-		// for which this is a cheap no-op once the member is consumed.
+		// for which this is a cheap no-op a single time the member is consumed.
 		io.Copy(io.Discard, body)
 		return storeStatusDropped, nil
 	}
@@ -311,10 +314,8 @@ func storeOneObject(storage *Storage, key string, body io.Reader, meta, audit ma
 
 // handleDeleteObject removes a single object. It is the surgical eviction lever
 // for a poisoned build-cache entry: delete the bad key and the next build
-// recomputes and re-uploads the correct object. DELETE is idempotent --
-// removing a missing key still reports success (204), so retries and races are
-// harmless. Auth is enforced upstream in ServeHTTP, the same gate PUT goes
-// through.
+// recomputes and re-uploads the correct object. Auth is enforced upstream in
+// ServeHTTP, the same gate PUT goes through.
 func handleDeleteObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string) {
 	if err := storage.Delete(key); err != nil && !errors.Is(err, ErrNotFound) {
 		writeError(w, 500, "internal_error", err.Error())
@@ -325,14 +326,17 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request, storage *Storage
 
 // handleGetIndex serves the precomputed GBCI v1 binary cache-key index.
 // The body is a fixed 24-byte header + sorted action-ID hashes + 32-byte
-// SHA-256 trailer. The strong ETag is the hex-encoded trailer; conditional
-// GETs (If-None-Match) are handled by http.ServeContent and return 304.
+// SHA-256 trailer.
 func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 	if idx == nil {
 		writeError(w, 500, "internal_error", "index unavailable")
 		return
 	}
 	blob, etag := idx.Blob()
+	// The blob is shared by every request and already built, so the transfer
+	// holds no memory of its own. It is tens of megabytes, and a CI runner can
+	// take minutes to pull it, so it goes out without an admission slot.
+	releaseSlot(r)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "no-cache")
@@ -345,17 +349,17 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 // the server's own per-PUT index tracking has a delay.
 func handlePutIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 	if idx == nil {
-		writeS3Error(w, 500, "InternalError", "index unavailable")
+		writeError(w, 500, "internal_error", "index unavailable")
 		return
 	}
 	data, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
 	if err != nil {
-		writeS3Error(w, 500, "InternalError", "failed to read body")
+		writeError(w, 500, "internal_error", "failed to read body")
 		return
 	}
 	hashes, err := parseIndexHashes(data)
 	if err != nil {
-		writeS3Error(w, 400, "InvalidRequest", fmt.Sprintf("invalid index blob: %v", err))
+		writeError(w, 400, "invalid_request", fmt.Sprintf("invalid index blob: %v", err))
 		return
 	}
 	idx.Merge(hashes)

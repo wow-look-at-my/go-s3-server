@@ -192,15 +192,23 @@ function drawTiles(stats) {
 	]);
 }
 
+// The outcome label values a single GET can record.
+const GET_OUTCOMES = [
+	"hit",
+	"miss_not_found",
+	"miss_advertised_unservable",
+	"miss_module_index_evicted",
+	"miss_peek_error",
+	"miss_selfheal_failed",
+];
+
 function drawReads(stats) {
 	const outcomes = byLabel(stats, "s3_get_requests_total", "outcome");
 	const total = sum(outcomes) || 1;
 	const tone = (k) => (k === "hit" ? "good" : k === "miss_not_found" ? "" : "bad");
 	fill(
 		$("get-outcomes"),
-		Object.entries(outcomes)
-			.sort((a, b) => b[1] - a[1])
-			.map(([k, v]) => bar(k, v, total, tone(k), `${count(v)}  ${percent(v, total)}`)),
+		GET_OUTCOMES.map((k) => bar(k, outcomes[k] || 0, total, tone(k), `${count(outcomes[k] || 0)}  ${percent(outcomes[k] || 0, total)}`)),
 	);
 	$("single-gets").hidden = !Object.keys(outcomes).length;
 

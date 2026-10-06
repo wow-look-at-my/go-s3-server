@@ -254,11 +254,7 @@ func (bkr *brokerServer) ownerGet(id ActionID) (Entry, string, error) {
 	return entry, TierDisk, err
 }
 
-// brokerNotice reports what the broker did, under the variable that makes the
-// cache report itself.
+// brokerNotice reports what the broker did.
 func brokerNotice(format string, args ...any) {
-	if !cacheDebug() {
-		return
-	}
 	fmt.Fprintf(os.Stderr, "go: "+format+"\n", args...)
 }

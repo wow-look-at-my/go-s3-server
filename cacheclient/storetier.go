@@ -3,7 +3,6 @@ package cacheclient
 import (
 	"encoding/hex"
 	"io"
-	"os"
 	"sync"
 	"sync/atomic"
 )
@@ -137,22 +136,16 @@ func (tier *storeTier) closeStore() error {
 // uploads so the totals here are final rather than in flight.
 func (tier *storeTier) report() {
 	web := tier.store.SummarySnapshot()
-	cacheNotice("cache: local %s, %s stored | server %s, %s pushed | index %s",
+	cacheNotice("cache: local %s, %s stored | server %s, %s pushed, %d missed | index %s",
 		countBytes(tier.localHits.Load(), tier.localHitBytes.Load()),
 		countBytes(tier.localPuts.Load(), tier.localPutBytes.Load()),
 		countBytes(int64(web.Hits), int64(web.HitBytes)),
 		countBytes(int64(web.Puts), int64(web.PutBytes)),
+		web.MissTotal(),
 		formatMB(int64(web.IndexBytes)))
 }
 
-// cacheNotice reports what the tiers did, under the variable that makes the
-// client report itself.
+// cacheNotice reports what the tiers did.
 func cacheNotice(format string, args ...any) {
-	if !cacheDebug() {
-		return
-	}
 	logging.Infof(format, args...)
 }
-
-// cacheDebug reports whether the cache is asked to describe itself.
-func cacheDebug() bool { return os.Getenv("GOCACHEDEBUG") != "" }

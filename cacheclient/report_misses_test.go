@@ -23,6 +23,8 @@ func TestReportNamesTheMisses(t *testing.T) {
 
 	require.Len(t, msgs, 1)
 	require.Contains(t, msgs[0], ", 4 missed")
+	require.Contains(t, msgs[0], "not_in_index=3")
+	require.Contains(t, msgs[0], "http_404=1")
 	require.Contains(t, msgs[0], "server 7 (")
 }
 

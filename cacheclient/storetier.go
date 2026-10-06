@@ -2,7 +2,9 @@ package cacheclient
 
 import (
 	"encoding/hex"
+	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -136,13 +138,40 @@ func (tier *storeTier) closeStore() error {
 // uploads so the totals here are final rather than in flight.
 func (tier *storeTier) report() {
 	web := tier.store.SummarySnapshot()
-	cacheNotice("cache: local %s, %s stored | server %s, %s pushed, %d missed | index %s",
+	cacheNotice("cache: local %s, %s stored | server %s, %s pushed, %s | index %s",
 		countBytes(tier.localHits.Load(), tier.localHitBytes.Load()),
 		countBytes(tier.localPuts.Load(), tier.localPutBytes.Load()),
 		countBytes(int64(web.Hits), int64(web.HitBytes)),
 		countBytes(int64(web.Puts), int64(web.PutBytes)),
-		web.MissTotal(),
+		missReasons(web),
 		formatMB(int64(web.IndexBytes)))
+}
+
+// missReasons names every miss reason the web tier recorded, so the report says
+// what to fix rather than only how often. A total alone cannot be acted on. The
+// poison tripwires are the reasons a guard refused a served object.
+func missReasons(web WebSummary) string {
+	total := web.MissTotal()
+	if total == 0 {
+		return "0 missed"
+	}
+	named := []string{}
+	add := func(name string, n uint32) {
+		if n > 0 {
+			named = append(named, fmt.Sprintf("%s=%d", name, n))
+		}
+	}
+	add("not_in_index", web.MissNotInIndex)
+	add("http_404", web.MissHTTP404)
+	add("http_error", web.MissHTTPError)
+	add("no_outputid", web.MissNoOutputID)
+	add("read_body", web.MissReadBody)
+	add("decompress", web.MissDecompress)
+	add("checksum", web.MissChecksum)
+	add("buildid", web.MissBuildID)
+	add("modindex", web.MissModuleIndex)
+	add("network", web.MissNetwork)
+	return fmt.Sprintf("%d missed (%s)", total, strings.Join(named, " "))
 }
 
 // cacheNotice reports what the tiers did.

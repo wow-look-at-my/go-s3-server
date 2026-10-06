@@ -34,7 +34,7 @@ shared:
 			fi
 			# A failing check gets the server's log too. Without this a check
 			# that cannot reach a server which HAD answered reports only its own
-			# exit status, and the a single process that knows why says nothing.
+			# exit status. And the a single process that knows why says nothing.
 			status=0
 			bash "$check" || status=$?
 			# On stdout, because that is what a failing test reports back.

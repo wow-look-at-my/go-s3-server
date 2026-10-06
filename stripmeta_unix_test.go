@@ -10,8 +10,8 @@ import (
 )
 
 // stripStoredMetadata removes an object's stored user metadata behind the
-// metadata cache's back, so a subsequent read can only succeed from the cache.
-// Nothing in the server does this -- it exists to prove the cache is consulted.
+// metadata cache's back, so a subsequent read can only succeed from the
+// cache.
 func stripStoredMetadata(t *testing.T, path string) {
 	t.Helper()
 	attrs, err := listXattrs(path)

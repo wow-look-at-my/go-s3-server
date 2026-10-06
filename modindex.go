@@ -9,69 +9,31 @@ import (
 	"github.com/pierrec/lz4/v4"
 )
 
-// goModuleIndexMagic is the leading bytes of a Go module index blob. cmd/go's
-// modindex writer stamps a version line "go index vN\n" at the head of every
-// index it stores through the build cache (indexVersion is "go index v2" in
-// current Go, written verbatim followed by '\n'). Matching the version-less
-// prefix keeps the check correct across index format bumps.
+// goModuleIndexMagic is the leading bytes of a Go module index blob.
 const goModuleIndexMagic = "go index v"
 
-// indexMagicProbeBytes is how many DEcompressed bytes we read to recognize the
-// magic: enough to cover "go index v" with a little slack. We never decode more
-// of the body than this.
+// indexMagicProbeBytes is how many DEcompressed bytes we read to recognize the magic.
 const indexMagicProbeBytes = 16
 
 const lz4HeadPeekBytes = 64
 
-// indexPutPeekBytes bounds how many COMPRESSED leading bytes the PUT path reads
-// before deciding whether an upload is a module index. It must be large enough
-// to contain a real index's earliest lz4 block, because the lz4 reader needs the
-// WHOLE earliest block to decode any output -- the bug this constant replaces
-// was a fixed 512-byte peek (see the package note below) that truncated the
-// single-block bodies the client actually sends, so the magic was never seen.
-//
-// If a body's earliest block somehow exceeds this (it never does in practice),
-// the decode comes up short and the upload is treated as "not an index" and
-// stored -- fail-open, matching the historic default and bounded by the
-// client-side guard + the v3 purge.
+// indexPutPeekBytes bounds how many COMPRESSED leading bytes the PUT path.
 const indexPutPeekBytes = 1 << 20
 
-// That was wrong: the client stores each body as a SINGLE lz4 block, and
-// pierrec/lz4's reader must have the entire block before it can decode any
+// That was wrong: the client stores each body as a SINGLE lz4 block.
+// Pierrec/lz4's reader must have the entire block before it can decode any
 // output. Both the read/evict path and the PUT guard were broken by the same
 // truncation. The fix feeds the detector enough input to decode the earliest
-// block (where the magic lives): the read path streams an lz4.Reader straight off
-// the open file (it pulls exactly a single block); the PUT path reads a bounded
+// block (where the magic lives). The read path streams an lz4.Reader straight off
+// the open file (it pulls exactly a single block). The PUT path reads a bounded
 // but block-sized prefix.
 
 // looksLikeGoModuleIndex reports whether the input (the leading bytes of an
-// upload, possibly lz4-compressed per the compression hint) begins with the Go
-// module index magic.
-//
-// IMPORTANT: when compression == "lz4", the input MUST contain at least the
-// body's earliest complete lz4 block. pierrec/lz4's reader cannot decode any
-// output from a partial block, so a prefix shorter than the earliest block
-// decodes to nothing and the magic is missed. Callers pass either the whole body
-// (read path) or a block-sized bounded prefix (PUT path, indexPutPeekBytes),
-// never a fixed small peek.
-//
-// The module index is the a single build-cache payload this server must refuse:
-// it carries no build id and does not bind to its action key, so a mis-keyed a
-// single served for a std package's key breaks every consumer's build at
-// package load ("package runtime is not in std" / "corrupt index") and neither
-// the client's outputID hash nor its build-id guard can catch it. cmd/go
-// recomputes an index locally for ~free, so dropping it from the shared cache costs nothing.
-//
-// A read/decompress error yields false (store it): the magic sits at the very
-// start, so a well-formed index given a full earliest block is always
-// recognized; failing open keeps a partial/garbled input from dropping a
-// legitimate object. A false positive would only cost a recompute, but false
-// negatives are the safer default here because the version-3 purge plus the
-// client-side guard already bound any residual risk.
+// upload, possibly lz4-compressed per the compression hint) begins with the
+// Go module index magic.
 func looksLikeGoModuleIndex(input []byte, compression string) bool {
-	// A zstd body settles through the shared decoder, which reads only the
-	// bytes the magic needs. The codec comes off the frame rather than the
-	// metadata hint: the bytes cannot disagree with themselves.
+	// A zstd body settles through the shared decoder, which reads only the bytes
+	// the magic needs.
 	if frameCodec(input) == "zstd" {
 		match, _ := readIsModuleIndex(bytes.NewReader(input), compression)
 		return match
@@ -86,8 +48,7 @@ func looksLikeGoModuleIndex(input []byte, compression string) bool {
 		buf := make([]byte, indexMagicProbeBytes)
 		zr := lz4.NewReader(bytes.NewReader(input))
 		n, _ := io.ReadFull(zr, buf)
-		// Return the reader's pooled buffers. Reset(nil) puts both buffers back
-		// so steady-state peeks allocate ~nothing.
+		// Return the reader's pooled buffers. Reset(nil) puts both buffers back so steady-state peeks allocate ~nothing.
 		zr.Reset(nil)
 		data = buf[:n]
 	}
@@ -96,29 +57,18 @@ func looksLikeGoModuleIndex(input []byte, compression string) bool {
 
 // readIsModuleIndex reports whether r begins with the Go module-index magic,
 // under the same `compression` metadata hint the PUT path consults. It is the
-// shared detection core for every read path (the rewinding peek for a GET that
-// keeps the file open, and the open-peek-close variant for the batch paths).
+// shared detection core for every read path (the rewinding peek for a GET
+// that keeps the file open, and the open-peek-close variant for the batch
+// paths).
 //
-// For an lz4 body it streams an lz4.Reader straight over r and reads only the
+// For an lz4 body it streams an lz4.Reader straight over r. It reads only the
 // few decompressed bytes the magic needs: the reader pulls exactly as much
-// COMPRESSED input from r as it takes to decode the earliest block, so the magic
-// -- which lives in that earliest block -- is always recovered regardless of how
-// large the compressed block is. (This is the fix for the old fixed-512-byte
-// peek, which truncated the single-block bodies the client sends and so never
-// decoded the magic; see the package note above.) An uncompressed body is
-// matched directly off its leading bytes.
-//
-// A read error yields (false, err): the magic is at the very start, so a
-// well-formed index is always recognized, and the caller decides what a read
-// failure means for it. The reader consumes from r, so a seekable caller that
-// needs the stream intact afterward must rewind (the GET path does); the batch
-// path opens a throwaway handle solely for this peek.
-//
-// In the lz4 branch, an error from the UNDERLYING reader (disk I/O) is
-// distinguished from an lz4 FORMAT error: a garbled-but-readable body is not an
-// index (fail-open: serve/keep it — the client hash-verifies anyway), but a
-// body that cannot even be read is a real storage failure the caller must not
-// hide.
+// COMPRESSED input from r as it takes to decode the earliest block, so the
+// magic -- which lives in that earliest block. It is always recovered
+// regardless of how large the compressed block is. (This is the fix for the
+// fixed-512-byte peek, which truncated the single-block bodies the client
+// sends and so never decoded the magic; see the package note above.) An
+// uncompressed body is matched directly off its leading bytes.
 func readIsModuleIndex(r io.Reader, compression string) (bool, error) {
 	// Peek far enough to name the codec AND to run lz4's header fast path.
 	var head [lz4HeadPeekBytes]byte
@@ -130,9 +80,7 @@ func readIsModuleIndex(r io.Reader, compression string) (bool, error) {
 	r = io.MultiReader(bytes.NewReader(head[:headN]), r)
 
 	if codec == "zstd" {
-		// zstd has no equivalent of lz4's readable earliest literal run, so
-		// the verdict costs a single decoded block. The decoder pulls only
-		// as much compressed input as that takes.
+		// zstd has no equivalent of lz4's readable earliest literal run, so the verdict costs a single decoded block.
 		zr, release, _, err := decompressingReader(r)
 		if err != nil {
 			return false, nil // unreadable frame: not an index, fail open
@@ -147,9 +95,7 @@ func readIsModuleIndex(r io.Reader, compression string) (bool, error) {
 	}
 
 	if compression == "lz4" || codec == "lz4" {
-		// Fast path: the leading decompressed bytes are readable straight out of
-		// the frame's earliest literal run (lz4head.go), so the common verdict
-		// costs a single small read instead of decoding a whole block off disk.
+		// Fast path: the leading decompressed bytes are readable straight out of the frame's earliest literal run (lz4head.go).
 		n := headN
 		if match, decided := lz4HasPrefix(head[:n], goModuleIndexMagic); decided {
 			return match, nil
@@ -165,14 +111,12 @@ func readIsModuleIndex(r io.Reader, compression string) (bool, error) {
 			return false, src.err
 		}
 		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
-			// The source read fine but the bytes are not a well-formed lz4
-			// frame, hence not a module index we should evict; report "not an
-			// index" so the caller serves/keeps the object (fail-open).
+			// The source read fine but the bytes are not a well-formed lz4 frame, hence not a module index we should evict; report "not an index".
 			return false, nil
 		}
 		return bytes.HasPrefix(buf[:n], []byte(goModuleIndexMagic)), nil
 	}
-	// Uncompressed: the magic is the very earliest bytes, so a tiny read suffices.
+	// Uncompressed: the magic is the earliest bytes, so a tiny read suffices.
 	buf := make([]byte, indexMagicProbeBytes)
 	n, err := io.ReadFull(r, buf)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
@@ -182,8 +126,7 @@ func readIsModuleIndex(r io.Reader, compression string) (bool, error) {
 }
 
 // errTrackingReader records the earliest non-EOF error returned by the
-// wrapped reader, so a consumer that transforms errors (e.g. an lz4 decoder
-// reporting a truncated frame) cannot mask a genuine I/O failure from the source.
+// wrapped reader.
 type errTrackingReader struct {
 	r   io.Reader
 	err error
@@ -197,48 +140,34 @@ func (t *errTrackingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// readGuardVerdict is the outcome of the GET-path module-index guard, so the
-// caller can report the distinct miss reasons (evicted poison vs.
+// readGuardVerdict is the outcome of the GET-path module-index guard.
 type readGuardVerdict int
 
 const (
 	// guardServe: not a module index — serve the body unchanged.
 	guardServe readGuardVerdict = iota
-	// guardEvicted: a stored module-index blob was detected and evicted; the
-	// caller reports a miss and the client recomputes the index locally.
+	// guardEvicted: a stored module-index blob was detected and evicted.
 	guardEvicted
-	// guardPeekError: the body could not be inspected (or the stream could not
-	// be rewound). Refused fail-safe as a miss; the object is left on disk.
+	// guardPeekError: the body could not be inspected (or the stream could not be rewound).
 	guardPeekError
 )
 
-// evictModuleIndexOnRead is the read-path counterpart to the PutObject module-
-// index guard, for a GET that already holds the object's open file. This closes
-// that loop: on read, detect such a blob, EVICT it (storage.Delete drops the
-// file and the /_index entry, the same lever handleDeleteObject uses), and
-// report a miss so the client recomputes the index locally. Each poisoned key is
-// thus shed on its earliest post-deploy fetch -- a lazy, incremental self-heal
-// that needs no cache-wide purge and works regardless of client version.
-//
-// It is scoped to indexed cacheprog keys (go-buildcache/v1<64-hex>, via
-// extractActionHash) exactly like the outputid self-heal: those are the only
-// keys advertised in /_index and the only ones that can carry a mis-keyed
-// module index, so an arbitrary/non-cache object is never inspected or touched.
-//
-// A read or seek error means we cannot guarantee an unchanged stream, so it is
-// reported as guardPeekError (the object is left on disk -- Delete is not
-// called -- and the caller reports a miss), which is safe because the client
-// just re-fetches.
+// evictModuleIndexOnRead is the read-path counterpart to the PutObject
+// module- index guard, for a GET that already holds the object's open file.
+// This closes that loop: on read, detect such a blob, EVICT it
+// (storage.Delete drops the file and the /_index entry, the same lever
+// handleDeleteObject uses), and report a miss so the client recomputes the
+// index locally. Each poisoned key is thus shed on its earliest post-deploy
+// fetch -- a lazy, incremental self-heal that needs no cache-wide purge. It
+// works regardless of client version.
 func evictModuleIndexOnRead(storage *Storage, key string, f io.ReadSeeker, meta *ObjectMeta) readGuardVerdict {
-	// Only indexed cacheprog keys can be a poisoned module index; never inspect
-	// or evict anything else.
+	// Only indexed cacheprog keys can be a poisoned module index; never inspect or evict anything else.
 	hash, ok := extractActionHash(key)
 	if !ok {
 		return guardServe
 	}
 	// Known-clean memo: this exact body already passed the probe on an earlier
-	// read (and nothing has overwritten/deleted it since, or the memo entry
-	// would have been invalidated), so skip the lz4 decode entirely.
+	// read (and nothing has overwritten/deleted it since, or the memo entry.
 	if storage.keyKnownClean(hash) {
 		return guardServe
 	}
@@ -261,21 +190,12 @@ func evictModuleIndexOnRead(storage *Storage, key string, f io.ReadSeeker, meta 
 	return guardEvicted
 }
 
-// evictModuleIndexOnReadByKey is the batch-path counterpart: it OPENS the object
-// at key, peeks it, and closes it, returning whether key holds a Go module-index
-// blob (and evicting it when so). The batch paths collect entry metadata with
-// Stat (no open file in hand) and must decide BEFORE building the manifest, so
-// this self-contained open-peek-close variant detects without disturbing the
-// later phase-2 streaming Open. Same scope (indexed cacheprog keys only) and
-// same eviction (storage.Delete) as evictModuleIndexOnRead; no rewind is needed
-// since the file is opened and closed solely for the peek. A key that vanished
-// or cannot be opened is reported as "not an index" (false): the batch loops
-// already treat a Stat/Open failure as a plain miss, so nothing regresses.
-//
-// The peek uses openRaw, not Open: it is an internal inspection, not a serve,
-// so it must not count a storage "get" op (previously every batch-served key
-// counted again) nor stamp a last-access time onto prefetch candidates that
-// are never actually sent (which inflated their LRU-eviction lifetime).
+// evictModuleIndexOnReadByKey is the batch-path counterpart. It OPENS the
+// object at key, peeks it, and closes it, returning whether key holds a Go
+// module-index blob (and evicting it when so). The batch paths collect entry
+// metadata with Stat (no open file in hand) and must decide BEFORE building
+// the manifest. This self-contained open-peek-close variant detects without
+// disturbing the later phase-2 streaming Open.
 func evictModuleIndexOnReadByKey(storage *Storage, key string, meta *ObjectMeta) bool {
 	hash, ok := extractActionHash(key)
 	if !ok {
@@ -310,8 +230,7 @@ func evictModuleIndexOnReadByKey(storage *Storage, key string, meta *ObjectMeta)
 // uses; a missing key (already evicted by a racing read) is not an error.
 func evictModuleIndex(storage *Storage, key string) {
 	if err := storage.Delete(key); err != nil && !errors.Is(err, ErrNotFound) {
-		// Eviction failed; the caller still refuses to serve the poison. The next
-		// read retries the eviction.
+		// Eviction failed; the caller still refuses to serve the poison. The next read retries the eviction.
 		log.Printf("module-index guard: failed to evict %q (still refused): %v", key, err)
 		return
 	}

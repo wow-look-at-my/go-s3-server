@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -76,11 +77,8 @@ func TestLockFileExcludesASecondHolder(t *testing.T) {
 	got := make(chan func())
 	go func() {
 		unlock, err := lockWithin(path, 10*time.Second)
-		if err != nil {
-			t.Error(err)
-			got <- nil
-			return
-		}
+		assert.Nil(t, err)
+
 		got <- unlock
 	}()
 	select {

@@ -27,13 +27,13 @@ func dummyID(num int) [HashSize]byte {
 // process below would hold.
 func serveOwner(t *testing.T, dir string) (owner Cache, child Cache) {
 	t.Helper()
-	t.Setenv(brokerEnv, "")
+	t.Setenv(BrokerEnv, "")
 	t.Setenv(brokerOffEnv, "")
 	disk, err := Open(dir)
 	require.NoError(t, err)
 	serveBroker(disk, dir)
 	t.Cleanup(StopBroker)
-	require.NotEmpty(t, os.Getenv(brokerEnv), "the owner must name its endpoint in the environment")
+	require.NotEmpty(t, os.Getenv(BrokerEnv), "the owner must name its endpoint in the environment")
 
 	child = dialBroker(dir)
 	require.NotNil(t, child, "a process that finds a live owner must become a child")
@@ -124,7 +124,7 @@ func TestBrokerSharesOneLookupAndOneStore(t *testing.T) {
 // the environment must not turn the next process into a child of nothing.
 func TestBrokerDeadNameMakesTheNextProcessTheOwner(t *testing.T) {
 	t.Setenv(brokerOffEnv, "")
-	t.Setenv(brokerEnv, "gobuildcache-nobody-holds-this")
+	t.Setenv(BrokerEnv, "gobuildcache-nobody-holds-this")
 	assert.Nil(t, dialBroker(t.TempDir()), "a name nobody answers must not be dialed")
 }
 
@@ -145,13 +145,13 @@ func TestBrokerOwnerOfAnotherDirectoryIsRefused(t *testing.T) {
 // The off switch is what a bisect of a broker-shaped problem wants: every
 // process then opens the directory for itself.
 func TestBrokerOffSwitchServesNothing(t *testing.T) {
-	t.Setenv(brokerEnv, "")
+	t.Setenv(BrokerEnv, "")
 	t.Setenv(brokerOffEnv, "1")
 	dir := t.TempDir()
 	disk, err := Open(dir)
 	require.NoError(t, err)
 	serveBroker(disk, dir)
 	t.Cleanup(StopBroker)
-	assert.Empty(t, os.Getenv(brokerEnv), "the off switch must leave no endpoint to find")
+	assert.Empty(t, os.Getenv(BrokerEnv), "the off switch must leave no endpoint to find")
 	assert.Empty(t, BrokerEnviron())
 }

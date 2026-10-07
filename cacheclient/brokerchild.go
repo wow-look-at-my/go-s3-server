@@ -69,7 +69,7 @@ type reply struct {
 // into. An owner of another directory is refused: this process was asked for
 // dir, and a command that sets its own GOCACHE must get that cache.
 func dialBroker(dir string) Cache {
-	name := os.Getenv(brokerEnv)
+	name := os.Getenv(BrokerEnv)
 	if name == "" || os.Getenv(brokerOffEnv) != "" {
 		return nil
 	}

@@ -105,6 +105,16 @@ func StopBroker() {
 	}
 }
 
+// Exit closes every endpoint this process holds and removes its life socket,
+// which no other process removes while the directory lives.
+func Exit() error {
+	StopBroker()
+	if child := liveChild.Swap(nil); child != nil {
+		child.Close()
+	}
+	return ipc.Release()
+}
+
 // shutdown ends the greeting, waits for the per-child servers, and unlinks the
 // name. Every child was started by this process and has exited.
 func (bkr *brokerServer) shutdown() {

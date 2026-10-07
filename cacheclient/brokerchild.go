@@ -108,8 +108,13 @@ func dialBroker(dir string) Cache {
 	}
 	go link.read(ctx)
 	brokerNotice("cache: served by the build cache owner at %s", name)
-	return &brokerCache{link: link, dir: dir}
+	child := &brokerCache{link: link, dir: dir}
+	liveChild.Store(child)
+	return child
 }
+
+// liveChild is this process's open link to an owner, which Exit closes.
+var liveChild atomic.Pointer[brokerCache]
 
 // read hands each reply to whoever is waiting for it. It parks in the ring
 // between replies, and the arrival of the next reply wakes it.
@@ -250,6 +255,7 @@ func (c *brokerCache) FuzzDir() string {
 // Close drops the channel. Nothing here owns a file, an upload or a trim, so
 // there is nothing to wait for.
 func (c *brokerCache) Close() error {
+	liveChild.CompareAndSwap(c, nil)
 	c.link.stop()
 	<-c.link.done
 	err := c.link.channel.Close()

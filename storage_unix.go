@@ -23,21 +23,13 @@ func unlockFile(f *os.File) {
 	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 }
 
-// metadataProtectedKeys are load-bearing for the cache protocol: outputid is
-// the content address every client verifies before consuming a body,
-// compression steers both the module-index guards and client decompression,
-// and storedsha256 is this server's own digest of the bytes as stored, the
-// thing hash it can check without decompressing anything. A failure
-// persisting any of these fails the PUT — storing the object without them
-// would serve unusable (or unguardable) bytes. Every other metadata key is
-// descriptive provenance (src, pkg, go-version, ...).
+// metadataProtectedKeys are load-bearing for the cache protocol.
 var metadataProtectedKeys = set.Of("outputid", "compression", storedDigestMetaKey)
 
 // setMetadata persists user metadata as xattrs. Protected keys are written
-// earliest (so they claim xattr space) and any error on them fails the
-// call. Instead the oversized optional key is dropped, counted, and logged
-// — the object stores and serves normally, minus a single provenance
-// field.
+// earliest (so they claim xattr space) and any error on them fails the call.
+// Instead the oversized optional key is dropped, counted, and logged — the
+// object stores and serves normally, minus a single provenance field.
 func setMetadata(path string, meta map[string]string) error {
 	for k := range metadataProtectedKeys.All() {
 		if v, ok := meta[k]; ok {
@@ -77,11 +69,7 @@ func setMetadata(path string, meta map[string]string) error {
 }
 
 // setMetadataFd writes user-metadata xattrs through an open file descriptor
-// rather than a path. This is the race-free variant for repairs computed FROM
-// that descriptor: a path-based setxattr can land on a different inode than
-// the a single that was hashed (a concurrent overwrite PUT renames a new file
-// onto the path in between), stamping a stale value onto a fresh body;
-// fsetxattr by construction stamps the exact inode the caller read.
+// rather than a path.
 func setMetadataFd(f *os.File, meta map[string]string) error {
 	for k, v := range meta {
 		attrName := "user.s3." + k
@@ -109,14 +97,7 @@ func getMetadataValueFd(f *os.File, key string) string {
 	return string(buf[:n])
 }
 
-// metaAttrPrefix is the xattr namespace user metadata lives in. Audit
-// attributes sit under auditAttrPrefix, which shares this prefix as a STRING
-// ("user.s3audit." begins with "user.s3.") -- so the namespace test has to
-// exclude them explicitly. Without that they were read back as metadata named
-// "audit.uploader", "audit.client_ip" and so on, and emitted to every client as
-// X-Cache-Meta-Audit.* headers: the uploader's identity and IP handed to anyone
-// who could fetch the object, plus a getxattr per audit attribute on every
-// metadata read.
+// metaAttrPrefix is the xattr namespace user metadata lives in.
 const metaAttrPrefix = "user.s3."
 
 func isUserMetaAttr(name string) bool {
@@ -203,9 +184,7 @@ func getXattr(path, name string) ([]byte, error) {
 	return append([]byte(nil), val...), nil
 }
 
-// Sidecar hooks: metadata lives in xattrs on unix, so there are no companion
-// files to move, remove, or skip — these are no-ops. The Windows build (JSON
-// sidecars next to the body) supplies the real implementations.
+// Sidecar hooks: metadata lives in xattrs on unix, so there are no companion files to move, remove.
 
 func finalizeSidecars(tmpPath, path string) error { return nil }
 
@@ -230,8 +209,7 @@ func getOriginalKey(path string) (string, error) {
 	return string(val), nil
 }
 
-// Server-managed audit attributes are stored under a distinct prefix so that
-// user-supplied S3 metadata (user.s3.*) can never spoof them.
+// Server-managed audit attributes are stored under a distinct prefix so that user-supplied S3 metadata.
 const auditAttrPrefix = "user.s3audit."
 
 func setAudit(path string, audit map[string]string) error {

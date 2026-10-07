@@ -9,56 +9,27 @@ import (
 	"os"
 )
 
-// outputIDMetaKey is the metadata field holding the GOCACHEPROG outputID -- the
-// content address of a cached object. The go-toolchain client sends it on every
-// PUT (as X-Cache-Meta-Outputid) and requires it on every GET: without it the
-// client cannot verify the body, so it discards the download and rebuilds.
+// outputIDMetaKey is the metadata field holding the GOCACHEPROG outputID -- the content address of a cached object.
 const outputIDMetaKey = "outputid"
 
 // missingOutputID reports whether a stored object lacks a usable outputID.
-//
-// Such an object is a relic of an earlier cache-data iteration, or a single
-// whose xattrs were stripped by a data-dir copy/restore that did not preserve
-// them. It can never satisfy a client (the outputID is mandatory), yet its key
-// stays advertised in /_index, so every client skips re-uploading it -- turning
-// each build that needs the action into a permanent cache miss. The fix is to
-// repair it, not evict it; see ensureOutputID.
 func missingOutputID(meta *ObjectMeta) bool {
 	return meta == nil || meta.Metadata[outputIDMetaKey] == ""
 }
 
 // ensureOutputID makes sure the object at key carries its outputid metadata,
-// repairing it in place when it does not, and reports whether the object is
-// usable as a cache hit. On success meta is updated to carry the outputid so the
-// caller can serve it.
+// repairing it in place. This happens when it does not, and reports whether
+// the object is usable as a cache hit. On success meta is updated to carry
+// the outputid so the caller can serve it.
 //
 // Callers without an open handle (the batch paths) pass nil and a private
 // handle is used — hashed and stamped through the same fd.
-//
-// Repair, not eviction, is deliberate. The GOCACHEPROG outputID is by definition
-// sha256(decompressed body) -- the content address the client verifies on every
-// GET -- so it can be reconstructed from the body itself, with no need for the
-// original uploader. Deleting the object instead would throw away a perfectly
-// good body, discard its audit xattrs (uploader/when/where), drop the key from
-// /_index, and force a re-upload: an unauditable churn pipeline. Reconstructing
-// the outputid in place keeps the bytes and the forensic trail, leaves the key
-// indexed, and makes the object an immediate hit.
-//
-// If the body cannot be decompressed (genuinely corrupt or non-conforming, and
-// unusable by the client regardless), it returns false WITHOUT deleting
-// anything: the object is left on disk for the normal age/size eviction policy,
-// and the caller reports a clean miss.
 func ensureOutputID(storage *Storage, key string, meta *ObjectMeta, f *os.File) bool {
 	if !missingOutputID(meta) {
 		return true
 	}
 	// Self-heal applies only to GOCACHEPROG cache objects -- the
-	// go-buildcache/v1<64-hex> keys that are advertised in /_index. Those are the
-	// only keys with the permanent-miss problem: a client consults /_index and
-	// skips re-uploading a key it sees there, so an indexed-but-outputid-less
-	// object wedges forever. Any other key is not indexed, carries no cache-
-	// protocol contract, and is served exactly as stored (an outputid is simply
-	// not expected), so we never touch arbitrary objects.
+	// go-buildcache/v1<64-hex> keys that are advertised in /_index.
 	if _, ok := extractActionHash(key); !ok {
 		return true
 	}
@@ -66,11 +37,6 @@ func ensureOutputID(storage *Storage, key string, meta *ObjectMeta, f *os.File) 
 	if err != nil {
 		// The body is unusable (most often: cannot be decompressed) and the
 		// outputid cannot be reconstructed, so this key can NEVER serve a hit.
-		// Leaving it advertised in /_index would wedge it permanently: every
-		// client is told to skip re-uploading an indexed key, yet every fetch is
-		// a forced miss. Note the startup/sweep-end index rebuild re-advertises
-		// it from disk; the next read then de-advertises it again — bounded
-		// churn, strictly better than a permanent forced miss.
 		if storage.Index != nil {
 			storage.Index.Remove(key)
 		}
@@ -94,26 +60,10 @@ func ensureOutputID(storage *Storage, key string, meta *ObjectMeta, f *os.File) 
 // straight into the hash, so even this rare repair path never buffers a whole
 // object in memory. Only the outputid xattr is written; the body and every other
 // xattr (audit included) are left exactly as they were.
-//
-// The stamp is written THROUGH THE SAME FILE DESCRIPTOR that was hashed
-// (setMetadataFd / fsetxattr), never through the path. A path-based write
-// raced with concurrent overwrite PUTs: hash old inode, PUT renames a new
-// inode onto the path (already stamped with its own fresh outputid), then the
-// path-based setxattr stamps the STALE hash onto the NEW body — leaving
-// outputid != sha256(body) permanently. The client then discards every
-// download (checksum mismatch) but never re-uploads (the key stays indexed),
-// and self-heal never re-fires (an outputid is present): an unrepairable
-// forced-miss wedge. Stamping the hashed fd is correct by construction — worst
-// case the stamp lands on a just-unlinked inode and dies with it.
-//
-// When nil, a private handle is opened and closed here.
 func reconstructOutputID(storage *Storage, key string, f *os.File) (string, error) {
 	callerOwned := f != nil
 	if !callerOwned {
-		// openRaw, not Open: the repair read is not a client-visible serve, so
-		// it must not count a "get" op or stamp a last-access time (a healed
-		// batch candidate that IS served gets its access recorded by the
-		// phase-2 streaming Open).
+		// openRaw, not Open: the repair read is not a client-visible serve.
 		opened, err := storage.openRaw(key)
 		if err != nil {
 			return "", err
@@ -123,7 +73,7 @@ func reconstructOutputID(storage *Storage, key string, f *os.File) (string, erro
 	}
 
 	// The digest recorded with the body decides whether these bytes are the ones
-	// that were stored, and a body disagreeing with it yields no content address.
+	// that were stored. A body disagreeing with it yields no content address.
 	if ok, err := bodyMatchesStoredDigest(f, getMetadataValueFd(f, storedDigestMetaKey)); err != nil {
 		return "", fmt.Errorf("check stored digest: %w", err)
 	} else if !ok {
@@ -137,9 +87,7 @@ func reconstructOutputID(storage *Storage, key string, f *os.File) (string, erro
 		return "", fmt.Errorf("decompress body: %w", decErr)
 	}
 	if codec == "" {
-		// The body opens with neither frame magic, so it is not something this
-		// cache stored. Hashing it as it stands would mint a confident, wrong
-		// content address and wedge the key for good.
+		// The body opens with neither frame magic, so it is not something this cache stored.
 		release()
 		return "", fmt.Errorf("decompress body: not a compressed frame")
 	}
@@ -157,11 +105,10 @@ func reconstructOutputID(storage *Storage, key string, f *os.File) (string, erro
 	}
 	outputID := hex.EncodeToString(h.Sum(nil))
 
-	// Mismatch tripwire: this repair only runs when the metadata read reported
-	// no outputid, so finding a DIFFERENT a single on the inode now means
-	// someone stamped a value that disagrees with the body hash — the
-	// historical stale-stamp corruption replaying. Count it (and repair it:
-	// the computed value is correct for this inode by construction).
+	// Mismatch tripwire. This repair only runs when the metadata read reported
+	// no outputid. Finding a DIFFERENT a single on the inode now means someone
+	// stamped a value. That disagrees with the body hash — the historical
+	// stale-stamp corruption replaying.
 	if current := getMetadataValueFd(f, outputIDMetaKey); current != "" && current != outputID {
 		outputIDMismatchTotal.Inc()
 		log.Printf("self-heal: outputid on %q disagrees with its body hash (found %.8s..., recomputed %.8s...); repairing", key, current, outputID)
@@ -170,9 +117,7 @@ func reconstructOutputID(storage *Storage, key string, f *os.File) (string, erro
 	if err := setMetadataFd(f, map[string]string{outputIDMetaKey: outputID}); err != nil {
 		return "", fmt.Errorf("persist reconstructed outputid: %w", err)
 	}
-	// An fsetxattr leaves the inode's mtime and size alone, so the metadata
-	// cache cannot notice this write on its own -- drop the entry so the next
-	// reader sees the repaired outputid rather than the absence that got us here.
+	// An fsetxattr leaves the inode's mtime and size alone.
 	storage.forgetMeta(key)
 	return outputID, nil
 }

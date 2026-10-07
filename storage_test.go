@@ -112,7 +112,7 @@ func TestDelete(t *testing.T) {
 }
 
 // TestCacheVersionCorruptMarker ensures a corrupt marker file is an error
-// that refuses to start, not a silent purge — something is wrong and the
+// that refuses to start, not a silent purge — something is wrong. The
 // operator should look at it.
 func TestCacheVersionCorruptMarker(t *testing.T) {
 	dir := t.TempDir()

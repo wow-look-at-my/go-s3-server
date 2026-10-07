@@ -1,10 +1,15 @@
 package cacheclient
 
 import (
+	"bufio"
+	"context"
 	"encoding/hex"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -14,6 +19,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/go-containers/set"
+	"github.com/wow-look-at-my/go-s3-server/cacheclient/cachedisk"
 )
 
 // idOf is the action ID a test key string names.
@@ -158,7 +164,7 @@ func TestNoCopyGetIsBoundedWhileIndexLoads(t *testing.T) {
 
 	b, err := NewWebBackend(WebConfig{Bucket: "bk", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: t.TempDir()})
 	require.NoError(t, err)
-	b.shortenIndexWaits(300*time.Millisecond, 10*time.Second)
+	b.shortenIndexWait(300 * time.Millisecond)
 
 	var absent [gbciHashSize]byte
 	absent[0] = 0x99
@@ -182,8 +188,7 @@ func TestNoCopyGetIsBoundedWhileIndexLoads(t *testing.T) {
 
 	require.NoError(t, b.Close())
 	require.Contains(t, logs.Warn(), "not loaded after 300ms", "the wait is visible without debug output")
-	_, err = os.Stat(b.indexCachePath() + ".lock")
-	require.True(t, os.IsNotExist(err), "Close releases the download lock")
+	requireIndexLockFree(t, b)
 }
 
 // TestConcurrentClientsDownloadIndexOnce pins single-flight across processes
@@ -213,7 +218,7 @@ func TestConcurrentClientsDownloadIndexOnce(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		b, err := NewWebBackend(cfg)
 		require.NoError(t, err)
-		b.shortenIndexWaits(10*time.Second, 10*time.Second)
+		b.shortenIndexWait(10 * time.Second)
 		defer b.Close()
 		backends = append(backends, b)
 	}
@@ -235,26 +240,74 @@ func TestConcurrentClientsDownloadIndexOnce(t *testing.T) {
 	}
 }
 
-// TestDeadLockHolderIsTakenOver pins what a crashed downloader leaves: a lock
-// nobody touches. Past the stale age the next process removes it and fetches.
+// indexLockHolderEnv names the lock file a child copy of this test binary takes and holds until it is killed.
+const indexLockHolderEnv = "CACHECLIENT_TEST_INDEX_LOCK_HOLDER"
+
+// holdIndexLockUntilKilled takes the lock at path, says so on stdout, and
+// blocks on stdin, which the parent never writes or closes.
+func holdIndexLockUntilKilled(path string) {
+	if _, err := cachedisk.LockFile(context.Background(), path); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println("locked")
+	io.ReadAll(os.Stdin)
+	os.Exit(0)
+}
+
+// requireIndexLockFree asserts that nothing holds b's download lock.
+func requireIndexLockFree(t *testing.T, b *WebBackend) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	unlock, err := cachedisk.LockFile(ctx, b.indexCachePath()+".lock")
+	require.NoError(t, err, "the download lock is released")
+	unlock()
+}
+
+// TestDeadLockHolderIsTakenOver pins what a crashed downloader leaves: an OS
+// lock the kernel drops with the process. The waiter blocks while the holder
+// lives and fetches the moment it dies.
 func TestDeadLockHolderIsTakenOver(t *testing.T) {
 	dir := t.TempDir()
 	f := newIndexFixture(t, "bk", sevenKeys())
 	b, err := NewWebBackend(WebConfig{Bucket: "bk", Endpoint: f.srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: dir})
 	require.NoError(t, err)
 	defer b.Close()
-	b.shortenIndexWaits(5*time.Second, 200*time.Millisecond)
+	b.shortenIndexWait(5 * time.Second)
 
-	lock := b.indexCachePath() + ".lock"
-	require.NoError(t, os.WriteFile(lock, []byte("1\n"), 0644))
-	old := time.Now().Add(-time.Hour)
-	require.NoError(t, os.Chtimes(lock, old, old))
+	child := exec.Command(os.Args[0], "-test.run=^$")
+	child.Env = append(os.Environ(), indexLockHolderEnv+"="+b.indexCachePath()+".lock")
+	child.Stderr = os.Stderr
+	stdin, err := child.StdinPipe()
+	require.NoError(t, err)
+	defer stdin.Close()
+	stdout, err := child.StdoutPipe()
+	require.NoError(t, err)
+	require.NoError(t, child.Start())
+	defer child.Wait()
+	defer child.Process.Kill()
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	require.NoError(t, err)
+	require.Equal(t, "locked\n", line)
 
-	b.awaitIndex()
+	loaded := make(chan struct{})
+	go func() {
+		b.awaitIndex()
+		close(loaded)
+	}()
+	select {
+	case <-loaded:
+		t.Fatal("the index loaded while another process held the download lock")
+	case <-time.After(200 * time.Millisecond):
+	}
+	require.Equal(t, int32(0), f.hits200.Load(), "nothing is fetched while the holder lives")
+
+	require.NoError(t, child.Process.Kill())
+	<-loaded
 	require.Equal(t, int32(1), f.hits200.Load(), "the dead holder's download is taken over")
 	require.True(t, b.SummarySnapshot().IndexAuthoritative)
-	_, err = os.Stat(lock)
-	require.True(t, os.IsNotExist(err), "the taken-over lock is released")
+	requireIndexLockFree(t, b)
 }
 
 // TestFailedHolderLeavesCopyNonAuthoritative pins the waiter's side of a
@@ -262,7 +315,9 @@ func TestDeadLockHolderIsTakenOver(t *testing.T) {
 // fails too it keeps the copy it had, non-authoritative, rather than retrying forever.
 func TestFailedHolderLeavesCopyNonAuthoritative(t *testing.T) {
 	dir := t.TempDir()
+	var fetches atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
@@ -270,19 +325,19 @@ func TestFailedHolderLeavesCopyNonAuthoritative(t *testing.T) {
 	b, err := NewWebBackend(WebConfig{Bucket: "bk", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: dir})
 	require.NoError(t, err)
 	defer b.Close()
-	b.shortenIndexWaits(5*time.Second, 10*time.Second)
+	b.shortenIndexWait(5 * time.Second)
 
-	// Another process holds the lock and gives up without writing a copy.
-	lock := b.indexCachePath() + ".lock"
-	require.NoError(t, os.WriteFile(lock, []byte("1\n"), 0644))
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		os.Remove(lock)
-	}()
+	// Another holder takes the lock and gives up without writing a copy.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	release, err := cachedisk.LockFile(ctx, b.indexCachePath()+".lock")
+	require.NoError(t, err)
+	time.AfterFunc(100*time.Millisecond, release)
 
 	b.awaitIndex()
 	require.False(t, b.SummarySnapshot().IndexAuthoritative)
 	require.Equal(t, 0, b.SummarySnapshot().IndexKeys)
+	require.Positive(t, fetches.Load(), "the waiter fetched itself once the lock was free")
 }
 
 // TestUnlockableIndexDirStillLoads pins that the lock is coordination, not a
@@ -330,6 +385,5 @@ func TestCloseAbandonsBackgroundRefresh(t *testing.T) {
 	start := time.Now()
 	require.NoError(t, b.Close())
 	require.Less(t, time.Since(start), 2*time.Second, "Close must not wait out the refresh")
-	_, err = os.Stat(b.indexCachePath() + ".lock")
-	require.True(t, os.IsNotExist(err), "Close releases the download lock")
+	requireIndexLockFree(t, b)
 }

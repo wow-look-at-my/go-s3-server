@@ -2,13 +2,11 @@ package cacheclient
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
-	"os"
 	"time"
 
 	"github.com/wow-look-at-my/go-containers/set"
+	"github.com/wow-look-at-my/go-s3-server/cacheclient/cachedisk"
 )
 
 // IndexWaitDefault is how long the earliest Get or Put waits for the key
@@ -24,21 +22,10 @@ const indexSlowLoad = 5 * time.Second
 type indexTiming struct {
 	// wait bounds how long the earliest use blocks on a load with no disk copy.
 	wait time.Duration
-	// lockHeartbeat is how often the process holding the lock touches it.
-	lockHeartbeat time.Duration
-	// lockStale is the lock age past which its holder is taken to be gone.
-	lockStale time.Duration
-	// lockPoll is how often a process waiting on the lock checks it.
-	lockPoll time.Duration
 }
 
 func defaultIndexTiming() indexTiming {
-	return indexTiming{
-		wait:          IndexWaitDefault,
-		lockHeartbeat: 2 * time.Second,
-		lockStale:     10 * time.Second,
-		lockPoll:      50 * time.Millisecond,
-	}
+	return indexTiming{wait: IndexWaitDefault}
 }
 
 // indexLoad is a load running in the background.
@@ -180,51 +167,28 @@ func (b *WebBackend) adoptIndex(keys *hashSet, authoritative bool) {
 // refreshIndex brings the disk copy up to date and returns the keys to
 // install, whether they are authoritative, and where they came from.
 //
-// A single process at a time downloads into a directory. the earliest to
-// create the lock file next to the copy fetches; any other waits for the
-// lock to go and then reads what the holder wrote. A holder that dies leaves
-// a lock nobody touches, and past indexTiming.lockStale the lock is removed
-// and the fetch taken over. A holder whose fetch failed leaves the copy as
-// it was; the waiter then tries a single time itself.
+// A single process at a time downloads into a directory, under an OS lock on
+// a file next to the copy. A process that finds the lock held blocks in the
+// kernel until the holder lets go, which it also does by exiting, and then
+// reads what the holder wrote. A holder whose fetch failed leaves the copy as
+// it was, and the next process to take the lock fetches itself.
 func (b *WebBackend) refreshIndex(ctx context.Context, path string, disk diskIndex) (*hashSet, bool, string) {
-	lockPath := path + ".lock"
-	for attempt := 0; ; attempt++ {
-		lock, err := acquireIndexLock(lockPath)
-		if err == nil {
-			keys, authoritative, source := b.fetchIndexLocked(ctx, path, disk, lock)
-			return keys, authoritative, source
-		}
-		if !errors.Is(err, fs.ErrExist) {
-			logging.Infof("cacheprog: web index: %v; fetching without the lock", err)
-			keys, authoritative := b.fetchIndex(ctx, path, disk)
-			return keys, authoritative, "fetched without the lock"
-		}
-		if !b.awaitIndexLock(ctx, lockPath) {
-			return nil, false, "cancelled"
-		}
-		if cur, ok := b.refreshedSince(path, disk); ok {
-			logging.Infof("cacheprog: web index: %d keys from another process's refresh", cur.count)
-			return cur.keys, true, "another process fetched it"
-		}
-		if attempt > 0 {
-			logging.Infof("cacheprog: web index: another process's refresh failed; using %d cached keys (batch probing enabled)", disk.count)
-			return disk.keys, false, "another process's fetch failed"
-		}
+	unlock, err := cachedisk.LockFile(ctx, path+".lock")
+	if err != nil && ctx.Err() != nil {
+		return nil, false, "cancelled"
 	}
-}
-
-// fetchIndexLocked fetches under a held lock, touching it as long as the fetch
-// runs, and releases it.
-func (b *WebBackend) fetchIndexLocked(ctx context.Context, path string, disk diskIndex, lock *indexLock) (*hashSet, bool, string) {
-	defer lock.release()
+	if err != nil {
+		logging.Infof("cacheprog: web index: %v; fetching without the lock", err)
+		keys, authoritative := b.fetchIndex(ctx, path, disk)
+		return keys, authoritative, "fetched without the lock"
+	}
+	defer unlock()
 	// A refresh that landed between the disk read and the lock is the thing
 	// this fetch would repeat.
 	if cur, ok := b.refreshedSince(path, disk); ok {
 		logging.Infof("cacheprog: web index: %d keys from another process's refresh", cur.count)
 		return cur.keys, true, "another process fetched it"
 	}
-	stop := lock.heartbeat(b.indexTiming.lockHeartbeat)
-	defer stop()
 	keys, authoritative := b.fetchIndex(ctx, path, disk)
 	return keys, authoritative, "fetched"
 }
@@ -237,73 +201,4 @@ func (b *WebBackend) refreshedSince(path string, disk diskIndex) (diskIndex, boo
 		return cur, false
 	}
 	return cur, true
-}
-
-// awaitIndexLock waits for the lock at lockPath to be released, or to go
-// stale, in which case it removes it. It reports false when ctx ends earliest.
-func (b *WebBackend) awaitIndexLock(ctx context.Context, lockPath string) bool {
-	tick := time.NewTicker(b.indexTiming.lockPoll)
-	defer tick.Stop()
-	for {
-		st, err := os.Stat(lockPath)
-		if err != nil {
-			return true
-		}
-		if age := time.Since(st.ModTime()); age > b.indexTiming.lockStale {
-			logging.Infof("cacheprog: web index: lock %s untouched for %v; taking over", lockPath, age.Round(time.Second))
-			os.Remove(lockPath)
-			return true
-		}
-		select {
-		case <-ctx.Done():
-			return false
-		case <-tick.C:
-		}
-	}
-}
-
-// indexLock is the lock file a single process holds while it downloads the
-// index. It is a file created exclusively rather than an OS lock, so it
-// works on every platform and filesystem the directory can be on.
-type indexLock struct {
-	path string
-}
-
-// acquireIndexLock creates the lock file. An error wrapping fs.ErrExist means
-// another process holds it.
-func acquireIndexLock(path string) (*indexLock, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
-	if err != nil {
-		return nil, err
-	}
-	_, werr := fmt.Fprintf(f, "%d\n", os.Getpid())
-	cerr := f.Close()
-	if err := errors.Join(werr, cerr); err != nil {
-		os.Remove(path)
-		return nil, err
-	}
-	return &indexLock{path: path}, nil
-}
-
-func (l *indexLock) release() {
-	os.Remove(l.path)
-}
-
-func (l *indexLock) heartbeat(every time.Duration) (stop func()) {
-	tick := time.NewTicker(every)
-	quit := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-quit:
-				return
-			case now := <-tick.C:
-				os.Chtimes(l.path, now, now)
-			}
-		}
-	}()
-	return func() {
-		tick.Stop()
-		close(quit)
-	}
 }

@@ -14,6 +14,9 @@ import (
 // of the revalidation path predate the max age and count requests. The tests
 // of the max age below pass a single explicitly.
 func TestMain(m *testing.M) {
+	if path := os.Getenv(indexLockHolderEnv); path != "" {
+		holdIndexLockUntilKilled(path)
+	}
 	defaultIndexMaxAge = func(string) time.Duration { return -1 }
 	os.Exit(m.Run())
 }

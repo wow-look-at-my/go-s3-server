@@ -7,6 +7,8 @@ import (
 	"os"
 	"syscall"
 	"time"
+
+	ipc "github.com/wow-look-at-my/go-ipc"
 )
 
 // lockWait bounds how long transformFile waits for another process's lock.
@@ -20,7 +22,7 @@ const lockWait = 20 * time.Second
 func transformFile(path string, change func([]byte) ([]byte, error)) error {
 	ctx, cancel := context.WithTimeout(context.Background(), lockWait)
 	defer cancel()
-	unlock, err := LockFile(ctx, path+".lock")
+	unlock, err := ipc.LockFile(ctx, path+".lock")
 	if errors.Is(err, context.DeadlineExceeded) {
 		return errors.New("cache: " + path + ".lock is held by another process")
 	}

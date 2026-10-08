@@ -15,10 +15,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	ipc "github.com/wow-look-at-my/go-ipc"
 )
 
 var (
-	ErrNotFound           = errors.New("not found")
+	ErrNotFound          = errors.New("not found")
 	ErrWriteOnceConflict  = errors.New("object already exists with different content")
 	ErrWriteOnceDuplicate = errors.New("object already exists")
 )
@@ -41,8 +43,8 @@ const fsyncThresholdBytes = 8 << 20
 type Storage struct {
 	dataDir   string
 	writeOnce WriteOnceConfig
-	lockFile  *os.File
-	Index     *Index // in-memory key index (mtime entries + GBCI hashes); nil if unavailable
+	unlock    func() // releases the data directory's lock
+	Index    *Index // in-memory key index (mtime entries + GBCI hashes); nil if unavailable
 
 	// accessShards tracks the last-access time (unix seconds) of each key.
 	accessShards []*accessShard
@@ -75,18 +77,13 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 	}
 
 	lockPath := filepath.Join(dataDir, lockFileName)
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	unlock, err := ipc.TryLockFile(lockPath)
 	if err != nil {
-		return nil, fmt.Errorf("open lock file: %w", err)
-	}
-	if err := lockExclusive(lockFile); err != nil {
-		lockFile.Close()
 		return nil, fmt.Errorf("data directory is locked by another process: %w", err)
 	}
 
 	if err := ensureCacheVersion(dataDir); err != nil {
-		unlockFile(lockFile)
-		lockFile.Close()
+		unlock()
 		return nil, err
 	}
 
@@ -96,7 +93,7 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 	s := &Storage{
 		dataDir:   dataDir,
 		writeOnce: writeOnce,
-		lockFile:  lockFile,
+		unlock:    unlock,
 		cleanKeys: newCleanKeyMemo(cacheBudget(cleanMemoBudgetFraction, defaultCleanMemoBytes)),
 		metaCache: newMetaCache(cacheBudget(metaCacheBudgetFraction, defaultMetaCacheBytes)),
 	}
@@ -106,9 +103,9 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 }
 
 func (s *Storage) Close() error {
-	if s.lockFile != nil {
-		unlockFile(s.lockFile)
-		return s.lockFile.Close()
+	if s.unlock != nil {
+		s.unlock()
+		s.unlock = nil
 	}
 	return nil
 }

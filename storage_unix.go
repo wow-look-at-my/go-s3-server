@@ -9,19 +9,10 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"syscall"
 
 	"github.com/wow-look-at-my/go-containers/set"
 	"golang.org/x/sys/unix"
 )
-
-func lockExclusive(f *os.File) error {
-	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-}
-
-func unlockFile(f *os.File) {
-	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-}
 
 // metadataProtectedKeys are load-bearing for the cache protocol.
 var metadataProtectedKeys = set.Of("outputid", "compression", storedDigestMetaKey)

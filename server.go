@@ -15,14 +15,10 @@ import (
 
 const retryAfterSeconds = 2
 
-// healthPath is the unauthenticated liveness/readiness probe. It is answered
-// before authentication and admission control so an orchestrator (e.g.
-// docker-updater's health-check / pre-check) or a reverse proxy can poll it
-// without credentials and without consuming a concurrency slot.
+// healthPath is the unauthenticated liveness/readiness probe.
 const healthPath = "/_health"
 
-// Only the status code is read, so health is an alias of /_health rather than
-// another implementation of "is it up" that could disagree with the earliest.
+// Only the status code is read.
 const (
 	wellKnownHealthPath    = "/.well-known/docker-updater/health"
 	wellKnownPreUpdatePath = "/.well-known/docker-updater/pre-update"
@@ -31,14 +27,9 @@ const (
 type Server struct {
 	config  *Config
 	storage *Storage
-	// sem bounds the requests doing work at the same time. A full sem means the
-	// server is at capacity. A request whose remaining work is only a body
-	// transfer hands its slot back early (releaseSlot). Buffered to
-	// MaxConcurrentRequests.
+	// sem bounds the requests doing work at the same time. A full sem means the server is at capacity.
 	sem chan struct{}
-	// mem scales the in-memory caches to fit the process's memory budget. It is
-	// deliberately NOT consulted on the request path: memory pressure changes
-	// how much the server remembers, never whether it answers.
+	// mem scales the in-memory caches to fit the process's memory budget.
 	mem *memController
 	// verboseLog prints a single line per request.
 	verboseLog bool
@@ -49,7 +40,7 @@ type Server struct {
 }
 
 func NewServer(cfg *Config, storage *Storage) *Server {
-	// Apply resource-limit defaults here too (not just in LoadConfig) so a Config
+	// Apply resource-limit defaults here too (not in LoadConfig) so a Config
 	// built directly — e.g.
 	if cfg.MaxConcurrentRequests <= 0 {
 		cfg.MaxConcurrentRequests = defaultMaxConcurrentRequests
@@ -81,9 +72,8 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 	return s
 }
 
-// Call it just before http.Server.Shutdown: an orchestrator or reverse proxy
-// watching /_health then stops sending new requests to this instance while
-// Shutdown lets the in-flight ones finish.
+// Call it before http.Server.Shutdown: an orchestrator or reverse proxy
+// watching /_health then stops sending new requests to this instance.
 func (s *Server) BeginShutdown() {
 	s.shuttingDown.Store(true)
 }
@@ -96,10 +86,7 @@ type auditInfo struct {
 	UserAgent string
 	Timestamp time.Time
 	Label     string // decoded object description (type, package, go version, target)
-	// Detail is what the handler wants said about this request, appended to
-	// the request's own verbose line. A handler that logs its own summary line
-	// prints the same request again under spellings, which is what made the
-	// verbose log unreadable.
+	// Detail is what the handler wants said about this request, appended to the request's own verbose line.
 	Detail string
 }
 
@@ -115,8 +102,7 @@ func (a *auditInfo) note(format string, v ...any) {
 type auditKey struct{}
 
 // admission is a single request's hold on a concurrency slot. release is
-// idempotent, so a handler can hand the slot back early and the deferred
-// release in ServeHTTP is then a no-op.
+// idempotent.
 type admission struct {
 	sem  chan struct{}
 	once sync.Once
@@ -131,11 +117,8 @@ func (a *admission) release() {
 
 type admissionKey struct{}
 
-// releaseSlot hands the request's concurrency slot back before a transfer that
-// holds no per-request memory: a shared, already-built index blob, or a body
-// sent from an open file. The slot bounds the work a request does. It is a
-// no-op when the request holds no slot, as a handler invoked directly in a
-// test does.
+// releaseSlot hands the request's concurrency slot back before a transfer
+// that holds no per-request memory: a shared.
 func releaseSlot(r *http.Request) {
 	if a, ok := r.Context().Value(admissionKey{}).(*admission); ok {
 		a.release()
@@ -152,8 +135,8 @@ func auditFromContext(ctx context.Context) *auditInfo {
 // clientIP returns the originating client IP, preferring proxy-provided headers
 // that are set by Cloudflare and standard reverse proxies. Falls back to the
 // TCP peer address. These headers are trusted unconditionally because this
-// server is expected to run behind a trusted proxy (e.g. Cloudflare Tunnel);
-// if you expose it directly to the internet, clients can spoof these headers.
+// server is expected to run behind a trusted proxy (e.g. Cloudflare Tunnel). If
+// you expose it directly to the internet, clients can spoof these headers.
 func clientIP(r *http.Request) string {
 	if v := r.Header.Get("CF-Connecting-IP"); v != "" {
 		return v
@@ -175,7 +158,7 @@ func clientIP(r *http.Request) string {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Liveness/readiness probe, answered before logging, metrics, authentication,
-	// and admission control: a frequent orchestrator/proxy poll must not spam the
+	// and admission control. A frequent orchestrator/proxy poll must not spam the
 	// access log, skew metrics, need credentials, or consume a concurrency slot.
 	if r.URL.Path == healthPath || r.URL.Path == wellKnownHealthPath {
 		if s.shuttingDown.Load() {
@@ -245,8 +228,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// The slot is released on return, or earlier by a handler whose remaining
-	// work is a body transfer that holds no per-request memory (see releaseSlot).
+	// The slot is released on return, or earlier by a handler whose remaining work is a body transfer that holds no per-request memory.
 	slot := &admission{sem: s.sem}
 	select {
 	case s.sem <- struct{}{}:
@@ -303,9 +285,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		route = "PutIndex"
 		handlePutIndex(rec, r, s.storage.Index)
 	case (r.Method == "GET" || r.Method == "POST") && key == "_batch/get":
-		// POST is the semantically sound method for a body-carrying batch
-		// lookup (GET-with-a-body is proxy-hostile); GET stays accepted for
-		// existing clients.
+		// POST is the semantically sound method for a body-carrying batch lookup (GET-with-a-body is proxy-hostile).
 		route = "BatchGet"
 		handleBatchGet(rec, r, s.storage, s.logAgg, s.config.Prefetch)
 	case r.Method == "GET" && key != "":

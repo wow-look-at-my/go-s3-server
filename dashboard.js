@@ -1,6 +1,4 @@
-// The dashboard polls a single JSON snapshot and redraws. It keeps no state
-// on the server: a rate is the difference between samples this page took, so
-// a reload starts the rate over and nothing else.
+// The dashboard polls a single JSON snapshot and redraws.
 
 const POLL_MS = 1000;
 
@@ -157,7 +155,7 @@ function setState(text, led) {
 }
 
 // hitRateTile reports the batch path, which is where every read of the current
-// client goes; a single-object GET is an older client, and it counts only when
+// client goes. A single-object GET is an older client. It counts only when
 // there is no batch traffic to report.
 function hitRateTile(stats) {
 	const kinds = byLabel(stats, "s3_batch_keys_total", "kind");
@@ -226,9 +224,7 @@ function drawTraffic(stats) {
 	drawRate(stats);
 }
 
-// push feeds a single sample to a <perf-graph>. The element is defined by a
-// module fetched at run time, so an early poll can land before it upgrades; a
-// plain element has no push and the sample is dropped rather than throwing.
+// push feeds a single sample to a <perf-graph>.
 function push(id, v) {
 	const el = $(id);
 	if (el && typeof el.push === "function") el.push(v);
@@ -254,8 +250,7 @@ function drawRate(stats) {
 	}
 	if (dt <= 0) return;
 
-	// perf-graph owns the history, the scale and the redraw. It is fed the
-	// newest sample and nothing else.
+	// perf-graph owns the history, the scale and the redraw. It is fed the newest sample and nothing else.
 	const now = dv / dt;
 	state.peak = Math.max(state.peak, now);
 	push("rate-chart", now);
@@ -299,9 +294,7 @@ function drawProjects(stats) {
 		return;
 	}
 
-	// Names in a fixed order, so a band keeps its place and its color as
-	// projects come and go. Sorted by name, not by traffic: a band that
-	// reorders itself every poll is unreadable.
+	// Names in a fixed order, so a band keeps its place and its color as projects come and go.
 	const names = Object.keys(totals).sort();
 	if (!state.projectNames || state.projectNames.join("\u0000") !== names.join("\u0000")) {
 		state.projectNames = names;
@@ -318,8 +311,7 @@ function drawProjects(stats) {
 		const now = totals[name];
 		const moved = now.hit + now.lookahead + now.put + now.miss - (was ? was.hit + was.lookahead + was.put + was.miss : 0);
 		if (moved < 0) {
-			// The server restarted between samples. Start the history over
-			// rather than draw a negative band.
+			// The server restarted between samples. Start the history over rather than draw a negative band.
 			chart.clear();
 			return;
 		}
@@ -454,10 +446,8 @@ async function poll() {
 	}
 }
 
-// The toggle is a custom element whose module is deferred, and this script is
-// a classic a single at the end of the body, so it runs earliest. Until the
-// element upgrades it carries the attribute and no property, and reading the
-// property alone reports "off" and stops the page polling at all.
+// The toggle is a custom element whose module is deferred. This script is a
+// classic a single at the end of the body. It runs earliest.
 function live() {
 	const el = $("autorefresh");
 	return typeof el.checked === "boolean" ? el.checked : el.hasAttribute("checked");
@@ -508,13 +498,9 @@ $("autorefresh").addEventListener("change", () => {
 	if (live()) poll();
 });
 
-// `checked` is a property scratch-toggle only has a single time it is
-// upgraded. Read it before that and the answer is undefined, which reads as
-// "live is off": the page then draws a single snapshot and never polls again.
-// Waiting makes the poll loop independent of which script the browser ran earliest.
+// `checked` is a property scratch-toggle only has a single time it is upgraded.
 poll();
 await customElements.whenDefined("scratch-toggle");
 schedule();
-// A single time the element upgrades its property is authoritative; re-read
-// it in case it disagrees with the attribute this started on.
+// A single time the element upgrades its property is authoritative.
 customElements.whenDefined("scratch-toggle").then(schedule);

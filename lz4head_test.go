@@ -12,16 +12,16 @@ import (
 )
 
 // decodeLeading is the slow, authoritative answer the fast path must agree
-// with: actually decompress, and take the leading bytes.
+// with: decompress, and take the leading bytes.
 func decodeLeading(tb testing.TB, frame []byte, n int) []byte {
 	buf := make([]byte, n)
 	got, _ := io.ReadFull(lz4.NewReader(bytes.NewReader(frame)), buf)
 	return buf[:got]
 }
 
-// TestLz4LeadingBytes_AgreesWithDecoder is the core claim: whenever the header
-// walk says it understood a frame, the bytes it returns are the bytes a real
-// decompression would produce. Bodies span the shapes the cache actually
+// TestLz4LeadingBytes_AgreesWithDecoder is the core claim: whenever the
+// header walk says it understood a frame. The bytes it returns are the bytes
+// a real decompression would produce. Bodies span the shapes the cache
 // stores: an ar archive, a module index, highly compressible runs, and
 // incompressible random data at several sizes.
 func TestLz4LeadingBytes_AgreesWithDecoder(t *testing.T) {
@@ -45,7 +45,7 @@ func TestLz4LeadingBytes_AgreesWithDecoder(t *testing.T) {
 			want := decodeLeading(t, frame, len(lead))
 			require.Equal(t, want, lead, "leading bytes must match a real decode")
 
-			// And the verdict the guard actually asks for.
+			// And the verdict the guard asks for.
 			match, decided := lz4HasPrefix(frame, goModuleIndexMagic)
 			require.True(t, decided, "a well-formed frame must be decidable")
 			require.Equal(t, bytes.HasPrefix(body, []byte(goModuleIndexMagic)), match)
@@ -54,7 +54,7 @@ func TestLz4LeadingBytes_AgreesWithDecoder(t *testing.T) {
 }
 
 // TestLz4LeadingBytes_UncompressedBlock: lz4 stores an incompressible block
-// verbatim with the high bit set in its size, a shape with no token or literal
+// verbatim with the high bit set in its size. A shape with no token or literal
 // run at all.
 func TestLz4LeadingBytes_UncompressedBlock(t *testing.T) {
 	body := make([]byte, 64<<10)
@@ -118,9 +118,9 @@ func TestLz4LeadingBytes_UndecidableShapes(t *testing.T) {
 }
 
 // TestLz4HasPrefix_ShortLiteralRunDecides: a literal run shorter than the magic
-// still settles the common case, because a compiled object diverges from "go
-// index v" within its earliest few bytes. Only a run that MATCHES so far is
-// undecidable.
+// still settles the common case. This is because a compiled object diverges
+// from "go index v" within its earliest few bytes. Only a run that MATCHES so
+// far is undecidable.
 func TestLz4HasPrefix_ShortLiteralRunDecides(t *testing.T) {
 	shortRun := func(t *testing.T, lead string, litLen int) []byte {
 		t.Helper()
@@ -142,7 +142,7 @@ func TestLz4HasPrefix_ShortLiteralRunDecides(t *testing.T) {
 }
 
 // TestModuleIndexGuard_FastPathMatchesSlowPath pins the property that matters
-// operationally: for every body shape, the guard's verdict is the same whether
+// operationally. For every body shape, the guard's verdict is the same whether
 // it took the header walk or the decoder.
 func TestModuleIndexGuard_FastPathMatchesSlowPath(t *testing.T) {
 	for _, body := range [][]byte{

@@ -15,11 +15,9 @@ import (
 )
 
 // skipIfNoXattr skips the test when dir's filesystem cannot persist the
-// server's audit xattrs. This is a local-environment escape hatch: CI runs
-// on ext4 where xattrs work, but developer VMs may use a filesystem
-// (v9fs, some tmpfs configurations) that doesn't. The production code
-// treats audit as best-effort, so losing xattrs is a degradation rather
-// than a failure; we simply skip the assertions that can't be verified.
+// server's audit xattrs. This is a local-environment escape hatch: CI runs on
+// ext4 where xattrs work, but developer VMs may use a filesystem (v9fs, some
+// tmpfs configurations) that doesn't.
 func skipIfNoXattr(t *testing.T, dir string) {
 	t.Helper()
 	canary, err := os.CreateTemp(dir, "xattr-probe-*")
@@ -144,7 +142,7 @@ func TestBasicAuthMalformed(t *testing.T) {
 	resp.Body.Close()
 }
 
-// TestAuditXattrsOnUpload verifies that when a user PUTs an object, the
+// TestAuditXattrsOnUpload verifies that when a user PUTs an object. The
 // server persists enough metadata on disk to later reconstruct who uploaded
 // it, when, from where, and with what client. This is the forensic trail
 // that was missing while the auth-bypass bug was exploitable.
@@ -190,7 +188,7 @@ func TestAuditXattrsOnUpload(t *testing.T) {
 	require.Equal(t, "203.0.113.42", audit["client_ip"])
 	require.Equal(t, "go-toolchain-test/1.2.3", audit["user_agent"])
 	require.Equal(t, strconv.Itoa(len(content)), audit["content_length"])
-	// uploaded_at is an RFC3339 timestamp; just require it parses.
+	// uploaded_at is an RFC3339 timestamp; require it parses.
 	_, tsErr := time.Parse(time.RFC3339Nano, audit["uploaded_at"])
 	require.NoError(t, tsErr)
 }
@@ -259,10 +257,10 @@ func TestDisableAuth(t *testing.T) {
 
 // TestAuthNotBypassedByEmptyCredential is a regression for the auth-bypass
 // bug where authenticate() short-circuited to success on the earliest
-// credential entry with an empty username and password. Even if someone
-// bypasses LoadConfig and constructs a Config directly with an empty
-// credential, authenticate() MUST still require valid Basic Auth when
-// DisableAuth is false.
+// credential entry. This holds with an empty username and password. Even
+// if someone bypasses LoadConfig. It constructs a Config directly with an
+// empty credential, authenticate() MUST still require valid Basic Auth
+// when DisableAuth is false.
 func TestAuthNotBypassedByEmptyCredential(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{
@@ -341,9 +339,7 @@ func TestLoadConfigRejectsDisableAuthWithCredentials(t *testing.T) {
 }
 
 func TestLoadConfigRejectsUnsetEnvVarCredential(t *testing.T) {
-	// Regression for a silent-insecure footgun: an env var that resolves to
-	// "" used to satisfy the "empty = disable auth" shortcut. With the new
-	// validation, an empty resolved credential is an error.
+	// Regression for a silent-insecure footgun.
 	os.Unsetenv("GOSTEST_UNSET_CRED")
 	dir := t.TempDir()
 	path := writeConfigFile(t, dir, "cfg.json", map[string]any{

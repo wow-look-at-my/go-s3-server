@@ -62,9 +62,7 @@ type WriteOnceConfig struct {
 	Notification string `json:"notification"` // "never", "always", "content_differs"
 }
 
-// Duration is a time.Duration that unmarshals from a Go duration string
-// ("720h", "30m", "0") or from a JSON number interpreted as seconds. It
-// marshals back to the canonical Go duration string.
+// Duration is a time.Duration that unmarshals from a Go duration string.
 type Duration time.Duration
 
 func (d *Duration) UnmarshalJSON(data []byte) error {
@@ -104,23 +102,10 @@ func (d Duration) Std() time.Duration { return time.Duration(d) }
 
 // EvictionConfig controls automatic pruning of cache entries so the data_dir
 // does not grow without bound.
-//
-// The cache is an LRU: by default it is bounded by SIZE (max_bytes), and when
-// it is over budget the least recently used entries go earliest. Age eviction
-// (max_age) is a separate, off-by-default TTL -- a build cache entry that is
-// still being read is still useful however old it is, so nothing is dropped
-// for age alone unless an operator asks for it.
-//
-// "Last used" is the latest of an entry's on-disk mtime (when it was written),
-// its filesystem access time (advanced by the kernel whenever its body is
-// read, and durable across restarts), and any read this process recorded in
-// memory. mtime itself is never rewritten on read, so the prefetch system's
-// "same build" grouping (which keys on mtime) is unaffected.
 type EvictionConfig struct {
 	// MaxAge removes entries not used within this window.
 	MaxAge Duration `json:"max_age"`
-	// MaxBytes is the total-size budget for the data_dir: over budget, the
-	// least-recently-used entries are evicted until the total is back under it.
+	// MaxBytes is the total-size budget for the data_dir.
 	MaxBytes *int64 `json:"max_bytes"`
 	// Interval is how often the background sweeper runs.
 	Interval Duration `json:"interval"`
@@ -152,34 +137,22 @@ type Config struct {
 	DisableAuth   bool            `json:"disable_auth"`
 	Credentials   []Credential    `json:"credentials"`
 
-	// LogMode selects the access log's shape: "normal" (a single line per
-	// active then aggregated) or "verbose" (a single line per request).
-	// Empty takes normal. See logagg.go.
+	// LogMode selects the access log's shape: "normal" (a single line per active then aggregated) or "verbose".
 	LogMode string `json:"log_mode"`
 
-	// DashboardListen is the address of the operator dashboard, on its own
-	// port so an access proxy can front it without touching the cache
-	// protocol port. A pointer so an absent field takes the default while an
-	// explicit "" turns the dashboard off. The page carries no
-	// authentication of its own -- see DashboardListenAddr.
+	// DashboardListen is the address of the operator dashboard, on its own port.
 	DashboardListen *string `json:"dashboard_listen"`
 
 	MaxConcurrentRequests int `json:"max_concurrent_requests"`
-	// IndexBlobInterval is the least time between serializations of the
-	// /_index blob. Absent means the 15s default. "0s" serializes on every
-	// GET after a PUT, which the executable spec uses.
+	// IndexBlobInterval is the least time between serializations of the /_index blob. Absent means the 15s default.
 	IndexBlobInterval *Duration `json:"index_blob_interval"`
-	// MaxObjectBytes caps a single PUT body. The body is streamed to disk, so
-	// this guards disk, not memory.
+	// MaxObjectBytes caps a single PUT body. The body is streamed to disk, so this guards disk, not memory.
 	MaxObjectBytes int64 `json:"max_object_bytes"`
 
 	// Prefetch lets /_batch/get add the keys stored near the requested ones.
-	// Off by default: a batch then returns only the requested keys, whatever
-	// the client's prefetch and prefetch_only flags say.
 	Prefetch bool `json:"prefetch"`
 
-	// Eviction bounds the on-disk cache so it does not grow until the disk
-	// fills. See EvictionConfig.
+	// Eviction bounds the on-disk cache so it does not grow until the disk fills. See EvictionConfig.
 	Eviction EvictionConfig `json:"eviction"`
 }
 
@@ -187,27 +160,16 @@ type Config struct {
 const (
 	defaultMaxConcurrentRequests = 128
 	defaultMaxObjectBytes        = 1 << 30
-	// A bound has to exist by default: unbounded, the cache grows until the
-	// disk fills, and every stored object also costs index memory in this
-	// process.
+	// A bound has to exist by default: unbounded, the cache grows until the disk fills.
 	defaultEvictionMaxBytes = 50 << 30
-	// maxBytesEnvVar overrides defaultEvictionMaxBytes without a config edit,
-	// which is how the deployment sizes the cache to the volume it mounted.
-	// An explicit eviction.max_bytes in the config still wins.
+	// maxBytesEnvVar overrides defaultEvictionMaxBytes without a config edit.
 	maxBytesEnvVar = "CACHE_MAX_BYTES"
 	// defaultEvictionInterval is how often the sweeper runs when eviction is on.
-	// Daily: each sweep walks the whole data_dir, and a day bounds how far the
-	// cache can overshoot its size budget between sweeps. The sweeper also runs
-	// at startup when the recorded last sweep is at least this old, so a
-	// frequently-restarted deployment still sweeps.
 	defaultEvictionInterval = 24 * time.Hour
 )
 
 // DashboardListenAddr returns the dashboard's listen address, "" when the
-// dashboard is switched off. The page and its stats endpoint answer WITHOUT
-// authentication: the port exists to be published through an access proxy
-// (Cloudflare empty Trust or equivalent), which is where the identity check
-// belongs. Do not expose it directly.
+// dashboard is switched off.
 func (c *Config) DashboardListenAddr() string {
 	if c.DashboardListen == nil {
 		return defaultDashboardListen
@@ -297,9 +259,7 @@ func LoadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// envMaxBytes resolves the cache size budget from CACHE_MAX_BYTES, falling back
-// to the built-in default when it is unset or empty. A value that is SET but
-// unparseable is a typo the operator needs to hear about, so it fails the load
+// envMaxBytes resolves the cache size budget from CACHE_MAX_BYTES, falling back to the built-in default when it is unset or empty. A value that is SET but unparseable is a typo the operator needs to hear about. It fails the load
 // rather than silently reverting to the default.
 func envMaxBytes() (int64, error) {
 	raw := strings.TrimSpace(os.Getenv(maxBytesEnvVar))

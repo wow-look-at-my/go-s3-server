@@ -25,9 +25,9 @@ import (
 // owner. Nothing spins: a send into a ring with room makes no system call, and
 // a side with nothing to do parks on a kernel wait rather than looking again.
 
-// brokerEnv names the owner's hello queue. A process that finds it set and
+// BrokerEnv names the owner's hello queue. A process that finds it set and
 // answering is a child. A process that finds it unset becomes the owner.
-const brokerEnv = "GO_BUILDCACHE_BROKER"
+const BrokerEnv = "GO_BUILDCACHE_BROKER"
 
 // brokerOffEnv makes every process open the cache for itself, which is what a
 // bisect of a broker-shaped problem wants.
@@ -52,7 +52,7 @@ var liveBroker atomic.Pointer[brokerServer]
 // name in the environment. It serves nothing when this process must not
 // serve, which is not an error: the cache then works as it did.
 func serveBroker(owner Cache, dir string) {
-	if os.Getenv(brokerOffEnv) != "" || os.Getenv(brokerEnv) != "" {
+	if os.Getenv(brokerOffEnv) != "" || os.Getenv(BrokerEnv) != "" {
 		return
 	}
 	name := endpointName("gobuildcache")
@@ -71,7 +71,7 @@ func serveBroker(owner Cache, dir string) {
 		fly:   newFlights(),
 	}
 	go bkr.greet(ctx)
-	os.Setenv(brokerEnv, name)
+	os.Setenv(BrokerEnv, name)
 	liveBroker.Store(bkr)
 	brokerNotice("cache: serving the build cache as %s", name)
 }
@@ -89,7 +89,7 @@ func endpointName(kind string) string {
 // test binary, adds these entries to it.
 func BrokerEnviron() []string {
 	if bkr := liveBroker.Load(); bkr != nil {
-		return []string{brokerEnv + "=" + bkr.name}
+		return []string{BrokerEnv + "=" + bkr.name}
 	}
 	return nil
 }
@@ -101,8 +101,18 @@ func StopBroker() {
 		bkr.shutdown()
 		// The name is gone, so a child handed this environment afterwards
 		// would wait on nobody.
-		os.Unsetenv(brokerEnv)
+		os.Unsetenv(BrokerEnv)
 	}
+}
+
+// Exit closes every endpoint this process holds and removes its life socket,
+// which no other process removes while the directory lives.
+func Exit() error {
+	StopBroker()
+	if child := liveChild.Swap(nil); child != nil {
+		child.Close()
+	}
+	return ipc.Release()
 }
 
 // shutdown ends the greeting, waits for the per-child servers, and unlinks the

@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// bodyPath finds the thing stored body under dir, so a test can corrupt it
+// bodyPath finds the thing stored body under dir. A test can corrupt it
 // the way a failing disk would: same name, same length, different bytes.
 func bodyPath(t *testing.T, dir string, size int) string {
 	t.Helper()
@@ -42,7 +42,7 @@ func bodyPath(t *testing.T, dir string, size int) string {
 }
 
 // Every stored object carries a digest of its own bytes, whatever its key and
-// whatever the uploader sent: the server computes a single when the upload
+// whatever the uploader sent. The server computes a single when the upload
 // names none. That is what makes the stamp a property of the cache rather
 // than of a current client.
 func TestPutStream_StampsDigestOnEveryObject(t *testing.T) {
@@ -78,7 +78,7 @@ func TestPutStream_RefusesClaimedDigestMismatch(t *testing.T) {
 }
 
 // The same refusal over HTTP, where the digest arrives as a metadata header:
-// the client's claim and the bytes it sent disagree, so this is its request
+// the client's claim. The bytes it sent disagree, so this is its request
 // that is wrong, not the server.
 func TestPutObject_RefusesDigestMismatch(t *testing.T) {
 	ts := testSetup(t)
@@ -95,7 +95,7 @@ func TestPutObject_RefusesDigestMismatch(t *testing.T) {
 	resp.Body.Close()
 }
 
-// A GET echoes the digest, so a reader that wants to check the bytes it just
+// A GET echoes the digest, so a reader that wants to check the bytes it
 // received has the value to check them against.
 func TestGetObject_EmitsStoredDigest(t *testing.T) {
 	ts := testSetup(t)
@@ -113,7 +113,7 @@ func TestGetObject_EmitsStoredDigest(t *testing.T) {
 	require.Equal(t, hex.EncodeToString(sum[:]), resp.Header.Get("X-Cache-Meta-Storedsha256"))
 }
 
-// A key outside the cacheprog pattern has no reader that verifies it, so the
+// A key outside the cacheprog pattern has no reader that verifies it. The
 // server is the only thing standing between rot on disk and a consumer. A body
 // that stopped matching its digest is refused and evicted, and the next
 // uploader replaces it.
@@ -127,8 +127,7 @@ func TestGetObject_EvictsBodyThatStoppedMatchingItsDigest(t *testing.T) {
 	key := "misc/rots"
 	require.NoError(t, s.Put(key, body, nil, nil))
 
-	// Same length, different content: the size and the metadata still agree, so
-	// only the digest can tell.
+	// Same length, different content: the size and the metadata still agree, so only the digest can tell.
 	path := bodyPath(t, dir, len(body))
 	rotted := append([]byte(nil), body...)
 	rotted[0] ^= 0xff
@@ -143,10 +142,10 @@ func TestGetObject_EvictsBodyThatStoppedMatchingItsDigest(t *testing.T) {
 	require.ErrorIs(t, statErr, ErrNotFound, "and it must be evicted, so the next upload replaces it")
 }
 
-// What the check answers, on each inputs it can get: bytes that still
+// What the check answers, on each inputs it can get. The check bytes that still
 // match, bytes that stopped matching, and an object stored before the stamp
-// existed. The last a single reports good -- missing evidence is not
-// evidence of rot, and treating it as rot would evict every relic in the cache.
+// existed. The last a single reports good -- missing evidence is not evidence
+// of rot, and treating it as rot would evict every relic in the cache.
 func TestVerifyStoredDigest(t *testing.T) {
 	body := []byte("bytes to check against their own digest")
 	sum := sha256.Sum256(body)

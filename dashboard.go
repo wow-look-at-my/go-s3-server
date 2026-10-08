@@ -11,22 +11,13 @@ import (
 	dto "github.com/prometheus/client_model/go"
 )
 
-// The dashboard is a single page, its assets and its icon. They are embedded so
-// the binary stays the whole deployment: no asset directory to mount, and no way
-// for the page to disagree with the server that serves it.
-//
 //go:embed dashboard.html dashboard.css dashboard.js icon.svg icon-monochrome.svg
 var dashboardAssets embed.FS
 
-// It is a SEPARATE port from the cache API on purpose: an access proxy
-// (Cloudflare empty Trust, or any other) fronts this port and leaves the cache
-// protocol port alone, so operators reach the dashboard through their identity
-// provider while build machines keep talking basic auth to the API.
+// It is a SEPARATE port from the cache API on purpose.
 const defaultDashboardListen = ":9002"
 
-// dashboardStatsPath serves the snapshot the page polls. Under it, the numbers
-// come from the same Prometheus registry /metrics serves, so the page and the
-// scrape can never report different values for a single counter.
+// dashboardStatsPath serves the snapshot the page polls.
 const dashboardStatsPath = "/api/stats"
 
 // metricValue is a metric with no labels (Value) or a labeled metric (Series).
@@ -98,7 +89,7 @@ func (d *dashboard) handler() http.Handler {
 }
 
 // servePage answers the page at "/" and its assets by name. It does not serve
-// the embedded directory as a tree: the page must be at the root, which is
+// the embedded directory as a tree. The page must be at the root, which is
 // where an access proxy points its hostname.
 func (d *dashboard) servePage(w http.ResponseWriter, r *http.Request) {
 	name, contentType := "", ""
@@ -131,8 +122,7 @@ func (d *dashboard) servePage(w http.ResponseWriter, r *http.Request) {
 func (d *dashboard) serveStats(w http.ResponseWriter, r *http.Request) {
 	stats, err := d.snapshot()
 	if err != nil {
-		// A gather failure means the numbers below would be partial. Say so
-		// instead of drawing a page of stale or missing values.
+		// A gather failure means the numbers below would be partial.
 		http.Error(w, "collect metrics: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -230,9 +220,8 @@ func addFamily(out map[string]metricValue, name string, metrics []*dto.Metric, v
 
 // startDashboardServer serves the dashboard on addr. A bind failure is logged
 // and the cache keeps running WITHOUT the dashboard, for the same reason the
-// metrics listener does: a busy dashboard port must not take down the data
-// path. The failure is loud, so an operator who wanted the dashboard learns
-// the port is taken instead of finding a page that never loads.
+// metrics listener does. A busy dashboard port must not take down the data
+// path.
 func startDashboardServer(addr string, d *dashboard) {
 	srv := &http.Server{
 		Addr:              addr,

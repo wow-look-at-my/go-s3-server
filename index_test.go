@@ -196,8 +196,9 @@ func TestIndexGenerationTracksContent(t *testing.T) {
 // TestIndexETagStableAcrossDuplicatePuts is the regression for the ETag-churn
 // fix: the blob (and thus the ETag) is a pure function of the sorted hash
 // content. Duplicate-only PUT traffic used to bump an in-header serialization
-// counter inside the hashed region, minting a fresh ETag with an unchanged key
-// set — every client then re-downloaded the multi-MB index for nothing.
+// counter inside the hashed region. That traffic is minting a fresh ETag with
+// an unchanged key set — every client then re-downloaded the multi-MB index
+// for nothing.
 func TestIndexETagStableAcrossDuplicatePuts(t *testing.T) {
 	ts := testSetup(t)
 
@@ -210,8 +211,7 @@ func TestIndexETagStableAcrossDuplicatePuts(t *testing.T) {
 	require.Equal(t, 200, status)
 	require.NotEmpty(t, etag1)
 
-	// Overwrite PUTs of the same key: the hash set is unchanged, so the blob
-	// must reserialize byte-identically and the ETag must not move.
+	// Overwrite PUTs of the same key: the hash set is unchanged.
 	putKey(t, ts, key, []byte("v2"))
 	putKey(t, ts, key, []byte("v3"))
 
@@ -277,8 +277,7 @@ func TestIndexBurstPuts(t *testing.T) {
 	wg.Wait()
 	burstDur := time.Since(start)
 
-	// The point is to fail loudly if PUT regresses to O(n)-per-call
-	// sorting on the new hashes path.
+	// The point is to fail loudly if PUT regresses to O(n)-per-call sorting on the new hashes path.
 	require.Less(t, burstDur, 5*time.Second, "burst PUT took %v (regression?)", burstDur)
 
 	status, body, _ := getIndex(t, ts, "")
@@ -416,16 +415,10 @@ func TestIndexHTTPMatchesInProcess(t *testing.T) {
 }
 
 // TestRebuildPreservesConcurrentPuts is the regression test for the rebuild
-// clobber: a PUT that completes while the rebuild's filesystem walk is running
-// lives only in the pending buffers, and the old rebuild nil'd those buffers,
-// silently dropping the key from /_index until the next rebuild. applyRebuild
-// (the post-walk half of rebuild) must merge the pending buffers into the fresh
-// snapshot instead. The interleaving is reproduced deterministically: the
-// "walk" snapshot is taken the concurrent Put lands after it, then the snapshot
-// is applied.
+// clobber.
 
 // buildFrom is what Storage.Walk feeds applyRebuild in production, assembled
-// here from a fixed object list so a rebuild can be tested without a data_dir.
+// here from a fixed object list.
 func buildFrom(objects []ListObject) *indexBuild {
 	b := newIndexBuild(len(objects), false)
 	for _, o := range objects {
@@ -444,8 +437,7 @@ func TestRebuildPreservesConcurrentPuts(t *testing.T) {
 	keyA, keyB := keyForHash(hA), keyForHash(hB)
 	snapshot := []ListObject{{Key: keyA, Size: 1, LastModified: time.Now()}}
 
-	// A PUT of key B completes after the walk passed its shard but before the
-	// rebuild takes the lock.
+	// A PUT of key B completes after the walk passed its shard but before the rebuild takes the lock.
 	idx.Put(keyB, 1)
 
 	idx.applyRebuild(buildFrom(snapshot))
@@ -461,8 +453,7 @@ func TestRebuildPreservesConcurrentPuts(t *testing.T) {
 	keys := idx.NearbyKeys(0, 1<<62, 10, set.Set[string]{}, nil)
 	require.ElementsMatch(t, []string{keyA, keyB}, keys)
 
-	// A key present in BOTH the snapshot and pending (a PUT the walk also saw)
-	// is deduped, not double-counted.
+	// A key present in BOTH the snapshot and pending (a PUT the walk also saw) is deduped, not double-counted.
 	idx2 := &Index{}
 	idx2.Put(keyA, 1)
 	idx2.applyRebuild(buildFrom(snapshot))

@@ -8,6 +8,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	github.com/wow-look-at-my/go-containers v0.0.0 // go-toolchain:auto-branch
+	github.com/wow-look-at-my/go-ipc v0.0.0 // go-toolchain:auto-branch
 	github.com/wow-look-at-my/go-s3-server/cacheclient v0.0.0 // go-toolchain:auto-branch
 	golang.org/x/sys v0.35.0
 )
@@ -33,7 +34,6 @@ require (
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
-	github.com/wow-look-at-my/go-ipc v0.0.0 // indirect
 	github.com/wow-look-at-my/go-mmap v0.0.0 // indirect
 	github.com/wow-look-at-my/go-shm v0.0.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect

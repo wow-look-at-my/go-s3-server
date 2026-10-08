@@ -132,8 +132,7 @@ func TestGetObjectNotFound(t *testing.T) {
 
 	require.Equal(t, 404, resp.StatusCode)
 
-	// Native plain-text error: the machine-readable code is in a header and the
-	// body is "<code>: <message>" (no S3 XML envelope).
+	// Native plain-text error: the machine-readable code is in a header and the body is "<code>: <message>".
 	require.Equal(t, "not_found", resp.Header.Get("X-Cache-Error-Code"))
 	body, _ := io.ReadAll(resp.Body)
 	require.Contains(t, string(body), "not_found")
@@ -433,8 +432,8 @@ func TestMetadataRoundTrip(t *testing.T) {
 	resp.Body.Close()
 }
 
-// TestLegacyAmzMetaCompat verifies the deprecated S3 metadata path still works:
-// a client uploading with X-Amz-Meta-* headers stores metadata, and a GET serves
+// TestLegacyAmzMetaCompat verifies the deprecated S3 metadata path still works.
+// A client uploading with X-Amz-Meta-* headers stores metadata, and a GET serves
 // it back under both the native and legacy header names. The deprecation counter
 // is bumped so the lingering S3 traffic stays observable.
 func TestLegacyAmzMetaCompat(t *testing.T) {
@@ -471,7 +470,7 @@ func TestMethodNotAllowed(t *testing.T) {
 }
 
 // TestDeleteObject covers the surgical eviction lever: a stored object can be
-// removed, a subsequent GET 404s, the key is dropped from the /_index blob, and
+// removed, a subsequent GET 404s. The key is dropped from the /_index blob, and
 // DELETE is idempotent (deleting a missing key still succeeds). This is the
 // mechanism for evicting a poisoned build-cache entry without a full purge.
 func TestDeleteObject(t *testing.T) {
@@ -515,12 +514,13 @@ func TestDeleteObject(t *testing.T) {
 	resp.Body.Close()
 }
 
-// TestSelfHealRepairsOutputIDInPlace covers the self-healing path: an object
-// stored without outputid metadata -- a relic of an earlier cache-data iteration,
-// or a single whose xattrs were stripped by a data-dir move -- is repaired in
-// place on the earliest read rather than evicted. The server reconstructs the
-// outputid from the body (it IS sha256 of the decompressed body), writes it back,
-// and serves the object as a hit. No eviction, no re-upload, no churn.
+// TestSelfHealRepairsOutputIDInPlace covers the self-healing path. An object
+// stored without outputid metadata. A relic of an earlier cache-data iteration,
+// or a single whose xattrs were stripped by a data-dir move. The object is
+// repaired in place on the earliest read rather than evicted. The server
+// reconstructs the outputid from the body (it IS sha256 of the decompressed
+// body), writes it back, and serves the object as a hit. No eviction, no
+// re-upload, no churn.
 func TestSelfHealRepairsOutputIDInPlace(t *testing.T) {
 	if !inOwnProcess(t) {
 		return
@@ -533,8 +533,7 @@ func TestSelfHealRepairsOutputIDInPlace(t *testing.T) {
 	require.Nil(t, err)
 	key := "/testbucket/go-buildcache/v1" + actionHex
 
-	// The body is an lz4 frame (what the client always stores); the outputid is
-	// sha256 of the decompressed content.
+	// The body is an lz4 frame (what the client always stores); the outputid is sha256 of the decompressed content.
 	raw := []byte("a compiled object body that lost its outputid xattr")
 	compressed := lz4Compress(t, raw)
 	sum := sha256.Sum256(raw)
@@ -559,8 +558,7 @@ func TestSelfHealRepairsOutputIDInPlace(t *testing.T) {
 	require.Greater(t, testutil.ToFloat64(selfHealRepairsTotal), repairsBefore,
 		"self-heal repair counter should increase")
 
-	// The key stays in the index -- repaired, not evicted -- so clients keep
-	// hitting it instead of re-uploading.
+	// The key stays in the index -- repaired, not evicted -- so clients keep hitting it instead of re-uploading.
 	resp = doRequest(t, ts, "GET", "/testbucket/_index", nil, nil)
 	idx, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -579,11 +577,11 @@ func TestSelfHealRepairsOutputIDInPlace(t *testing.T) {
 
 // TestSelfHealLeavesUnrepairableObjectInPlace verifies the non-destructive
 // fallback: an outputid-less object whose body is not a decodable lz4 frame
-// cannot be repaired (and the client could not consume it anyway), so the server
-// reports a clean miss and does NOT delete the body -- the file is left in place
+// cannot be repaired (and the client could not consume it anyway). The server
+// reports a clean miss and does NOT delete the body. The file is left in place
 // for forensics and the normal age/size eviction policy. Its INDEX entry,
 // however, is dropped: an unrepairable key that stayed advertised would be a
-// permanent forced miss (clients skip re-uploading indexed keys), so the server
+// permanent forced miss (clients skip re-uploading indexed keys). The server
 // de-advertises it and lets the next consumer re-upload a good body.
 func TestSelfHealLeavesUnrepairableObjectInPlace(t *testing.T) {
 	if !inOwnProcess(t) {
@@ -611,14 +609,12 @@ func TestSelfHealLeavesUnrepairableObjectInPlace(t *testing.T) {
 	require.Equal(t, "not_found", resp.Header.Get("X-Cache-Error-Code"))
 	resp.Body.Close()
 
-	// ... but nothing was repaired (counter unchanged) and the BODY was not
-	// evicted: the file remains on disk for the eviction policy to own.
+	// ... but nothing was repaired (counter unchanged) and the BODY was not evicted.
 	require.Equal(t, repairsBefore, testutil.ToFloat64(selfHealRepairsTotal))
 	_, err = storage.Stat(objectKey)
 	require.NoError(t, err, "an unrepairable object's body must be left on disk, not evicted")
 
-	// The key is no longer advertised, so consumers re-upload instead of
-	// taking a forced miss forever.
+	// The key is no longer advertised, so consumers re-upload instead of taking a forced miss forever.
 	resp = doRequest(t, ts, "GET", "/testbucket/_index", nil, nil)
 	idx, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()

@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestHeadObject: HEAD serves the exact header surface of a GET (both
-// metadata prefixes, Last-Modified, Content-Length) with no body, no guard
+// TestHeadObject. HEAD serves the exact header surface of a GET (both
+// metadata prefixes, Last-Modified, Content-Length) with no body. No guard
 // probes, and no access-record side effects — the cheap "inspect a key"
 // endpoint.
 func TestHeadObject(t *testing.T) {
@@ -51,7 +51,7 @@ func TestHeadObject(t *testing.T) {
 
 // TestStatusRecorderReadFrom: the metrics wrapper forwards io.ReaderFrom (the
 // sendfile fast path for GET body copies) instead of hiding it, and still
-// counts bytes; a wrapped writer WITHOUT ReaderFrom falls back to plain
+// counts bytes. A wrapped writer WITHOUT ReaderFrom falls back to plain
 // copying without double-counting.
 func TestStatusRecorderReadFrom(t *testing.T) {
 	payload := strings.Repeat("z", 4096)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -198,6 +199,27 @@ func TestHTTPErrLogger_TickerFlush(t *testing.T) {
 	}, time.Second, 5*time.Millisecond, "ticker should have flushed")
 
 	require.NoError(t, l.Close())
+}
+
+// The flush comes a whole interval after the record that woke the loop. A
+// loop that ticked on its own clock would flush at the earlier tick.
+func TestHTTPErrLogger_FlushFollowsTheRecord(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var buf syncBuffer
+		l := newHTTPErrLogger(&buf, 30*time.Second)
+
+		time.Sleep(20 * time.Second)
+		l.Record("web put", 502, "aabbccdd", "boom")
+
+		time.Sleep(15 * time.Second)
+		synctest.Wait()
+		require.Empty(t, buf.String(), "the flush waits a whole interval after the record")
+
+		time.Sleep(15 * time.Second)
+		synctest.Wait()
+		require.Contains(t, buf.String(), "HTTP 502")
+		require.NoError(t, l.Close())
+	})
 }
 
 func TestHTTPErrLogger_ConcurrentRecord(t *testing.T) {

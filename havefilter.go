@@ -1,30 +1,6 @@
 package main
 
 // The client's statement of what it already holds.
-//
-// A prefetch window is only worth sending for a key the caller does not have.
-// That record was never a statement about the client. It was a statement
-// about the wire, and while the client discarded every unrequested body it
-// was tracking a fiction -- the server suppressed keys the client never kept,
-// and they came back as ordinary blocking misses.
-//
-// So the client says what it holds, in the request, and the server keeps no
-// per-client memory at all.
-//
-// The statement is a Bloom filter over ACTION HASHES. A cache key's action
-// hash is a sha256, already uniformly distributed, so the filter needs no hash
-// function of its own: each of the k bit positions is bytes read straight out
-// of the hash, modulo the bit count. That is what keeps both implementations
-// of this filter, here and in cacheclient, from drifting -- there is no hash
-// to agree on, only this arithmetic.
-//
-// It fails toward sending. A Bloom filter has false positives and no false
-// negatives, and a positive here means "the client holds it", so the error is
-// always a key the server declines to send. The client then asks for it by
-// name on the blocking path and gets it: a single body un-sent, never a wrong
-// answer and never a lost object. The opposite arrangement, where the error
-// claims the client LACKS a key, would re-send bodies it already has, which is
-// the waste this whole change exists to remove.
 
 // haveFilterMaxHashes bounds k.
 const haveFilterMaxHashes = 10
@@ -36,9 +12,7 @@ type haveFilter struct {
 	K    int    `json:"k"`
 }
 
-// usable reports whether the filter says anything at all. An absent, empty or
-// malformed filter is read as a client that stated nothing, which is served
-// the full window.
+// usable reports whether the filter says anything at all.
 func (f *haveFilter) usable() bool {
 	return f != nil && len(f.Bits) > 0 && f.K >= 1 && f.K <= haveFilterMaxHashes
 }
@@ -60,9 +34,7 @@ func (f *haveFilter) contains(h [gbciHashSize]byte) bool {
 	return true
 }
 
-// haveFilterBit is position i of hash h in a filter of m bits. It is the whole
-// of the filter's hashing, and it is the thing piece that must read
-// identically in the client.
+// haveFilterBit is position i of hash h in a filter of m bits.
 func haveFilterBit(h [gbciHashSize]byte, i int, m uint32) uint32 {
 	off := i * 3
 	v := uint32(h[off])<<16 | uint32(h[off+1])<<8 | uint32(h[off+2])

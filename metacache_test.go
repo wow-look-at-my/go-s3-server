@@ -14,11 +14,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestMetaCache_ServesWarmMetadataWithoutXattrs proves the cache is actually
-// consulted: after a single read, the attributes are removed from disk behind
-// the cache's back and the next read still reports them. (Only a test may do
-// that -- the server never rewrites an inode's xattrs in place except through
-// the self-heal, which invalidates.)
+// TestMetaCache_ServesWarmMetadataWithoutXattrs proves the cache is
+// consulted. After a single read, the attributes are removed from disk behind
+// the cache's back and the next read still reports them.
 func TestMetaCache_ServesWarmMetadataWithoutXattrs(t *testing.T) {
 	_, storage := testSetupWithStorage(t)
 	key := "go-buildcache/v1" + strings.Repeat("a", 64)
@@ -41,9 +39,9 @@ func TestMetaCache_ServesWarmMetadataWithoutXattrs(t *testing.T) {
 	require.Empty(t, meta.Metadata["outputid"])
 }
 
-// TestMetaCache_OverwriteIsNotServedStale is the safety property: a new body
-// under the same key arrives as a new inode, so the stat the cache validates
-// against no longer matches and the previous body's metadata is never served.
+// TestMetaCache_OverwriteIsNotServedStale is the safety property. A new body
+// under the same key arrives as a new inode. The stat the cache validates
+// against no longer matches and the body's metadata is never served.
 func TestMetaCache_OverwriteIsNotServedStale(t *testing.T) {
 	_, storage := testSetupWithStorage(t)
 	key := "go-buildcache/v1" + strings.Repeat("b", 64)
@@ -60,7 +58,7 @@ func TestMetaCache_OverwriteIsNotServedStale(t *testing.T) {
 }
 
 // TestMetaCache_SetMetaInvalidates covers the a single mutation the stat
-// comparison cannot see: an xattr written onto a live inode, which leaves
+// comparison cannot see. An xattr written onto a live inode, which leaves
 // mtime and size exactly as they were.
 func TestMetaCache_SetMetaInvalidates(t *testing.T) {
 	_, storage := testSetupWithStorage(t)
@@ -77,9 +75,9 @@ func TestMetaCache_SetMetaInvalidates(t *testing.T) {
 }
 
 // TestMetaCache_SelfHealInvalidates: the repair stamps the reconstructed
-// outputid through an fd, so it too must drop the entry -- otherwise the next
+// outputid through an fd. It too must drop the entry -- otherwise the next
 // reader sees the absence that triggered the repair and repairs it again on
-// every single read.
+// every read.
 func TestMetaCache_SelfHealInvalidates(t *testing.T) {
 	_, storage := testSetupWithStorage(t)
 	key := "go-buildcache/v1" + strings.Repeat("d", 64)
@@ -172,9 +170,9 @@ func TestAuditXattrsAreNotServedAsMetadata(t *testing.T) {
 	_ = audit
 }
 
-// TestOpenBodyMatchesOpen: the batch streaming phase swapped Open for OpenBody,
-// so the size it writes into each tar header must still be the open fd's size,
-// and the body must still be the whole object.
+// TestOpenBodyMatchesOpen: the batch streaming phase swapped Open for OpenBody.
+// The size it writes into each tar header must still be the open fd's size. The
+// body must still be the whole object.
 func TestOpenBodyMatchesOpen(t *testing.T) {
 	_, storage := testSetupWithStorage(t)
 	key := "go-buildcache/v1" + strings.Repeat("f", 64)
@@ -194,7 +192,7 @@ func TestOpenBodyMatchesOpen(t *testing.T) {
 }
 
 // TestBatchGetServesFullMetadataAndBodies guards the batch path end to end
-// after the streaming phase stopped re-reading metadata: the manifest must
+// after the streaming phase stopped re-reading metadata. The manifest must
 // still carry every attribute, and each body must arrive whole.
 func TestBatchGetServesFullMetadataAndBodies(t *testing.T) {
 	_, storage := testSetupWithStorage(t)
@@ -235,9 +233,7 @@ func batchGetDirect(t *testing.T, storage *Storage, keys []string) (batchGetMani
 	return parseBatchResponse(t, bytes.NewReader(rec.Body.Bytes()))
 }
 
-// maxMetaEntryBytes bounds the single-entry overshoot the cache allows: an
-// insert never evicts the entry it just made, so a shard can exceed its budget
-// by at most a single entry.
+// maxMetaEntryBytes bounds the single-entry overshoot the cache allows: an insert never evicts the entry it made.
 const maxMetaEntryBytes = 4096
 
 // cacheEntryFor reports how many cached metadata attributes the cache holds for

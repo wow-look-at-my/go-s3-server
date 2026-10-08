@@ -65,6 +65,22 @@ func TestCacheVersionLeavesCurrentAlone(t *testing.T) {
 	assert.Equal(t, content, got)
 }
 
+// A second storage on a data directory another holds fails at once, and the
+// directory opens again once the holder closes.
+func TestStorageHoldsItsDataDirectory(t *testing.T) {
+	dir := t.TempDir()
+	first, err := NewStorage(dir, WriteOnceConfig{Action: "allow"})
+	require.NoError(t, err)
+
+	_, err = NewStorage(dir, WriteOnceConfig{Action: "allow"})
+	require.ErrorContains(t, err, "locked by another process")
+
+	require.NoError(t, first.Close())
+	again, err := NewStorage(dir, WriteOnceConfig{Action: "allow"})
+	require.NoError(t, err)
+	require.NoError(t, again.Close())
+}
+
 // TestCacheVersionPurgesOnMismatch simulates a stored version that is not
 // the current version — a downgrade or an operator-set marker — and verifies
 // the purge happens.
@@ -112,7 +128,7 @@ func TestDelete(t *testing.T) {
 }
 
 // TestCacheVersionCorruptMarker ensures a corrupt marker file is an error
-// that refuses to start, not a silent purge — something is wrong and the
+// that refuses to start, not a silent purge — something is wrong. The
 // operator should look at it.
 func TestCacheVersionCorruptMarker(t *testing.T) {
 	dir := t.TempDir()

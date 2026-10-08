@@ -7,8 +7,7 @@ import (
 	"runtime/debug"
 )
 
-// versionPath answers what build is serving. It sits with /_health, before
-// the auth gate, so an operator checks a deploy with a single unauthenticated GET.
+// versionPath answers what build is serving.
 const versionPath = "/_version"
 
 // buildVersion is what /_version reports. Every field comes from the binary's

@@ -1,9 +1,7 @@
 package main
 
 // The data_dir's format version and the startup hygiene that goes with it:
-// purging a cache written under a version we no longer trust, and sweeping the
-// temp files an interrupted upload left behind. Both run a single time, before
-// the server serves anything, under the data_dir's exclusive lock.
+// purging a cache written under a version we no longer trust.
 
 import (
 	"errors"
@@ -20,8 +18,8 @@ import (
 // version does not match currentCacheVersion, every entry in the data_dir
 // (except the lock file) is removed and a new version marker is written.
 // This forces the operator to rebuild the cache from trusted inputs whenever
-// we bump the version, e.g. after fixing a vulnerability that could have let
-// an attacker populate the cache.
+// we bump the version, e.g. after fixing a vulnerability. That vulnerability
+// could have let an attacker populate the cache.
 func ensureCacheVersion(dataDir string) error {
 	stored, err := readCacheVersion(dataDir)
 	if err != nil {

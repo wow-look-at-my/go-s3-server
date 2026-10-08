@@ -20,7 +20,7 @@ import (
 )
 
 var (
-	ErrNotFound          = errors.New("not found")
+	ErrNotFound           = errors.New("not found")
 	ErrWriteOnceConflict  = errors.New("object already exists with different content")
 	ErrWriteOnceDuplicate = errors.New("object already exists")
 )
@@ -44,7 +44,7 @@ type Storage struct {
 	dataDir   string
 	writeOnce WriteOnceConfig
 	unlock    func() // releases the data directory's lock
-	Index    *Index // in-memory key index (mtime entries + GBCI hashes); nil if unavailable
+	Index     *Index // in-memory key index (mtime entries + GBCI hashes); nil if unavailable
 
 	// accessShards tracks the last-access time (unix seconds) of each key.
 	accessShards []*accessShard

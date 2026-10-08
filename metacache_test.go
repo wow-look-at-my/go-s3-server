@@ -140,9 +140,10 @@ func TestMetaCache_Bound(t *testing.T) {
 
 // TestAuditXattrsAreNotServedAsMetadata: audit attributes share the metadata
 // namespace as a string prefix ("user.s3audit." begins with "user.s3."), and
-// were being read back as metadata and emitted as X-Cache-Meta-Audit.* headers
-// -- handing the uploader's identity and IP to every client that fetched the
-// object, and costing a getxattr per audit attribute on every read.
+// were being read back as metadata and emitted as X-Cache-Meta-Audit.*
+// headers. It is handing the uploader's identity and IP to every client that
+// fetched the object, and costing a getxattr per audit attribute on every
+// read.
 func TestAuditXattrsAreNotServedAsMetadata(t *testing.T) {
 	ts, storage := testSetupWithStorage(t)
 	key := "go-buildcache/v1" + strings.Repeat("e", 64)

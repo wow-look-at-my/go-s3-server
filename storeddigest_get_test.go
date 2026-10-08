@@ -13,9 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// rotBody replaces a stored object's bytes with other bytes, the way a failing
-// disk changes a body under a key that keeps all of its metadata. The metadata
-// cache entry goes with it, so the next reader stats the file afresh.
+// rotBody replaces a stored object's bytes with other bytes, the way a
+// failing disk changes a body under a key. That key keeps all of its
+// metadata.
 func rotBody(t *testing.T, s *Storage, key string, replacement []byte) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(s.keyToPath(key), replacement, 0644))
@@ -25,7 +25,7 @@ func rotBody(t *testing.T, s *Storage, key string, replacement []byte) {
 // An action-keyed body that stopped matching the digest recorded with it is
 // refused and evicted. The client's own check cannot catch this: with no
 // outputid on the object, a content address would be minted from the bytes
-// being served, so it would agree with whatever is there.
+// being served. It would agree with whatever is there.
 func TestGetObject_RefusesRottedActionKeyedBody(t *testing.T) {
 	if !inOwnProcess(t) {
 		return
@@ -92,7 +92,7 @@ func TestGetObject_RefusesRottedBodyWithOutputIDIntact(t *testing.T) {
 }
 
 // An object carrying neither an outputid nor a recorded digest predates both
-// stamps. Missing evidence is not evidence of rot, so it is repaired in place
+// stamps. Missing evidence is not evidence of rot. It is repaired in place
 // and served, which is what keeps every relic in a live cache usable.
 func TestSelfHeal_StillRepairsLegacyObjectWithNoStoredDigest(t *testing.T) {
 	ts, storage := testSetupWithStorage(t)
@@ -102,8 +102,7 @@ func TestSelfHeal_StillRepairsLegacyObjectWithNoStoredDigest(t *testing.T) {
 	stored := lz4Compress(t, raw)
 	sum := sha256.Sum256(raw)
 
-	// Written straight to the store's own path, so the body arrives with no
-	// metadata of any kind.
+	// Written straight to the store's own path, so the body arrives with no metadata of any kind.
 	path := storage.keyToPath(key)
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0755))
 	require.NoError(t, os.WriteFile(path, stored, 0644))

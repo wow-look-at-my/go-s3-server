@@ -42,8 +42,8 @@ func TestDetectMemoryBudget_UsesRuntimeLimit(t *testing.T) {
 }
 
 // TestReadCgroupMemoryLimit covers the fallback for a binary built without the
-// injected guard, including both spellings of "no limit": v2's literal "max"
-// and v1's saturated sentinel.
+// injected guard, including both spellings of "no limit". This also covers
+// v2's literal "max" and v1's saturated sentinel.
 func TestReadCgroupMemoryLimit(t *testing.T) {
 	t.Serial() // cgroupMemoryLimitPaths is package state
 	for _, tc := range []struct {
@@ -141,8 +141,7 @@ func TestMemController_ShrinksCachesUnderPressure(t *testing.T) {
 	c.poll()
 	require.EqualValues(t, 25, cache.budget)
 
-	// Inside the cooldown, nothing moves -- a single burst must not walk the
-	// caches straight to their floor.
+	// Inside the cooldown, nothing moves -- a single burst must not walk the caches straight to their floor.
 	c.poll()
 	require.EqualValues(t, 25, cache.budget)
 }
@@ -171,16 +170,15 @@ func TestMemController_GrowsBackAfterPressure(t *testing.T) {
 	require.EqualValues(t, 1, c.Scale(), "budgets must return to full once memory recovers")
 	require.Greater(t, cache.budget, shrunk)
 
-	// And growth stops at full: the controller never hands out more than the
-	// share it was given.
+	// And growth stops at full: the controller never hands out more than the share it was given.
 	c.poll()
 	require.EqualValues(t, 1000, cache.budget)
 }
 
-// TestMemController_FloorsAndWarns: a single time the caches are as small as
-// they go, there is nothing left for the server to give up -- the remaining
-// memory is the index and in-flight work. The controller must stop shrinking
-// (rather than spin) and say so, because that is the a single case only the operator can fix.
+// TestMemController_FloorsAndWarns: a single time the caches are as small as they go, there
+// is nothing left for the server to give up. The remaining memory is the index and in-flight
+// work. The controller must stop shrinking (rather than spin) and say so, because that is the
+// a single case only the operator can fix.
 func TestMemController_FloorsAndWarns(t *testing.T) {
 	inUse := int64(990)
 	now := time.Now()
@@ -234,9 +232,9 @@ func TestMemSampler_ReadsRuntimeMemory(t *testing.T) {
 }
 
 // TestMemController_ShrinkEvictsRealCaches wires the controller to the actual
-// caches a server runs with, rather than a fake, and checks the whole chain:
-// pressure -> smaller budget -> entries actually gone -> the data still
-// available from disk.
+// caches a server runs with, rather than a fake, and checks the whole chain.
+// Pressure -> smaller budget -> entries gone -> the data still available from
+// disk.
 func TestMemController_ShrinkEvictsRealCaches(t *testing.T) {
 	_, storage := testSetupWithStorage(t)
 
@@ -272,11 +270,11 @@ func TestMemController_ShrinkEvictsRealCaches(t *testing.T) {
 	}
 }
 
-// TestMemoryBudgetIsTheEnforcedCeiling: the budget must be the limit the GC is
-// actually enforcing, not the container limit somebody could have derived it
-// from. go-toolchain's injected init() installs GOMEMLIMIT at a fraction of the
-// cgroup limit, and resolving the budget before that init ran reported the raw
-// cgroup number -- a ceiling nothing enforced, which reads as "GOMEMLIMIT is
+// TestMemoryBudgetIsTheEnforcedCeiling: the budget must be the limit the GC
+// is enforcing, not the container limit somebody could have derived it from.
+// go-toolchain's injected init() installs GOMEMLIMIT at a fraction of the
+// cgroup limit. It resolving the budget before that init ran reported the raw
+// cgroup number. A ceiling nothing enforced, which reads as "GOMEMLIMIT is
 // not set" to anyone diagnosing an OOM from the metric.
 func TestMemoryBudgetIsTheEnforcedCeiling(t *testing.T) {
 	t.Serial() // the memory limit and memoryBudget are process state

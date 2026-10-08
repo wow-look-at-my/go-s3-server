@@ -1,28 +1,8 @@
 package main
 
-// cleanKeyMemo remembers indexed cacheprog keys whose stored body has already
-// passed the read-path module-index probe, so repeat GET/batch/prefetch reads
-// of a warm key skip the file open and the header walk. On a warm cache the
-// same keys are read on every build, so memoizing the verdict removes that work
-// from the steady state.
-//
-// Scope and safety: only keys in the guard's scope (go-buildcache/v1<64-hex>)
-// are ever memoized, keyed by their 32-byte action hash. A key is forgotten
-// whenever its body could have changed -- overwrite PUT, DELETE, and eviction
-// (storage.forgetClean call sites) -- so a memo hit always refers to a body
-// that entered through PutStream's module-index guard or was probed directly.
-// The memo is a probe-skip optimization, not the safety boundary: the PUT guard
-// remains the gate that keeps new module indexes out of the store.
-//
-// Bounded in BYTES with least-recently-used eviction (lrucache.go), sized from
-// the process's memory ceiling and shrunk when memory gets tight (memlimit.go).
-// Evicting an entry costs a single re-probe of that key -- which is why this
-// cache, like the others, is the right thing to give up under memory pressure
-// instead of service.
+// cleanKeyMemo remembers indexed cacheprog keys whose stored body has already passed the read-path module-index probe.
 
-// cleanEntryBytes is what a single memoized verdict costs: the 32-byte hash,
-// the map bucket and the list element. The value carries no data -- membership
-// IS the verdict -- so an entry's size is a constant.
+// cleanEntryBytes is what a single memoized verdict costs: the 32-byte hash, the map bucket and the list element.
 const cleanEntryBytes = 96
 
 // cleanMemoKind is the label this cache reports its size under.
@@ -39,7 +19,7 @@ func newCleanKeyMemo(budget int64) *lruCache[cleanKey, struct{}] {
 }
 
 // keyKnownClean reports whether the action hash already passed the read-path
-// module-index probe. Nil-safe for directly-constructed Storage values.
+// module-index probe.
 func (s *Storage) keyKnownClean(h cleanKey) bool {
 	if s.cleanKeys == nil {
 		return false
@@ -48,7 +28,7 @@ func (s *Storage) keyKnownClean(h cleanKey) bool {
 	return ok
 }
 
-// markKeyClean memoizes an action hash whose body was just probed and is not a
+// markKeyClean memoizes an action hash whose body was probed and is not a
 // module index. Nil-safe for directly-constructed Storage values.
 func (s *Storage) markKeyClean(h cleanKey) {
 	if s.cleanKeys != nil {
@@ -56,9 +36,7 @@ func (s *Storage) markKeyClean(h cleanKey) {
 	}
 }
 
-// forgetClean invalidates the known-clean memo entry for key. Must be called
-// whenever the body stored under key changes or is removed (overwrite PUT,
-// DELETE, eviction), so the next read re-probes the new body.
+// forgetClean invalidates the known-clean memo entry for key.
 func (s *Storage) forgetClean(key string) {
 	if s.cleanKeys == nil {
 		return

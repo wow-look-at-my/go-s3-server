@@ -24,8 +24,9 @@ func lz4Compress(t testing.TB, data []byte) []byte {
 	return buf.Bytes()
 }
 
-// incompressibleIndexBody builds a module-index payload (magic + random bytes)
-// whose lz4-compressed earliest block exceeds the old fixed 512-byte peek -- i.e.
+// incompressibleIndexBody builds a module-index payload (magic + random
+// bytes) whose lz4-compressed earliest block exceeds the fixed 512-byte peek
+// -- i.e.
 func incompressibleIndexBody(t *testing.T, randLen int) []byte {
 	t.Helper()
 	body := make([]byte, len(goModuleIndexMagic)+2+randLen) // magic + "2\n" + entropy
@@ -46,9 +47,7 @@ func TestLooksLikeGoModuleIndex(t *testing.T) {
 	require.False(t, looksLikeGoModuleIndex([]byte("go index"), "")) // no version letter
 	require.False(t, looksLikeGoModuleIndex(nil, ""))
 
-	// lz4-compressed (the wire format). The detector is now handed the WHOLE
-	// compressed body (its contract: it needs the full earliest block), the same
-	// as the read path streams off the file and the PUT path peeks block-sized.
+	// lz4-compressed (the wire format).
 	cIndex := lz4Compress(t, index)
 	cPlain := lz4Compress(t, plain)
 	require.True(t, looksLikeGoModuleIndex(cIndex, "lz4"))
@@ -57,9 +56,7 @@ func TestLooksLikeGoModuleIndex(t *testing.T) {
 	// A version-1 index (format-bump robustness).
 	require.True(t, looksLikeGoModuleIndex(lz4Compress(t, []byte("go index v1\nlegacy")), "lz4"))
 
-	// Regression: a REALISTIC, incompressible index whose compressed earliest
-	// block is far larger than the old 512-byte peek. This is the exact shape of
-	// the real production blobs.
+	// Regression: a REALISTIC, incompressible index whose compressed earliest block is far larger than the 512-byte peek.
 	cReal := lz4Compress(t, incompressibleIndexBody(t, 8192))
 	require.Greater(t, len(cReal), 512, "the compressed index must exceed the old 512-byte peek to exercise the bug")
 	require.True(t, looksLikeGoModuleIndex(cReal, "lz4"),
@@ -67,9 +64,9 @@ func TestLooksLikeGoModuleIndex(t *testing.T) {
 }
 
 // TestReadIsModuleIndex_FullBlock exercises the read-path detector against a
-// realistic, incompressible index whose compressed body far exceeds the old
+// realistic, incompressible index whose compressed body far exceeds the
 // 512-byte peek. readIsModuleIndex streams an lz4.Reader over the source and
-// pulls exactly the earliest block, so the magic is recovered however large
+// pulls exactly the earliest block. The magic is recovered however large
 // that block is -- the property the fixed-peek code lacked.
 func TestReadIsModuleIndex_FullBlock(t *testing.T) {
 	cIndex := lz4Compress(t, incompressibleIndexBody(t, 16384))
@@ -97,8 +94,7 @@ func TestReadIsModuleIndex_FullBlock(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, isIndex)
 
-	// A garbled "lz4" body that cannot be decompressed is treated as not-an-index
-	// (fail-open), never an error that would fail the serve path.
+	// A garbled "lz4" body that cannot be decompressed is treated as not-an-index (fail-open).
 	isIndex, err = readIsModuleIndex(bytes.NewReader([]byte("not a valid lz4 frame at all")), "lz4")
 	require.NoError(t, err)
 	require.False(t, isIndex)
@@ -126,8 +122,7 @@ func BenchmarkPutObjectPeek(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		// write_once action=allow lets each iteration overwrite the same key, so
-		// the storage layer stays bounded while the peek path runs every time.
+		// write_once action=allow lets each iteration overwrite the same key.
 		key := fmt.Sprintf("go-buildcache/v1%064x", i%4)
 		req := httptest.NewRequest("PUT", "/testbucket/"+key, bytes.NewReader(payload))
 		req.Header = hdr
@@ -173,13 +168,13 @@ func TestPutObject_RefusesModuleIndex(t *testing.T) {
 	require.Equal(t, payload, got, "a stored object must round-trip byte-for-byte")
 }
 
-// TestPutObject_RefusesRealisticModuleIndex is the regression guard at the PUT
-// level: a REALISTIC, incompressible index whose single lz4 block is far larger
-// than the old 512-byte peek (the exact shape of the real production poison)
-// must be refused and stored nothing. The old fixed-512 peek truncated this
-// body, never decoded the magic, and STORED the poison. The control normal
-// object alongside it (also multi-KB so it can't be confused with the peek
-// window) still stores and round-trips.
+// TestPutObject_RefusesRealisticModuleIndex is the regression guard at the
+// PUT level. A REALISTIC, incompressible index whose single lz4 block is far
+// larger than the 512-byte peek (the exact shape of the real production
+// poison) must be refused and stored nothing. The fixed-512 peek truncated
+// this body, never decoded the magic, and STORED the poison. The control
+// normal object alongside it (also multi-KB so it can't be confused with the
+// peek window) still stores and round-trips.
 func TestPutObject_RefusesRealisticModuleIndex(t *testing.T) {
 	ts, storage := testSetupWithStorage(t)
 
@@ -195,8 +190,7 @@ func TestPutObject_RefusesRealisticModuleIndex(t *testing.T) {
 	require.Equal(t, 200, resp.StatusCode, "a realistic index PUT is accepted on the wire")
 	resp.Body.Close()
 
-	// It must NOT have been stored -- the storage layer is the source of truth
-	// (the GET path would also evict it, so check storage directly).
+	// It must NOT have been stored -- the storage layer is the source of truth.
 	_, err := storage.Stat(idxKey)
 	require.ErrorIs(t, err, ErrNotFound, "a realistic module index must never be stored on PUT")
 

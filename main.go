@@ -14,21 +14,12 @@ import (
 )
 
 // HTTP server timeouts. ReadHeaderTimeout is the slowloris guard: a request
-// line and its headers must arrive promptly. Idle reaps an unused keep-alive
-// connection from any of many CI runners.
-//
-// There is deliberately no ReadTimeout and no WriteTimeout. Both cap a whole
-// request, so both measure how BIG a transfer is rather than whether it is
-// healthy, and this server's transfers are bulk. guardStall bounds the silence
-// instead, per request. See stallguard.go.
+// line and its headers must arrive promptly.
 const (
 	httpReadHeaderTimeout = 15 * time.Second
 	httpIdleTimeout       = 120 * time.Second
 
-	// shutdownTimeout bounds how long graceful shutdown waits for in-flight
-	// requests to finish after SIGINT/SIGTERM. Kept under a typical orchestrator
-	// stop grace period (docker-updater issues ContainerStop with a 300s timeout)
-	// so the process drains and exits cleanly before a SIGKILL would arrive.
+	// shutdownTimeout bounds how long graceful shutdown waits for in-flight requests to finish after SIGINT/SIGTERM.
 	shutdownTimeout = 280 * time.Second
 )
 
@@ -50,8 +41,7 @@ func init() {
 }
 
 func run(cmd *cobra.Command, args []string) error {
-	// Every init() has run by now, including the GOMEMLIMIT guard go-toolchain
-	// injects, so this reads the ceiling the GC is actually enforcing.
+	// Every init() has run by now, including the GOMEMLIMIT guard go-toolchain injects.
 	resolveMemoryBudget()
 
 	configPath, _ := cmd.Flags().GetString("config")
@@ -72,9 +62,8 @@ func run(cmd *cobra.Command, args []string) error {
 	if v, _ := cmd.Flags().GetString("metrics-listen"); v != "" {
 		cfg.MetricsListen = v
 	}
-	// An empty flag value cannot mean "turn the dashboard off": an unset flag
-	// is empty too. "off" is the spelling that disables it from the command
-	// line; the config file uses an explicit empty dashboard_listen.
+	// An empty flag value cannot mean "turn the dashboard off": an unset flag is
+	// empty too.
 	if v, _ := cmd.Flags().GetString("dashboard-listen"); v != "" {
 		if v == "off" {
 			v = ""
@@ -91,8 +80,7 @@ func run(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Before NewStorage, which builds the index: the startup walk must not
-	// build a list this server will not read.
+	// Before NewStorage, which builds the index: the startup walk must not build a list this server will not read.
 	SetIndexEntryTracking(cfg.Prefetch)
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
@@ -150,7 +138,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 	log.Printf("limits: max_concurrent_requests=%d max_object_bytes=%d index_blob_interval=%v", cfg.MaxConcurrentRequests, cfg.MaxObjectBytes, storage.Index.BlobInterval())
 
-	// Memory: the in-memory caches are already sized from this budget; starting
+	// Memory: the in-memory caches are already sized from this budget. Starting
 	// the controller adds the feedback half, shrinking them when memory gets
 	// tight and letting them grow back when it does not. It never touches
 	// request handling -- a cache that stops answering is not a cache.
@@ -171,10 +159,7 @@ func run(cmd *cobra.Command, args []string) error {
 		log.Printf("memory: no process limit discovered (no GOMEMLIMIT, no cgroup limit); in-memory caches use fixed default budgets. Set GOMEMLIMIT or a container memory limit to have them sized and adjusted automatically.")
 	}
 
-	// Bodies are already compressed when they arrive and this server never
-	// compresses anything, so a compressing dataset underneath is another
-	// pass for no gain -- said a single time, here, where the other
-	// costly-config warnings are.
+	// Bodies are already compressed when they arrive and this server never compresses anything, so a compressing dataset underneath is another pass for no gain.
 	logCompressionAdvisory(cfg.DataDir, log.Printf)
 
 	httpSrv := &http.Server{
@@ -184,11 +169,7 @@ func run(cmd *cobra.Command, args []string) error {
 		IdleTimeout:       httpIdleTimeout,
 	}
 
-	// Serve in a goroutine so the main goroutine can wait for a termination
-	// signal and drain in-flight requests before exiting. Without this, the
-	// SIGTERM that `docker stop` sends during a rolling update kills the process
-	// immediately and cuts off in-flight GET/PUT streams; draining lets the
-	// orchestrator's stop grace period be spent finishing those requests.
+	// Serve in a goroutine.
 	serveErr := make(chan error, 1)
 	go func() {
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

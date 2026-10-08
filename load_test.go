@@ -43,7 +43,7 @@ func newLoadTestServer(t *testing.T, maxConcurrent int) (*httptest.Server, *Stor
 
 // consumeTar reads a batch-get tar response a single entry at a time, discarding
 // each body, and returns the total bytes seen. Reading entry-by-entry both
-// validates that the streamed tar is well-formed under load and keeps the
+// validates that the streamed tar is well-formed under load. It keeps the
 // client's own memory bounded, so the process-heap assertion reflects the server.
 func consumeTar(r io.Reader) (int64, int, error) {
 	tr := tar.NewReader(r)
@@ -138,8 +138,7 @@ func TestLoad_ConcurrentMatrixStreamsWithBoundedMemory(t *testing.T) {
 		}
 	}
 
-	// Barrier so all clients hit the server at the same time, maximizing the
-	// concurrent peak the sampler must catch (and that buffering would balloon).
+	// Barrier so all clients hit the server at the same time, maximizing the concurrent peak the sampler must catch.
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	client := &http.Client{Timeout: 120 * time.Second}
@@ -199,10 +198,7 @@ func TestLoad_ConcurrentMatrixStreamsWithBoundedMemory(t *testing.T) {
 	t.Logf("served %d MiB; peak heap %d MiB; max status %d",
 		atomic.LoadInt64(&totalServed)/(1024*1024), peak/(1024*1024), atomic.LoadInt64(&maxStatus))
 	if raceDetectorEnabled {
-		// The race detector's allocation tracking inflates the heap, so the
-		// streaming-vs-buffering memory bound is only meaningful without it.
-		// The no-5xx and tar-validity checks above still exercise the streaming
-		// path under -race.
+		// The race detector's allocation tracking inflates the heap.
 		t.Log("skipping heap-bound assertion under -race")
 		return
 	}
@@ -220,8 +216,7 @@ func TestLoad_OverloadShedsWith503(t *testing.T) {
 
 	rejectedBefore := testutil.ToFloat64(httpRejectedTotal)
 
-	// Occupy the only slot with a PUT whose body never completes (a pipe we
-	// don't close), so the server blocks in storage streaming while holding it.
+	// Occupy the only slot with a PUT whose body never completes (a pipe we don't close), so the server blocks in storage streaming while holding it.
 	pr, pw := io.Pipe()
 	putDone := make(chan struct{})
 	go func() {
@@ -257,14 +252,14 @@ func TestLoad_OverloadShedsWith503(t *testing.T) {
 }
 
 // TestLoad_MemoryPressureNeverRefusesService is the requirement, stated as a
-// test: while memory pressure is continuous and the controller is shrinking the
-// caches as hard as it can, every single request is still answered correctly.
+// test. While memory pressure is continuous and the controller is shrinking
+// the caches as hard as it can, every request is still answered correctly.
 //
-// A cache server exists to answer. If it refuses under load, every client it
-// refuses rebuilds anyway -- having earliest paid for the round trip -- so a
-// cache that sheds is worse than no cache at all. Memory pressure is allowed to
-// make the server slower (a cold cache means more syscalls per request); it is
-// never allowed to make it unavailable.
+// A cache server exists to answer. Suppose it refuses under load. Then every
+// client it refuses rebuilds anyway -- having earliest paid for the round
+// trip -- so a cache that sheds is worse than no cache at all. Memory
+// pressure is allowed to make the server slower (a cold cache means more
+// syscalls per request); it is never allowed to make it unavailable.
 func TestLoad_MemoryPressureNeverRefusesService(t *testing.T) {
 	if testing.Short() {
 		t.Skip("load test skipped in -short mode")
@@ -277,8 +272,7 @@ func TestLoad_MemoryPressureNeverRefusesService(t *testing.T) {
 	cfg := &Config{Bucket: "testbucket", DataDir: dir, DisableAuth: true, MaxConcurrentRequests: 128}
 	srv := NewServer(cfg, st)
 
-	// Drive the controller from the test: "always under pressure", which is the
-	// worst case the server has to keep serving through.
+	// Drive the controller from the test: "always under pressure".
 	registered := srv.mem.caches
 	srv.mem = newMemController(1000)
 	srv.mem.sample = func() int64 { return 990 }
@@ -381,9 +375,7 @@ func TestLoad_MemoryPressureNeverRefusesService(t *testing.T) {
 						refused.Add(1)
 						continue
 					}
-					// The body must be byte-for-byte right: a cache under
-					// pressure that starts serving truncated or wrong bodies
-					// would be far worse than a single that refused.
+					// The body must be byte-for-byte right.
 					if rerr != nil || !bytes.Equal(got, body) {
 						wrong.Add(1)
 						continue
@@ -406,7 +398,6 @@ func TestLoad_MemoryPressureNeverRefusesService(t *testing.T) {
 	require.Zero(t, wrong.Load(), "and what it serves must still be correct")
 	require.EqualValues(t, clients*reqPerCl, served.Load())
 
-	// The pressure was real: the controller did shrink the caches while all of
-	// that was being served.
+	// The pressure was real: the controller did shrink the caches while all of that was being served.
 	require.Less(t, srv.mem.Scale(), 1.0, "the controller must actually have shrunk the caches")
 }

@@ -22,13 +22,8 @@ const ownProcessEnv = "GO_S3_SERVER_ISOLATED_TEST"
 
 // inOwnProcess reports whether the caller is the child process that runs this
 // test alone. In the parent it re-executes the test binary for this a single
-// test, waits, and reports false; the caller must then return without running
+// test, waits, and reports false. The caller must then return without running
 // the body. A failure in the child becomes a failure here.
-//
-// Every metric in this package is a process-global collector, so a before/after
-// pair counts what a concurrent test does as well. A separate process starts
-// with those counters at empty and nothing else writing them, which buys the
-// isolation without making the rest of the suite wait.
 func inOwnProcess(t *testing.T) bool {
 	t.Helper()
 	if os.Getenv(ownProcessEnv) == t.Name() {
@@ -43,11 +38,7 @@ func inOwnProcess(t *testing.T) bool {
 }
 
 func TestMetricsServer(t *testing.T) {
-	// Waiting for another test to do it makes the assertion depend on which
-	// tests ran and top-level tests here run in parallel: this failed with the
-	// http vec still empty. Touching them is what makes the series exist.
-	// Values go unasserted, and every test that measures a delta already runs
-	// in its own process.
+	// Waiting for another test to do it makes the assertion depend on which tests ran and top-level tests here run in parallel.
 	httpRequestsTotal.WithLabelValues("GET", "metrics-endpoint-probe", "200").Add(0)
 	storageOpsTotal.WithLabelValues("metrics-endpoint-probe", "ok").Add(0)
 
@@ -126,9 +117,9 @@ func TestBatchCountersRecorded(t *testing.T) {
 	require.Equal(t, reqsBefore+1, testutil.ToFloat64(batchRequestsTotal))
 }
 
-// TestLookAheadAnchorsAreNotMisses: the client seeds a look-ahead request only
-// with keys it just hit. With prefetch on or off, those keys must not count as
-// requested or as project misses, or every hit also reads as a miss.
+// TestLookAheadAnchorsAreNotMisses: the client seeds a look-ahead request
+// only with keys it hit. With prefetch on or off, those keys must not count
+// or as project misses, or every hit also reads as a miss.
 func TestLookAheadAnchorsAreNotMisses(t *testing.T) {
 	if !inOwnProcess(t) {
 		return

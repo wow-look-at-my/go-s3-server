@@ -47,5 +47,5 @@ func TestAbsentKeyMissesWhenTheLoadLandsNotWhenTheProbeDoes(t *testing.T) {
 	start := time.Now()
 	_, _, _, miss = reader.Get(objs[1].actionID)
 	require.True(t, miss)
-	require.Less(t, time.Since(start), bound,"the miss waited for the probe, not for the index")
+	require.Less(t, time.Since(start), bound, "the miss waited for the probe, not for the index")
 }

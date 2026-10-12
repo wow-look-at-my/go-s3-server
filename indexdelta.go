@@ -10,7 +10,7 @@ import (
 // The add log lets a client that holds a copy of /_index fetch only the hashes stored since that copy.
 
 // A full log starts a new epoch, and a client then makes one full fetch.
-var maxAddLog = 1 << 20
+const maxAddLog = 1 << 20
 
 // newIndexEpoch is random, so a client's position from an earlier server
 // process never matches the log of a later one.
@@ -24,7 +24,11 @@ func newIndexEpoch() uint64 {
 
 // appendAddLocked records hash in the add log. The caller holds idx.mu.
 func (idx *Index) appendAddLocked(hash [gbciHashSize]byte) {
-	if len(idx.added) >= maxAddLog {
+	limit := idx.addLogLimit
+	if limit == 0 {
+		limit = maxAddLog
+	}
+	if len(idx.added) >= limit {
 		idx.resetAddLogLocked()
 	}
 	idx.added = append(idx.added, hash)

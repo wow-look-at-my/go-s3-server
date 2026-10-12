@@ -80,11 +80,8 @@ func TestDeltaRefusesAPositionAheadOfTheLog(t *testing.T) {
 }
 
 func TestFullLogStartsANewEpoch(t *testing.T) {
-	prev := maxAddLog
-	maxAddLog = 2
-	t.Cleanup(func() { maxAddLog = prev })
-
 	idx := newDeltaIndex(t)
+	idx.addLogLimit = 2
 	_, _, gen := idx.BlobGen()
 	for n := byte(1); n <= 3; n++ {
 		key, _ := deltaKey(n)

@@ -62,6 +62,8 @@ type Index struct {
 	addEpoch  uint64
 	added     [][gbciHashSize]byte
 	cachedGen indexGen
+	// addLogLimit overrides maxAddLog when nonzero, for a test.
+	addLogLimit int
 }
 
 // defaultIndexBlobInterval is the least time between serializations of the index unless the config says otherwise.

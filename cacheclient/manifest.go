@@ -27,8 +27,12 @@ type buildManifest struct {
 	id      atomic.Pointer[string] // the manifest's own action ID, once the module is known
 	started atomic.Bool
 
-	mu      sync.Mutex
-	used    set.Set[string]          // action IDs this process served or stored
+	mu          sync.Mutex
+	used        set.Set[string] // action IDs this process served or stored
+	missed      set.Set[string] // action IDs this process asked for and did not get
+	knownMissed set.Set[string] // action IDs the last build asked for and did not get
+
+	AbsentSkips AtomicCounter // lookups answered as misses from the manifest while the index loaded
 	pending map[string]chan struct{} // action IDs a fetch has on the wire, closed when they land
 	ready   chan struct{}            // closed once the manifest is read and its objects marked
 
@@ -39,7 +43,38 @@ type buildManifest struct {
 }
 
 func newBuildManifest() *buildManifest {
-	return &buildManifest{used: set.New[string](), pending: map[string]chan struct{}{}, ready: make(chan struct{})}
+	return &buildManifest{
+		used: set.New[string](), missed: set.New[string](), knownMissed: set.New[string](),
+		pending: map[string]chan struct{}{}, ready: make(chan struct{}),
+	}
+}
+
+// noteMissed records an action ID this build asked for and did not get.
+func (m *buildManifest) noteMissed(actionID string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.missed.Len() < manifestMaxKeys {
+		m.missed.Add(actionID)
+	}
+	m.mu.Unlock()
+}
+
+// missedLastTime reports whether the last build asked for actionID and did
+// not get it. It waits briefly for the manifest to be read.
+func (m *buildManifest) missedLastTime(actionID string) bool {
+	if m == nil || !m.started.Load() {
+		return false
+	}
+	select {
+	case <-m.ready:
+	case <-time.After(manifestReadWait):
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.knownMissed.Contains(actionID)
 }
 
 // manifestReadWait bounds how long a lookup waits for the manifest itself.
@@ -144,6 +179,14 @@ func (b *WebBackend) fetchManifest(id string) {
 	b.keysMu.RUnlock()
 	var ids []string
 	for _, line := range strings.Split(string(data), "\n") {
+		if missed, ok := strings.CutPrefix(line, "-"); ok {
+			if _, ok := parseActionHash(missed); ok {
+				b.manifest.mu.Lock()
+				b.manifest.knownMissed.Add(missed)
+				b.manifest.mu.Unlock()
+			}
+			continue
+		}
 		h, ok := parseActionHash(line)
 		if !ok || line == id {
 			continue
@@ -273,10 +316,16 @@ func (b *WebBackend) storeManifest() {
 		return
 	}
 	m.mu.Lock()
-	ids := make([]string, 0, m.used.Len())
+	ids := make([]string, 0, m.used.Len()+m.missed.Len())
 	for actionID := range m.used.All() {
 		if actionID != *id {
 			ids = append(ids, actionID)
+		}
+	}
+	// A miss the build later stored is a hit for the next one, not a miss.
+	for actionID := range m.missed.All() {
+		if actionID != *id && !m.used.Contains(actionID) {
+			ids = append(ids, "-"+actionID)
 		}
 	}
 	m.mu.Unlock()
@@ -298,5 +347,6 @@ func (b *WebBackend) reportManifest() {
 	if m == nil || m.Named.Load() == 0 {
 		return
 	}
-	logging.Infof("cacheprog: manifest: named %d keys, fetched %d ahead, %d lookups waited for them", m.Named.Load(), m.Fetched.Load(), m.Waited.Load())
+	logging.Infof("cacheprog: manifest: named %d keys, fetched %d ahead, %d lookups waited for them, %d answered as misses while the index loaded",
+		m.Named.Load(), m.Fetched.Load(), m.Waited.Load(), m.AbsentSkips.Load())
 }

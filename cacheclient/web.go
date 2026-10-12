@@ -476,8 +476,18 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 	if b.manifest != nil && !b.manifest.started.Load() {
 		b.startManifest(b.moduleName())
 	}
+	// The last build asked for this and did not get it. While the index loads,
+	// that answer is worth more than a wait for the index. Being wrong costs a
+	// local compile.
+	if b.indexLoading() && b.manifest.missedLastTime(actionID) {
+		b.manifest.AbsentSkips.Increment()
+		b.manifest.noteMissed(actionID)
+		return "", nil, time.Time{}, true
+	}
 	outputID, data, t, miss = b.get(actionID)
-	if !miss {
+	if miss {
+		b.manifest.noteMissed(actionID)
+	} else {
 		b.manifest.note(actionID)
 	}
 	return outputID, data, t, miss

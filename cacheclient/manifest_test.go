@@ -126,6 +126,24 @@ func TestAwaitPrefetchWaitsForTheFetch(t *testing.T) {
 	require.Equal(t, uint32(1), b.manifest.Waited.Load())
 }
 
+// While the index loads, a key the last build missed is a miss at once, and
+// the next manifest lists it as missed again.
+func TestManifestMissAnswersWhileTheIndexLoads(t *testing.T) {
+	b := NewBareBackend("go-buildcache/")
+	b.manifest = newBuildManifest()
+	b.manifest.started.Store(true)
+	missed := strings.Repeat("a7", 32)
+	b.manifest.knownMissed.Add(missed)
+	close(b.manifest.ready)
+	b.indexLoad.Store(&indexLoad{cancel: func() {}, done: make(chan struct{})})
+
+	_, _, _, miss := b.Get(missed)
+	require.True(t, miss)
+	require.Equal(t, uint32(1), b.manifest.AbsentSkips.Load())
+	require.True(t, b.manifest.missed.Contains(missed))
+	require.False(t, b.manifest.missedLastTime(strings.Repeat("b8", 32)))
+}
+
 // A build with no module stores no manifest and fetches nothing.
 func TestManifestNeedsAModule(t *testing.T) {
 	b := NewBareBackend("go-buildcache/")

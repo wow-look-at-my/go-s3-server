@@ -60,6 +60,24 @@ func fillIndexTracking(n int, entries bool) *Index {
 	return idx
 }
 
+// addLogBytes is what the add log holds.
+func addLogBytes(idx *Index) uint64 {
+	return uint64(cap(idx.added)) * gbciHashSize
+}
+
+// The add log never holds more than its limit, however many keys arrive. A
+// key past the limit starts a new epoch with an empty log.
+func TestAddLogIsBounded(t *testing.T) {
+	idx := &Index{entriesOff: true, addLogLimit: 1000}
+	idx.blobMinInterval.Store(0)
+	for i := range 2500 {
+		idx.Put(footprintKey(i), 4096)
+		require.LessOrEqual(t, len(idx.added), 1000)
+	}
+	require.Equal(t, 500, len(idx.added), "two resets, then the last 500 keys")
+	require.LessOrEqual(t, cap(idx.added), 1024, "a reset releases the old backing array")
+}
+
 // The bound is per key over the whole index. This covers the mtime-sorted
 // entry list, the sorted hash list, and the serialized blob the /_index
 // endpoint serves between rebuilds.
@@ -76,9 +94,9 @@ func TestIndexPerKeyFootprint(t *testing.T) {
 	runtime.KeepAlive(idx)
 	runtime.KeepAlive(blob)
 
-	perKey := float64(after-before) / float64(footprintKeys)
-	t.Logf("index footprint: %d keys, %.1f MB live, %.1f bytes/key",
-		footprintKeys, float64(after-before)/(1<<20), perKey)
+	perKey := float64(after-before-addLogBytes(idx)) / float64(footprintKeys)
+	t.Logf("index footprint: %d keys, %.1f MB live, %.1f MB of it the add log, %.1f bytes/key without it",
+		footprintKeys, float64(after-before)/(1<<20), float64(addLogBytes(idx))/(1<<20), perKey)
 	t.Logf("  projected at 1.7M keys: %.0f MB", perKey*1_700_000/(1<<20))
 
 	require.Less(t, perKey, indexMaxBytesPerKey,
@@ -101,9 +119,9 @@ func TestIndexWithoutEntriesCostsLess(t *testing.T) {
 	runtime.KeepAlive(idx)
 	runtime.KeepAlive(blob)
 
-	perKey := float64(after-before) / float64(footprintKeys)
-	t.Logf("index footprint without the mtime list: %.1f bytes/key (%.0f MB at 1.7M keys)",
-		perKey, perKey*1_700_000/(1<<20))
+	perKey := float64(after-before-addLogBytes(idx)) / float64(footprintKeys)
+	t.Logf("index footprint without the mtime list: %.1f bytes/key (%.0f MB at 1.7M keys), plus %.1f MB of add log",
+		perKey, perKey*1_700_000/(1<<20), float64(addLogBytes(idx))/(1<<20))
 	require.Less(t, perKey, indexNoEntriesMaxBytesPerKey,
 		"with the mtime list off, a key must cost no more than the hash plus the blob")
 

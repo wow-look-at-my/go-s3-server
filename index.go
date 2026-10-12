@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -59,6 +58,13 @@ type Index struct {
 	builtAt time.Time
 	// blobMinInterval is the least time between serializations, in nanoseconds.
 	blobMinInterval atomic.Int64
+
+	// addEpoch and added are the add log (indexdelta.go). cachedGen is the log position cachedBlob is complete up to.
+	addEpoch  uint64
+	added     [][gbciHashSize]byte
+	cachedGen indexGen
+	// addLogLimit overrides maxAddLog when nonzero, for a test.
+	addLogLimit int
 }
 
 // defaultIndexBlobInterval is the least time between serializations of the index unless the config says otherwise.
@@ -111,7 +117,7 @@ func extractActionHash(key string) ([gbciHashSize]byte, bool) {
 
 // NewIndex builds the index by scanning the filesystem.
 func NewIndex(storage *Storage) *Index {
-	idx := &Index{entriesOff: !indexEntriesDefault}
+	idx := &Index{entriesOff: !indexEntriesDefault, addEpoch: newIndexEpoch()}
 	idx.blobMinInterval.Store(int64(defaultIndexBlobInterval))
 	idx.rebuild(storage)
 	return idx
@@ -161,6 +167,7 @@ func (idx *Index) Put(key string, size int64) {
 
 	if hashOK {
 		idx.pending = append(idx.pending, hash)
+		idx.appendAddLocked(hash)
 		idx.dirty.Store(true)
 	}
 	idx.updateGaugesLocked()
@@ -216,8 +223,7 @@ func (idx *Index) Remove(key string) {
 	if hashOK {
 		idx.pending = removeHash(idx.pending, hash)
 		idx.hashes = removeHash(idx.hashes, hash)
-		idx.dirty.Store(true)
-		idx.builtAt = time.Time{} // a removed key is not advertised for the interval
+		idx.resetAddLogLocked()
 	}
 	idx.updateGaugesLocked()
 }
@@ -257,8 +263,7 @@ func (idx *Index) RemoveKeys(keys []string) {
 	if len(victimHashes) > 0 {
 		idx.hashes = filterHashes(idx.hashes, victimHashes)
 		idx.pending = filterHashes(idx.pending, victimHashes)
-		idx.dirty.Store(true)
-		idx.builtAt = time.Time{} // removed keys are not advertised for the interval
+		idx.resetAddLogLocked()
 	}
 	idx.updateGaugesLocked()
 }
@@ -475,17 +480,24 @@ func (idx *Index) blobServableLocked() bool {
 }
 
 // Blob answers the serialized index and its ETag.
+func (idx *Index) Blob() ([]byte, string) {
+	blob, etag, _ := idx.BlobGen()
+	return blob, etag
+}
+
+// BlobGen answers the serialized index, its ETag, and the add-log position the
+// blob is complete up to.
 //
 // Fast path: a servable cached blob is returned under a read lock. Slow path: merge pending into
 // hashes, serialize header + body + trailer, cache the result, clear dirty. Callers arriving
 // during a serialization wait on the read lock and all receive the blob it produces. A burst of
 // GETs costs a single serialization.
-func (idx *Index) Blob() ([]byte, string) {
+func (idx *Index) BlobGen() ([]byte, string, indexGen) {
 	idx.mu.RLock()
-	cached, etag, fresh := idx.cachedBlob, idx.cachedETag, idx.blobServableLocked()
+	cached, etag, gen, fresh := idx.cachedBlob, idx.cachedETag, idx.cachedGen, idx.blobServableLocked()
 	idx.mu.RUnlock()
 	if fresh {
-		return cached, etag
+		return cached, etag, gen
 	}
 
 	idx.mu.Lock()
@@ -494,7 +506,7 @@ func (idx *Index) Blob() ([]byte, string) {
 	// Re-check: another caller may have rebuilt the blob while we were
 	// waiting on the lock.
 	if idx.blobServableLocked() {
-		return idx.cachedBlob, idx.cachedETag
+		return idx.cachedBlob, idx.cachedETag, idx.cachedGen
 	}
 
 	lockedAt := time.Now()
@@ -511,31 +523,15 @@ func (idx *Index) Blob() ([]byte, string) {
 		idx.pending = resetPending(idx.pending)
 	}
 
-	count := uint64(len(idx.hashes))
-
-	blob := make([]byte, gbciHeaderSize+int(count)*gbciHashSize+sha256.Size)
-	copy(blob[0:4], gbciMagic[:])
-	blob[4] = gbciVersion
-	blob[5] = gbciHashSize
-	binary.LittleEndian.PutUint16(blob[6:8], 0)
-	binary.LittleEndian.PutUint64(blob[16:24], count)
-	off := gbciHeaderSize
-	for i := range idx.hashes {
-		copy(blob[off:off+gbciHashSize], idx.hashes[i][:])
-		off += gbciHashSize
-	}
-	// That makes the whole blob — and therefore the ETag.
-	bodyDigest := sha256.Sum256(blob[gbciHeaderSize:off])
-	binary.LittleEndian.PutUint64(blob[8:16], binary.LittleEndian.Uint64(bodyDigest[:8]))
-	digest := sha256.Sum256(blob[:off])
-	copy(blob[off:], digest[:])
-
+	blob := marshalGBCI(idx.hashes)
 	idx.cachedBlob = blob
-	idx.cachedETag = `"` + hex.EncodeToString(digest[:]) + `"`
+	idx.cachedETag = `"` + hex.EncodeToString(blob[len(blob)-sha256.Size:]) + `"`
+	// Every hash in the add log is in pending or hashes, so the blob holds them all.
+	idx.cachedGen = indexGen{epoch: idx.addEpoch, seq: uint64(len(idx.added))}
 	idx.builtAt = time.Now()
 	idx.dirty.Store(false)
 	idx.updateGaugesLocked()
-	return idx.cachedBlob, idx.cachedETag
+	return idx.cachedBlob, idx.cachedETag, idx.cachedGen
 }
 
 // Merge adds hashes from a client-uploaded index blob into the pending queue.
@@ -661,7 +657,7 @@ func (idx *Index) applyRebuild(b *indexBuild) (int, int) {
 	// pending and pendingEntries intentionally survive (see doc comment above).
 	idx.cachedBlob = nil
 	idx.cachedETag = ""
-	idx.dirty.Store(true)
+	idx.resetAddLogLocked()
 	hashCount := len(idx.hashes) + len(idx.pending)
 	idx.updateGaugesLocked()
 	idx.mu.Unlock()

@@ -54,6 +54,8 @@ type Storage struct {
 
 	// cleanKeys memoizes indexed cacheprog keys whose stored body already passed the read-path module-index probe.
 	cleanKeys *lruCache[cleanKey, struct{}]
+	// digestOK memoizes the file version of each key whose body last matched its stored digest.
+	digestOK *lruCache[cleanKey, fileIdentity]
 }
 
 type ObjectMeta struct {
@@ -94,6 +96,7 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 		writeOnce: writeOnce,
 		unlock:    unlock,
 		cleanKeys: newCleanKeyMemo(cacheBudget(cleanMemoBudgetFraction, defaultCleanMemoBytes)),
+		digestOK:  newDigestMemo(cacheBudget(cleanMemoBudgetFraction, defaultCleanMemoBytes)),
 		metaCache: newMetaCache(cacheBudget(metaCacheBudgetFraction, defaultMetaCacheBytes)),
 	}
 

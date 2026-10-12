@@ -80,6 +80,9 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 		if storage.cleanKeys != nil {
 			s.mem.Register(cleanMemoKind, storage.cleanKeys.Budget(), storage.cleanKeys)
 		}
+		if storage.digestOK != nil {
+			s.mem.Register(digestMemoKind, storage.digestOK.Budget(), storage.digestOK)
+		}
 	}
 	return s
 }

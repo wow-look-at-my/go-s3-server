@@ -443,7 +443,7 @@ func openVerifiedEntries(storage *Storage, entries []batchEntry) []openedEntry {
 		if err != nil {
 			return openedEntry{}, false
 		}
-		ok, verifyErr := verifyStoredDigest(f, e.meta.Metadata)
+		ok, verifyErr := storage.verifyStoredDigestFor(e.key, f, e.meta.Metadata)
 		if verifyErr == nil && ok {
 			return openedEntry{batchEntry: e, f: f, size: size}, true
 		}

@@ -40,6 +40,16 @@ The page reports these carefully:
 - **Cache size** comes from `s3_cache_bytes`. The server writes that gauge at an eviction sweep and every few minutes, not on every PUT. Before the first measurement the page says "not measured". It never says `0 B`.
 - **Rates** are computed in the browser, from one poll against the poll before it. A reload starts them over. A counter that goes backwards means the server restarted, so the page clears the history instead of drawing a negative rate.
 
+## Reads the server never sees
+
+The client keeps a copy of `/_index`. When that copy is fresh, the client misses a key the copy lacks with no request. It also skips the upload of a key the copy holds. The server cannot count either operation by itself, so its hit rate counts only the keys that reached it.
+
+The client therefore reports those skips. It sends `POST /{bucket}/_skips` from a skip that comes at least `skipReportInterval` after the last send, and again at `Close`. That `POST /{bucket}/_skips` is with the counts since the last report the server accepted. A failed report leaves the counts in place for the next one. The code is `cacheclient/skipreport.go` and `skips.go`.
+
+The server counts each report in `s3_client_skips_total{op,reason}`. Each skipped get is also a miss in `s3_project_objects_total` for the project that asked. The hit rate tile and the hit chart divide `found` by `requested` plus the skipped gets.
+
+A server older than the endpoint answers 405. The client then stops reporting for that run and logs one warning, because that server's hit rate stays too high.
+
 ## The BY PROJECT panel
 
 A shared cache gets one question more than any other. The hit rate reads fine overall, so whose builds are the ones missing?
@@ -50,7 +60,7 @@ A look-ahead request (`prefetch_only`) names keys the client has just hit, as an
 
 The bands come from `<perf-graph>`'s stacked mode, which the page fetches from the js-snippets library site at run time. This page can therefore be newer than the component it loaded. When the loaded component has no `pushSeries`, the page says so under the chart. A stacked chart that silently stayed blank reads as "no traffic".
 
-Bands are ordered by name, not by traffic. A band that reorders itself on every poll cannot be followed. Each band's color comes from its own name, so one project is one color on every machine.
+Name orders bands, not by traffic. A band that reorders itself on every poll cannot be followed. Each band's color comes from its own name, so one project is one color on every machine.
 
 The project name arrives on a client header, so `projectLabeller` bounds how many names hold a series of their own. The bound is `maxProjectLabels` in `projectmetrics.go`. A name past it folds into `other` and increments `s3_project_names_folded_total`. Watch `s3_project_names` against that bound. A value near it means the next new project lands in `other`.
 
@@ -85,6 +95,6 @@ Then add a self-hosted Access application for `cache-dashboard.example.com` in Z
 
 Leave `cache.example.com` without an Access policy. Access in front of the cache port breaks every build, because the client cannot complete a browser login.
 
-`cloudflared` often runs in its own container. The dashboard must then bind an address that container reaches. `:9002` binds every interface and works. `127.0.0.1:9002` does not.
+`cloudflared` frequently runs in its own container. The dashboard must then bind an address that container reaches. `:9002` binds every interface and works. `127.0.0.1:9002` does not.
 
 `CF-Connecting-IP` is already the first header the cache port trusts for the client IP. A tunnelled deployment therefore logs real client addresses.

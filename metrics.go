@@ -281,7 +281,6 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// Unwrap gives http.ResponseController the real writer underneath, which is
 // what carries the connection deadlines the stall guard moves.
 func (r *statusRecorder) Unwrap() http.ResponseWriter {
 	return r.ResponseWriter

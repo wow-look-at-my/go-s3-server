@@ -1,7 +1,5 @@
 package main
 
-// cleanKeyMemo remembers indexed cacheprog keys whose stored body has already passed the read-path module-index probe.
-
 // cleanEntryBytes is what a single memoized verdict costs: the 32-byte hash, the map bucket and the list element.
 const cleanEntryBytes = 96
 

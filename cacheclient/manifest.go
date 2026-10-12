@@ -27,15 +27,58 @@ type buildManifest struct {
 	id      atomic.Pointer[string] // the manifest's own action ID, once the module is known
 	started atomic.Bool
 
-	mu   sync.Mutex
-	used set.Set[string] // action IDs this process served or stored
+	mu      sync.Mutex
+	used    set.Set[string]          // action IDs this process served or stored
+	pending map[string]chan struct{} // action IDs a fetch has on the wire, closed when they land
+
+	Waited AtomicCounter // lookups that waited for a fetch already on the wire
 
 	Fetched AtomicCounter // entries the manifest brought into the local tier
 	Named   AtomicCounter // action IDs the manifest named
 }
 
 func newBuildManifest() *buildManifest {
-	return &buildManifest{used: set.New[string]()}
+	return &buildManifest{used: set.New[string](), pending: map[string]chan struct{}{}}
+}
+
+// AwaitPrefetch waits while the manifest fetch has actionID on the wire. It
+// reports whether it waited, so a caller that did reads its local tier again
+// rather than asking for the same object a second time.
+func (b *WebBackend) AwaitPrefetch(actionID string) bool {
+	m := b.manifest
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	done, ok := m.pending[actionID]
+	m.mu.Unlock()
+	if !ok {
+		return false
+	}
+	<-done
+	m.Waited.Increment()
+	return true
+}
+
+// markPending records that a fetch has these action IDs on the wire, and
+// returns the call that clears them.
+func (m *buildManifest) markPending(ids []string) func() {
+	done := make(chan struct{})
+	m.mu.Lock()
+	for _, id := range ids {
+		m.pending[id] = done
+	}
+	m.mu.Unlock()
+	return func() {
+		m.mu.Lock()
+		for _, id := range ids {
+			if m.pending[id] == done {
+				delete(m.pending, id)
+			}
+		}
+		m.mu.Unlock()
+		close(done)
+	}
 }
 
 // manifestID is the action ID the manifest for this module is stored under.
@@ -81,7 +124,7 @@ func (b *WebBackend) fetchManifest(id string) {
 	b.keysMu.RLock()
 	authoritative := b.indexAuthoritative
 	b.keysMu.RUnlock()
-	var keys []string
+	var ids []string
 	for _, line := range strings.Split(string(data), "\n") {
 		h, ok := parseActionHash(line)
 		if !ok || line == id {
@@ -92,24 +135,39 @@ func (b *WebBackend) fetchManifest(id string) {
 		if (authoritative && !b.keyKnown(h)) || b.isHeld(h) {
 			continue
 		}
-		keys = append(keys, b.key(line))
+		ids = append(ids, line)
 	}
-	if len(keys) == 0 {
+	if len(ids) == 0 {
 		return
 	}
-	work := make(chan []string)
+	type chunk struct {
+		keys  []string
+		clear func()
+	}
+	// Every chunk is marked before the first goes out, so a lookup also waits on a chunk still in the queue.
+	var chunks []chunk
+	for start := 0; start < len(ids); start += batchMaxKeys {
+		part := ids[start:min(start+batchMaxKeys, len(ids))]
+		keys := make([]string, len(part))
+		for idx, actionID := range part {
+			keys[idx] = b.key(actionID)
+		}
+		chunks = append(chunks, chunk{keys: keys, clear: b.manifest.markPending(part)})
+	}
+	work := make(chan chunk)
 	var wg sync.WaitGroup
 	for range manifestFetchWidth {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for chunk := range work {
-				b.fetchNamed(chunk)
+			for next := range work {
+				b.fetchNamed(next.keys)
+				next.clear()
 			}
 		}()
 	}
-	for start := 0; start < len(keys); start += batchMaxKeys {
-		work <- keys[start:min(start+batchMaxKeys, len(keys))]
+	for _, next := range chunks {
+		work <- next
 	}
 	close(work)
 	wg.Wait()
@@ -221,5 +279,5 @@ func (b *WebBackend) reportManifest() {
 	if m == nil || m.Named.Load() == 0 {
 		return
 	}
-	logging.Infof("cacheprog: manifest: named %d keys, fetched %d ahead", m.Named.Load(), m.Fetched.Load())
+	logging.Infof("cacheprog: manifest: named %d keys, fetched %d ahead, %d lookups waited for them", m.Named.Load(), m.Fetched.Load(), m.Waited.Load())
 }

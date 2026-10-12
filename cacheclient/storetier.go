@@ -52,7 +52,17 @@ func (tier *storeTier) GetTiered(id ActionID) (Entry, string, error) {
 		tier.localHitBytes.Add(entry.Size)
 		return entry, TierDisk, nil
 	}
-	outputID, data, _, miss := tier.store.Get(hex.EncodeToString(id[:]))
+	actionID := hex.EncodeToString(id[:])
+	// A fetch already carrying this object lands it on disk. Asking again
+	// would download it twice.
+	if tier.store.AwaitPrefetch(actionID) {
+		if entry, err := tier.DiskCache.Get(id); err == nil {
+			tier.localHits.Add(1)
+			tier.localHitBytes.Add(entry.Size)
+			return entry, TierDisk, nil
+		}
+	}
+	outputID, data, _, miss := tier.store.Get(actionID)
 	if miss || data == nil {
 		return Entry{}, TierShared, err
 	}

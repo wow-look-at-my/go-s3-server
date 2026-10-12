@@ -139,8 +139,8 @@ func TestBatchAnswerSaysPrefetchIsOff(t *testing.T) {
 	assert.Equal(t, "off", resp.Header.Get(headerPrefetch))
 }
 
-// A key another build stores while this process runs is a hit, not a miss the
-// process decides alone from the index it loaded at start.
+// A key another build stores while this process runs is a hit. The process
+// must not decide the miss alone from the index it loaded at start.
 func TestRunningClientLearnsKeysStoredDuringItsRun(t *testing.T) {
 	if !inOwnProcess(t) {
 		return

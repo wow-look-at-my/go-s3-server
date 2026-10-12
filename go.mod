@@ -6,7 +6,7 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.27
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/cobra v1.10.2
-	github.com/stretchr/testify v1.11.1
+	github.com/stretchr/testify v1.12.1
 	github.com/wow-look-at-my/go-containers v0.0.0 // go-toolchain:auto-branch
 	github.com/wow-look-at-my/go-ipc v0.0.0 // go-toolchain:auto-branch
 	github.com/wow-look-at-my/go-s3-server/cacheclient v0.0.0 // go-toolchain:auto-branch

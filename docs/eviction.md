@@ -1,20 +1,20 @@
 # Eviction: an LRU bounded by size
 
-The cache is bounded by **size**, and when it is over budget the **least recently used** entries go first. It is not a TTL: a build-cache entry that is still being read is still useful however long ago it was written. Dropping it costs a rebuild for nothing.
+Size bounds the cache**, and when it is over budget the **least recently used** entries go first. It is not a TTL: a build-cache entry that is still being read is still useful however long ago it was written. Dropping it costs a rebuild for nothing.
 
-Age eviction still exists (`eviction.max_age`) and is off by default. It is a second, independent cutoff for operators who want one.
+eviction of the Default offs Age still exists (`eviction.max_age`) and. It is a second, independent cutoff for operators who want one.
 
 ## What "last used" means
 
 The latest of multiple signals, so a missing one can only make an entry look older, not younger (`lastUsedUnix` in `atime.go`):
 
 1. **mtime** — when the body was written.
-2. **The filesystem's access time**, which the kernel advances whenever a body is read. Under the default `relatime` it moves at most once a day, which is the resolution a multi-day eviction window needs, and — the point. It **survives restarts**.
+2. **The filesystem's access time**, which the kernel advances when a body is read. Under the default `relatime` it moves at most once a day, which is the resolution a multi-day eviction window needs, and — the point. It **survives restarts**.
 3. **This process's own record** of reads since startup (`accessShards`).
 
 Before atime was consulted, only 1 and 3 existed, and starts empty on every boot. A rolling update therefore erased every read the server knew about. The next sweep saw a cache full of entries whose only timestamp was a write from months ago. It evicted things that were being read constantly. That is the bug this list exists to fix.
 
-At startup the server **probes** the real data_dir rather than guessing from mount options (`atimeIsRecorded`). Write a throwaway file, backdate it, read it back, and see whether the access time moved. That answers for the actual filesystem, which `noatime`, overlayfs, bind mounts and NFS all make hard to infer. When the answer is no, the server logs a warning naming the consequence. The server enables the in-memory map instead — which is correct while it runs, empty after each restart, and one entry per key read. The memory the probe otherwise saves.
+At startup the server **probes** the real data_dir rather than guessing from mount options (`atimeIsRecorded`). Write a throwaway file, backdate it, read it back, and see whether the access time moved. That answers for the actual filesystem, which `noatime`, overlayfs, bind mounts and NFS all make hard to infer. When the answer is no, the server logs a warning naming the consequence. The server enables the in-memory map instead — which is correct while it runs, empty after each start, and one entry per key read. The memory the probe otherwise saves.
 
 An internal peek (the module-index guard, the self-heal's hashing handle) reads a body too, so it advances atime for a prefetch candidate that was never sent. It is bounded — those paths are memoized per key — and the effect is that a candidate the server considered looks used for a while. That is a small, known imprecision, not a silent one.
 
@@ -22,7 +22,7 @@ An internal peek (the module-index guard, the self-heal's hashing handle) reads 
 
 A sweep never builds a list of the cache's contents. At a million objects that list — one heap-allocated key string apiece. It was the largest allocation this process made. It was made on a schedule (see `docs/memory-limits.md`).
 
-**Walk 1 (`scanForEviction`)** measures: total bytes, and a histogram of bytes by last-use time in 10-minute buckets. The histogram is bounded by the *spread* of last-use times, not by the object count.
+**Walk 1 (`scanForEviction`)** measures: total bytes, and a histogram of bytes by last-use time in 10-minute buckets. The *spread* of last-use times bound the histogram, not by the object count.
 
 From it the sweep derives ONE number, the **cutoff**: evict everything last used before it.
 
@@ -45,7 +45,7 @@ On startup the server reads that marker and:
 - **no marker, or a sweep at least an interval old** → sweep now, after a jittered 1–5 minute delay that spreads replicas restarting together.
 - **a more recent sweep** → wait out the remainder of the interval.
 
-Both halves matter. A schedule that restarted on every boot meant a deployment that rolls more often than the interval — which is the production model. Never swept at all. A schedule that swept on every boot meant walking the whole disk on every rolling update.
+Both halves matter. A schedule that restarted on every boot meant a deployment that rolls more frequently than the interval — which is the production model. Never swept at all. A schedule that swept on every boot meant walking the whole disk on every rolling update.
 
 The `s3_cache_bytes` gauge is refreshed on its own `cacheBytesRefreshInterval` cadence. So it is not stale by up to a whole interval.
 

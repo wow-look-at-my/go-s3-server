@@ -267,7 +267,7 @@ function drawRate(stats) {
 
 // Both gauges beside the rate. Both read straight off the snapshot, so
 // neither needs a previous sample and both start drawing on the earliest
-// poll. The batch series is the same a single hitRateTile reads, for the same reason.
+// poll.
 function drawGauges(stats) {
 	const { found, asked } = batchReads(stats);
 	if (asked) $("hit-chart").push((found / asked) * 100);

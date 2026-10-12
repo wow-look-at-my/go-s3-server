@@ -87,7 +87,6 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 		return nil, err
 	}
 
-	// Sweep .tmp-* orphans from crashed/killed PutStreams.
 	sweepTempFiles(dataDir)
 
 	s := &Storage{

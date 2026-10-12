@@ -60,7 +60,7 @@ A look-ahead request (`prefetch_only`) names keys the client has just hit, as an
 
 The bands come from `<perf-graph>`'s stacked mode, which the page fetches from the js-snippets library site at run time. This page can therefore be newer than the component it loaded. When the loaded component has no `pushSeries`, the page says so under the chart. A stacked chart that silently stayed blank reads as "no traffic".
 
-Bands are ordered by name, not by traffic. A band that reorders itself on every poll cannot be followed. Each band's color comes from its own name, so one project is one color on every machine.
+Name orders bands, not by traffic. A band that reorders itself on every poll cannot be followed. Each band's color comes from its own name, so one project is one color on every machine.
 
 The project name arrives on a client header, so `projectLabeller` bounds how many names hold a series of their own. The bound is `maxProjectLabels` in `projectmetrics.go`. A name past it folds into `other` and increments `s3_project_names_folded_total`. Watch `s3_project_names` against that bound. A value near it means the next new project lands in `other`.
 
@@ -95,6 +95,6 @@ Then add a self-hosted Access application for `cache-dashboard.example.com` in Z
 
 Leave `cache.example.com` without an Access policy. Access in front of the cache port breaks every build, because the client cannot complete a browser login.
 
-`cloudflared` often runs in its own container. The dashboard must then bind an address that container reaches. `:9002` binds every interface and works. `127.0.0.1:9002` does not.
+`cloudflared` frequently runs in its own container. The dashboard must then bind an address that container reaches. `:9002` binds every interface and works. `127.0.0.1:9002` does not.
 
 `CF-Connecting-IP` is already the first header the cache port trusts for the client IP. A tunnelled deployment therefore logs real client addresses.

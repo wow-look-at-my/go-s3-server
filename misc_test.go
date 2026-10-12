@@ -57,7 +57,6 @@ func TestStatusRecorderReadFrom(t *testing.T) {
 	payload := strings.Repeat("z", 4096)
 	source := func() io.Reader { return struct{ io.Reader }{strings.NewReader(payload)} }
 
-	// Fallback: httptest.ResponseRecorder has no ReadFrom.
 	plain := httptest.NewRecorder()
 	rec := &statusRecorder{ResponseWriter: plain, statusCode: 200}
 	n, err := io.Copy(rec, source())

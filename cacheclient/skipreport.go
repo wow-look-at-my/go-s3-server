@@ -131,7 +131,7 @@ func (b *WebBackend) FlushSkips() bool {
 		return false
 	}
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	resp.Body.Close()
+	closeBody(resp.Body)
 	switch {
 	case resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK:
 		b.skips.sent = total

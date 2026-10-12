@@ -17,6 +17,10 @@ require (
 // a published version: protocol and server change together in one commit.
 replace github.com/wow-look-at-my/go-s3-server/cacheclient => ./cacheclient
 
+// cobra names v3.0.4, whose go.mod requires gopkg.in/check.v1. Without this the
+// build reads gopkg.in, and a gopkg.in outage fails go mod tidy.
+exclude go.yaml.in/yaml/v3 v3.0.4
+
 require (
 	github.com/klauspost/compress v1.20.1
 	github.com/prometheus/client_model v0.6.3

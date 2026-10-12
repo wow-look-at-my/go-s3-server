@@ -147,6 +147,16 @@ func parseBatchResponse(r io.Reader) ([]BatchEntry, error) {
 	return entries, nil
 }
 
+// batchInFlight is how many batches may be on the wire at the same time
+// before a new key waits for a slot.
+func batchInFlight() int {
+	n := envInt("GO_TOOLCHAIN_CACHE_BATCH_INFLIGHT", 8)
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
 // batchCoalescer collects incoming batchReqs and dispatches each batch as a
 // single HTTP request to the server's batch endpoint.
 //
@@ -160,6 +170,7 @@ func (b *WebBackend) batchCoalescer() {
 	// been blocked since at least this instant, so it is what the window costs.
 	var firstQueued time.Time
 	var inFlight atomic.Int64
+	maxInFlight := int64(batchInFlight())
 	sent := make(chan struct{}, 1)
 	timer := time.NewTimer(time.Hour)
 	if !timer.Stop() {
@@ -207,7 +218,7 @@ func (b *WebBackend) batchCoalescer() {
 				timer.Reset(batchCoalesceWait)
 			}
 			pending = append(pending, req)
-			if len(pending) >= batchMaxKeys || inFlight.Load() == 0 {
+			if len(pending) >= batchMaxKeys || inFlight.Load() < maxInFlight {
 				flush()
 			}
 		case <-sent:

@@ -293,6 +293,8 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 // The add-log position travels as decimal headers on the response and as
 // query parameters on a delta request. cacheclient carries the same names.
 const (
+	// headerPrefetch is "off" on a batch answer from a server that never sends a look-ahead window.
+	headerPrefetch   = "X-Cache-Prefetch"
 	headerIndexEpoch = "X-Index-Epoch"
 	headerIndexSeq   = "X-Index-Seq"
 	headerIndexDelta = "X-Index-Delta"

@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -122,6 +123,19 @@ func TestIndexHeadersMatchTheClient(t *testing.T) {
 	assert.Equal(t, cacheclient.HeaderIndexEpoch, headerIndexEpoch)
 	assert.Equal(t, cacheclient.HeaderIndexSeq, headerIndexSeq)
 	assert.Equal(t, cacheclient.HeaderIndexDelta, headerIndexDelta)
+	assert.Equal(t, cacheclient.HeaderPrefetch, headerPrefetch)
+}
+
+// A server with prefetch off says so on every batch answer, so a client's
+// look-ahead pool stops after its first request.
+func TestBatchAnswerSaysPrefetchIsOff(t *testing.T) {
+	ts, _ := testSetupWithStorage(t)
+	resp, err := http.Post(ts.URL+"/testbucket/_batch/get", "application/json",
+		strings.NewReader(`{"keys":["go-buildcache/v1aa"],"prefetch":true,"prefetch_only":true}`))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "off", resp.Header.Get(headerPrefetch))
 }
 
 // Consider a key stored after a client. That key wrote its disk copy is a hit

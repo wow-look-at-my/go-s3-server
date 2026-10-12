@@ -80,6 +80,65 @@ func readIndexGen(path, etag string) indexGen {
 	return indexGen{epoch: epoch, seq: seq}
 }
 
+// LiveDeltaInterval is the least time between live delta refreshes. A burst of misses then costs a single request.
+const LiveDeltaInterval = 2 * time.Second
+
+// setLiveGen records the position the live set is complete up to.
+func (b *WebBackend) setLiveGen(gen indexGen) {
+	b.keysMu.Lock()
+	b.liveGen = gen
+	b.keysMu.Unlock()
+}
+
+// refreshLiveDelta adds the keys stored since the live set's position, at
+// most once per LiveDeltaInterval. Concurrent callers wait for the request in
+// flight rather than send their own. It reports whether a delta was applied.
+// A set with no position, or a load still in progress, is left alone.
+func (b *WebBackend) refreshLiveDelta() bool {
+	b.deltaMu.Lock()
+	defer b.deltaMu.Unlock()
+	if time.Since(b.deltaAt) < LiveDeltaInterval {
+		return false
+	}
+	b.keysMu.RLock()
+	gen, loading, authoritative := b.liveGen, b.keysJournal != nil, b.indexAuthoritative
+	b.keysMu.RUnlock()
+	if gen.epoch == 0 || loading || !authoritative {
+		return false
+	}
+	b.deltaAt = time.Now()
+	reply, err := b.doIndexGET(context.Background(), deltaQuery(gen), "")
+	if reply.status == http.StatusGone {
+		// The epoch ended. The set stays as it is, and no later miss asks again.
+		logging.Infof("cacheprog: web index: the server's add log moved past this process's position; misses stop refreshing")
+		b.setLiveGen(indexGen{})
+		return false
+	}
+	if err != nil || !reply.delta {
+		if err != nil {
+			logging.Infof("cacheprog: web index live delta: %v", err)
+		}
+		return false
+	}
+	added, _, err := parseIndexBlob(reply.body)
+	if err != nil {
+		logging.Warnf("cacheprog: web index live delta parse: %v", err)
+		return false
+	}
+	b.keysMu.Lock()
+	b.keys.addAll(added)
+	b.liveGen = reply.gen
+	b.keysMu.Unlock()
+	return true
+}
+
+func deltaQuery(gen indexGen) string {
+	q := url.Values{}
+	q.Set("epoch", strconv.FormatUint(gen.epoch, 10))
+	q.Set("seq", strconv.FormatUint(gen.seq, 10))
+	return q.Encode()
+}
+
 // startDeltaLoad installs a young disk copy as non-authoritative and brings it
 // current in the background.
 func (b *WebBackend) startDeltaLoad(path string, disk diskIndex) {
@@ -106,10 +165,7 @@ func (b *WebBackend) startDeltaLoad(path string, disk diskIndex) {
 // authoritative. A server that cannot answer from the copy's position gets a
 // full refresh. A failed request leaves the copy non-authoritative.
 func (b *WebBackend) applyDelta(ctx context.Context, path string, disk diskIndex) {
-	q := url.Values{}
-	q.Set("epoch", strconv.FormatUint(disk.gen.epoch, 10))
-	q.Set("seq", strconv.FormatUint(disk.gen.seq, 10))
-	reply, err := b.doIndexGET(ctx, q.Encode(), "")
+	reply, err := b.doIndexGET(ctx, deltaQuery(disk.gen), "")
 	if err != nil && reply.status != http.StatusGone {
 		if ctx.Err() == nil {
 			logging.Infof("cacheprog: web index delta: %v; using %d cached keys (batch probing enabled)", err, disk.count)
@@ -128,6 +184,7 @@ func (b *WebBackend) applyDelta(ctx context.Context, path string, disk diskIndex
 		b.keysMu.Lock()
 		b.keys.addAll(added)
 		b.keysJournal = nil
+		b.liveGen = reply.gen
 		b.indexAuthoritative = true
 		b.indexEmpty = b.keys.Len() == 0
 		b.keysMu.Unlock()

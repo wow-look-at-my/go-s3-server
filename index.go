@@ -588,6 +588,23 @@ func (idx *Index) BlobGenFormat(f gbciFormat) ([]byte, string, indexGen) {
 	return s.blob, s.etag, s.gen
 }
 
+// mergePendingLocked folds the pending hashes into the sorted list and answers
+// the add-log position the list is now complete up to. The caller holds idx.mu.
+func (idx *Index) mergePendingLocked() indexGen {
+	// hashes is sorted and deduplicated already. The pending buffer is small
+	// next to it, so a merge costs O(n) where a re-sort cost O(n log n).
+	if len(idx.pending) > 0 {
+		idx.hashes = mergeSortedHashes(idx.hashes, sortDedupeHashes(idx.pending))
+		idx.pending = resetPending(idx.pending)
+	}
+	// Every hash in the add log is in pending or hashes, so the list holds them all.
+	return indexGen{epoch: idx.addEpoch, seq: uint64(len(idx.added))}
+}
+
+func blobETag(blob []byte) string {
+	return `"` + hex.EncodeToString(blob[len(blob)-sha256.Size:]) + `"`
+}
+
 func (idx *Index) rebuild(storage *Storage) {
 	start := time.Now()
 	b := newIndexBuild(idx.hashCount(), !idx.EntryTrackingEnabled())

@@ -77,6 +77,7 @@ func (s *hashSet[K]) Contains(h K) bool {
 	if s == nil {
 		return false
 	}
+	h = s.norm(h)
 	if s.removed.Contains(h) {
 		return false
 	}
@@ -91,6 +92,7 @@ func (s *hashSet[K]) Add(h K) {
 	if s == nil {
 		return
 	}
+	h = s.norm(h)
 	// A key in removed is still in the sorted slice, so re-adding it is the
 	// deletion going away rather than a new entry.
 	if s.removed.Contains(h) {
@@ -113,6 +115,7 @@ func (s *hashSet[K]) Remove(h K) {
 	if s == nil {
 		return
 	}
+	h = s.norm(h)
 	if s.pending.Contains(h) {
 		s.pending.Remove(h)
 		return

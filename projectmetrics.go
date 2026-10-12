@@ -127,11 +127,74 @@ func noteProjectObject(prov requestProvenance, wire int64, put bool) {
 	case prov.lookAhead:
 		kind = objKindLookAhead
 	}
-	label := projects.label(projectOf(prov))
+	name := projectOf(prov)
+	projectTotals.add(name, kind, 1, wire)
+	label := projects.label(name)
 	projectObjectsTotal.WithLabelValues(label, kind).Inc()
 	if wire > 0 {
 		projectBytesTotal.WithLabelValues(label, kind).Add(float64(wire))
 	}
+}
+
+// projectRow is one project's exact totals since the server started.
+type projectRow struct {
+	Hit            uint64 `json:"hit"`
+	Miss           uint64 `json:"miss"`
+	Put            uint64 `json:"put"`
+	LookAhead      uint64 `json:"lookahead"`
+	HitBytes       uint64 `json:"hit_bytes"`
+	PutBytes       uint64 `json:"put_bytes"`
+	LookAheadBytes uint64 `json:"lookahead_bytes"`
+}
+
+// exactProjects keeps a row for every project name, with no bound.
+type exactProjects struct {
+	mu   sync.Mutex
+	rows map[string]*projectRow
+}
+
+var projectTotals = &exactProjects{rows: map[string]*projectRow{}}
+
+func (e *exactProjects) add(name, kind string, objects uint64, wire int64) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = unknownProject
+	}
+	var bytes uint64
+	if wire > 0 {
+		bytes = uint64(wire)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	row := e.rows[name]
+	if row == nil {
+		row = &projectRow{}
+		e.rows[name] = row
+	}
+	switch kind {
+	case objKindHit:
+		row.Hit += objects
+		row.HitBytes += bytes
+	case objKindMiss:
+		row.Miss += objects
+	case objKindPut:
+		row.Put += objects
+		row.PutBytes += bytes
+	case objKindLookAhead:
+		row.LookAhead += objects
+		row.LookAheadBytes += bytes
+	}
+}
+
+// snapshot copies every row.
+func (e *exactProjects) snapshot() map[string]projectRow {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make(map[string]projectRow, len(e.rows))
+	for name, row := range e.rows {
+		out[name] = *row
+	}
+	return out
 }
 
 // noteProjectMiss counts keys the cache could not serve against the project
@@ -140,5 +203,6 @@ func noteProjectMiss(prov requestProvenance, keys int) {
 	if keys <= 0 {
 		return
 	}
+	projectTotals.add(prov.module, objKindMiss, uint64(keys), 0)
 	projectObjectsTotal.WithLabelValues(projects.label(prov.module), objKindMiss).Add(float64(keys))
 }

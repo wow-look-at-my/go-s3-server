@@ -510,8 +510,34 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 		b.noteSkip()
 		return "", nil, time.Time{}, true
 	}
-	r := b.getBatch(actionID, b.key(actionID), h)
+	r := b.probeDuringLoad(actionID, h)
 	return r.outputID, r.data, r.t, r.miss
+}
+
+// probeDuringLoad asks the server for a key the unconfirmed index does not
+// hold. A running index load races the probe: once the load proves the key
+// absent, the miss returns at once and the probe finishes unread.
+func (b *WebBackend) probeDuringLoad(actionID string, h actionHash) batchResp {
+	load := b.indexLoad.Load()
+	if load == nil {
+		return b.getBatch(actionID, b.key(actionID), h)
+	}
+	probe := make(chan batchResp, 1)
+	go func() { probe <- b.getBatch(actionID, b.key(actionID), h) }()
+	select {
+	case r := <-probe:
+		return r
+	case <-load.done:
+	}
+	b.keysMu.RLock()
+	absent := b.indexAuthoritative && !b.keys.Contains(h)
+	b.keysMu.RUnlock()
+	if !absent {
+		return <-probe
+	}
+	b.SkippedNotInIndex.Increment()
+	b.noteSkip()
+	return batchResp{miss: true}
 }
 
 // Verify decompresses and checks a stored body from a look-ahead entry, under

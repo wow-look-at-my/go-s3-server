@@ -285,7 +285,7 @@ func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response,
 			// Drain and close so the connection returns to the pool. What was
 			// read is kept, so a response returned later still has its body.
 			drained, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-			resp.Body.Close()
+			closeBody(resp.Body)
 			resp.Body = io.NopCloser(bytes.NewReader(drained))
 		}
 		b.sleepBackoff(attempt, retryAfter)

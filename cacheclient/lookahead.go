@@ -260,7 +260,7 @@ func (la *lookAhead) expand(seed []string) {
 		return
 	}
 	if resp.StatusCode != 200 {
-		resp.Body.Close()
+		closeBody(resp.Body)
 		b.Pool.Release()
 		return
 	}
@@ -305,7 +305,7 @@ func (la *lookAhead) expand(seed []string) {
 	}
 
 	err = streamBatchResponse(resp.Body, ingest)
-	resp.Body.Close()
+	closeBody(resp.Body)
 	b.Pool.Release()
 	if err != nil {
 		return

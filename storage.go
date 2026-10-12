@@ -222,12 +222,15 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 	path := s.keyToPath(key)
 	hashed := !isKeySafe(key)
 
+	// The directory almost always exists, so the put makes it only when the create fails.
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("create dirs: %w", err)
-	}
-
 	tmp, err := os.CreateTemp(dir, tempFilePrefix+"*")
+	if errors.Is(err, fs.ErrNotExist) {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("create dirs: %w", err)
+		}
+		tmp, err = os.CreateTemp(dir, tempFilePrefix+"*")
+	}
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}

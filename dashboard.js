@@ -8,6 +8,7 @@ const state = {
 	timer: null,
 	projects: null, // the last per-project totals, for per-project rates
 	projectNames: null,
+	reads: null, // the last read totals, for the per-poll hit rate
 	raw: null, // the body of the snapshot on screen, verbatim, for "copy json"
 };
 
@@ -164,18 +165,25 @@ function batchReads(stats) {
 	return { found, skipped, asked: (kinds.requested || 0) + skipped };
 }
 
-// hitRateTile reports the batch path, which is where every read of the current
-// client goes. A single-object GET is an older client. It counts only when
-// there is no batch traffic to report.
-function hitRateTile(stats) {
-	const { found, asked, skipped } = batchReads(stats);
-	if (asked) {
-		return tile("hit rate", percent(found, asked), `${count(found)} of ${count(asked)} keys builds asked for; ${count(skipped)} missed in the client's index`);
-	}
+// allReads is every key a build asked for on either read path: the batch
+// reads plus the single-object GETs.
+function allReads(stats) {
+	const batch = batchReads(stats);
 	const outcomes = byLabel(stats, "s3_get_requests_total", "outcome");
-	const reads = sum(outcomes);
-	const hits = outcomes.hit || 0;
-	return tile("hit rate", reads ? percent(hits, reads) : "--", `${count(hits)} of ${count(reads)} single GETs`);
+	const single = sum(outcomes);
+	const singleHits = outcomes.hit || 0;
+	return {
+		found: batch.found + singleHits,
+		asked: batch.asked + single,
+		skipped: batch.skipped,
+		single,
+	};
+}
+
+function hitRateTile(stats) {
+	const { found, asked, skipped, single } = allReads(stats);
+	if (!asked) return tile("hit rate", "--", "no build has asked for a key yet");
+	return tile("hit rate", percent(found, asked), `${count(found)} of ${count(asked)} keys builds asked for; ${count(skipped)} missed in the client's index, ${count(single)} single GETs`);
 }
 
 function drawTiles(stats) {
@@ -273,12 +281,22 @@ function drawRate(stats) {
 	$("rate-label").textContent = `${now.toFixed(1)} req/s now, peak ${state.peak.toFixed(1)} since this page loaded`;
 }
 
-// Both gauges beside the rate. Both read straight off the snapshot, so
-// neither needs a previous sample and both start drawing on the earliest
-// poll.
+// The hit chart plots the hit rate of the keys asked since the last poll. The
+// counters cover the whole server lifetime, so their plain ratio barely moves
+// after the first hour and hides a drop.
 function drawGauges(stats) {
-	const { found, asked } = batchReads(stats);
-	if (asked) $("hit-chart").push((found / asked) * 100);
+	const { found, asked } = allReads(stats);
+	const prev = state.reads;
+	state.reads = { found, asked };
+	if (prev) {
+		const dAsked = asked - prev.asked;
+		const dFound = found - prev.found;
+		if (dAsked < 0 || dFound < 0) {
+			$("hit-chart").clear?.();
+		} else if (dAsked > 0) {
+			push("hit-chart", (dFound / dAsked) * 100);
+		}
+	}
 	$("inflight-chart").push(value(stats, "cache_http_in_flight_requests"));
 }
 

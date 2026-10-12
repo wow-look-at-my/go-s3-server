@@ -258,11 +258,11 @@ func provenanceOf(r *http.Request) requestProvenance {
 }
 
 // wire is the stored (compressed) size, which is what crossed the network.
-// The raw size comes from the object's own metadata, and the project from
-// the object or, failing that, from the request that moved it.
+// The raw size comes from the object's own metadata. The project is the build
+// that sent the request.
 func recordObject(agg *logAggregator, prov requestProvenance, meta map[string]string, wire int64, put, batched bool) {
 	// The metrics are recorded before the log.
-	noteProjectObject(prov, meta, wire, put)
+	noteProjectObject(prov, wire, put)
 	if agg == nil {
 		return
 	}
@@ -273,26 +273,14 @@ func recordObject(agg *logAggregator, prov requestProvenance, meta map[string]st
 		wire:      wire,
 		raw:       raw,
 		rawKnown:  known,
-		project:   projectOf(meta, prov),
+		project:   projectOf(prov),
 		lookAhead: prov.lookAhead,
 	})
 }
 
-// projectOf names the project an object belongs to. The object's own module
-// metadata is the answer whenever it is there. Otherwise the import path's
-// earliest segments are the closest thing to a project a package path carries
-// (host, owner, repo).
-func projectOf(meta map[string]string, prov requestProvenance) string {
-	if module := meta["module"]; module != "" {
-		return module
-	}
-	if pkg := meta["pkg"]; pkg != "" {
-		parts := strings.Split(pkg, "/")
-		if len(parts) > 3 {
-			parts = parts[:3]
-		}
-		return strings.Join(parts, "/")
-	}
+// projectOf names the build that moved an object: the module in the request
+// header.
+func projectOf(prov requestProvenance) string {
 	return prov.module
 }
 

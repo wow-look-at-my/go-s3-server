@@ -51,18 +51,21 @@ tests:
 				set -euo pipefail
 				base=http://127.0.0.1:19050/test-cache
 				auth=testuser:testpass
-				# Stores and reads of a plain key, carrying the metadata a real
-				# client sends: the module it built and the uncompressed size.
+				# Stores and reads of a plain key, carrying what a real client
+				# sends: the requesting build's module header, the stored module
+				# and the uncompressed size. The project is the requester.
 				curl -sf -u "$auth" -X PUT --data-binary '0123456789' \
+					-H 'X-Cache-Module: example.com/alpha' \
 					-H 'X-Cache-Meta-Module: example.com/alpha' \
 					-H 'X-Cache-Meta-Body-Size: 40' \
 					"$base/log/v1test000000000001" > /dev/null
 				curl -sf -u "$auth" -X PUT --data-binary '0123456789' \
+					-H 'X-Cache-Module: example.com/beta' \
 					-H 'X-Cache-Meta-Module: example.com/beta' \
 					-H 'X-Cache-Meta-Body-Size: 40' \
 					"$base/log/v1test000000000002" > /dev/null
-				curl -sf -u "$auth" "$base/log/v1test000000000001" > /dev/null
-				curl -sf -u "$auth" "$base/log/v1test000000000002" > /dev/null
+				curl -sf -u "$auth" -H 'X-Cache-Module: example.com/alpha' "$base/log/v1test000000000001" > /dev/null
+				curl -sf -u "$auth" -H 'X-Cache-Module: example.com/beta' "$base/log/v1test000000000002" > /dev/null
 	  cmd: bash {shared.serve.sh} {inputs.config.json} 19050 {inputs.check.sh}
 	  outputs:
 		stdout:

@@ -91,6 +91,7 @@ func (b *WebBackend) resolveIndexMaxAge(indexPath string) time.Duration {
 // support it.
 type WebBackend struct {
 	client    *http.Client
+	transport *http.Transport
 	bucket    string
 	prefix    string
 	endpoint  string
@@ -287,6 +288,30 @@ func closeBody(body io.ReadCloser) {
 	body.Close()
 }
 
+// firstDial makes the first request of a process run alone.
+type firstDial struct {
+	next    *http.Transport
+	started atomic.Bool
+	ready   chan struct{}
+}
+
+func (gate *firstDial) RoundTrip(req *http.Request) (*http.Response, error) {
+	if gate.started.CompareAndSwap(false, true) {
+		defer close(gate.ready)
+		return gate.next.RoundTrip(req)
+	}
+	select {
+	case <-gate.ready:
+	case <-req.Context().Done():
+		return nil, req.Context().Err()
+	}
+	return gate.next.RoundTrip(req)
+}
+
+func (gate *firstDial) CloseIdleConnections() {
+	gate.next.CloseIdleConnections()
+}
+
 // NewWebBackend creates a web backend from the given config.
 // Returns nil if bucket is empty.
 func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
@@ -348,8 +373,9 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 		// Liveness is the transport's job instead: ResponseHeaderTimeout above
 		// bounds a server that never answers, which is what a deadline here was
 		// reaching for. The index fetch adds its own stall guard on top.
+		transport: transport,
 		client: &http.Client{
-			Transport: transport,
+			Transport: &firstDial{next: transport, ready: make(chan struct{})},
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
 					return fmt.Errorf("stopped after 10 redirects")

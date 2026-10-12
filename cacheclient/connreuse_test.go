@@ -42,9 +42,9 @@ func TestWebBackend_HTTP2SharesOneConnection(t *testing.T) {
 	defer b.Close()
 	pool := x509.NewCertPool()
 	pool.AddCert(srv.Certificate())
-	b.client.Transport.(*http.Transport).TLSClientConfig.RootCAs = pool
+	b.transport.TLSClientConfig.RootCAs = pool
 
-	const requests = 32
+	const requests = MaxConnsPerHost
 	var wg sync.WaitGroup
 	for idx := range requests {
 		wg.Add(1)

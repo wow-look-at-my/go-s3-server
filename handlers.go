@@ -268,12 +268,59 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 		writeError(w, 500, "internal_error", "index unavailable")
 		return
 	}
-	blob, etag := idx.Blob()
+	if from, asked := indexGenFromQuery(r); asked {
+		delta, to, ok := idx.Delta(from)
+		if !ok {
+			writeError(w, http.StatusGone, "index_epoch_gone", "the index changed beyond a delta; fetch it whole")
+			return
+		}
+		releaseSlot(r)
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set(headerIndexDelta, "1")
+		setIndexGenHeaders(w, to)
+		_, _ = w.Write(delta)
+		return
+	}
+	blob, etag, gen := idx.BlobGen()
 	// The blob is shared by every request and already built, so the transfer holds no memory of its own.
 	releaseSlot(r)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("ETag", etag)
+	setIndexGenHeaders(w, gen)
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(blob))
+}
+
+// The add-log position travels as decimal headers on the response and as
+// query parameters on a delta request. cacheclient carries the same names.
+const (
+	headerIndexEpoch = "X-Index-Epoch"
+	headerIndexSeq   = "X-Index-Seq"
+	headerIndexDelta = "X-Index-Delta"
+)
+
+// setIndexGenHeaders names gen on the response. A zero epoch is no position,
+// so it sends nothing.
+func setIndexGenHeaders(w http.ResponseWriter, gen indexGen) {
+	if gen.epoch == 0 {
+		return
+	}
+	w.Header().Set(headerIndexEpoch, strconv.FormatUint(gen.epoch, 10))
+	w.Header().Set(headerIndexSeq, strconv.FormatUint(gen.seq, 10))
+}
+
+// indexGenFromQuery reads a delta request's position. asked is false when the
+// request names none, which asks for the whole index.
+func indexGenFromQuery(r *http.Request) (gen indexGen, asked bool) {
+	q := r.URL.Query()
+	epoch, err := strconv.ParseUint(q.Get("epoch"), 10, 64)
+	if err != nil || epoch == 0 {
+		return indexGen{}, false
+	}
+	seq, err := strconv.ParseUint(q.Get("seq"), 10, 64)
+	if err != nil {
+		return indexGen{}, false
+	}
+	return indexGen{epoch: epoch, seq: seq}, true
 }
 
 // objectLabel builds a short human-readable description of a cache entry from its stored

@@ -237,7 +237,7 @@ func (b *WebBackend) fetchIndexBlob(ctx context.Context, ifNoneMatch string) ([]
 	if err != nil {
 		return nil, 0, wrapErr(err)
 	}
-	defer resp.Body.Close()
+	defer closeBody(resp.Body)
 	switch resp.StatusCode {
 	case http.StatusOK:
 		body, err := io.ReadAll(&stallGuardedReader{r: resp.Body, watchdog: watchdog, window: indexStallTimeout})

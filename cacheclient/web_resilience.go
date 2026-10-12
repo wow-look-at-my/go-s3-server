@@ -269,25 +269,22 @@ func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response,
 			return resp, nil
 		}
 		watchdog.Stop()
-		cancel()
 		var retryAfter time.Duration
 		if err == nil {
 			retryAfter = parseRetryAfter(resp)
 			if retryAfter > 0 {
 				b.noteShed(retryAfter)
 			}
+			// Drain before cancel: a cancel with an unread body closes the connection.
+			drained, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			closeBody(resp.Body)
+			resp.Body = io.NopCloser(bytes.NewReader(drained))
 		}
+		cancel()
 		if attempt >= maxRetries {
 			return resp, err
 		}
 		// Honor a server Retry-After (e.g. an admission shed), but never sleep less than the jittered backoff.
-		if err == nil {
-			// Drain and close so the connection returns to the pool. What was
-			// read is kept, so a response returned later still has its body.
-			drained, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-			resp.Body.Close()
-			resp.Body = io.NopCloser(bytes.NewReader(drained))
-		}
 		b.sleepBackoff(attempt, retryAfter)
 	}
 }

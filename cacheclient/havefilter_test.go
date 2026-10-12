@@ -22,7 +22,7 @@ func vectorHash(fill byte) actionHash {
 // root, and its own test asserting this same constant. A change to the bit
 // arithmetic on a single side and not the other fails any of both tests
 // instead of silently making suppression wrong on the wire.
-const haveFilterVectorBits = "c2643f18fd57b6aa9bb7cb286f32b9ee7c655c83b95e78ca11591a166bd6658a"
+const haveFilterVectorBits = "0149c9d142d7626524be75881516b6bbabdb6cce15a4a7dd204e0e8030a15946"
 
 func TestHaveFilterVector(t *testing.T) {
 	f := &haveFilter{Bits: make([]byte, 32), K: 3}

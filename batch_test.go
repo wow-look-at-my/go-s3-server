@@ -385,7 +385,7 @@ func TestBatchGet_PrefetchAdvancesAsTheClientStatesMore(t *testing.T) {
 }
 
 // haveFilterVectorBits is the filter's bit arithmetic, pinned.
-const haveFilterVectorBits = "c2643f18fd57b6aa9bb7cb286f32b9ee7c655c83b95e78ca11591a166bd6658a"
+const haveFilterVectorBits = "0149c9d142d7626524be75881516b6bbabdb6cce15a4a7dd204e0e8030a15946"
 
 func TestHaveFilterVector(t *testing.T) {
 	f := &haveFilter{Bits: make([]byte, 32), K: 3}

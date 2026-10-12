@@ -3,6 +3,7 @@ package cacheclient
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"github.com/stretchr/testify/require"
 	"slices"
 	"testing"
 )
@@ -35,8 +36,8 @@ func BenchmarkParseShortIndex(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		if _, _, err := parseIndexBlob(blob); err != nil {
-			b.Fatal(err)
-		}
+		_, _, err := parseIndexBlob(blob)
+		require.Nil(b, err)
+
 	}
 }

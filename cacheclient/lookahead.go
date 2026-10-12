@@ -111,7 +111,7 @@ const minChunkBudget = 256 << 10
 // across the workers is what makes the budget describe the pool rather than a single fetch.
 func chunkBudget(budget int64, workers int) int64 {
 	if budget <= 0 || workers <= 0 {
-		return 0 // unbounded, as an unset budget asks for
+		return 0 // unbounded, as an unset budget asks.
 	}
 	per := budget / int64(workers)
 	if per < minChunkBudget {

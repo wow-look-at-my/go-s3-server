@@ -40,6 +40,16 @@ The page reports these carefully:
 - **Cache size** comes from `s3_cache_bytes`. The server writes that gauge at an eviction sweep and every few minutes, not on every PUT. Before the first measurement the page says "not measured". It never says `0 B`.
 - **Rates** are computed in the browser, from one poll against the poll before it. A reload starts them over. A counter that goes backwards means the server restarted, so the page clears the history instead of drawing a negative rate.
 
+## Reads the server never sees
+
+The client keeps a copy of `/_index`. When that copy is fresh, the client misses a key the copy lacks with no request. It also skips the upload of a key the copy holds. The server cannot count either operation by itself, so its hit rate counts only the keys that reached it.
+
+The client therefore reports those skips. It sends `POST /{bucket}/_skips` every few seconds and at `Close`, with the counts since the last report the server accepted. A failed report leaves the counts in place for the next one. The code is `cacheclient/skipreport.go` and `skips.go`.
+
+The server counts each report in `s3_client_skips_total{op,reason}`. Each skipped get is also a miss in `s3_project_objects_total` for the project that asked. The hit rate tile and the hit chart divide `found` by `requested` plus the skipped gets.
+
+A server older than the endpoint answers 405. The client then stops reporting for that run and logs one warning, because that server's hit rate stays too high.
+
 ## The BY PROJECT panel
 
 A shared cache gets one question more than any other. The hit rate reads fine overall, so whose builds are the ones missing?

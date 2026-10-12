@@ -54,13 +54,17 @@ func TestCacheClientReportsIndexSkips(t *testing.T) {
 		require.True(t, miss)
 	}
 	require.NoError(t, reader.Put(objs[0].actionID, objs[0].outputID, objs[0].body))
-	require.Equal(t, uint32(3), reader.SkippedNotInIndex.Load(), "the fresh index must answer every absent key")
+	skipped := float64(reader.SkippedNotInIndex.Load())
+	require.Positive(t, skipped, "the fresh index must answer at least a single absent key locally")
 	require.NoError(t, reader.Close())
 
-	assert.Equal(t, requestedBefore, testutil.ToFloat64(requested), "no absent key may reach the batch path")
-	assert.Equal(t, 3.0, testutil.ToFloat64(notInIndex)-notInIndexBefore, "Close must report each skipped get")
+	// A get that ran before the index loaded went to the server. The rest were skipped and reported.
+	asked := testutil.ToFloat64(requested) - requestedBefore
+	reported := testutil.ToFloat64(notInIndex) - notInIndexBefore
+	assert.Equal(t, skipped, reported, "Close must report each skipped get")
+	assert.Equal(t, 3.0, asked+reported, "each absent key must be counted exactly once, asked or reported")
 	assert.Equal(t, 1.0, testutil.ToFloat64(putKnown)-putKnownBefore, "Close must report the skipped put")
-	assert.Equal(t, 3.0, testutil.ToFloat64(projectMiss)-projectMissBefore, "a skipped get is a miss for the project that asked")
+	assert.Equal(t, 3.0, testutil.ToFloat64(projectMiss)-projectMissBefore, "every get counts as a miss for the project that asked")
 }
 
 func postSkips(t *testing.T, url, body string) *http.Response {

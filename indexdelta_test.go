@@ -165,6 +165,7 @@ func TestIndexHeadersMatchTheClient(t *testing.T) {
 // A server with prefetch off says so on every batch answer, so a client's
 // look-ahead pool stops after its first request.
 func TestBatchAnswerSaysPrefetchIsOff(t *testing.T) {
+<<<<<<< HEAD
 	_, storage := testSetupWithStorage(t)
 	body := `{"keys":["go-buildcache/v1aa"],"prefetch":true,"prefetch_only":true}`
 
@@ -177,6 +178,15 @@ func TestBatchAnswerSaysPrefetchIsOff(t *testing.T) {
 	handleBatchGet(on, httptest.NewRequest(http.MethodPost, "/testbucket/_batch/get", strings.NewReader(body)), storage, nil, true)
 	require.Equal(t, http.StatusOK, on.Code)
 	assert.Empty(t, on.Header().Get(headerPrefetch), "a server with prefetch on sends no such header")
+=======
+	ts, _ := testSetupWithStorage(t)
+	resp, err := http.Post(ts.URL+"/testbucket/_batch/get", "application/json",
+		strings.NewReader(`{"keys":["go-buildcache/v1aa"],"prefetch":true,"prefetch_only":true}`))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "off", resp.Header.Get(headerPrefetch))
+>>>>>>> origin/master
 }
 
 // A key another build stores while this process runs is a hit. The process

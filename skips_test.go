@@ -75,12 +75,16 @@ func postSkips(t *testing.T, url, body string) *http.Response {
 
 func TestSkipReportRejectsBadBodies(t *testing.T) {
 	ts, _ := testSetupWithStorage(t)
+	// Valid JSON with only known fields, so the size bound is the only reason to refuse it.
+	large, err := json.MarshalIndent(skipReport{GetNotInIndex: 1}, "", strings.Repeat(" ", maxSkipReportBytes))
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusRequestEntityTooLarge, postSkips(t, ts.URL, string(large)).StatusCode)
+
 	for name, body := range map[string]string{
 		"unknown field": `{"get_not_in_index":1,"bogus":2}`,
 		"not json":      `nope`,
 		"negative":      `{"get_not_in_index":-1}`,
 		"out of range":  `{"put_known":4294967296}`,
-		"too large":     `{"get_not_in_index":1` + strings.Repeat(" ", maxSkipReportBytes) + `}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			resp := postSkips(t, ts.URL, body)

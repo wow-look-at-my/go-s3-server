@@ -521,7 +521,7 @@ func (idx *Index) BlobGen() ([]byte, string, indexGen) {
 		log.Printf("index: serialize unlocked after %v (hashes=%d)", time.Since(lockedAt), len(idx.hashes))
 	}()
 
-	gen := idx.mergePendingLocked()
+	gen = idx.mergePendingLocked()
 	blob := marshalGBCI(idx.hashes)
 	idx.cachedBlob = blob
 	idx.cachedETag = blobETag(blob)

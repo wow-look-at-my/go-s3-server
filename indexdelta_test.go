@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -116,6 +117,134 @@ func TestIndexHandlerServesTheDelta(t *testing.T) {
 	gone := httptest.NewRecorder()
 	handleGetIndex(gone, httptest.NewRequest("GET", "/b/_index?epoch=7&seq=0", nil), idx)
 	assert.Equal(t, http.StatusGone, gone.Code)
+}
+
+// prefixEntries splits a version 2 blob's body into its entries.
+func prefixEntries(t *testing.T, blob []byte) [][gbciPrefixSize]byte {
+	t.Helper()
+	require.GreaterOrEqual(t, len(blob), gbciHeaderSize+32)
+	require.Equal(t, byte(gbciPrefixVersion), blob[4])
+	require.Equal(t, byte(gbciPrefixSize), blob[5])
+	body := blob[gbciHeaderSize : len(blob)-32]
+	require.Zero(t, len(body)%gbciPrefixSize)
+	out := make([][gbciPrefixSize]byte, len(body)/gbciPrefixSize)
+	for i := range out {
+		copy(out[i][:], body[i*gbciPrefixSize:])
+	}
+	return out
+}
+
+func prefixOf(h [gbciHashSize]byte) [gbciPrefixSize]byte {
+	var p [gbciPrefixSize]byte
+	copy(p[:], h[:])
+	return p
+}
+
+// A client that does not ask for a version is the go toolchain's vendored
+// client, which reads version 1 only. It must keep getting exactly that.
+func TestIndexHandlerServesV1UnlessAsked(t *testing.T) {
+	idx := newDeltaIndex(t)
+	k1, h1 := deltaKey(1)
+	k2, h2 := deltaKey(2)
+	idx.Put(k1, 1)
+	idx.Put(k2, 1)
+
+	v1 := httptest.NewRecorder()
+	handleGetIndex(v1, httptest.NewRequest("GET", "/b/_index", nil), idx)
+	require.Equal(t, http.StatusOK, v1.Code)
+	assert.Equal(t, marshalGBCI([][gbciHashSize]byte{h1, h2}, gbciFull), v1.Body.Bytes(), "byte for byte the version 1 blob")
+	assert.Equal(t, byte(gbciVersion), v1.Body.Bytes()[4])
+
+	other := httptest.NewRecorder()
+	handleGetIndex(other, httptest.NewRequest("GET", "/b/_index?v=7", nil), idx)
+	assert.Equal(t, v1.Body.Bytes(), other.Body.Bytes(), "a version this server does not know is answered with version 1")
+
+	v2 := httptest.NewRecorder()
+	handleGetIndex(v2, httptest.NewRequest("GET", "/b/_index?v=2", nil), idx)
+	require.Equal(t, http.StatusOK, v2.Code)
+	assert.Equal(t, [][gbciPrefixSize]byte{prefixOf(h1), prefixOf(h2)}, prefixEntries(t, v2.Body.Bytes()))
+	assert.Len(t, v2.Body.Bytes(), gbciHeaderSize+2*gbciPrefixSize+32)
+	etag1, etag2 := v1.Header().Get("ETag"), v2.Header().Get("ETag")
+	require.NotEmpty(t, etag2)
+	assert.NotEqual(t, etag1, etag2)
+	assert.Equal(t, v1.Header().Get(headerIndexSeq), v2.Header().Get(headerIndexSeq), "both versions name the same position")
+
+	revalidate := func(query, etag string) int {
+		req := httptest.NewRequest("GET", "/b/_index"+query, nil)
+		req.Header.Set("If-None-Match", etag)
+		rec := httptest.NewRecorder()
+		handleGetIndex(rec, req, idx)
+		return rec.Code
+	}
+	assert.Equal(t, http.StatusNotModified, revalidate("?v=2", etag2))
+	assert.Equal(t, http.StatusNotModified, revalidate("", etag1))
+	assert.Equal(t, http.StatusOK, revalidate("?v=2", etag1), "a version 1 copy is replaced by version 2")
+	assert.Equal(t, http.StatusOK, revalidate("", etag2))
+}
+
+func TestIndexHandlerServesTheV2Delta(t *testing.T) {
+	idx := newDeltaIndex(t)
+	k1, _ := deltaKey(1)
+	idx.Put(k1, 1)
+
+	full := httptest.NewRecorder()
+	handleGetIndex(full, httptest.NewRequest("GET", "/b/_index?v=2", nil), idx)
+	require.Equal(t, http.StatusOK, full.Code)
+	epoch, seq := full.Header().Get(headerIndexEpoch), full.Header().Get(headerIndexSeq)
+	require.NotEmpty(t, epoch)
+
+	k2, h2 := deltaKey(2)
+	idx.Put(k2, 1)
+	delta := httptest.NewRecorder()
+	handleGetIndex(delta, httptest.NewRequest("GET", "/b/_index?v=2&epoch="+epoch+"&seq="+seq, nil), idx)
+	require.Equal(t, http.StatusOK, delta.Code)
+	assert.Equal(t, "1", delta.Header().Get(headerIndexDelta))
+	assert.Equal(t, "2", delta.Header().Get(headerIndexSeq))
+	assert.Equal(t, [][gbciPrefixSize]byte{prefixOf(h2)}, prefixEntries(t, delta.Body.Bytes()))
+
+	v1Delta := httptest.NewRecorder()
+	handleGetIndex(v1Delta, httptest.NewRequest("GET", "/b/_index?epoch="+epoch+"&seq="+seq, nil), idx)
+	assert.Equal(t, [][gbciHashSize]byte{h2}, gbciHashes(t, v1Delta.Body.Bytes()), "a delta without v=2 stays version 1")
+}
+
+// Hashes that differ only past the prefix are one version 2 entry, so the
+// body stays sorted and deduped.
+func TestPrefixBlobMergesHashesThatSharePrefix(t *testing.T) {
+	var a, b, c [gbciHashSize]byte
+	a[0], b[0], c[0] = 1, 1, 2
+	b[31] = 9
+	hashes := [][gbciHashSize]byte{a, b, c}
+	assert.Equal(t, [][gbciPrefixSize]byte{prefixOf(a), prefixOf(c)}, prefixEntries(t, marshalGBCI(hashes, gbciPrefix)))
+	assert.Equal(t, hashes, gbciHashes(t, marshalGBCI(hashes, gbciFull)))
+}
+
+// Each version is serialized at most once per blob interval, and serving one
+// leaves the other's cached blob alone.
+func TestEachFormatIsCachedOnItsOwn(t *testing.T) {
+	idx := newDeltaIndex(t)
+	idx.SetBlobInterval(time.Hour)
+	k1, _ := deltaKey(1)
+	idx.Put(k1, 1)
+
+	full1, _, _ := idx.BlobGenFormat(gbciFull)
+	prefix1, _, _ := idx.BlobGenFormat(gbciPrefix)
+	full2, _, _ := idx.BlobGenFormat(gbciFull)
+	prefix2, _, _ := idx.BlobGenFormat(gbciPrefix)
+	assert.Same(t, &full1[0], &full2[0])
+	assert.Same(t, &prefix1[0], &prefix2[0])
+
+	k2, _ := deltaKey(2)
+	idx.Put(k2, 1)
+	full3, _, _ := idx.BlobGenFormat(gbciFull)
+	prefix3, _, _ := idx.BlobGenFormat(gbciPrefix)
+	assert.Same(t, &full1[0], &full3[0], "inside the interval the cached blob is served")
+	assert.Same(t, &prefix1[0], &prefix3[0])
+
+	idx.SetBlobInterval(0)
+	full4, _, _ := idx.BlobGenFormat(gbciFull)
+	prefix4, _, _ := idx.BlobGenFormat(gbciPrefix)
+	assert.Len(t, gbciHashes(t, full4), 2)
+	assert.Len(t, prefixEntries(t, prefix4), 2, "serializing version 1 must not mark version 2 current")
 }
 
 func TestIndexHeadersMatchTheClient(t *testing.T) {

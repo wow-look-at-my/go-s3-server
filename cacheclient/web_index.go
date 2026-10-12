@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -29,11 +29,10 @@ const indexFetchRetries = 1
 // gbciKeyPrefix leads every cacheprog key; the wire format carries only the raw hash after it.
 const gbciKeyPrefix = "go-buildcache/v1"
 
-// hashSize is the number of bytes in an action ID, and so per entry in the
-// index body.
+// hashSize is the number of bytes in an action ID.
 const hashSize = 32
 
-// gbciHashSize is the size the wire header states. It must equal hashSize.
+// gbciHashSize is the entry size of a version 1 index: a whole action ID.
 const gbciHashSize = hashSize
 
 // It is a comparable array, so a set of them is a single flat allocation
@@ -62,8 +61,15 @@ func parseActionHash(actionID string) (actionHash, bool) {
 // gbciHeaderSize is the fixed header size in bytes.
 const gbciHeaderSize = 24
 
-// gbciVersion is the wire-format version stored in the header.
-const gbciVersion = 1
+// The wire-format versions a header can carry. A version 1 entry is a whole
+// action hash; a version 2 entry is its indexKey.
+const (
+	gbciVersionFull   = 1
+	gbciVersionPrefix = 2
+)
+
+// indexVersionQuery is the query parameter that asks the server for version 2.
+const indexVersionQuery = "v=2"
 
 // gbciMagic is the file-format identifier "GBCI".
 var gbciMagic = [4]byte{'G', 'B', 'C', 'I'}
@@ -97,7 +103,7 @@ func (b *WebBackend) indexCachePath() string {
 //
 // Each outcome logs a single time here. The consumer's stderr carries only
 // the Warnf lines unless it asks for the routine ones.
-func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex) (*hashSet, bool) {
+func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex) (*keySet, bool) {
 	diskBlob, diskKeys, diskETag := disk.blob, disk.keys, disk.etag
 
 	reply, err := b.doIndexGET(ctx, "", diskETag)
@@ -117,7 +123,7 @@ func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex
 		}
 		logging.Warnf("cacheprog: web index fetch: %v", err)
 		logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
-		return newHashSet(0), false
+		return newKeySet(0), false
 	}
 	if status == http.StatusNotModified {
 		if diskBlob != nil {
@@ -137,7 +143,7 @@ func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex
 			}
 			logging.Warnf("cacheprog: web index refetch: %v", err)
 			logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
-			return newHashSet(0), false
+			return newKeySet(0), false
 		}
 	}
 	keys, etag, err := parseIndexBlob(blob)
@@ -148,7 +154,7 @@ func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex
 			return diskKeys, false
 		}
 		logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
-		return newHashSet(0), false
+		return newKeySet(0), false
 	}
 	b.writeIndexBlob(path, blob)
 	writeIndexGen(path, etag, reply.gen)
@@ -159,7 +165,7 @@ func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex
 // diskIndex is the index's disk copy as a single read found it.
 type diskIndex struct {
 	blob []byte   // the raw copy; nil when missing or invalid
-	keys *hashSet // its parsed keys; empty when blob is nil
+	keys *keySet  // its parsed keys; empty when blob is nil
 	etag string   // its strong ETag; empty when blob is nil
 	gen  indexGen // its add-log position; zero when the server named none
 	// count is the key count as read. keys may be installed as the live set
@@ -179,7 +185,7 @@ func (d diskIndex) age() time.Duration {
 // readDiskIndex reads the disk copy at path. A missing or invalid copy comes
 // back with a nil blob and an empty key set.
 func (b *WebBackend) readDiskIndex(path string) diskIndex {
-	d := diskIndex{keys: newHashSet(0)}
+	d := diskIndex{keys: newKeySet(0)}
 	st, err := os.Stat(path)
 	if err != nil {
 		return d
@@ -232,9 +238,9 @@ func (b *WebBackend) doIndexGET(ctx context.Context, rawQuery, ifNoneMatch strin
 		return err
 	}
 
-	target := b.endpoint + "/" + b.bucket + "/_index"
+	target := b.endpoint + "/" + b.bucket + "/_index?" + indexVersionQuery
 	if rawQuery != "" {
-		target += "?" + rawQuery
+		target += "&" + rawQuery
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", target, nil)
 	if err != nil {
@@ -289,7 +295,7 @@ func (s *stallGuardedReader) Read(p []byte) (int, error) {
 	return s.r.Read(p)
 }
 
-// writeIndexBlob persists a GBCI v1 blob via a temp file private to this
+// writeIndexBlob persists an index blob via a temp file private to this
 // writer and an atomic rename, so processes sharing the directory never
 // interleave into a single file. Best-effort: a stale on-disk cache only
 // forces a fresh GET next time.
@@ -314,67 +320,69 @@ func (b *WebBackend) writeIndexBlob(path string, blob []byte) {
 	}
 }
 
-// parseIndexBlob validates a GBCI v1 blob and returns:
+// gbciEntrySize answers the entry size a header's version carries, and
+// refuses a header whose size byte disagrees with its version.
+func gbciEntrySize(version, size byte) (int, error) {
+	switch {
+	case version == gbciVersionFull && size == gbciHashSize:
+		return gbciHashSize, nil
+	case version == gbciVersionPrefix && size == indexKeySize:
+		return indexKeySize, nil
+	case version != gbciVersionFull && version != gbciVersionPrefix:
+		return 0, fmt.Errorf("unsupported version %d", version)
+	default:
+		return 0, fmt.Errorf("unsupported hash size %d for version %d", size, version)
+	}
+}
+
+// parseIndexBlob validates a GBCI blob of either version and returns:
 //
-//   - the reconstructed key set (full cache key strings)
+//   - the key set, as the indexKey of every entry
 //   - the strong ETag (hex-encoded sha256 trailer, quoted per the HTTP spec)
-//   - or an error if magic, version, length, or trailer hash don't validate.
-func parseIndexBlob(blob []byte) (*hashSet, string, error) {
+//   - or an error if magic, version, entry size, length, or trailer hash don't validate.
+func parseIndexBlob(blob []byte) (*keySet, string, error) {
 	if len(blob) < gbciHeaderSize+sha256.Size {
 		return nil, "", fmt.Errorf("blob too small (%d bytes)", len(blob))
 	}
 	if !bytes.Equal(blob[0:4], gbciMagic[:]) {
 		return nil, "", fmt.Errorf("bad magic")
 	}
-	if blob[4] != gbciVersion {
-		return nil, "", fmt.Errorf("unsupported version %d", blob[4])
-	}
-	if blob[5] != gbciHashSize {
-		return nil, "", fmt.Errorf("unsupported hash size %d", blob[5])
+	size, err := gbciEntrySize(blob[4], blob[5])
+	if err != nil {
+		return nil, "", err
 	}
 	count := binary.LittleEndian.Uint64(blob[16:24])
-	bodyEnd := gbciHeaderSize + int(count)*gbciHashSize
-	if bodyEnd+sha256.Size != len(blob) {
-		return nil, "", fmt.Errorf("length %d != header+%d*%d+trailer", len(blob), count, gbciHashSize)
+	bodyLen := len(blob) - gbciHeaderSize - sha256.Size
+	if bodyLen%size != 0 || count != uint64(bodyLen/size) {
+		return nil, "", fmt.Errorf("length %d != header+%d*%d+trailer", len(blob), count, size)
 	}
+	bodyEnd := gbciHeaderSize + bodyLen
 	expected := sha256.Sum256(blob[:bodyEnd])
 	if !bytes.Equal(expected[:], blob[bodyEnd:]) {
 		return nil, "", fmt.Errorf("trailer hash mismatch")
 	}
-	// The body IS the hashes, ascending, which is the order the set holds them
-	// in. Each entry is copied as it stands, with no hex encode, no per-key
-	// allocation and no sort: on a cache of hundreds of thousands of entries
-	// that work all lands before the build starts.
-	hashes := make([]actionHash, count)
-	for i := uint64(0); i < count; i++ {
-		off := gbciHeaderSize + int(i)*gbciHashSize
-		copy(hashes[i][:], blob[off:off+gbciHashSize])
+	// The body is ascending, so the leading bytes of its entries are too.
+	keys := make([]indexKey, count)
+	for i := range keys {
+		off := gbciHeaderSize + i*size
+		copy(keys[i][:], blob[off:off+indexKeySize])
 	}
-	keys := newHashSetFromSorted(hashes)
 	etag := `"` + hex.EncodeToString(blob[bodyEnd:]) + `"`
-	return keys, etag, nil
+	return adoptSortedKeys(keys), etag, nil
 }
 
-// marshalIndex encodes the given hash set as a GBCI v1 blob. Used by tests.
-func marshalIndex(keys *hashSet) []byte {
-	hashes := make([]actionHash, 0, keys.Len())
-	for h := range keys.All() {
-		hashes = append(hashes, h)
-	}
-	sort.Slice(hashes, func(i, j int) bool {
-		return bytes.Compare(hashes[i][:], hashes[j][:]) < 0
-	})
-	blob := make([]byte, gbciHeaderSize+len(hashes)*gbciHashSize+sha256.Size)
+// marshalIndex encodes the given key set as a GBCI v2 blob. Used by tests.
+func marshalIndex(keys *keySet) []byte {
+	sorted := slices.SortedFunc(keys.All(), compareKey)
+	blob := make([]byte, gbciHeaderSize+len(sorted)*indexKeySize+sha256.Size)
 	copy(blob[0:4], gbciMagic[:])
-	blob[4] = gbciVersion
-	blob[5] = gbciHashSize
-	binary.LittleEndian.PutUint16(blob[6:8], 0)
-	binary.LittleEndian.PutUint64(blob[8:16], 0)
-	binary.LittleEndian.PutUint64(blob[16:24], uint64(len(hashes)))
+	blob[4] = gbciVersionPrefix
+	blob[5] = indexKeySize
+	binary.LittleEndian.PutUint64(blob[16:24], uint64(len(sorted)))
 	off := gbciHeaderSize
-	for i := range hashes {
-		copy(blob[off:off+gbciHashSize], hashes[i][:])
-		off += gbciHashSize
+	for i := range sorted {
+		copy(blob[off:off+indexKeySize], sorted[i][:])
+		off += indexKeySize
 	}
 	digest := sha256.Sum256(blob[:off])
 	copy(blob[off:], digest[:])

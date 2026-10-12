@@ -260,16 +260,20 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request, storage *Storage
 	w.WriteHeader(204)
 }
 
-// handleGetIndex serves the precomputed GBCI v1 binary cache-key index.
-// The body is a fixed 24-byte header + sorted action-ID hashes + 32-byte
-// SHA-256 trailer.
+// handleGetIndex serves the precomputed GBCI binary cache-key index. The
+// body is a fixed 24-byte header + sorted entries + 32-byte SHA-256
+// trailer. The query parameter v=2 selects version 2, whose entries are the
+// leading gbciPrefixSize bytes of each action hash. Without it the body is
+// version 1, a whole hash per entry. The version is part of the URL, so a
+// caching proxy keeps both apart.
 func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 	if idx == nil {
 		writeError(w, 500, "internal_error", "index unavailable")
 		return
 	}
+	format := indexFormatFromQuery(r)
 	if from, asked := indexGenFromQuery(r); asked {
-		delta, to, ok := idx.Delta(from)
+		delta, to, ok := idx.DeltaFormat(from, format)
 		if !ok {
 			writeError(w, http.StatusGone, "index_epoch_gone", "the index changed beyond a delta; fetch it whole")
 			return
@@ -281,7 +285,7 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 		_, _ = w.Write(delta)
 		return
 	}
-	blob, etag, gen := idx.BlobGen()
+	blob, etag, gen := idx.BlobGenFormat(format)
 	// The blob is shared by every request and already built, so the transfer holds no memory of its own.
 	releaseSlot(r)
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -306,6 +310,18 @@ func setIndexGenHeaders(w http.ResponseWriter, gen indexGen) {
 	}
 	w.Header().Set(headerIndexEpoch, strconv.FormatUint(gen.epoch, 10))
 	w.Header().Set(headerIndexSeq, strconv.FormatUint(gen.seq, 10))
+}
+
+// indexFormatQuery names the query parameter that selects the index version.
+const indexFormatQuery = "v"
+
+// indexFormatFromQuery reads the requested index version. Only "2" selects
+// version 2; any other value, or none, is version 1.
+func indexFormatFromQuery(r *http.Request) gbciFormat {
+	if r.URL.Query().Get(indexFormatQuery) == "2" {
+		return gbciPrefix
+	}
+	return gbciFull
 }
 
 // indexGenFromQuery reads a delta request's position. asked is false when the

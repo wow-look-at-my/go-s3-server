@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -39,8 +40,10 @@ func (idx *Index) appendAddLocked(hash [gbciHashSize]byte) {
 func (idx *Index) resetAddLogLocked() {
 	idx.addEpoch = newIndexEpoch()
 	idx.added = nil
-	idx.builtAt = time.Time{}
-	idx.dirty.Store(true)
+	for f := range idx.served {
+		idx.served[f].builtAt = time.Time{}
+	}
+	idx.markStaleLocked()
 }
 
 // indexGen is a position in the add log.
@@ -49,10 +52,14 @@ type indexGen struct {
 	seq   uint64
 }
 
-// Delta answers a GBCI blob of the hashes added after from, and the position
-// it brings the client to. ok is false when from is not in the current epoch
-// or is ahead of the log: the client must make a full fetch.
+// Delta answers a version 1 GBCI blob of the hashes added after from, and the
+// position it brings the client to. ok is false.
 func (idx *Index) Delta(from indexGen) (blob []byte, to indexGen, ok bool) {
+	return idx.DeltaFormat(from, gbciFull)
+}
+
+// DeltaFormat is Delta with the blob in format f.
+func (idx *Index) DeltaFormat(from indexGen, f gbciFormat) (blob []byte, to indexGen, ok bool) {
 	idx.mu.RLock()
 	if from.epoch != idx.addEpoch || from.seq > uint64(len(idx.added)) {
 		idx.mu.RUnlock()
@@ -61,25 +68,31 @@ func (idx *Index) Delta(from indexGen) (blob []byte, to indexGen, ok bool) {
 	tail := append([][gbciHashSize]byte(nil), idx.added[from.seq:]...)
 	to = indexGen{epoch: idx.addEpoch, seq: uint64(len(idx.added))}
 	idx.mu.RUnlock()
-	return marshalGBCI(sortDedupeHashes(tail)), to, true
+	return marshalGBCI(sortDedupeHashes(tail), f), to, true
 }
 
-// marshalGBCI encodes sorted hashes as a GBCI v1 blob.
-func marshalGBCI(hashes [][gbciHashSize]byte) []byte {
-	count := uint64(len(hashes))
-	blob := make([]byte, gbciHeaderSize+int(count)*gbciHashSize+sha256.Size)
+// marshalGBCI encodes sorted, deduplicated hashes as a GBCI blob in format f.
+// Each entry is the leading f.entrySize() bytes of a hash. Neighbours that
+// share those bytes are written once, so the body stays sorted and deduped.
+func marshalGBCI(hashes [][gbciHashSize]byte, f gbciFormat) []byte {
+	size := f.entrySize()
+	blob := make([]byte, gbciHeaderSize+len(hashes)*size+sha256.Size)
 	copy(blob[0:4], gbciMagic[:])
-	blob[4] = gbciVersion
-	blob[5] = gbciHashSize
-	binary.LittleEndian.PutUint64(blob[16:24], count)
+	blob[4] = f.version()
+	blob[5] = byte(size)
 	off := gbciHeaderSize
 	for i := range hashes {
-		copy(blob[off:off+gbciHashSize], hashes[i][:])
-		off += gbciHashSize
+		entry := hashes[i][:size]
+		if off > gbciHeaderSize && bytes.Equal(blob[off-size:off], entry) {
+			continue
+		}
+		copy(blob[off:off+size], entry)
+		off += size
 	}
+	binary.LittleEndian.PutUint64(blob[16:24], uint64((off-gbciHeaderSize)/size))
 	bodyDigest := sha256.Sum256(blob[gbciHeaderSize:off])
 	binary.LittleEndian.PutUint64(blob[8:16], binary.LittleEndian.Uint64(bodyDigest[:8]))
 	digest := sha256.Sum256(blob[:off])
 	copy(blob[off:], digest[:])
-	return blob
+	return blob[:off+sha256.Size]
 }

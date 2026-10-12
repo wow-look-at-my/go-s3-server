@@ -126,9 +126,7 @@ func (b *WebBackend) applyDelta(ctx context.Context, path string, disk diskIndex
 		}
 		// The live set already carries every claim and drop, so the journal has nothing to replay.
 		b.keysMu.Lock()
-		for h := range added.All() {
-			b.keys.Add(h)
-		}
+		b.keys.addAll(added)
 		b.keysJournal = nil
 		b.indexAuthoritative = true
 		b.indexEmpty = b.keys.Len() == 0

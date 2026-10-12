@@ -123,8 +123,8 @@ type WebBackend struct {
 	// keys holds RAW ACTION HASHES, not cache-key strings. A large cache is
 	// hundreds of thousands of entries, and that set is built at startup
 	// before the build does anything at all.
-	keys       *hashSet // known keys, from the startup index fetch + Put claims
-	indexEmpty bool     // remote index was empty at startup.
+	keys       *keySet // known keys, from the startup index fetch + Put claims
+	indexEmpty bool    // remote index was empty at startup.
 	// indexAuthoritative marks a fresh, server-confirmed index: an absent key can then miss without a probe.
 	indexAuthoritative bool
 	// indexKeysAtStart is the key count from the startup index fetch, reported in WebSummary to flag a dead remote.
@@ -135,7 +135,7 @@ type WebBackend struct {
 	// indexBytes is what that fetch cost on the wire, which no hit or put total covers.
 	indexBytes AtomicBytes
 	missesMu   sync.RWMutex
-	knownMiss  *hashSet // keys confirmed absent from remote this session
+	knownMiss  *hashSet[actionHash] // keys confirmed absent from remote this session
 
 	// emptyBatchBackoffThreshold: after this many empty batches in a row, stop probing for the run (an unset value disables).
 	emptyBatchBackoffThreshold int          // an unset value disables the backoff
@@ -189,7 +189,7 @@ type WebBackend struct {
 	// object it received and verified, and every object it uploaded. It is NOT
 	// the index, which says what the server has. A prefetch request states it
 	// so the server can skip what this build is not going to need.
-	held *hashSet
+	held *hashSet[actionHash]
 
 	// prefetchHold bounds the bytes of unrequested bodies this backend is
 	// carrying between reading them off a response and handing them over.

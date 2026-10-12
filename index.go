@@ -17,14 +17,57 @@ import (
 // gbciKeyPrefix is the constant leading portion of every cacheprog cache key.
 const gbciKeyPrefix = "go-buildcache/v1"
 
-// gbciHashSize is the number of bytes per entry in the binary index body.
+// gbciHashSize is the number of bytes in an action hash, and per entry in a version 1 index body.
 const gbciHashSize = 32
+
+// gbciPrefixSize is the number of bytes per entry in a version 2 index body: the leading bytes of each action hash.
+const gbciPrefixSize = 8
 
 // gbciHeaderSize is the fixed header size in bytes.
 const gbciHeaderSize = 24
 
-// gbciVersion is the wire-format version stored in the header.
-const gbciVersion = 1
+// The wire-format versions stored in the header.
+const (
+	gbciVersion       = 1
+	gbciPrefixVersion = 2
+)
+
+// gbciFormat is an encoding /_index serves. Each is serialized and cached on its own.
+type gbciFormat int
+
+const (
+	// gbciFull is version 1: each entry is a whole action hash.
+	gbciFull gbciFormat = iota
+	// gbciPrefix is version 2: each entry is an action hash's leading gbciPrefixSize bytes.
+	gbciPrefix
+	gbciFormats
+)
+
+func (f gbciFormat) version() byte {
+	if f == gbciPrefix {
+		return gbciPrefixVersion
+	}
+	return gbciVersion
+}
+
+func (f gbciFormat) entrySize() int {
+	if f == gbciPrefix {
+		return gbciPrefixSize
+	}
+	return gbciHashSize
+}
+
+// servedBlob is the most recently built blob of a single format.
+type servedBlob struct {
+	blob []byte
+	etag string
+	// gen is the add-log position blob is complete up to.
+	gen indexGen
+	// builtAt is when blob was serialized. blob is served for blobMinInterval after it, stale or not.
+	builtAt time.Time
+	// stale is set by every change to the key set after blob was built.
+	stale bool
+}
 
 var gbciMagic = [4]byte{'G', 'B', 'C', 'I'}
 
@@ -47,21 +90,14 @@ type Index struct {
 	// pending is an unsorted append-only buffer of new hashes added by Put.
 	pending [][gbciHashSize]byte
 
-	// dirty is set true whenever pending grows or the master is rebuilt.
-	dirty atomic.Bool
-
-	// cachedBlob and cachedETag hold the most recently built output.
-	cachedBlob []byte
-	cachedETag string
-	// builtAt is when cachedBlob was serialized. Blob serves the cached blob for blobMinInterval after it, dirty or not.
-	builtAt time.Time
+	// served holds the most recently built blob of each format.
+	served [gbciFormats]servedBlob
 	// blobMinInterval is the least time between serializations, in nanoseconds.
 	blobMinInterval atomic.Int64
 
-	// addEpoch and added are the add log (indexdelta.go). cachedGen is the log position cachedBlob is complete up to.
-	addEpoch  uint64
-	added     [][gbciHashSize]byte
-	cachedGen indexGen
+	// addEpoch and added are the add log (indexdelta.go).
+	addEpoch uint64
+	added    [][gbciHashSize]byte
 	// addLogLimit overrides maxAddLog when nonzero, for a test.
 	addLogLimit int
 }
@@ -167,7 +203,7 @@ func (idx *Index) Put(key string, size int64) {
 	if hashOK {
 		idx.pending = append(idx.pending, hash)
 		idx.appendAddLocked(hash)
-		idx.dirty.Store(true)
+		idx.markStaleLocked()
 	}
 	idx.updateGaugesLocked()
 }
@@ -469,34 +505,50 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded
 	return keys
 }
 
-// blobServableLocked reports whether the cached blob may be handed out: it is
-// current, or it is younger than the blob interval. The caller holds idx.mu.
-func (idx *Index) blobServableLocked() bool {
-	if idx.cachedBlob == nil {
-		return false
+// markStaleLocked records a change to the key set against every format's
+// cached blob. The caller holds idx.mu for writing.
+func (idx *Index) markStaleLocked() {
+	for f := range idx.served {
+		idx.served[f].stale = true
 	}
-	return !idx.dirty.Load() || time.Since(idx.builtAt) < idx.BlobInterval()
 }
 
-// Blob answers the serialized index and its ETag.
+// blobServableLocked reports whether format f's cached blob may be handed
+// out: it is current, or it is younger than the blob interval. The caller
+// holds idx.mu.
+func (idx *Index) blobServableLocked(f gbciFormat) bool {
+	s := &idx.served[f]
+	if s.blob == nil {
+		return false
+	}
+	return !s.stale || time.Since(s.builtAt) < idx.BlobInterval()
+}
+
+// Blob answers the serialized version 1 index and its ETag.
 func (idx *Index) Blob() ([]byte, string) {
 	blob, etag, _ := idx.BlobGen()
 	return blob, etag
 }
 
-// BlobGen answers the serialized index, its ETag, and the add-log position the
-// blob is complete up to.
+// BlobGen answers the serialized version 1 index, its ETag, and the add-log
+// position the blob is complete up to.
+func (idx *Index) BlobGen() ([]byte, string, indexGen) {
+	return idx.BlobGenFormat(gbciFull)
+}
+
+// BlobGenFormat answers the index serialized in format f, its ETag, and the
+// add-log position the blob is complete up to.
 //
 // Fast path: a servable cached blob is returned under a read lock. Slow path: merge pending into
-// hashes, serialize header + body + trailer, cache the result, clear dirty. Callers arriving
+// hashes, serialize header + body + trailer, cache the result for f. Callers arriving
 // during a serialization wait on the read lock and all receive the blob it produces. A burst of
-// GETs costs a single serialization.
-func (idx *Index) BlobGen() ([]byte, string, indexGen) {
+// GETs costs a single serialization per format.
+func (idx *Index) BlobGenFormat(f gbciFormat) ([]byte, string, indexGen) {
 	idx.mu.RLock()
-	cached, etag, gen, fresh := idx.cachedBlob, idx.cachedETag, idx.cachedGen, idx.blobServableLocked()
+	s, fresh := idx.served[f], idx.blobServableLocked(f)
 	idx.mu.RUnlock()
 	if fresh {
-		return cached, etag, gen
+		return s.blob, s.etag, s.gen
 	}
 
 	idx.mu.Lock()
@@ -504,15 +556,16 @@ func (idx *Index) BlobGen() ([]byte, string, indexGen) {
 
 	// Re-check: another caller may have rebuilt the blob while we were
 	// waiting on the lock.
-	if idx.blobServableLocked() {
-		return idx.cachedBlob, idx.cachedETag, idx.cachedGen
+	if idx.blobServableLocked(f) {
+		s := &idx.served[f]
+		return s.blob, s.etag, s.gen
 	}
 
 	lockedAt := time.Now()
 	pendingCount := len(idx.pending)
-	log.Printf("index: serialize locked (hashes=%d pending=%d)", len(idx.hashes), pendingCount)
+	log.Printf("index: serialize v%d locked (hashes=%d pending=%d)", f.version(), len(idx.hashes), pendingCount)
 	defer func() {
-		log.Printf("index: serialize unlocked after %v (hashes=%d)", time.Since(lockedAt), len(idx.hashes))
+		log.Printf("index: serialize v%d unlocked after %v (hashes=%d)", f.version(), time.Since(lockedAt), len(idx.hashes))
 	}()
 
 	// hashes is sorted and deduplicated already. The pending buffer is small
@@ -522,15 +575,17 @@ func (idx *Index) BlobGen() ([]byte, string, indexGen) {
 		idx.pending = resetPending(idx.pending)
 	}
 
-	blob := marshalGBCI(idx.hashes)
-	idx.cachedBlob = blob
-	idx.cachedETag = `"` + hex.EncodeToString(blob[len(blob)-sha256.Size:]) + `"`
-	// Every hash in the add log is in pending or hashes, so the blob holds them all.
-	idx.cachedGen = indexGen{epoch: idx.addEpoch, seq: uint64(len(idx.added))}
-	idx.builtAt = time.Now()
-	idx.dirty.Store(false)
+	blob := marshalGBCI(idx.hashes, f)
+	idx.served[f] = servedBlob{
+		blob: blob,
+		etag: `"` + hex.EncodeToString(blob[len(blob)-sha256.Size:]) + `"`,
+		// Every hash in the add log is in pending or hashes, so the blob holds them all.
+		gen:     indexGen{epoch: idx.addEpoch, seq: uint64(len(idx.added))},
+		builtAt: time.Now(),
+	}
 	idx.updateGaugesLocked()
-	return idx.cachedBlob, idx.cachedETag, idx.cachedGen
+	s = idx.served[f]
+	return s.blob, s.etag, s.gen
 }
 
 func (idx *Index) rebuild(storage *Storage) {
@@ -607,8 +662,7 @@ func (idx *Index) applyRebuild(b *indexBuild) (int, int) {
 	idx.entries = b.entries
 	idx.hashes = b.hashes
 	// pending and pendingEntries intentionally survive (see doc comment above).
-	idx.cachedBlob = nil
-	idx.cachedETag = ""
+	idx.served = [gbciFormats]servedBlob{}
 	idx.resetAddLogLocked()
 	hashCount := len(idx.hashes) + len(idx.pending)
 	idx.updateGaugesLocked()

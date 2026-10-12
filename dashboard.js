@@ -304,12 +304,10 @@ function drawGauges(stats) {
 
 // The chart is a rate. A counter that drops means the server restarted.
 function drawProjects(stats) {
+	// stats.projects is exact for every name. The Prometheus series fold names past their bound into "other".
 	const totals = {};
-	for (const { labels, value: v } of points(stats, "s3_project_objects_total")) {
-		const { project, kind } = labels;
-		if (!project) continue;
-		const row = (totals[project] ||= { hit: 0, lookahead: 0, put: 0, miss: 0 });
-		if (kind in row) row[kind] += v;
+	for (const [project, row] of Object.entries(stats.projects || {})) {
+		totals[project] = { hit: row.hit, lookahead: row.lookahead, put: row.put, miss: row.miss };
 	}
 
 	drawProjectHitRates(totals);

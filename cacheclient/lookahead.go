@@ -62,6 +62,9 @@ type lookAhead struct {
 	budget int64
 	chunk  int64 // bytes a single worker may hold between
 
+	// serverOff is set when the server says it sends no look-ahead window. Every later seed is then dropped unsent.
+	serverOff atomic.Bool
+
 	Requests AtomicCounter // look-ahead round trips issued
 	Entries  AtomicCounter // entries they brought back
 	Dropped  AtomicCounter // seeds refused: the queue was full, or the budget was spent
@@ -120,6 +123,9 @@ func chunkBudget(budget int64, workers int) int64 {
 	return per
 }
 
+// HeaderPrefetch is "off" on a batch answer from a server that never sends a look-ahead window.
+const HeaderPrefetch = "X-Cache-Prefetch"
+
 // maxLookAheadWorkers caps the pool however large GO_TOOLCHAIN_CACHE_LOOKAHEAD is.
 const maxLookAheadWorkers = 64
 
@@ -158,7 +164,7 @@ func newLookAhead(b *WebBackend) *lookAhead {
 // never blocks: a full queue means the pool is already saturated with work of
 // the same kind, and a build goroutine must never wait on speculation.
 func (la *lookAhead) Seed(keys []string) {
-	if la == nil || len(keys) == 0 {
+	if la == nil || len(keys) == 0 || la.serverOff.Load() {
 		return
 	}
 	fresh := keys[:0:0]
@@ -260,6 +266,14 @@ func (la *lookAhead) expand(seed []string) {
 		return
 	}
 	if resp.StatusCode != 200 {
+		closeBody(resp.Body)
+		b.Pool.Release()
+		return
+	}
+	if resp.Header.Get(HeaderPrefetch) == "off" {
+		if !la.serverOff.Swap(true) {
+			logging.Warnf("cacheprog: look-ahead: the server sends no look-ahead window; GO_TOOLCHAIN_CACHE_LOOKAHEAD has no effect against it, so this process stops asking")
+		}
 		closeBody(resp.Body)
 		b.Pool.Release()
 		return

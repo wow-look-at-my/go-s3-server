@@ -63,6 +63,8 @@ type dashboardStats struct {
 	Server        dashboardServerInfo    `json:"server"`
 	Eviction      dashboardEvictionInfo  `json:"eviction"`
 	Metrics       map[string]metricValue `json:"metrics"`
+	// Projects holds every project's exact totals.
+	Projects map[string]projectRow `json:"projects"`
 }
 
 // dashboard answers the page, its assets, and the stats snapshot.
@@ -163,7 +165,8 @@ func (d *dashboard) snapshot() (*dashboardStats, error) {
 			MaxAge:   d.cfg.Eviction.AgeLimit().String(),
 			Interval: d.cfg.Eviction.Interval.Std().String(),
 		},
-		Metrics: metrics,
+		Metrics:  metrics,
+		Projects: projectTotals.snapshot(),
 	}, nil
 }
 

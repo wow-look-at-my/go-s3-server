@@ -30,6 +30,7 @@ type buildManifest struct {
 	mu      sync.Mutex
 	used    set.Set[string]          // action IDs this process served or stored
 	pending map[string]chan struct{} // action IDs a fetch has on the wire, closed when they land
+	ready   chan struct{}            // closed once the manifest is read and its objects marked
 
 	Waited AtomicCounter // lookups that waited for a fetch already on the wire
 
@@ -38,16 +39,25 @@ type buildManifest struct {
 }
 
 func newBuildManifest() *buildManifest {
-	return &buildManifest{used: set.New[string](), pending: map[string]chan struct{}{}}
+	return &buildManifest{used: set.New[string](), pending: map[string]chan struct{}{}, ready: make(chan struct{})}
 }
+
+// manifestReadWait bounds how long a lookup waits for the manifest itself.
+const manifestReadWait = 2 * time.Second
 
 // AwaitPrefetch waits while the manifest fetch has actionID on the wire. It
 // reports whether it waited, so a caller that did reads its local tier again
 // rather than asking for the same object a second time.
 func (b *WebBackend) AwaitPrefetch(actionID string) bool {
 	m := b.manifest
-	if m == nil {
+	if m == nil || !m.started.Load() {
 		return false
+	}
+	// Until the manifest is read, nothing is marked, so a lookup that ran
+	// now would go on to wait for the whole index instead.
+	select {
+	case <-m.ready:
+	case <-time.After(manifestReadWait):
 	}
 	m.mu.Lock()
 	done, ok := m.pending[actionID]
@@ -117,10 +127,18 @@ func (b *WebBackend) startManifest(module string) {
 
 // fetchManifest reads the manifest and pulls what it names.
 func (b *WebBackend) fetchManifest(id string) {
-	_, data, _, miss := b.Get(id)
-	if miss {
+	ready := sync.OnceFunc(func() { close(b.manifest.ready) })
+	defer ready()
+	h, ok := parseActionHash(id)
+	if !ok {
 		return
 	}
+	// A direct batch read, not Get: Get waits for the index.
+	r := b.getBatch(id, b.key(id), h)
+	if r.miss {
+		return
+	}
+	data := r.data
 	b.keysMu.RLock()
 	authoritative := b.indexAuthoritative
 	b.keysMu.RUnlock()
@@ -154,6 +172,7 @@ func (b *WebBackend) fetchManifest(id string) {
 		}
 		chunks = append(chunks, chunk{keys: keys, clear: b.manifest.markPending(part)})
 	}
+	ready()
 	work := make(chan chunk)
 	var wg sync.WaitGroup
 	for range manifestFetchWidth {

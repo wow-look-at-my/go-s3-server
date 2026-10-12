@@ -41,6 +41,8 @@ func (idx *Index) resetAddLogLocked() {
 	idx.added = nil
 	idx.builtAt = time.Time{}
 	idx.dirty.Store(true)
+	idx.prefixBuiltAt = time.Time{}
+	idx.prefixDirty.Store(true)
 }
 
 // indexGen is a position in the add log.
@@ -52,19 +54,36 @@ type indexGen struct {
 // BlobGenWidth is BlobGen in the form a client asked for: gbciPrefixSize-byte
 // hashes, or the full gbciHashSize.
 func (idx *Index) BlobGenWidth(width int) ([]byte, string, indexGen) {
-	for {
-		blob, etag, gen := idx.BlobGen()
-		if width != gbciPrefixSize {
-			return blob, etag, gen
-		}
-		idx.mu.RLock()
-		prefix, prefixETag, prefixGen := idx.cachedPrefix, idx.cachedPrefixETag, idx.cachedGen
-		idx.mu.RUnlock()
-		// A rebuild between both locks clears the cache, so build it again.
-		if prefix != nil {
-			return prefix, prefixETag, prefixGen
-		}
+	if width != gbciPrefixSize {
+		return idx.BlobGen()
 	}
+	idx.mu.RLock()
+	blob, etag, gen, fresh := idx.cachedPrefix, idx.cachedPrefixETag, idx.cachedPrefixGen, idx.prefixServableLocked()
+	idx.mu.RUnlock()
+	if fresh {
+		return blob, etag, gen
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	if idx.prefixServableLocked() {
+		return idx.cachedPrefix, idx.cachedPrefixETag, idx.cachedPrefixGen
+	}
+	gen = idx.mergePendingLocked()
+	idx.cachedPrefix = marshalGBCIWidth(idx.hashes, gbciPrefixSize)
+	idx.cachedPrefixETag = blobETag(idx.cachedPrefix)
+	idx.cachedPrefixGen = gen
+	idx.prefixBuiltAt = time.Now()
+	idx.prefixDirty.Store(false)
+	idx.updateGaugesLocked()
+	return idx.cachedPrefix, idx.cachedPrefixETag, idx.cachedPrefixGen
+}
+
+// prefixServableLocked is blobServableLocked for the short form. The caller holds idx.mu.
+func (idx *Index) prefixServableLocked() bool {
+	if idx.cachedPrefix == nil {
+		return false
+	}
+	return !idx.prefixDirty.Load() || time.Since(idx.prefixBuiltAt) < idx.BlobInterval()
 }
 
 // Delta is DeltaWidth at the full hash width.

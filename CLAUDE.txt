@@ -2,7 +2,7 @@
 
 Shared Go build cache server for go-toolchain. (Slated to be renamed **go-toolchain-cache**.)
 
-This server is **no longer S3-compatible**. The wire protocol is go-toolchain's native cache protocol. It carries native `X-Cache-Meta-*` metadata headers and native plain-text errors. Custom endpoints replaced the per-object S3 GETs and PUTs. `/_index` serves the GBCI v1 binary key index. `/_batch/get` transfers a tar and prefetches nearby keys.
+This server is **no longer S3-compatible**. The wire protocol is go-toolchain's native cache protocol. It carries native `X-Cache-Meta-*` metadata headers and native plain-text errors. Custom endpoints replaced the per-object S3 GETs and PUTs. `/_index` serves the GBCI binary key index: version 1 by default, version 2 (8-byte hash prefixes) to a client that sends `v=2`. `/_batch/get` transfers a tar and prefetches nearby keys.
 
 `/_batch/put` uploads many objects in one tar. The only S3 remnant is a **deprecated** compatibility shim. It still accepts legacy `X-Amz-Meta-*` request headers and still mirrors them onto GET responses. A client that is not yet upgraded therefore keeps working. Each use is logged once and counted in `s3_deprecated_requests_total`. These names stay until the repository is renamed.
 
@@ -24,7 +24,7 @@ Do NOT use `go build`, `go test`, or any bare `go` commands. Always use `go-tool
 - `docs/eviction.md` — the disk cache is an LRU bounded by size: what "last used" means, the two-walk sweep, and the sweep schedule.
 - `docs/module-index-guard.md` — why a Go module index is refused, how the verdict is reached, and what it costs.
 - `docs/look-ahead.md` — why the blocking path carries only what the build asked for, where the speculative fetching runs instead, and the zstd wire codec.
-- `docs/index-wire-size.md` — what can shrink /_index: why compressing the hashes cannot, and what the approaches that can will cost.
+- `docs/index-wire-size.md` — the /_index wire format. The GBCI frame, version 1 and version 2 and how a client picks one, why 8-byte prefixes are enough. The delta, and why compressing the hashes cannot shrink it.
 
 ## Project layout
 
@@ -80,7 +80,7 @@ Do NOT use `go build`, `go test`, or any bare `go` commands. Always use `go-tool
   Unlike an object with no outputid, it can never be made usable.
 - `deprecation.go` — the backward-compatibility shims for the retired S3 protocol. It defines the native `x-cache-meta-` and legacy `x-amz-meta-` metadata header prefixes. It also defines `noteDeprecatedS3Meta`. That function logs a one-time `DEPRECATION:` warning, because a thousands of the CI run issues of PUTs and per-request logging floods the log. It increments `s3_deprecated_requests_total{feature="amz_meta_header"}` on every legacy request.
 - `modindex.go` and `lz4head.go` — the **module-index guard**. This shared cache must never hold a Go module index. Such an index carries no build id and does not bind to its action key. A mis-keyed one breaks every consumer's build at package load. The guard refuses it on PUT. It evicts it on read, for an indexed cacheprog key, on GET, batch and prefetch. The verdict comes from an lz4 frame-header walk that reads the first literal run instead of decoding a block. That walk costs about 183ns, allocates nothing, and holds for any object size. It falls back to a real decode for any frame shape it cannot fully parse. Depth, invariants and history: `docs/module-index-guard.md`
-- `index.go` — the in-memory key index. It maintains an mtime-sorted list of `indexEntry` for `_batch/get` prefetch. An entry is a `compactKey` plus an mtime, so a million-key index carries no per-key allocation. It also maintains a sorted slice of action-ID hashes. That slice serializes to the GBCI v1 binary blob served at `GET /<bucket>/_index`. A PUT appends to the unsorted `pending` buffer of hashes and the `pendingEntries` buffer of mtimes, under a microsecond-scale mutex.
+- `index.go` — the in-memory key index. It maintains an mtime-sorted list of `indexEntry` for `_batch/get` prefetch. An entry is a `compactKey` plus an mtime, so a million-key index carries no per-key allocation. It also maintains a sorted slice of action-ID hashes. That slice serializes to the GBCI blob served at `GET /<bucket>/_index`: version 1, a whole hash per entry. This happens unless the request carries `v=2`, which selects version 2, the leading several bytes of each hash. Each version has its own cached blob and ETag (`servedBlob`). Depth: `docs/index-wire-size.md`. A PUT appends to the unsorted `pending` buffer of hashes and the `pendingEntries` buffer of mtimes, under a microsecond-scale mutex.
 
   The hash sort, dedupe and serialize wait for the next `Blob()`. They run at most once per blob interval, 15s by default and per index (`SetBlobInterval`). The `index_blob_interval` config field overrides it. A removal expires the blob at once. Inside the interval a GET serves the previous blob and its ETag. A conditional GET then answers 304.
 
@@ -142,7 +142,7 @@ Do NOT use `go build`, `go test`, or any bare `go` commands. Always use `go-tool
 ## Conventions
 
 - CLI parsing uses cobra. The single root command is in `main.go`.
-- Error responses are native plain text. `writeError` writes a `<code>: <message>` body with `Content-Type: text/plain`. It puts the machine-readable code in the `X-Cache-Error-Code` header. The codes are lower case, with underscores: `not_found`, `unknown_bucket`, `access_denied`, `overloaded`, `conflict`, `too_large`, `method_not_allowed`, `invalid_request` and `internal_error`. They are not codes of the S3 XML error. The `/_index` endpoint serves a binary GBCI v1 blob as `application/octet-stream`, with a strong ETag from the hex-encoded SHA-256 trailer. `http.ServeContent` handles a conditional GET.
+- Error responses are native plain text. `writeError` writes a `<code>: <message>` body with `Content-Type: text/plain`. It puts the machine-readable code in the `X-Cache-Error-Code` header. The codes are lower case, with underscores: `not_found`, `unknown_bucket`, `access_denied`, `overloaded`, `conflict`, `too_large`, `method_not_allowed`, `invalid_request` and `internal_error`. They are not codes of the S3 XML error. The `/_index` endpoint serves a binary GBCI blob, version 1 or with `v=2` version 2, as `application/octet-stream`, with a strong ETag from the hex-encoded SHA-256 trailer. `http.ServeContent` handles a conditional GET.
 - Object metadata lives in filesystem extended attributes: xattr on Unix, ADS on Windows.
 - Storage keys are sharded: `prefix/v1aabbccdd` → `prefix/v1/aa/bbccdd`.
 - `write_once` config is an object: `{"action": "allow"|"deny", "notification": "never"|"always"|"content_differs"}`. Defaults: `action=allow`, `notification=never`.

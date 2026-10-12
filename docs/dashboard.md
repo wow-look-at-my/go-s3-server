@@ -66,7 +66,7 @@ The bands come from `<perf-graph>`'s stacked mode, which the page fetches from t
 
 Name orders bands, not by traffic. A band that reorders itself on every poll cannot be followed. Each band's color comes from its own name, so one project is one color on every machine.
 
-The project name arrives on a client header, so `projectLabeller` bounds how many names hold a series of their own. The bound is `maxProjectLabels` in `projectmetrics.go`. A name past it folds into `other` and increments `s3_project_names_folded_total`. Watch `s3_project_names` against that bound. A value near it means the next new project lands in `other`.
+The panel reads the snapshot's `projects` map, not the Prometheus series. That map keeps an exact row for every project name, with no bound. The Prometheus series are bounded, because the project name arrives on a client header and each label value is a series a scraper keeps. `projectLabeller` bounds them at `maxProjectLabels` in `projectmetrics.go`. A name past it folds into `other` and increments `s3_project_names_folded_total`. That fold changes only the scraped metrics, not the panel.
 
 The snapshot reports configuration, not credentials. `TestDashboardStatsCarryNoCredentials` holds that line.
 

@@ -160,6 +160,11 @@ func TestHitAndMissCountForTheSameProject(t *testing.T) {
 	assert.Equal(t, hitsBefore+1, testutil.ToFloat64(projectObjectsTotal.WithLabelValues(asker, objKindHit)), "the hit must count for the requester")
 	assert.Equal(t, missesBefore+1, testutil.ToFloat64(projectObjectsTotal.WithLabelValues(asker, objKindMiss)))
 	assert.Equal(t, writerBefore, testutil.ToFloat64(projectObjectsTotal.WithLabelValues(writer, objKindHit)), "the module that stored the object must not get the hit")
+
+	row := projectTotals.snapshot()[asker]
+	assert.Equal(t, uint64(1), row.Hit, "the dashboard row has the hit")
+	assert.Equal(t, uint64(1), row.Miss, "the dashboard row has the miss")
+	assert.Zero(t, projectTotals.snapshot()[writer].Hit)
 }
 
 func TestRawSizeOfRejectsWhatItCannotTrust(t *testing.T) {

@@ -126,13 +126,16 @@ func chunkBudget(budget int64, workers int) int64 {
 // HeaderPrefetch is "off" on a batch answer from a server that never sends a look-ahead window.
 const HeaderPrefetch = "X-Cache-Prefetch"
 
+// defaultLookAheadWorkers is the pool an unset GO_TOOLCHAIN_CACHE_LOOKAHEAD gets.
+const defaultLookAheadWorkers = 4
+
 // maxLookAheadWorkers caps the pool however large GO_TOOLCHAIN_CACHE_LOOKAHEAD is.
 const maxLookAheadWorkers = 64
 
 // lookAheadDefaults returns the worker count and queue depth. A positive count
 // is capped at maxLookAheadWorkers.
 func lookAheadDefaults() (workers, depth int) {
-	workers = envInt("GO_TOOLCHAIN_CACHE_LOOKAHEAD", 0)
+	workers = envInt("GO_TOOLCHAIN_CACHE_LOOKAHEAD", defaultLookAheadWorkers)
 	if workers > maxLookAheadWorkers {
 		workers = maxLookAheadWorkers
 	}

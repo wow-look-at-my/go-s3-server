@@ -252,8 +252,8 @@ func TestBatchGet_PrefetchOnWindowOnly(t *testing.T) {
 	}
 }
 
-// The config field is off unless the file turns it on.
-func TestConfigPrefetchDefaultsOff(t *testing.T) {
+// Prefetch is on unless the file turns it off.
+func TestConfigPrefetchDefaultsOn(t *testing.T) {
 	dir := t.TempDir()
 	load := func(extra map[string]any) *Config {
 		path := filepath.Join(dir, "config.json")
@@ -266,8 +266,9 @@ func TestConfigPrefetchDefaultsOff(t *testing.T) {
 		require.NoError(t, err)
 		return cfg
 	}
-	assert.False(t, load(nil).Prefetch)
-	assert.True(t, load(map[string]any{"prefetch": true}).Prefetch)
+	assert.True(t, load(nil).PrefetchEnabled(), "absent means on")
+	assert.True(t, load(map[string]any{"prefetch": true}).PrefetchEnabled())
+	assert.False(t, load(map[string]any{"prefetch": false}).PrefetchEnabled(), "an explicit false turns it off")
 }
 
 // indexedKey is a real cacheprog key: the prefix plus a 64-hex action hash.

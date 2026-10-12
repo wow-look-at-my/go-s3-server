@@ -24,9 +24,9 @@ So look-ahead moved off that path.
 
 A hit seeds the pool with the keys that answered, deduplicated. A key that missed says nothing about where to look. A full queue drops the seed. Look-ahead is speculation. A build goroutine must never wait on it.
 
-The pool is off by default. `GO_TOOLCHAIN_CACHE_LOOKAHEAD` sets the worker count. Unset or `0` means no pool. A positive count is capped at 64. The server answers a `prefetch_only` request with an empty window by default. Its `prefetch` config field must be `true` to change that.
+The pool is on by default, with `defaultLookAheadWorkers` workers. `GO_TOOLCHAIN_CACHE_LOOKAHEAD` sets the worker count, and `0` turns the pool off. A positive count is capped at 64. The server sends a window by default too. Its `prefetch` config field set to `false` turns that off. Such a server marks every batch answer `X-Cache-Prefetch: off`.
 
-A pool pointed at a default server therefore fetches nothing.
+The pool stops at the first one.
 
 ## What the pool is worth
 

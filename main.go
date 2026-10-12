@@ -81,7 +81,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Before NewStorage, which builds the index: the startup walk must not build a list this server will not read.
-	SetIndexEntryTracking(cfg.Prefetch)
+	SetIndexEntryTracking(cfg.PrefetchEnabled())
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)
 	if err != nil {

@@ -330,7 +330,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case (r.Method == "GET" || r.Method == "POST") && key == "_batch/get":
 		// POST is the semantically sound method for a body-carrying batch lookup (GET-with-a-body is proxy-hostile).
 		route = "BatchGet"
-		handleBatchGet(rec, r, s.storage, s.logAgg, s.config.Prefetch)
+		handleBatchGet(rec, r, s.storage, s.logAgg, s.config.PrefetchEnabled())
 	case r.Method == "POST" && key == skipReportKey:
 		route = "SkipReport"
 		handleSkipReport(rec, r)

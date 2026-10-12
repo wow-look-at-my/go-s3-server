@@ -11,14 +11,7 @@ import (
 	"github.com/pierrec/lz4/v4"
 )
 
-// A stored body names its own codec in its earliest bytes. The server reads
-// that rather than the client's `compression` metadata, because the bytes
-// cannot disagree with themselves: an object whose metadata was lost, or
-// stamped by a client of another version, is still decoded correctly.
-//
-// The cache holds both codecs and will for a long time. zstd is what the client
-// writes now, because this cache's constraint is bandwidth. lz4 is what it
-// wrote before, and those objects stay readable.
+// A stored body names its own codec in its earliest bytes.
 const (
 	zstdFrameMagic = 0xFD2FB528
 	lz4FrameMagicV = 0x184D2204
@@ -31,7 +24,8 @@ const codecPeekBytes = 4
 var errNoZstdDecoder = errors.New("codec: cannot build a zstd decoder")
 
 // frameCodec names the codec a stored body opens with, or "" when the bytes
-// are too short or match neither -- which is how an uncompressed body reads.
+// are too short. Otherwise, match neither -- which is how an uncompressed
+// body reads.
 func frameCodec(head []byte) string {
 	if len(head) < codecPeekBytes {
 		return ""
@@ -61,11 +55,8 @@ var zstdProbeDecoders = sync.Pool{New: func() any {
 // The codec is "" for a body that opens with neither frame magic. That reader
 // is the bytes as they stand, which is right for a caller matching a magic
 // prefix on a possibly-uncompressed body. It is WRONG for a caller that must
-// have the decompressed bytes, so such a caller checks the codec: hashing a
+// have the decompressed bytes, so such a caller checks the codec. Hashing a
 // body that never decompressed would mint a confident, wrong content address.
-//
-// The peek is non-destructive: whatever it consumed is replayed in front of
-// the rest, so the caller hands over a plain io.Reader and gets a single back.
 func decompressingReader(r io.Reader) (io.Reader, func(), string, error) {
 	br := bufio.NewReaderSize(r, 4096)
 	head, err := br.Peek(codecPeekBytes)
@@ -85,8 +76,7 @@ func decompressingReader(r io.Reader) (io.Reader, func(), string, error) {
 			return nil, func() {}, codec, err
 		}
 		return d.IOReadCloser(), func() {
-			// Reset to nil releases the decoder's buffers before it goes back
-			// to the pool, so an abandoned probe does not park them there.
+			// Reset to nil releases the decoder's buffers before it goes back to the pool.
 			_ = d.Reset(nil)
 			zstdProbeDecoders.Put(d)
 		}, codec, nil

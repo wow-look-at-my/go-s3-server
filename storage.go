@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	ipc "github.com/wow-look-at-my/go-ipc"
 )
 
 var (
@@ -24,60 +26,33 @@ var (
 )
 
 // currentCacheVersion is the on-disk data-dir format version.
-//
-// Bump this whenever prior cache contents should not be trusted.
-//
-// The go-toolchain client now refuses to upload or serve module-index blobs,
-// but that only protects clients that have updated; this purge removes the
-// already-stored poison so EVERY client -- updated or not -- is repaired at
-// the same time (a missing index key is simply recomputed locally).
-//
-// Every entry is a single plain file now, so such an entry is unreadable. A
-// missing key is simply rebuilt.
 const currentCacheVersion = 4
 
 const cacheVersionFile = ".cache_version"
 const lockFileName = ".lock"
 
-// sweepMarkerFile records when the last eviction sweep finished, so a restart
-// does not reset the sweep schedule. See eviction.go.
+// sweepMarkerFile records when the last eviction sweep finished, so a restart does not reset the sweep schedule.
 const sweepMarkerFile = ".last_sweep"
 
-// tempFilePrefix names PutStream's in-progress uploads. Files carrying it are
-// invisible to every walk of the data_dir and are swept at startup.
+// tempFilePrefix names PutStream's in-progress uploads.
 const tempFilePrefix = ".tmp-"
 
-// fsyncThresholdBytes: PutStream fsyncs temp files at or above this size
-// before renaming them into place (see the comment at the call site).
+// fsyncThresholdBytes: PutStream fsyncs temp files at or above this size before renaming them into place.
 const fsyncThresholdBytes = 8 << 20
 
 type Storage struct {
 	dataDir   string
 	writeOnce WriteOnceConfig
-	lockFile  *os.File
+	unlock    func() // releases the data directory's lock
 	Index     *Index // in-memory key index (mtime entries + GBCI hashes); nil if unavailable
 
-	// accessShards tracks the last-access time (unix seconds) of each key so the
-	// eviction sweeper can prune entries by least-recent *use*, not merely by
-	// write time. It is allocated only when eviction is enabled
-	// (EnableAccessTracking); while nil, recordAccess is a no-op and the read hot
-	// path pays nothing. Sharded so the per-GET update never serializes on a
-	// single global lock — the same lock-convoy concern that shaped the index's
-	// hot path. mtime stays the authoritative write time (the prefetch system
-	// keys on it); access time is kept here, separately, so both never interfere.
-	// The map holds only keys read since startup (the working set), not the whole
-	// cache. The type and methods live in eviction.go.
+	// accessShards tracks the last-access time (unix seconds) of each key.
 	accessShards []*accessShard
 
-	// metaCache remembers each key's user metadata against the mtime+size it
-	// was read under, so a warm Stat/Open skips the listxattr + per-attribute
-	// getxattr syscalls. Byte-bounded with LRU eviction; see metacache.go.
+	// metaCache remembers each key's user metadata.
 	metaCache *lruCache[string, metaEntry]
 
-	// cleanKeys memoizes indexed cacheprog keys whose stored body already
-	// passed the read-path module-index probe, so warm keys skip the per-GET
-	// probe. Invalidated on overwrite PUT, DELETE, and eviction. Byte-bounded
-	// with LRU eviction; see cleanmemo.go.
+	// cleanKeys memoizes indexed cacheprog keys whose stored body already passed the read-path module-index probe.
 	cleanKeys *lruCache[cleanKey, struct{}]
 }
 
@@ -102,33 +77,23 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 	}
 
 	lockPath := filepath.Join(dataDir, lockFileName)
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	unlock, err := ipc.TryLockFile(lockPath)
 	if err != nil {
-		return nil, fmt.Errorf("open lock file: %w", err)
-	}
-	if err := lockExclusive(lockFile); err != nil {
-		lockFile.Close()
 		return nil, fmt.Errorf("data directory is locked by another process: %w", err)
 	}
 
 	if err := ensureCacheVersion(dataDir); err != nil {
-		unlockFile(lockFile)
-		lockFile.Close()
+		unlock()
 		return nil, err
 	}
 
-	// Sweep .tmp-* orphans from crashed/killed PutStreams. List skips the
-	// .tmp- prefix, so these files are invisible to listing, eviction, and the
-	// index — without this sweep they leak disk forever. The exclusive flock
-	// above guarantees no other server is writing to this data_dir, and this
-	// process has not started serving yet, so at this point EVERY .tmp- file
-	// is a dead orphan.
+	// Sweep .tmp-* orphans from crashed/killed PutStreams.
 	sweepTempFiles(dataDir)
 
 	s := &Storage{
 		dataDir:   dataDir,
 		writeOnce: writeOnce,
-		lockFile:  lockFile,
+		unlock:    unlock,
 		cleanKeys: newCleanKeyMemo(cacheBudget(cleanMemoBudgetFraction, defaultCleanMemoBytes)),
 		metaCache: newMetaCache(cacheBudget(metaCacheBudgetFraction, defaultMetaCacheBytes)),
 	}
@@ -138,9 +103,9 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 }
 
 func (s *Storage) Close() error {
-	if s.lockFile != nil {
-		unlockFile(s.lockFile)
-		return s.lockFile.Close()
+	if s.unlock != nil {
+		s.unlock()
+		s.unlock = nil
 	}
 	return nil
 }
@@ -191,8 +156,8 @@ func (s *Storage) shardPath(base, key string) string {
 	}
 }
 
-// pathToKey reverses the sharding to reconstruct the original cache key.
-// For hashed keys (under __hashed__/), the original key is read from xattr.
+// pathToKey reverses the sharding to reconstruct the cache key. For hashed
+// keys (under __hashed__/), the key is read from xattr.
 func (s *Storage) pathToKey(path string) string {
 	rel, _ := filepath.Rel(s.dataDir, path)
 	rel = filepath.ToSlash(rel)
@@ -269,9 +234,7 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 	}
 	tmpPath := tmp.Name()
 
-	// Hash the upload on its way to disk. This is the only pass over the bytes,
-	// so every stored object carries a digest of itself for the price of the
-	// copy, whatever its key and whatever metadata the uploader sent.
+	// Hash the upload on its way to disk.
 	sum := sha256.New()
 	n, copyErr := io.Copy(io.MultiWriter(tmp, sum), r)
 	if copyErr != nil {
@@ -288,10 +251,7 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 		return err
 	}
 	// Durability, proportionate to a cache's needs: fsync large bodies before
-	// the rename so a power loss cannot leave a big, mostly-unwritten file
-	// under the final name. Small objects skip the sync — full fsync-per-PUT
-	// would throttle CI bursts, and the client hash-verifies every download,
-	// so a rare torn small object costs a single refused fetch, not correctness.
+	// the rename so a power loss cannot leave a big.
 	if n >= fsyncThresholdBytes {
 		if err := tmp.Sync(); err != nil {
 			tmp.Close()
@@ -329,12 +289,7 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 		}
 	}
 
-	// An uploader that named no digest gets the computed digest recorded for
-	// it, so the stamp covers every object rather than the ones a current
-	// client wrote. The caller's map is copied rather than written through: a
-	// caller that reuses a map across objects would otherwise carry the
-	// previous body's digest into the next PUT, where it reads as a claim
-	// about bytes it never described.
+	// An uploader that named no digest gets the computed digest recorded for it.
 	stored := make(map[string]string, len(meta)+1)
 	maps.Copy(stored, meta)
 	stored[storedDigestMetaKey] = digest
@@ -343,10 +298,8 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 		return err
 	}
 
-	// Audit is best-effort: if the filesystem doesn't support extended
-	// attributes, the request log still captures the same fields, and it's
-	// better to accept the upload than to refuse it over missing forensics.
-	// Log loudly so operators notice if they're losing the on-disk trail.
+	// Audit is best-effort: if the filesystem does not support extended
+	// attributes, the request log still captures the same fields.
 	if audit != nil {
 		audit["content_length"] = strconv.FormatInt(n, 10)
 	}
@@ -365,16 +318,12 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 		os.Remove(tmpPath)
 		return fmt.Errorf("rename: %w", err)
 	}
-	// Move the metadata sidecars (Windows only; xattrs travel with the inode
-	// on unix) to the final path alongside the body. Failing here fails the
-	// PUT: a body without its metadata cannot serve, and the client's retry
-	// overwrites cleanly.
+	// Move the metadata sidecars (Windows only; xattrs travel with the inode on
+	// unix) to the final path alongside the body.
 	if err := finalizeSidecars(tmpPath, path); err != nil {
 		return fmt.Errorf("finalize sidecars: %w", err)
 	}
-	// The body under this key just changed: the next read must re-probe it
-	// rather than trust a stale known-clean verdict for the previous body, and
-	// must not be described by the previous body's metadata.
+	// The body under this key changed: the next read must re-probe it rather than trust a stale known-clean verdict for the body.
 	s.forgetClean(key)
 	s.forgetMeta(key)
 	if s.Index != nil {
@@ -457,13 +406,9 @@ func (s *Storage) Get(key string) (_ []byte, _ *ObjectMeta, err error) {
 	return data, meta, nil
 }
 
-// SetMeta adds or overwrites the given user-metadata keys on the object stored
-// under key, leaving its body and every other xattr (audit included, and the
-// mtime the prefetch system keys on) untouched. It is the in-place repair lever
-// for an object missing required metadata -- specifically the outputid self-heal,
-// which reconstructs the content address from the body and persists it here
-// rather than evicting and forcing a re-upload. Returns ErrNotFound if no object
-// exists for key.
+// SetMeta adds or overwrites the given user-metadata keys on the object
+// stored under key, leaving its body and every other xattr (audit included,
+// and the mtime the prefetch system keys on) untouched.
 func (s *Storage) SetMeta(key string, kv map[string]string) error {
 	path := s.keyToPath(key)
 	if _, err := os.Stat(path); err != nil {
@@ -472,16 +417,16 @@ func (s *Storage) SetMeta(key string, kv map[string]string) error {
 		}
 		return err
 	}
-	// An xattr write does not move the file's mtime, so the cached metadata
-	// cannot be invalidated by the stat comparison -- drop it explicitly.
+	// An xattr write does not move the file's mtime.
 	s.forgetMeta(key)
 	return setMetadata(path, kv)
 }
 
-// Stat returns an object's metadata (size, mtime, user metadata) WITHOUT reading
-// its body. The batch endpoint uses it to build the response manifest, and the
-// GET path uses it where only size/metadata are needed — so a large object's
-// bytes are never pulled into memory just to learn how big it is.
+// Stat returns an object's metadata (size, mtime, user metadata) WITHOUT
+// reading its body. The batch endpoint uses it to build the response
+// manifest. The GET path uses it. This happens where only size/metadata are
+// needed — so a large object's bytes are never pulled into memory to learn
+// how big it is.
 func (s *Storage) Stat(key string) (*ObjectMeta, error) {
 	path := s.keyToPath(key)
 	info, err := os.Stat(path)
@@ -503,7 +448,7 @@ func (s *Storage) Stat(key string) (*ObjectMeta, error) {
 // Open opens an object's body for streaming and returns it with its metadata.
 // The caller MUST Close the returned file. Streaming straight from the open file
 // (instead of ReadFile + Write) is what keeps GET and batch-GET memory flat
-// under load: only an io.Copy-sized buffer is resident, never the whole object.
+// under load. Only an io.Copy-sized buffer is resident, never the whole object.
 // meta.Size comes from the open fd, so it matches the bytes that will be read.
 func (s *Storage) Open(key string) (_ *os.File, _ *ObjectMeta, err error) {
 	start := time.Now()
@@ -571,12 +516,7 @@ func (s *Storage) OpenBody(key string) (_ *os.File, _ int64, err error) {
 }
 
 // openRaw opens an object's body WITHOUT the storage-op metric or the
-// last-access recording that Open performs. It exists for internal peeks —
-// the module-index guard's inspection and the self-heal's private hashing
-// handle — which are not client-visible serves: routing them through Open
-// double-counted the "get" op for every batch-served key and, worse, stamped
-// a fresh last-access time onto prefetch candidates that were never actually
-// sent, inflating their lifetime under LRU eviction.
+// last-access recording that Open performs.
 func (s *Storage) openRaw(key string) (*os.File, error) {
 	f, err := os.Open(s.keyToPath(key))
 	if err != nil {
@@ -590,11 +530,11 @@ func (s *Storage) openRaw(key string) (*os.File, error) {
 
 // Delete removes the object stored under key, returning ErrNotFound if no such
 // object exists. It is the surgical counterpart to the whole-dir cache-version
-// purge: an operator can evict a single poisoned entry -- e.g. a cross-
+// purge. An operator can evict. A single poisoned entry -- e.g. a cross-
 // contaminated build-cache object that hashes to its own outputID yet belongs
-// under a different action key -- without rebuilding the entire cache. The
-// index entry is dropped too, so the server stops advertising a key it no
-// longer stores.
+// under a different action key. Without rebuilding the entire cache. The index
+// entry is dropped too, so the server stops advertising a key it no longer
+// stores.
 func (s *Storage) Delete(key string) (err error) {
 	start := time.Now()
 	defer func() {
@@ -623,9 +563,7 @@ func (s *Storage) Delete(key string) (err error) {
 }
 
 // isReservedFile reports whether a name in the data_dir is server bookkeeping
-// rather than a stored object. Every walk of the data_dir must skip these:
-// listing a single would advertise a phantom key in the index and let
-// eviction delete the server's own state.
+// rather than a stored object.
 func isReservedFile(name string) bool {
 	return name == lockFileName ||
 		name == cacheVersionFile ||
@@ -644,7 +582,7 @@ func isReservedFile(name string) bool {
 // /_index blob in a single request -- and what both remaining callers want is
 // "everything, unordered".
 //
-// Cost is a single directory walk plus a single stat per file, which is
+// Cost is a single directory walk plus a single stat per file. This is
 // inherent to enumerating a directory tree, and now nothing on top of it.
 func (s *Storage) Walk(fn func(ListObject)) (err error) {
 	metricsStart := time.Now()

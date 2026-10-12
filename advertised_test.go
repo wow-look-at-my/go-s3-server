@@ -56,8 +56,7 @@ func TestPutObject_RefusedIndexNotAdvertised(t *testing.T) {
 	resp.Body.Close()
 	require.False(t, bytes.Contains(blob, hashBytes), "a refused PUT must not appear in the /_index blob")
 
-	// A GET of the refused key is a PLAIN not-found — specifically NOT the
-	// advertised-but-unservable divergence signature.
+	// A GET of the refused key is a PLAIN.
 	notFoundBefore := getOutcome("miss_not_found")
 	divergedBefore := getOutcome("miss_advertised_unservable")
 	resp = doRequest(t, ts, "GET", "/testbucket/"+key, nil, nil)
@@ -124,8 +123,7 @@ func TestSelfhealFailure_DeadvertisesKey(t *testing.T) {
 	require.False(t, storage.Index.Contains(hash),
 		"an unrepairable object must be dropped from the index")
 
-	// ... but the body stays on disk (repair-not-evict: forensics + the normal
-	// eviction policy own the file).
+	// ... but the body stays on disk (repair-not-evict: forensics + the normal eviction policy own the file).
 	_, err := storage.Stat(key)
 	require.NoError(t, err, "the unrepairable body must stay on disk")
 
@@ -144,7 +142,7 @@ func TestSelfhealFailure_DeadvertisesKey(t *testing.T) {
 }
 
 // TestIndexRemoveKeys: the batch removal used by the eviction sweeper drops
-// mtime entries, master hashes, and pending hashes in a single pass, and
+// mtime entries, master hashes, and pending hashes in a single pass. It
 // marks the blob dirty so /_index stops advertising the victims immediately.
 func TestIndexRemoveKeys(t *testing.T) {
 	idx := &Index{}

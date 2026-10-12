@@ -13,15 +13,7 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// The provenance headers a client stamps on its requests. They are spelled out
-// here rather than imported from cacheclient, because a server reads them the
-// way it reads Content-Type: as a wire contract that any client version may or
-// may not honor. Importing the client to name them would put the client's whole
-// package in the server's dependency graph, and with it in the server's
-// coverage, for strings.
-//
-// TestProvenanceHeadersMatchTheClient pins them against the client's own
-// constants, so both cannot drift apart in silence.
+// The provenance headers a client stamps on its requests.
 const (
 	headerModule  = "X-Cache-Module"
 	headerKind    = "X-Cache-Kind"
@@ -30,20 +22,12 @@ const (
 )
 
 // The access log has modes.
-//
-// A handler that has something to add (a batch's key counts, a refusal)
-// attaches it to that same line, so a single request never appears again
-// under spellings.
-//
-// normal prints nothing per request. A CI fleet issues thousands of requests
-// a then so a per-request log is unreadable exactly when it is most needed.
 const (
 	logModeNormal  = "normal"
 	logModeVerbose = "verbose"
 )
 
-// maxLoggedProjects bounds the project list on a single line. Past it the line
-// says how many more there were, rather than running to the width of the terminal.
+// maxLoggedProjects bounds the project list on a single line.
 const maxLoggedProjects = 8
 
 // objectEvent is a single object moving through the cache: stored or served,
@@ -51,21 +35,13 @@ const maxLoggedProjects = 8
 type objectEvent struct {
 	put     bool
 	batched bool
-	// wire is the compressed size, the bytes that crossed the network. raw is
-	// the decompressed size the client asked the cache to hold, taken from the
-	// body-size metadata the client sends.
+	// wire is the compressed size, the bytes that crossed the network. raw is the decompressed size the client asked the cache to hold.
 	wire int64
 	raw  int64
-	// rawKnown is false for an object with no body-size metadata. Such an
-	// object counts toward the rates that do not need it, and is reported as
-	// unsized instead of being folded into the compression ratio as if it had
-	// compressed to nothing.
+	// rawKnown is false for an object with no body-size metadata.
 	rawKnown bool
 	project  string
-	// lookAhead marks an object the client fetched before anything asked for
-	// it. another in which most of the traffic is look-ahead is a cache
-	// working ahead of a build, not a build waiting on a cache, and a log that
-	// cannot tell those apart reports both identically.
+	// lookAhead marks an object.
 	lookAhead bool
 }
 
@@ -75,8 +51,7 @@ type secondBucket struct {
 	lookAheadObjects int
 	wireBytes        int64
 	rawBytes         int64
-	// wireSized is the wire bytes of the objects that declared a raw size, so
-	// the compression ratio divides like against like.
+	// wireSized is the wire bytes of the objects that declared a raw size.
 	wireSized int64
 	unsized   int
 	projects  set.Set[string]
@@ -200,11 +175,7 @@ func (b *secondBucket) line() string {
 		fmt.Fprintf(&sb, " ahead=%s", percent(b.lookAheadObjects, objects))
 	}
 
-	// compressed is every byte that crossed the wire. uncompressed and the
-	// ratio cover only the objects whose client declared a body-size, because
-	// nothing else can be compared. When those sets differ, sized=N/total says
-	// so: without it the line reads as uncompressed being SMALLER than
-	// compressed, which no compressor does.
+	// compressed is every byte that crossed the wire. uncompressed and the ratio cover only the objects whose client declared a body-size.
 	fmt.Fprintf(&sb, " compressed=%s/s", byteSize(b.wireBytes))
 	sized := objects - b.unsized
 	if sized > 0 {
@@ -265,14 +236,11 @@ func byteSize(n int64) string {
 }
 
 // requestProvenance is what a client said about itself on the request that
-// moved an object. An object's own metadata says what it IS; these headers say
-// who wanted it, which is the question a log about traffic answers.
+// moved an object.
 type requestProvenance struct {
 	module    string
 	lookAhead bool
-	// build names the a single build this request belongs to. Prefetch
-	// suppression is scoped to it, so a window a build has already been given
-	// stays suppressed for that build and for no other.
+	// build names the a single build this request belongs to.
 	build string
 }
 
@@ -293,9 +261,7 @@ func provenanceOf(r *http.Request) requestProvenance {
 // The raw size comes from the object's own metadata, and the project from
 // the object or, failing that, from the request that moved it.
 func recordObject(agg *logAggregator, prov requestProvenance, meta map[string]string, wire int64, put, batched bool) {
-	// The metrics are recorded before the log, because verbose mode installs
-	// no aggregator and the dashboard's numbers must not depend on which log
-	// mode the server was started in.
+	// The metrics are recorded before the log.
 	noteProjectObject(prov, meta, wire, put)
 	if agg == nil {
 		return
@@ -315,9 +281,7 @@ func recordObject(agg *logAggregator, prov requestProvenance, meta map[string]st
 // projectOf names the project an object belongs to. The object's own module
 // metadata is the answer whenever it is there. Otherwise the import path's
 // earliest segments are the closest thing to a project a package path carries
-// (host, owner, repo). Failing both, the requesting client's own module header
-// answers: a served object may carry no metadata at all, and a build asking for
-// it is still a build belonging to some project.
+// (host, owner, repo).
 func projectOf(meta map[string]string, prov requestProvenance) string {
 	if module := meta["module"]; module != "" {
 		return module

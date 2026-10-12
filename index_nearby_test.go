@@ -29,7 +29,7 @@ func nearbyKeyNum(t *testing.T, key string) int {
 
 // The window's nearest entries come back taken from both sides of the
 // midpoint. This is the ordering prefetch depends on: the objects written
-// closest in time to the ones the build just asked for.
+// closest in time to the ones the build asked for.
 func TestNearbyKeysReturnsNearestFirst(t *testing.T) {
 	idx := nearbyIndex(100)
 	got := idx.NearbyKeys(20, 40, 5, set.Set[string]{}, nil)
@@ -87,7 +87,7 @@ func TestNearbyKeysExcludesTheRequestedKeys(t *testing.T) {
 	require.Equal(t, 29, nearbyKeyNum(t, got[0]), "the nearest key that was not asked for")
 }
 
-// A skipped candidate does not stop the walk: it steps past it, so a client
+// A skipped candidate does not stop the walk. It steps past it, so a client
 // that already holds the nearest keys is still handed new ones.
 func TestNearbyKeysWalksPastSkippedKeys(t *testing.T) {
 	idx := nearbyIndex(100)
@@ -133,7 +133,7 @@ func TestNearbyKeysAllocatesOnlyItsResult(t *testing.T) {
 }
 
 // BenchmarkNearbyKeysWideWindow is the per-request cost of prefetch selection
-// over a window holding far more entries than the limit, which is the shape a
+// over a window holding far more entries than the limit. This is the shape a
 // busy cache has.
 func BenchmarkNearbyKeysWideWindow(b *testing.B) {
 	for _, keys := range []int{10_000, 100_000} {

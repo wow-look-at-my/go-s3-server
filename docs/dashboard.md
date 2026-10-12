@@ -37,7 +37,7 @@ A counter with no labels becomes `{"value": N}`. A labeled one becomes `{"series
 
 The page reports these carefully:
 
-- **Cache size** comes from `s3_cache_bytes`. The server writes that gauge at an eviction sweep and every 15 minutes, not on every PUT. Before the first measurement the page says "not measured". It never says `0 B`.
+- **Cache size** comes from `s3_cache_bytes`. The server writes that gauge at an eviction sweep and every few minutes, not on every PUT. Before the first measurement the page says "not measured". It never says `0 B`.
 - **Rates** are computed in the browser, from one poll against the poll before it. A reload starts them over. A counter that goes backwards means the server restarted, so the page clears the history instead of drawing a negative rate.
 
 ## The BY PROJECT panel
@@ -50,11 +50,11 @@ A look-ahead request (`prefetch_only`) names keys the client has just hit, as an
 
 The bands come from `<perf-graph>`'s stacked mode, which the page fetches from the js-snippets library site at run time. This page can therefore be newer than the component it loaded. When the loaded component has no `pushSeries`, the page says so under the chart. A stacked chart that silently stayed blank reads as "no traffic".
 
-Bands are ordered by name, never by traffic. A band that reorders itself on every poll cannot be followed. Each band's color comes from its own name, so one project is one color on every machine.
+Bands are ordered by name, not by traffic. A band that reorders itself on every poll cannot be followed. Each band's color comes from its own name, so one project is one color on every machine.
 
 The project name arrives on a client header, so `projectLabeller` bounds how many names hold a series of their own. The bound is `maxProjectLabels` in `projectmetrics.go`. A name past it folds into `other` and increments `s3_project_names_folded_total`. Watch `s3_project_names` against that bound. A value near it means the next new project lands in `other`.
 
-The snapshot reports configuration, never credentials. `TestDashboardStatsCarryNoCredentials` holds that line.
+The snapshot reports configuration, not credentials. `TestDashboardStatsCarryNoCredentials` holds that line.
 
 ## Authentication: there is none, and that is the point
 

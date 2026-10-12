@@ -17,8 +17,7 @@ import (
 // the exclusive lock, before serving.
 func TestStartupSweepsTempOrphans(t *testing.T) {
 	dir := t.TempDir()
-	// Stamp the current cache version earliest so NewStorage does not purge
-	// the planted files for a version mismatch.
+	// Stamp the current cache version earliest so NewStorage does not purge the planted files for a version mismatch.
 	require.NoError(t, writeCacheVersion(dir, currentCacheVersion))
 
 	shard := filepath.Join(dir, "go-buildcache", "v1", "ab")
@@ -83,8 +82,7 @@ func TestReadProbeDistinguishesIOError(t *testing.T) {
 }
 
 // TestMetricsServerBusyPortDoesNotExit: a busy metrics port must not take the
-// whole cache down. startMetricsServer now logs and returns (the old code
-// called log.Fatalf, killing the data path over the monitoring path).
+// whole cache down.
 func TestMetricsServerBusyPortDoesNotExit(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)

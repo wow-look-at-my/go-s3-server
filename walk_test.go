@@ -12,13 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Walk is the ground truth both the index rebuild and the eviction sweeper are
-// built on, and until it replaced the old paginated List it had no test at all
-// -- the pagination it carried was dead code nobody called and nobody checked.
+// Walk is the ground truth both the index rebuild and the eviction sweeper
+// are built on, and until.
 
-// collectWalk gathers everything Walk reports. The tests below assert on the
-// whole set; production callers consume objects as the walk finds them, which
-// is the point of Walk taking a callback.
+// collectWalk gathers everything Walk reports.
 func collectWalk(s *Storage) ([]ListObject, error) {
 	var objects []ListObject
 	err := s.Walk(func(o ListObject) { objects = append(objects, o) })
@@ -70,10 +67,7 @@ func TestWalkHasNoCap(t *testing.T) {
 }
 
 func TestWalkSkipsNonObjects(t *testing.T) {
-	// The lock file, the cache-version stamp, in-flight temp files and Windows
-	// metadata sidecars all live in the data dir but are not objects. Listing
-	// a single would advertise a phantom key in /_index and hand the eviction
-	// sweeper a file it must not touch.
+	// The lock file, the cache-version stamp, in-flight temp files.
 	s := newTestStorage(t)
 	require.NoError(t, s.Put("real-object", []byte("body"), nil, nil))
 
@@ -105,13 +99,13 @@ func hex64(c byte) string {
 	return string(b)
 }
 
-// That endpoint is gone: the protocol is no longer S3-shaped, and a client now
+// That endpoint is gone: the protocol is no longer S3-shaped. A client now
 // populates its index from the precomputed /_index blob in a single request.
 //
 // This asserts the shape that makes the cliff structurally impossible. A
 // future listing endpoint is a legitimate thing to want -- but it must not be
-// the old walk-per-page, so it should arrive with this test updated
-// deliberately, not silently.
+// the walk-per-page. It should arrive with this test updated deliberately,
+// not silently.
 func TestNoBucketLevelListingRoute(t *testing.T) {
 	cfg := &Config{Bucket: "testbucket", DisableAuth: true}
 	s := NewServer(cfg, newTestStorage(t))

@@ -64,11 +64,9 @@ func TestDashboardServesPageAndAssets(t *testing.T) {
 }
 
 // dashboard.js reads `checked` off a scratch-toggle, which is a property the
-// element only has a single time the browser has upgraded it. A classic script
-// runs before the deferred module that defines the components, so it read
-// undefined, took "live" for off, and polled exactly a single time. The page
-// then sat on a single snapshot forever. A module script runs after that
-// definition, in document order, which is what keeps the poll loop alive.
+// element only has a single time the browser has upgraded it. A classic
+// script runs before the deferred module that defines the components. It
+// read undefined, took "live" for off, and polled exactly a single time.
 func TestDashboardLoadsItsScriptAsAModule(t *testing.T) {
 	page, err := dashboardAssets.ReadFile("dashboard.html")
 	require.NoError(t, err)

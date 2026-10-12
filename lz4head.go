@@ -6,13 +6,6 @@ import (
 
 // The module-index guard needs the earliest decompressed bytes of a body and
 // nothing more.
-//
-// It is also unnecessary. An lz4 frame's earliest block always begins with a
-// literal run (there is no history for a match to reference yet), and literals
-// are stored verbatim, so the leading decompressed bytes can be read straight
-// out of the frame with no decompression at all: parse the frame header, read
-// the earliest block's token, and the literals follow. That is a handful of
-// byte loads regardless of object size.
 const (
 	lz4FrameMagic  = 0x184D2204
 	lz4UncompMask  = 0x80000000
@@ -23,14 +16,14 @@ const (
 // frame at the start of head, without decompressing anything.
 //
 // It reports ok=false for every shape it does not fully understand -- a
-// truncated head, a non-frame (skippable or legacy) magic, a version it does
+// truncated head, a non-frame (skippable or legacy) magic. A version it does
 // not know, a dictionary frame (whose earliest block CAN match into the
 // dictionary, so its literals are not necessarily the leading bytes), or an
 // empty frame. The caller then falls back to a real decode: this is an
 // optimization, never another source of truth about what a body is.
 //
 // The returned slice may be SHORTER than want when the earliest literal run
-// is: that is a genuine answer about the leading bytes, and a caller
+// is. That is a genuine answer about the leading bytes, and a caller
 // comparing against a magic can still decide "no" from a mismatching prefix.
 func lz4LeadingBytes(head []byte, want int) ([]byte, bool) {
 	p := 0
@@ -108,13 +101,10 @@ func lz4LeadingBytes(head []byte, want int) ([]byte, bool) {
 	return head[p : p+min(avail, want)], true
 }
 
-// lz4HasPrefix reports whether the lz4 frame at the start of head decompresses
-// to something beginning with want, when that can be settled from the frame's
-// earliest literal run alone. decided=false means the caller must decode for real.
-//
-// A literal run SHORTER than want still decides the common case: a compiled Go
-// object starts "!<arch>\n", which diverges from "go index v" within bytes, so
-// the guard answers without decompressing even when the run is tiny.
+// lz4HasPrefix reports whether the lz4 frame at the start of head decompresses to
+// something beginning with want. This happens when that can be settled from the
+// frame's earliest literal run alone. decided=false means the caller must decode
+// for real.
 func lz4HasPrefix(head []byte, want string) (match, decided bool) {
 	lead, ok := lz4LeadingBytes(head, len(want))
 	if !ok {

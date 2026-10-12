@@ -39,7 +39,7 @@ One line per request, and only one.
 
 A handler with something to add attaches it to that same line. The batch endpoints used to print their own summary line as well, so one batch request appeared twice, under a different spelling each time. Anything a handler wants said now rides the request it belongs to.
 
-Use verbose to follow one client, or to see the key counts of a specific batch. A CI fleet issues thousands of requests a second, so leave it off under load. The per-request lines bury the very thing being looked for.
+Use verbose to follow one client, or to see the key counts of a specific batch. A CI fleet issues thousands of requests a second, so leave it off under load. The per-request lines bury the thing being looked for.
 
 ## Why normal is the default
 

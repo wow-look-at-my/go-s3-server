@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Here the server has a single slot, a client starts a download and stops
-// reading it, and a PUT must still be admitted while that download is blocked
+// Here the server has a single slot. A client starts a download and stops
+// reading it. A PUT must still be admitted while that download is blocked
 // mid-body.
 func TestAdmission_BodyTransferHoldsNoSlot(t *testing.T) {
 	if !inOwnProcess(t) {

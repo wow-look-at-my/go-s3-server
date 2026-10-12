@@ -10,9 +10,7 @@ import (
 )
 
 // writeConfigFile marshals cfg into a JSON file called name under dir and
-// returns the path. A config fixture spelled as source text has to carry a
-// temp directory's path, and a quote or a backslash in that path breaks the
-// document, so the fixture is a Go value and encoding/json writes it.
+// returns the path.
 func writeConfigFile(t *testing.T, dir, name string, cfg map[string]any) string {
 	t.Helper()
 	body, err := json.Marshal(cfg)

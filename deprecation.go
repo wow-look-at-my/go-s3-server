@@ -6,27 +6,17 @@ import (
 	"sync"
 )
 
-// This file centralizes the backward-compatibility shims for the old
-// S3-compatible protocol. The cache protocol is no longer S3-compatible: the
-// go-toolchain client now speaks a native protocol (native error bodies and
-// X-Cache-Meta-* metadata headers). The shims below keep not-yet-upgraded
-// clients working, but every use of a deprecated S3 feature is surfaced --
-// logged a single time and counted in the s3_deprecated_requests_total metric
-// -- so the remaining S3 traffic is visible and the shims can be removed a
-// single time it drops to empty (slated for the repository rename to go-toolchain-cache).
+// This file centralizes the backward-compatibility shims for the
+// S3-compatible protocol.
 
 const (
-	// nativeMetaPrefix is the current, non-S3 request/response header prefix
-	// for user object metadata.
+	// nativeMetaPrefix is the current, non-S3 request/response header prefix for user object metadata.
 	nativeMetaPrefix = "x-cache-meta-"
-	// legacyMetaPrefix is the deprecated S3-style metadata header prefix. It is
-	// still accepted on PUT and still emitted on GET so older go-toolchain
-	// clients keep functioning, but its use is flagged as deprecated.
+	// legacyMetaPrefix is the deprecated S3-style metadata header prefix.
 	legacyMetaPrefix = "x-amz-meta-"
 )
 
-// featureAmzMeta labels deprecated requests that carried S3-style
-// X-Amz-Meta-* metadata headers.
+// featureAmzMeta labels deprecated requests that carried S3-style X-Amz-Meta-* metadata headers.
 const featureAmzMeta = "amz_meta_header"
 
 var s3MetaDeprecationOnce sync.Once

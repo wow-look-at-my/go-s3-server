@@ -26,9 +26,11 @@ type httpErrLogger struct {
 	groups    map[httpErrKey]*httpErrGroup
 	batchHTTP map[batchHTTPKey]*batchHTTPGroup
 
-	stop   chan struct{}
-	done   chan struct{}
-	closed bool
+	// recorded holds a single token after a record, which wakes the flush loop.
+	recorded chan struct{}
+	stop     chan struct{}
+	done     chan struct{}
+	closed   bool
 }
 
 type httpErrKey struct {
@@ -67,9 +69,8 @@ func (loggerWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// newHTTPErrLogger returns a logger that writes aggregated
-// summaries to w on every interval tick (and again on Close).
-
+// newHTTPErrLogger returns a logger that writes aggregated summaries to w an
+// interval after a record arrives, and again on Close.
 func newHTTPErrLogger(w io.Writer, interval time.Duration) *httpErrLogger {
 	l := &httpErrLogger{
 		w:         w,
@@ -77,6 +78,7 @@ func newHTTPErrLogger(w io.Writer, interval time.Duration) *httpErrLogger {
 		maxNamed:  httpErrMaxNamed,
 		groups:    map[httpErrKey]*httpErrGroup{},
 		batchHTTP: map[batchHTTPKey]*batchHTTPGroup{},
+		recorded:  make(chan struct{}, 1),
 		stop:      make(chan struct{}),
 		done:      make(chan struct{}),
 	}
@@ -113,6 +115,16 @@ func (l *httpErrLogger) Record(op string, status int, id, body string) {
 	}
 	g.bodyRaw = body
 	l.mu.Unlock()
+	l.wake()
+}
+
+// wake tells the flush loop a record is waiting. A token already there
+// covers this record too.
+func (l *httpErrLogger) wake() {
+	select {
+	case l.recorded <- struct{}{}:
+	default:
+	}
 }
 
 // RecordBatchHTTP coalesces stats from a batch-GET HTTP request
@@ -142,18 +154,26 @@ func (l *httpErrLogger) RecordBatchHTTP(keysRequested, entriesReturned int, dur 
 	g.sumEntries += entriesReturned
 	g.sumDur += dur
 	l.mu.Unlock()
+	l.wake()
 }
 
+// loop parks until a record arrives, holds it for one interval so the records
+// behind it join the same summary, and flushes. An idle logger stays parked.
+// Close flushes whatever the loop has not.
 func (l *httpErrLogger) loop() {
 	defer close(l.done)
-	t := time.NewTicker(l.interval)
-	defer t.Stop()
 	for {
 		select {
-		case <-t.C:
+		case <-l.recorded:
+		case <-l.stop:
+			return
+		}
+		hold := time.NewTimer(l.interval)
+		select {
+		case <-hold.C:
 			l.flush()
 		case <-l.stop:
-			l.flush()
+			hold.Stop()
 			return
 		}
 	}
@@ -186,8 +206,7 @@ func (l *httpErrLogger) flush() {
 	}
 }
 
-// Close stops the ticker and flushes pending groups. Idempotent. It does not
-
+// Close stops the flush loop and flushes pending groups. Idempotent.
 func (l *httpErrLogger) Close() error {
 	l.mu.Lock()
 	if l.closed {

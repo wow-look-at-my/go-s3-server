@@ -10,8 +10,7 @@ import (
 )
 
 // stripStoredMetadata removes an object's stored user metadata behind the
-// metadata cache's back (see the unix counterpart). On Windows that metadata is
-// the .meta JSON sidecar.
+// metadata cache's back (see the unix counterpart).
 func stripStoredMetadata(t *testing.T, path string) {
 	t.Helper()
 	require.NoError(t, os.Remove(path+".meta"))

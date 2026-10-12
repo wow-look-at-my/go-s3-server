@@ -3,7 +3,7 @@
 package main
 
 import (
-	"encoding/json"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
@@ -15,153 +15,243 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// metadataProtectedKeys are load-bearing for the cache protocol.
+// metadataProtectedKeys are load-bearing for the cache protocol. A write never drops them to make room.
 var metadataProtectedKeys = set.Of("outputid", "compression", storedDigestMetaKey)
 
-// setMetadata persists user metadata as xattrs. Protected keys are written
-// earliest (so they claim xattr space) and any error on them fails the call.
-// Instead the oversized optional key is dropped, counted, and logged — the
-// object stores and serves normally, minus a single provenance field.
-func setMetadata(path string, meta map[string]string) error {
-	for k := range metadataProtectedKeys.All() {
-		if v, ok := meta[k]; ok {
-			attrName := "user.s3." + k
-			if err := unix.Setxattr(path, attrName, []byte(v), 0); err != nil {
-				return fmt.Errorf("set xattr %s: %w", attrName, err)
+// objAttr holds all of an object's metadata and audit fields.
+const objAttr = "user.s3.obj"
+
+// objAttrVersion is the first byte of the objAttr value.
+const objAttrVersion = 1
+
+// objAttrs is the decoded objAttr value.
+type objAttrs struct {
+	meta  map[string]string
+	audit map[string]string
+}
+
+func appendKV(buf []byte, kv map[string]string) []byte {
+	keys := make([]string, 0, len(kv))
+	for k := range kv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		buf = binary.AppendUvarint(buf, uint64(len(k)))
+		buf = append(buf, k...)
+		buf = binary.AppendUvarint(buf, uint64(len(kv[k])))
+		buf = append(buf, kv[k]...)
+	}
+	return buf
+}
+
+// encodeObjAttrs writes the version, both pair counts, then each pair as a
+// uvarint-length key and a uvarint-length value.
+func encodeObjAttrs(a objAttrs) []byte {
+	buf := make([]byte, 0, 256)
+	buf = append(buf, objAttrVersion)
+	buf = binary.AppendUvarint(buf, uint64(len(a.meta)))
+	buf = binary.AppendUvarint(buf, uint64(len(a.audit)))
+	buf = appendKV(buf, a.meta)
+	return appendKV(buf, a.audit)
+}
+
+var errObjAttrCorrupt = errors.New("object attribute does not decode")
+
+func readUvarintString(buf []byte) (string, []byte, error) {
+	size, width := binary.Uvarint(buf)
+	if width <= 0 || uint64(len(buf)-width) < size {
+		return "", nil, errObjAttrCorrupt
+	}
+	end := width + int(size)
+	return string(buf[width:end]), buf[end:], nil
+}
+
+func decodePairs(buf []byte, count uint64) (map[string]string, []byte, error) {
+	out := make(map[string]string, count)
+	for range count {
+		key, rest, err := readUvarintString(buf)
+		if err != nil {
+			return nil, nil, err
+		}
+		val, rest, err := readUvarintString(rest)
+		if err != nil {
+			return nil, nil, err
+		}
+		out[key] = val
+		buf = rest
+	}
+	return out, buf, nil
+}
+
+func decodeObjAttrs(buf []byte) (objAttrs, error) {
+	if len(buf) == 0 || buf[0] != objAttrVersion {
+		return objAttrs{}, errObjAttrCorrupt
+	}
+	buf = buf[1:]
+	nMeta, width := binary.Uvarint(buf)
+	if width <= 0 {
+		return objAttrs{}, errObjAttrCorrupt
+	}
+	buf = buf[width:]
+	nAudit, width := binary.Uvarint(buf)
+	if width <= 0 {
+		return objAttrs{}, errObjAttrCorrupt
+	}
+	buf = buf[width:]
+	// Each pair takes a couple of bytes or more, which bounds a corrupt count.
+	if nMeta > uint64(len(buf)) || nAudit > uint64(len(buf)) || (nMeta+nAudit)*2 > uint64(len(buf)) {
+		return objAttrs{}, errObjAttrCorrupt
+	}
+	meta, buf, err := decodePairs(buf, nMeta)
+	if err != nil {
+		return objAttrs{}, err
+	}
+	audit, buf, err := decodePairs(buf, nAudit)
+	if err != nil {
+		return objAttrs{}, err
+	}
+	if len(buf) != 0 {
+		return objAttrs{}, errObjAttrCorrupt
+	}
+	return objAttrs{meta: meta, audit: audit}, nil
+}
+
+func isNoSpace(err error) bool {
+	return errors.Is(err, unix.E2BIG) || errors.Is(err, unix.ENOSPC) || errors.Is(err, unix.EDQUOT)
+}
+
+func wrapObjErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("set xattr %s: %w", objAttr, err)
+}
+
+// writeObjAttrs stores attrs with setter. When the value does not fit, it
+// drops the audit fields first, then the longest optional metadata value, one
+// at a time. It never drops a protected key. Each drop is counted and logged.
+func writeObjAttrs(where string, attrs objAttrs, setter func([]byte) error) error {
+	err := setter(encodeObjAttrs(attrs))
+	if !isNoSpace(err) {
+		return wrapObjErr(err)
+	}
+	var dropped []string
+	if len(attrs.audit) > 0 {
+		for key := range attrs.audit {
+			dropped = append(dropped, "audit."+key)
+		}
+		attrs.audit = nil
+		err = setter(encodeObjAttrs(attrs))
+	}
+	meta := make(map[string]string, len(attrs.meta))
+	for key, val := range attrs.meta {
+		meta[key] = val
+	}
+	attrs.meta = meta
+	for isNoSpace(err) {
+		longest := ""
+		for key, val := range meta {
+			if !metadataProtectedKeys.Contains(key) && (longest == "" || len(val) > len(meta[longest])) {
+				longest = key
 			}
 		}
-	}
-
-	optional := make([]string, 0, len(meta))
-	for k := range meta {
-		if !metadataProtectedKeys.Contains(k) {
-			optional = append(optional, k)
+		if longest == "" {
+			break
 		}
-	}
-	if len(optional) == 0 {
-		return nil
-	}
-	// The optional keys go in a single attribute: on ZFS with xattr=on every attribute is a file of its own.
-	packed := make(map[string]string, len(optional))
-	for _, k := range optional {
-		packed[k] = meta[k]
-	}
-	if err := setPackedXattr(path, packedMetaAttr, packed); err == nil {
-		return nil
-	} else if !errors.Is(err, unix.E2BIG) && !errors.Is(err, unix.ENOSPC) && !errors.Is(err, unix.EDQUOT) {
-		return fmt.Errorf("set xattr %s: %w", packedMetaAttr, err)
-	}
-	// Too large for one attribute: fall back to a key each, which drops the keys that do not fit instead of all of them.
-	sort.Strings(optional) // deterministic write order under space pressure
-
-	var dropped []string
-	for _, k := range optional {
-		attrName := "user.s3." + k
-		err := unix.Setxattr(path, attrName, []byte(meta[k]), 0)
-		if err == nil {
-			continue
-		}
-		if errors.Is(err, unix.E2BIG) || errors.Is(err, unix.ENOSPC) || errors.Is(err, unix.EDQUOT) {
-			dropped = append(dropped, k)
-			continue
-		}
-		return fmt.Errorf("set xattr %s: %w", attrName, err)
+		delete(meta, longest)
+		dropped = append(dropped, longest)
+		err = setter(encodeObjAttrs(attrs))
 	}
 	if len(dropped) > 0 {
 		metadataXattrsDroppedTotal.Add(float64(len(dropped)))
-		log.Printf("metadata: dropped oversized xattr(s) %v for %s (xattr space exhausted; object stored without them)", dropped, path)
+		log.Printf("metadata: dropped oversized field(s) %v for %s (xattr space exhausted; object stored without them)", dropped, where)
 	}
-	return nil
+	return wrapObjErr(err)
 }
 
-// setMetadataFd writes user-metadata xattrs through an open file descriptor
-// rather than a path.
-func setMetadataFd(f *os.File, meta map[string]string) error {
-	for k, v := range meta {
-		attrName := "user.s3." + k
-		if err := unix.Fsetxattr(int(f.Fd()), attrName, []byte(v), 0); err != nil {
-			return fmt.Errorf("fset xattr %s: %w", attrName, err)
+func pathSetter(path string) func([]byte) error {
+	return func(val []byte) error { return unix.Setxattr(path, objAttr, val, 0) }
+}
+
+func fdSetter(f *os.File) func([]byte) error {
+	return func(val []byte) error { return unix.Fsetxattr(int(f.Fd()), objAttr, val, 0) }
+}
+
+func emptyObjAttrs() objAttrs {
+	return objAttrs{meta: map[string]string{}, audit: map[string]string{}}
+}
+
+// readObjAttrs decodes the value getter returns. An absent or corrupt value
+// reads as empty maps. The read logs a corrupt value.
+func readObjAttrs(where string, getter func([]byte) (int, error)) objAttrs {
+	var stack [xattrValueBufSize]byte
+	buf := stack[:]
+	size, err := getter(buf)
+	if errors.Is(err, unix.ERANGE) {
+		size, err = getter(nil)
+		if err == nil {
+			buf = make([]byte, size)
+			size, err = getter(buf)
 		}
 	}
-	return nil
+	if err != nil {
+		return emptyObjAttrs()
+	}
+	attrs, err := decodeObjAttrs(buf[:size])
+	if err != nil {
+		log.Printf("metadata: %s on %s: %v", objAttr, where, err)
+		return emptyObjAttrs()
+	}
+	return attrs
 }
 
-// getMetadataValueFd reads a single user-metadata value through an open
-// file descriptor ("" if absent or unreadable). Fd-based for the same
-// reason as setMetadataFd: it inspects the exact inode the caller holds.
+func readObjAttrsPath(path string) objAttrs {
+	return readObjAttrs(path, func(buf []byte) (int, error) { return unix.Getxattr(path, objAttr, buf) })
+}
+
+func readObjAttrsFd(f *os.File) objAttrs {
+	return readObjAttrs(f.Name(), func(buf []byte) (int, error) { return unix.Fgetxattr(int(f.Fd()), objAttr, buf) })
+}
+
+// setObjectAttrs writes a new object's metadata and audit fields in one
+// setxattr. It replaces what the file held.
+func setObjectAttrs(path string, meta, audit map[string]string) error {
+	return writeObjAttrs(path, objAttrs{meta: meta, audit: audit}, pathSetter(path))
+}
+
+// setMetadata merges meta into the object's stored metadata.
+func setMetadata(path string, meta map[string]string) error {
+	attrs := readObjAttrsPath(path)
+	for key, val := range meta {
+		attrs.meta[key] = val
+	}
+	return writeObjAttrs(path, attrs, pathSetter(path))
+}
+
+// setMetadataFd merges meta into the stored metadata of the inode f holds.
+func setMetadataFd(f *os.File, meta map[string]string) error {
+	attrs := readObjAttrsFd(f)
+	for key, val := range meta {
+		attrs.meta[key] = val
+	}
+	return writeObjAttrs(f.Name(), attrs, fdSetter(f))
+}
+
+// getMetadataValueFd reads one metadata value from the inode f holds ("" if
+// absent or unreadable).
 func getMetadataValueFd(f *os.File, key string) string {
-	attrName := "user.s3." + key
-	sz, err := unix.Fgetxattr(int(f.Fd()), attrName, nil)
-	if err != nil || sz == 0 {
-		return ""
-	}
-	buf := make([]byte, sz)
-	n, err := unix.Fgetxattr(int(f.Fd()), attrName, buf)
-	if err != nil {
-		return ""
-	}
-	return string(buf[:n])
-}
-
-// metaAttrPrefix is the xattr namespace user metadata lives in.
-const metaAttrPrefix = "user.s3."
-
-// packedMetaAttr and packedAuditAttr each hold many keys as a single JSON
-// object.
-const (
-	packedMetaAttr  = metaAttrPrefix + "packed"
-	packedAuditAttr = auditAttrPrefix + "packed"
-)
-
-func setPackedXattr(path, name string, kv map[string]string) error {
-	data, err := json.Marshal(kv)
-	if err != nil {
-		return err
-	}
-	return unix.Setxattr(path, name, data, 0)
-}
-
-// unpackXattr adds the keys a packed value holds to into. A value that does
-// not decode is logged and skipped: the per-key attributes still read.
-func unpackXattr(path, name string, val []byte, into map[string]string) {
-	var kv map[string]string
-	if err := json.Unmarshal(val, &kv); err != nil {
-		log.Printf("metadata: %s on %s does not decode: %v", name, path, err)
-		return
-	}
-	for k, v := range kv {
-		into[k] = v
-	}
-}
-
-func isUserMetaAttr(name string) bool {
-	return strings.HasPrefix(name, metaAttrPrefix) && !strings.HasPrefix(name, auditAttrPrefix)
+	return readObjAttrsFd(f).meta[key]
 }
 
 func getMetadata(path string, meta *ObjectMeta) {
-	attrs, err := listXattrs(path)
-	if err != nil {
-		return
-	}
-	var buf [xattrValueBufSize]byte
-	for _, attr := range attrs {
-		if !isUserMetaAttr(attr) {
-			continue
-		}
-		val, err := getXattrBuf(path, attr, buf[:])
-		if err != nil {
-			continue
-		}
-		if attr == packedMetaAttr {
-			unpackXattr(path, attr, val, meta.Metadata)
-			continue
-		}
-		meta.Metadata[strings.TrimPrefix(attr, metaAttrPrefix)] = string(val)
+	for key, val := range readObjAttrsPath(path).meta {
+		meta.Metadata[key] = val
 	}
 }
 
 const (
-	xattrValueBufSize = 512
+	xattrValueBufSize = 1024
 	xattrNameBufSize  = 1024
 )
 
@@ -192,36 +282,17 @@ func listXattrs(path string) ([]string, error) {
 	return attrs, nil
 }
 
-// getXattrBuf reads a single attribute into buf when it fits, falling back to a
-// probe-then-read for an oversized value. The returned slice aliases buf on the
-// fast path, so callers must copy anything they keep.
-func getXattrBuf(path, name string, buf []byte) ([]byte, error) {
-	n, err := unix.Getxattr(path, name, buf)
-	if err == nil {
-		return buf[:n], nil
-	}
-	if !errors.Is(err, unix.ERANGE) {
-		return nil, err
-	}
-	sz, err := unix.Getxattr(path, name, nil)
-	if err != nil {
-		return nil, err
-	}
-	big := make([]byte, sz)
-	n, err = unix.Getxattr(path, name, big)
-	if err != nil {
-		return nil, err
-	}
-	return big[:n], nil
-}
-
 func getXattr(path, name string) ([]byte, error) {
-	var buf [xattrValueBufSize]byte
-	val, err := getXattrBuf(path, name, buf[:])
+	size, err := unix.Getxattr(path, name, nil)
 	if err != nil {
 		return nil, err
 	}
-	return append([]byte(nil), val...), nil
+	buf := make([]byte, size)
+	size, err = unix.Getxattr(path, name, buf)
+	if err != nil {
+		return nil, err
+	}
+	return buf[:size], nil
 }
 
 // Sidecar hooks: metadata lives in xattrs on unix, so there are no companion files to move, remove.
@@ -232,7 +303,8 @@ func removeSidecars(path string) {}
 
 func isSidecarName(name string) bool { return false }
 
-const originalKeyAttr = "user.s3.originalkey"
+// originalKeyAttr is outside the "user.s3." namespace: it is not an object field.
+const originalKeyAttr = "user.s3originalkey"
 
 func setOriginalKey(path, key string) error {
 	if err := unix.Setxattr(path, originalKeyAttr, []byte(key), 0); err != nil {
@@ -249,38 +321,19 @@ func getOriginalKey(path string) (string, error) {
 	return string(val), nil
 }
 
-// Server-managed audit attributes are stored under a distinct prefix so that user-supplied S3 metadata.
-const auditAttrPrefix = "user.s3audit."
-
+// setAudit merges audit into the object's stored audit fields. Audit fields
+// are never served as metadata.
 func setAudit(path string, audit map[string]string) error {
 	if len(audit) == 0 {
 		return nil
 	}
-	if err := setPackedXattr(path, packedAuditAttr, audit); err != nil {
-		return fmt.Errorf("set xattr %s: %w", packedAuditAttr, err)
+	attrs := readObjAttrsPath(path)
+	for key, val := range audit {
+		attrs.audit[key] = val
 	}
-	return nil
+	return writeObjAttrs(path, attrs, pathSetter(path))
 }
 
 func getAudit(path string) map[string]string {
-	attrs, err := listXattrs(path)
-	if err != nil {
-		return nil
-	}
-	out := make(map[string]string)
-	for _, attr := range attrs {
-		if !strings.HasPrefix(attr, auditAttrPrefix) {
-			continue
-		}
-		val, err := getXattr(path, attr)
-		if err != nil {
-			continue
-		}
-		if attr == packedAuditAttr {
-			unpackXattr(path, attr, val, out)
-			continue
-		}
-		out[strings.TrimPrefix(attr, auditAttrPrefix)] = string(val)
-	}
-	return out
+	return readObjAttrsPath(path).audit
 }

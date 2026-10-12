@@ -13,10 +13,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// A put writes the protected keys one attribute each and every other key in
-// a single packed attribute. A store costs a few xattr writes rather than
-// one per key. Every key reads back.
-func TestPutPacksOptionalMetadata(t *testing.T) {
+// A put writes every metadata and audit field in one attribute. Every key
+// reads back, and no audit field reads as metadata.
+func TestPutWritesOneAttribute(t *testing.T) {
 	_, storage := testSetupWithStorage(t)
 	key := "go-buildcache/v1" + strings.Repeat("c", 64)
 	meta := map[string]string{
@@ -30,32 +29,41 @@ func TestPutPacksOptionalMetadata(t *testing.T) {
 	path := storage.keyToPath(key)
 	attrs, err := listXattrs(path)
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{
-		"user.s3.outputid", "user.s3.compression", "user.s3." + storedDigestMetaKey,
-		packedMetaAttr, packedAuditAttr,
-	}, attrs)
+	assert.Equal(t, []string{objAttr}, attrs)
 
 	got := &ObjectMeta{Metadata: map[string]string{}}
 	getMetadata(path, got)
-	for k, v := range meta {
-		assert.Equal(t, v, got.Metadata[k], k)
+	for key, val := range meta {
+		assert.Equal(t, val, got.Metadata[key], key)
 	}
 	assert.NotEmpty(t, got.Metadata[storedDigestMetaKey])
+	assert.NotContains(t, got.Metadata, "uploader")
 	assert.Equal(t, "someone", getAudit(path)["uploader"])
-	assert.NotContains(t, got.Metadata, "packed", "the packed attribute is a container, not a key")
+	assert.Equal(t, "4", getAudit(path)["content_length"])
 }
 
-// An object stored before packing keeps a key per attribute, and still reads.
-func TestPerKeyMetadataStillReads(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "legacy")
+// A metadata merge keeps the fields it does not name, the audit fields too.
+func TestSetMetadataMerges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "obj")
 	require.NoError(t, os.WriteFile(path, []byte("body"), 0o644))
-	for k, v := range map[string]string{"outputid": "out", "pkg": "example.com/p"} {
-		require.NoError(t, unix.Setxattr(path, metaAttrPrefix+k, []byte(v), 0))
-	}
-	require.NoError(t, unix.Setxattr(path, auditAttrPrefix+"uploader", []byte("old"), 0))
+	require.NoError(t, setObjectAttrs(path, map[string]string{"outputid": "a", "pkg": "p"}, map[string]string{"uploader": "u"}))
+	require.NoError(t, setMetadata(path, map[string]string{"outputid": "b"}))
 
 	got := &ObjectMeta{Metadata: map[string]string{}}
 	getMetadata(path, got)
-	assert.Equal(t, map[string]string{"outputid": "out", "pkg": "example.com/p"}, got.Metadata)
-	assert.Equal(t, "old", getAudit(path)["uploader"])
+	assert.Equal(t, map[string]string{"outputid": "b", "pkg": "p"}, got.Metadata)
+	assert.Equal(t, map[string]string{"uploader": "u"}, getAudit(path))
+}
+
+// A value that does not decode reads as no fields, and never panics.
+func TestCorruptObjAttrReadsEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "obj")
+	require.NoError(t, os.WriteFile(path, []byte("body"), 0o644))
+	good := encodeObjAttrs(objAttrs{meta: map[string]string{"outputid": "abc"}})
+	for _, bad := range [][]byte{{}, {9}, good[:len(good)-1], append(good, 0), {objAttrVersion, 0xff, 0xff, 0xff, 0xff, 0x0f, 0}} {
+		require.NoError(t, unix.Setxattr(path, objAttr, bad, 0))
+		got := &ObjectMeta{Metadata: map[string]string{}}
+		getMetadata(path, got)
+		assert.Empty(t, got.Metadata)
+	}
 }

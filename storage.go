@@ -292,18 +292,13 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 	stored := make(map[string]string, len(meta)+1)
 	maps.Copy(stored, meta)
 	stored[storedDigestMetaKey] = digest
-	if err := setMetadata(tmpPath, stored); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-
-	// Audit is best-effort: if the filesystem does not support extended
-	// attributes, the request log still captures the same fields.
 	if audit != nil {
 		audit["content_length"] = strconv.FormatInt(n, 10)
 	}
-	if err := setAudit(tmpPath, audit); err != nil {
-		log.Printf("audit: failed to persist xattrs for key %q (request log still has the data): %v", key, err)
+	// One write holds the metadata and the audit fields together.
+	if err := setObjectAttrs(tmpPath, stored, audit); err != nil {
+		os.Remove(tmpPath)
+		return err
 	}
 
 	if hashed {

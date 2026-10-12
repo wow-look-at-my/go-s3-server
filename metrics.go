@@ -50,6 +50,17 @@ var (
 		Help: "Requests currently holding an admission-control slot (bounded by max_concurrent_requests).",
 	})
 
+	httpQueuedRequests = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "cache_http_queued_requests",
+		Help: "Requests waiting for an admission-control slot.",
+	})
+
+	httpAdmissionWait = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "cache_http_admission_wait_seconds",
+		Help:    "Time a request waited for an admission-control slot, for requests that found every slot busy.",
+		Buckets: []float64{0.001, 0.005, 0.025, 0.1, 0.5, 1, 2.5, 5, 10},
+	})
+
 	// A nonzero, rising value is the direct signal that the server is saturated
 	// and load should be reduced or capacity added — the observable
 	// backpressure metric.

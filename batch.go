@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -176,24 +177,34 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 		}
 	}
 
+	// Open every body and check it against its stored digest before anything is written. That is the request's work.
+	opened := openVerifiedEntries(storage, entries)
+	defer func() {
+		for _, o := range opened {
+			if o.f != nil {
+				o.f.Close()
+			}
+		}
+	}()
+
 	// Build manifest from metadata only — no body bytes are held here.
 	manifest := batchGetManifest{}
-	for _, e := range entries {
-		manifest.Entries = append(manifest.Entries, batchGetManifestEntry{
-			Key:      e.key,
-			Size:     e.meta.Size,
-			Metadata: e.meta.Metadata,
-			Prefetch: e.prefetch,
-		})
-	}
-
-	// Count stats for logging.
 	var nPrefetch int
-	for _, e := range entries {
-		if e.prefetch {
+	for _, o := range opened {
+		manifest.Entries = append(manifest.Entries, batchGetManifestEntry{
+			Key:      o.key,
+			Size:     o.size,
+			Metadata: o.meta.Metadata,
+			Prefetch: o.prefetch,
+		})
+		if o.prefetch {
 			nPrefetch++
 		}
 	}
+	manifestData, _ := json.Marshal(manifest)
+
+	// The rest is wire time, which a slow runner stretches to minutes.
+	releaseSlot(r)
 
 	// Write tar response.
 	w.Header().Set("Content-Type", "application/x-tar")
@@ -203,7 +214,6 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 	defer tw.Close()
 
 	// Manifest earliest.
-	manifestData, _ := json.Marshal(manifest)
 	if err := writeTarEntry(tw, "manifest.json", int64(len(manifestData)), bytes.NewReader(manifestData)); err != nil {
 		log.Printf("batch get: write manifest: %v", err)
 		return
@@ -211,43 +221,26 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 
 	// Only a single body is in flight at a time (an io.Copy-sized buffer).
 	var streamed int
-	for _, e := range entries {
-		// The size still comes from the open fd.
-		f, size, err := storage.OpenBody(e.key)
-		if err != nil {
-			// Vanished between stat and stream (e.g. operator eviction).
-			continue
-		}
-		// Same check the single-object GET makes: the digest recorded with the
-		// body decides whether these bytes are the ones that were stored.
-		if ok, verifyErr := verifyStoredDigest(f, e.meta.Metadata); verifyErr != nil || !ok {
-			f.Close()
-			if verifyErr == nil {
-				storedDigestMismatchTotal.WithLabelValues("batch_get").Inc()
-				log.Printf("stored digest: %q no longer hashes to the digest stored with it; evicting", e.key)
-				if delErr := storage.Delete(e.key); delErr != nil && !errors.Is(delErr, ErrNotFound) {
-					log.Printf("stored digest: evicting %q: %v", e.key, delErr)
-				}
-			}
-			continue
-		}
-		err = writeTarEntry(tw, "data/"+e.key, size, f)
-		f.Close()
+	for i := range opened {
+		o := &opened[i]
+		err := writeTarEntry(tw, "data/"+o.key, o.size, o.f)
+		o.f.Close()
+		o.f = nil
 		if err != nil {
 			// A write error here is almost always the client going away mid-stream.
-			log.Printf("batch get: stream %s: %v", e.key, err)
+			log.Printf("batch get: stream %s: %v", o.key, err)
 			return
 		}
 		streamed++
 		// Counted where the bytes leave.
-		recordObject(agg, prov, e.meta.Metadata, size, false, true)
+		recordObject(agg, prov, o.meta.Metadata, o.size, false, true)
 	}
 
 	requested, anchors := len(req.Keys), 0
 	if anchorsOnly {
 		requested, anchors = 0, len(req.Keys)
 	}
-	found := len(entries) - nPrefetch
+	found := len(opened) - nPrefetch
 	batchRequestsTotal.Inc()
 	batchKeysTotal.WithLabelValues("requested").Add(float64(requested))
 	batchKeysTotal.WithLabelValues("found").Add(float64(found))
@@ -443,6 +436,43 @@ func writeTarEntry(tw *tar.Writer, name string, size int64, r io.Reader) error {
 		return io.ErrUnexpectedEOF
 	}
 	return err
+}
+
+// openedEntry is a batch member whose body is open and matches its stored digest.
+type openedEntry struct {
+	batchEntry
+	f    *os.File
+	size int64
+}
+
+// openVerifiedEntries opens each entry's body and checks it against the digest
+// recorded with it, the same check the single-object GET makes. A body that
+// vanished since its stat is left out. A body that no longer matches is left
+// out and evicted, so the client reads it as a miss and the next upload
+// replaces it. The caller owns the returned files.
+func openVerifiedEntries(storage *Storage, entries []batchEntry) []openedEntry {
+	opened := make([]openedEntry, 0, len(entries))
+	for _, e := range entries {
+		f, size, err := storage.OpenBody(e.key)
+		if err != nil {
+			continue
+		}
+		ok, verifyErr := verifyStoredDigest(f, e.meta.Metadata)
+		if verifyErr == nil && ok {
+			opened = append(opened, openedEntry{batchEntry: e, f: f, size: size})
+			continue
+		}
+		f.Close()
+		if verifyErr != nil {
+			continue
+		}
+		storedDigestMismatchTotal.WithLabelValues("batch_get").Inc()
+		log.Printf("stored digest: %q no longer hashes to the digest stored with it; evicting", e.key)
+		if delErr := storage.Delete(e.key); delErr != nil && !errors.Is(delErr, ErrNotFound) {
+			log.Printf("stored digest: evicting %q: %v", e.key, delErr)
+		}
+	}
+	return opened
 }
 
 // buildPrefetchEntries stats the given prefetch keys and applies the same

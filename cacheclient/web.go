@@ -205,6 +205,12 @@ type WebBackend struct {
 	// SkippedNotInIndex counts clean misses skipped because the authoritative index omits the key.
 	SkippedNotInIndex AtomicCounter
 
+	// SkippedKnownMiss counts clean misses skipped because the server already said this run that the key is absent.
+	SkippedKnownMiss AtomicCounter
+
+	// skips sends the skip counters to the server, so its hit rate counts the misses it never saw.
+	skips skipReporter
+
 	// Reclaimed404 counts stale index claims dropped after the server reported the key absent.
 	Reclaimed404 AtomicCounter
 
@@ -384,6 +390,7 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	b.putBatchStop = make(chan struct{})
 	b.putBatchDone = make(chan struct{})
 	go b.batchPutCoalescer()
+	b.startSkipReporter()
 	b.prep = newPrepPool(b)
 	b.lookAhead = newLookAhead(b)
 	// The same knob bounds both speculative paths, since both hold bodies the
@@ -444,6 +451,7 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 	alreadyMissed := b.knownMiss.Contains(h)
 	b.missesMu.RUnlock()
 	if alreadyMissed {
+		b.SkippedKnownMiss.Increment()
 		return "", nil, time.Time{}, true
 	}
 
@@ -548,6 +556,7 @@ func (b *WebBackend) Close() error {
 		close(b.batchStop)
 		<-b.batchDone
 	}
+	b.stopSkipReporter()
 	// The coalescer is done, so no further hand-off can start; the ones running
 	// still owe the consumer their callback.
 	b.prefetchWG.Wait()

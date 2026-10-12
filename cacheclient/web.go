@@ -390,7 +390,6 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	b.putBatchStop = make(chan struct{})
 	b.putBatchDone = make(chan struct{})
 	go b.batchPutCoalescer()
-	b.startSkipReporter()
 	b.prep = newPrepPool(b)
 	b.lookAhead = newLookAhead(b)
 	// The same knob bounds both speculative paths, since both hold bodies the
@@ -452,6 +451,7 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 	b.missesMu.RUnlock()
 	if alreadyMissed {
 		b.SkippedKnownMiss.Increment()
+		b.noteSkip()
 		return "", nil, time.Time{}, true
 	}
 
@@ -465,11 +465,13 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 		} else {
 			b.SkippedNotInIndex.Increment()
 		}
+		b.noteSkip()
 		return "", nil, time.Time{}, true
 	}
 	if b.batchProbingOff() {
 		// Backoff tripped: the remote has proven empty for this run. Miss without probing.
 		b.SkippedBatchBackoff.Increment()
+		b.noteSkip()
 		return "", nil, time.Time{}, true
 	}
 	r := b.getBatch(actionID, b.key(actionID), h)

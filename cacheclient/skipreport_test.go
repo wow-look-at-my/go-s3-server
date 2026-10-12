@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,6 +67,32 @@ func TestSkipReportResendsAfterAFailure(t *testing.T) {
 		{GetNotInIndex: 4, GetKnownMiss: 2, PutKnown: 1},
 		{GetEmptyIndex: 1},
 	}, got, "a failed report must ride the next one, and each count must arrive exactly once")
+}
+
+func TestSkipReportSendsDuringARun(t *testing.T) {
+	var status atomic.Int32
+	var got []SkipReport
+	var mu sync.Mutex
+	srv := skipServer(t, &status, &got, &mu)
+	defer srv.Close()
+	b := newSkipBackend(t, srv.URL)
+	status.Store(http.StatusNoContent)
+
+	b.SkippedNotInIndex.Increment()
+	b.noteSkip()
+	b.skips.wg.Wait()
+	mu.Lock()
+	require.Empty(t, got, "the first skip only starts the interval")
+	mu.Unlock()
+
+	b.skips.lastSend.Store(time.Now().Add(-2 * skipReportInterval).UnixNano())
+	b.SkippedNotInIndex.Increment()
+	b.noteSkip()
+	b.skips.wg.Wait()
+	mu.Lock()
+	require.Equal(t, []SkipReport{{GetNotInIndex: 2}}, got, "a skip past the interval must send without waiting for Close")
+	mu.Unlock()
+	require.NoError(t, b.Close())
 }
 
 func TestSkipReportStopsAgainstAnOlderServer(t *testing.T) {

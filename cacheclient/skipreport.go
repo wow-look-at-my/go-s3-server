@@ -53,8 +53,10 @@ type skipReporter struct {
 	mu       sync.Mutex
 	sent     SkipReport
 	disabled atomic.Bool // the server has no skip endpoint
-	stop     chan struct{}
-	done     chan struct{}
+	// lastSend is the UnixNano time of the last send that started.
+	lastSend atomic.Int64
+	inFlight atomic.Bool
+	wg       sync.WaitGroup
 }
 
 // skipTotals reads the client's own skip counters.
@@ -68,32 +70,31 @@ func (b *WebBackend) skipTotals() SkipReport {
 	}
 }
 
-// startSkipReporter sends the skip counts on a timer until Close.
-func (b *WebBackend) startSkipReporter() {
-	b.skips.stop = make(chan struct{})
-	b.skips.done = make(chan struct{})
+// noteSkip starts a send in the background when the last one started at
+// least skipReportInterval ago. The skip itself never waits on the network.
+func (b *WebBackend) noteSkip() {
+	now := time.Now().UnixNano()
+	last := b.skips.lastSend.Load()
+	if last == 0 {
+		// The interval counts from the first skip, so a short run sends one report at Close.
+		b.skips.lastSend.CompareAndSwap(0, now)
+		return
+	}
+	if now-last < int64(skipReportInterval) || !b.skips.inFlight.CompareAndSwap(false, true) {
+		return
+	}
+	b.skips.lastSend.Store(now)
+	b.skips.wg.Add(1)
 	go func() {
-		defer close(b.skips.done)
-		t := time.NewTicker(skipReportInterval)
-		defer t.Stop()
-		for {
-			select {
-			case <-b.skips.stop:
-				return
-			case <-t.C:
-				b.FlushSkips()
-			}
-		}
+		defer b.skips.wg.Done()
+		defer b.skips.inFlight.Store(false)
+		b.FlushSkips()
 	}()
 }
 
-// stopSkipReporter stops the timer and sends what is left.
+// stopSkipReporter waits for a send in flight, then sends what is left.
 func (b *WebBackend) stopSkipReporter() {
-	if b.skips.stop == nil {
-		return
-	}
-	close(b.skips.stop)
-	<-b.skips.done
+	b.skips.wg.Wait()
 	b.FlushSkips()
 }
 

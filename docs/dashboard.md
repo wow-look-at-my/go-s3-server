@@ -44,7 +44,7 @@ The page reports these carefully:
 
 The client keeps a copy of `/_index`. When that copy is fresh, the client misses a key the copy lacks with no request. It also skips the upload of a key the copy holds. The server cannot count either operation by itself, so its hit rate counts only the keys that reached it.
 
-The client therefore reports those skips. It sends `POST /{bucket}/_skips` every few seconds and at `Close`, with the counts since the last report the server accepted. A failed report leaves the counts in place for the next one. The code is `cacheclient/skipreport.go` and `skips.go`.
+The client therefore reports those skips. It sends `POST /{bucket}/_skips` from a skip that comes at least `skipReportInterval` after the last send, and again at `Close`. That `POST /{bucket}/_skips` is with the counts since the last report the server accepted. A failed report leaves the counts in place for the next one. The code is `cacheclient/skipreport.go` and `skips.go`.
 
 The server counts each report in `s3_client_skips_total{op,reason}`. Each skipped get is also a miss in `s3_project_objects_total` for the project that asked. The hit rate tile and the hit chart divide `found` by `requested` plus the skipped gets.
 

@@ -25,7 +25,7 @@ One line per SECOND in which the cache moved an object. A second with no traffic
 
 The rates are per second by construction, because the line IS one second.
 
-`uncompressed` and `ratio` cover only the objects whose client declared a `body-size`. When some object did not, `sized=N/total` says how many of that second's objects those fields cover. Without that field the line reads as uncompressed being smaller than compressed, which no compressor does. The go-toolchain client always sends `body-size`, so `sized` on a real deployment means something else is writing to the cache.
+`uncompressed` and `ratio` cover only the objects whose client declared a `body-size`. When some object did not, `sized=N/total` says how many of that second's objects those fields cover. Without that field the line reads as uncompressed being smaller than compressed, which no compressor does. The go-toolchain client always sends `body-size`, so `sized` on a real deployment means something else writs to the cache.
 
 A project is the `module` metadata the client sends. An object with no module falls back to the leading segments of its import path. That prefix is the closest thing to a project a package path carries.
 
@@ -39,7 +39,11 @@ One line per request, and only one.
 
 A handler with something to add attaches it to that same line. The batch endpoints used to print their own summary line as well, so one batch request appeared twice, under a different spelling each time. Anything a handler wants said now rides the request it belongs to.
 
+<<<<<<< HEAD
 Use verbose to follow one client, or to see the key counts of a specific batch. A CI fleet issues thousands of requests a second, so leave it off under load. The per-request lines bury the thing being looked for.
+=======
+Use verbose to follow one client, or to see the key counts of a specific batch. A thousands of the CI fleet issues of requests a second, so leave it off under load. The per-request lines bury the thing being looked for.
+>>>>>>> origin/master
 
 ## Why normal is the default
 

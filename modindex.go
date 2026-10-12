@@ -61,8 +61,13 @@ func looksLikeGoModuleIndex(input []byte, compression string) bool {
 // that keeps the file open, and the open-peek-close variant for the batch
 // paths).
 //
+<<<<<<< HEAD
 // For an lz4 body it streams an lz4.Reader straight over r. It reads only the
 // few decompressed bytes the magic needs: the reader pulls exactly as much
+=======
+// For an lz4 body it streams an lz4.Reader straight over r and reads only the
+// few decompressed bytes the magic needs. The reader pulls exactly as much
+>>>>>>> origin/master
 // COMPRESSED input from r as it takes to decode the earliest block, so the
 // magic -- which lives in that earliest block. It is always recovered
 // regardless of how large the compressed block is. (This is the fix for the

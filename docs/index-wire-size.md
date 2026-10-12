@@ -12,13 +12,21 @@ An action ID is a SHA-256. Sorted, uniformly distributed, incompressible by cons
 | 100,000 | 98.5% | 99.8% |
 | 1,000,000 | 97.0% | 99.5% |
 
+<<<<<<< HEAD
 Front-coding a shared prefix wins 3% at a million keys and nothing at ten thousand, because the prefix multiple neighbours share is about `log2(N)` bits. Delta-coding consecutive values is the same arithmetic and lands in the same place. Neither is worth a wire-format change.
+=======
+Front-coding a shared prefix wins 3% at a million keys and nothing at ten thousand. This is because the share of the prefix multiple neighbours is about `log2(N)` bits. Delta-coding consecutive values is the same arithmetic and lands in the same place. Neither is worth a wire-format change.
+>>>>>>> origin/master
 
 ## Truncation does work, and the index can afford it
 
 The client consults the index in ONE direction. An absent key, with a fresh index, is a miss and skips its probe (`web.go`, the `indexAuthoritative` branch). A present key is then actually fetched, and that fetch is what answers.
 
+<<<<<<< HEAD
 So a truncated hash can only ever cost a probe that comes back empty. It cannot skip an upload. It cannot answer a fetch wrongly. There are no false negatives either: a key that is present keeps its prefix.
+=======
+So a truncated hash can only ever cost a probe that comes back empty. It cannot skip an upload. It cannot answer a fetch incorrectly. There are no false negatives either: a key that is present keeps its prefix.
+>>>>>>> origin/master
 
 Several bytes per hash cuts the index to a quarter. With a million keys the chance any one lookup collides is about `1e6 / 2^64`, roughly 5e-14, against a saving of 24 MB on every cold fetch.
 

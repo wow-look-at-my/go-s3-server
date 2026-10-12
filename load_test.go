@@ -256,10 +256,17 @@ func TestLoad_OverloadShedsWith503(t *testing.T) {
 // the caches as hard as it can, every request is still answered correctly.
 //
 // A cache server exists to answer. Suppose it refuses under load. Then every
+<<<<<<< HEAD
 // client it refuses rebuilds anyway -- having earliest paid for the round
 // trip -- so a cache that sheds is worse than no cache at all. Memory
 // pressure is allowed to make the server slower (a cold cache means more
 // syscalls per request); it is never allowed to make it unavailable.
+=======
+// client it refuses rebuilds anyway, having earliest paid for the round
+// trip. A cache that sheds is worse than no cache at all. Memory pressure is
+// allowed to make the server slower (a cold cache means more syscalls per
+// request); it is never allowed to make it unavailable.
+>>>>>>> origin/master
 func TestLoad_MemoryPressureNeverRefusesService(t *testing.T) {
 	if testing.Short() {
 		t.Skip("load test skipped in -short mode")

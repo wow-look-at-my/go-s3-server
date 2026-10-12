@@ -15,15 +15,25 @@ A cache exists to answer. A cache that refuses under load is worse than no cache
 | last-access records (`eviction.go`) | keys read since startup | **no** — but only exists on a `noatime` data_dir; see `docs/eviction.md` |
 | in-flight requests | concurrency | **no** — but bodies stream, so each is small |
 
+<<<<<<< HEAD
 The first three are byte-bounded LRU caches (`lrucache.go`): each holds a budget's worth of bytes. Each evicts its least-recently-used entries to stay there. Everything they hold is reconstructible from disk, which is precisely why they are the right thing to give up.
+=======
+The first three are byte-bounded LRU caches (`lrucache.go`): each holds a budget's worth of bytes. Each evicts its least-recently-used entries to stay there. Everything they hold is reconstructible from disk, which is accurately why they are the right thing to give up.
+>>>>>>> origin/master
 
 The index is not droppable, and that sets the floor. A container has to be big enough to hold the index for the cache it serves. Below that no amount of eviction helps. The server says so in the log rather than pretending otherwise.
 
 ## The index is the floor, so it is stored in bytes, not strings
 
+<<<<<<< HEAD
 A production instance holding 1.11M keys sat at 645 MB in use against a 1 GiB container, with 432 MB of live heap and 1.29M heap objects. About one allocation and many bytes per indexed key. The shrinkable caches held 19 MB between them, 3% of the total. So the controller shrinking them to their floor released ~20 MB while the process stayed at 645 MB. It was defending the wrong 3%.
 
 The size was in the key strings. Every cacheprog key is the constant `go-buildcache/v1` plus a 64-character hex action ID: many bytes of string, on its own heap object. That key is carrying many bytes of entropy — held once per index entry, once per eviction candidate and once per access record. `compactKey` (`compactkey.go`) stores the bytes inline instead and rebuilds the string only for the keys a caller actually receives. What the index costs per key is now the sum of multiple fixed structures, and nothing else:
+=======
+A production instance holding 1.11M keys sat at 645 MB in use against a 1 GiB container, with 432 MB of live heap and 1.29M heap objects. About one allocation and many bytes per indexed key. The shrinkable caches held 19 MB between them, 3% of the total. So the controller shrinking them to their floor released ~20 MB while the process stayed at 645 MB. It defends the incorrect 3%.
+
+The size was in the key strings. Every cacheprog key is the constant `go-buildcache/v1` plus a 64-character hex action ID: many bytes of string, on its own heap object. That key carries many bytes of entropy — held once per index entry, once per eviction candidate and once per access record. `compactKey` (`compactkey.go`) stores the bytes inline instead and rebuilds the string only for the keys a caller actually receives. What the index costs per key is now the sum of multiple fixed structures, and nothing else:
+>>>>>>> origin/master
 
 | structure | bytes per key |
 |---|---|
@@ -33,7 +43,13 @@ The size was in the key strings. Every cacheprog key is the constant `go-buildca
 
 That is many bytes per key, or ~130 MB at a million keys, with no per-key allocation for the GC to trace. `TestCompactKeyCostsNothingPerKey` pins both properties.
 
+<<<<<<< HEAD
 The other half was periodic rather than resident: rebuilding the index and sweeping for eviction both materialized the whole cache as a `[]ListObject`. This holds with a key string apiece (~140 MB at a million keys). The sweep then built a candidate list and a live-key set on top of that. `Storage.Walk` now hands each object to a callback as the directory walk finds it. Both callers consume it into compact structures — the sweep into a bounded histogram and bounded victim batches. Its peak is a batch rather than the cache. The rebuild also stopped routing walked hashes through the pending buffer. This had left a full-size backing array alive for the life of the process.
+=======
+The other half was periodic rather than resident: rebuilding the index and sweeping for eviction both materialized the whole cache as a `[]ListObject`. This holds with a key string apiece (~140 MB at a million keys). The sweep then built a candidate list and a live-key set on top of that. `Storage.Walk` now hands each object to a callback as the directory walk finds it. Both callers consume it into compact structures — the sweep into a bounded histogram and bounded victim batches. Its peak is a batch rather than the cache.
+
+The rebuild also stopped routing walked hashes through the pending buffer. This left a full-size backing array alive for the life of the process.
+>>>>>>> origin/master
 
 ## The budget
 
@@ -45,9 +61,17 @@ Each cache gets a fraction of that as its fully-grown budget (metadata 10%, know
 
 The GC's own ceiling is set for us: go-toolchain injects a `gomemlimit_gen.go` into every main package it builds, whose `init()` reads the cgroup limit. It calls `debug.SetMemoryLimit(0.9 × limit)` unless `GOMEMLIMIT` is already set. This server must not install a second one — it will be dead code re-deriving the same number.
 
+<<<<<<< HEAD
 What it must do is *read* the right number. That is a matter of ordering. `detectMemoryBudget` used to run from a package-level variable initializer, and Go runs every package-level initializer **before** any `init()`. So it ran before the guard, found no runtime limit, fell back to `/sys/fs/cgroup/memory.max` and reported the raw container limit — 1 GiB. This happens where the GC was enforcing 966 MB. The caches were sized against a ceiling nothing enforced, and `s3_memory_limit_bytes` published it. That gauge reading exactly the container limit is what "GOMEMLIMIT is not set" looks like from the outside. It sent separate investigations down that path.
 
 `resolveMemoryBudget` is therefore called from `run()`, by which point every `init()` has finished, and `debug.SetMemoryLimit(-1)` returns the ceiling the GC is actually using.
+=======
+What it must do is *read* the right number. That is a matter of ordering. `detectMemoryBudget` used to run from a package-level variable initializer, and Go runs every package-level initializer **before** any `init()`. So it ran before the guard, found no runtime limit, fell back to `/sys/fs/cgroup/memory.max` and reported the raw container limit — 1 GiB. This happens where the GC enforcs 966 MB. The caches were sized against a ceiling nothing enforced, and `s3_memory_limit_bytes` published it.
+
+That gauge reading exactly the container limit is what "GOMEMLIMIT is not set" looks like from the outside. It sent separate investigations down that path.
+
+`resolveMemoryBudget` is therefore called from `run()`, by which point every `init()` finished, and `debug.SetMemoryLimit(-1)` returns the ceiling the GC is actually using.
+>>>>>>> origin/master
 
 ## The controller
 
@@ -95,7 +119,11 @@ Every request answered. The server absorbed a load worth 1.9 GB of uploads insid
 
 - `s3_memory_limit_bytes` — the discovered ceiling. Zero means none was found. The caches are on fixed defaults. Worth alerting on in a container that is supposed to have a limit.
 - `s3_memory_in_use_bytes` — the last sample.
+<<<<<<< HEAD
 - `s3_memory_shrinks_total` — how often pressure has forced the caches down. A slow trickle is the system working. A steady climb means the working set does not fit and the cache is running cold: give the container more memory.
+=======
+- `s3_memory_shrinks_total` — how frequently pressure forced the caches down. A slow trickle is the system working. A steady climb means the working set does not fit and the cache runs cold: give the container more memory.
+>>>>>>> origin/master
 - `s3_cache_memory_bytes{cache}` / `s3_cache_memory_budget_bytes{cache}` — what each cache holds and is allowed to hold. Budgets far below full is the visible signature of sustained pressure.
 
 There is deliberately no metric for "requests refused due to memory", because there is no such thing.

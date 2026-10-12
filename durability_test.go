@@ -82,8 +82,12 @@ func TestReadProbeDistinguishesIOError(t *testing.T) {
 }
 
 // TestMetricsServerBusyPortDoesNotExit: a busy metrics port must not take the
+<<<<<<< HEAD
 // whole cache down. startMetricsServer now logs and returns (the code called
 // log.Fatalf, killing the data path over the monitoring path).
+=======
+// whole cache down.
+>>>>>>> origin/master
 func TestMetricsServerBusyPortDoesNotExit(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)

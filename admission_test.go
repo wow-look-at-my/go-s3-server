@@ -64,7 +64,7 @@ func TestAdmission_WorkStillHoldsTheSlot(t *testing.T) {
 		return
 	}
 
-	ts, _ := newLoadTestServer(t, 1)
+	ts, _, _ := newAdmissionTestServer(t, 1, 200*time.Millisecond)
 
 	// A PUT whose body never finishes is work in progress: it holds the slot.
 	pr, pw := io.Pipe()

@@ -326,14 +326,11 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 	resp.Body.Close()
 	b.Pool.Release()
 	if err != nil {
-		logging.Warnf("cacheprog: web batch get: parse: %v", err)
-		// Only the callers still waiting: a single already answered must not be
-		// sent another reply.
+		logging.Warnf("cacheprog: web batch get: parse: %v; asking for the %d keys it did not answer one at a time", err, len(reqByKey))
+		// A cut stream says nothing about the keys it never reached, so each is
+		// asked for on its own.
 		for _, r := range reqByKey {
-			if b.keyKnown(r.hash) {
-				b.MissReadBody.Increment()
-			}
-			r.resp <- batchResp{miss: true}
+			r.resp <- b.getIndividual(r.actionID, r.key, r.hash)
 		}
 		return
 	}

@@ -54,15 +54,6 @@ func isSidecarName(name string) bool {
 	return false
 }
 
-func lockExclusive(f *os.File) error {
-	// On Windows, use LockFileEx via syscall for exclusive locking.
-	return lockFileWindows(f)
-}
-
-func unlockFile(f *os.File) {
-	unlockFileWindows(f)
-}
-
 // setMetadata persists user metadata in the object's JSON sidecar. It
 // READ-MERGES-WRITES: only the given keys are added/overwritten and every
 // other stored key survives. The whole-file replace meant any partial update

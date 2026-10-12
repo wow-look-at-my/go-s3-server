@@ -324,6 +324,55 @@ func TestGetBatch_FallbackToIndividual(t *testing.T) {
 	require.Equal(t, "fallback data", string(data))
 }
 
+// A batch response cut before the body a caller waits on says nothing about
+// that key. The caller gets it from the GET, a hit.
+func TestGetBatch_CutStreamAsksForTheRestOneAtATime(t *testing.T) {
+	const key = "go-buildcache/v1aabbccdd11223344"
+	compressed, _ := Compress([]byte("cut data"))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/testbucket/_batch/get" {
+			manifest, _ := json.Marshal(batchGetManifest{Entries: []batchGetManifestEntry{{
+				Key: key, Size: int64(len(compressed)), Metadata: map[string]string{"outputid": testOutputID("cut data")},
+			}}})
+			w.Header().Set("Content-Type", "application/x-tar")
+			w.WriteHeader(200)
+			tw := tar.NewWriter(w)
+			tw.WriteHeader(&tar.Header{Name: "manifest.json", Size: int64(len(manifest)), Mode: 0644})
+			tw.Write(manifest)
+			tw.Flush()
+			// Half a tar header, then the connection ends.
+			w.Write(make([]byte, 100))
+			return
+		}
+		if r.Method == "GET" && r.URL.Path == "/testbucket/"+key {
+			w.Header().Set("X-Cache-Meta-outputid", testOutputID("cut data"))
+			w.WriteHeader(200)
+			w.Write(compressed)
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	b, err := NewWebBackend(WebConfig{
+		Bucket: "testbucket", Endpoint: srv.URL,
+		AccessKey: "key", SecretKey: "secret",
+	})
+	require.NoError(t, err)
+	defer b.Close()
+	b.ensureIndex()
+	b.keysMu.Lock()
+	b.keys.Add(hashOfKey(key))
+	b.keysMu.Unlock()
+
+	outputID, body, _, _, miss, _, err := b.getBatchTest("aabbccdd11223344", key)
+	require.NoError(t, err)
+	require.False(t, miss, "a key the cut stream never reached must still be fetched")
+	require.Equal(t, testOutputID("cut data"), outputID)
+	data, _ := io.ReadAll(body)
+	require.Equal(t, "cut data", string(data))
+}
+
 func TestGetBatch_Miss(t *testing.T) {
 	// Server with empty store.
 	srv := fakeBatchServer(t, make(map[string][]byte), make(map[string]map[string]string))

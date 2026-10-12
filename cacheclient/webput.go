@@ -67,6 +67,7 @@ func (b *WebBackend) enqueuePut(actionID, outputID string, data []byte, path str
 	if b.keys.Contains(h) {
 		b.keysMu.Unlock()
 		b.PutSkippedKnown.Increment()
+		b.noteSkip()
 		return nil
 	}
 	b.addKeyLocked(h)

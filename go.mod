@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/pierrec/lz4/v4 v4.1.27
-	github.com/prometheus/client_golang v1.23.2
+	github.com/prometheus/client_golang v1.25.0
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
 	github.com/wow-look-at-my/go-containers v0.0.0 // go-toolchain:auto-branch

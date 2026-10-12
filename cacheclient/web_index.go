@@ -198,19 +198,6 @@ func (b *WebBackend) readDiskIndex(path string) diskIndex {
 	return d
 }
 
-// fetchIndexBlob does a conditional GET <endpoint>/<bucket>/_index under ctx,
-// with at most indexFetchRetries retries (further capped by the configured
-// retry policy). Returns:
-//
-//	body, http.StatusOK, nil for a served blob nil, http.StatusNotModified,
-//	nil for a validated disk copy nil, <statusCode>, err for a bad HTTP
-//	status (status preserved so the caller can classify it) nil, no status,
-//	err for any transport failure
-func (b *WebBackend) fetchIndexBlob(ctx context.Context, ifNoneMatch string) ([]byte, int, error) {
-	reply, err := b.doIndexGET(ctx, "", ifNoneMatch)
-	return reply.body, reply.status, err
-}
-
 // indexReply is a GET /_index answer: the body, the status, the add-log
 // position the server named, and whether the body is a delta.
 type indexReply struct {
@@ -220,7 +207,10 @@ type indexReply struct {
 	delta  bool
 }
 
-// doIndexGET is fetchIndexBlob with a query and the reply's position headers.
+// doIndexGET does a conditional GET <endpoint>/<bucket>/_index?rawQuery under
+// ctx, with at most indexFetchRetries retries (further capped by the
+// configured retry policy). A bad HTTP status comes back with the status kept,
+// so the caller can classify it. A transport failure comes back with no status.
 func (b *WebBackend) doIndexGET(ctx context.Context, rawQuery, ifNoneMatch string) (indexReply, error) {
 	// Watchdog re-arms per body read: bytes keep it alive, silence fires it and cancels the request.
 	ctx, cancel := context.WithCancel(ctx)

@@ -122,7 +122,7 @@ type WebBackend struct {
 	// hundreds of thousands of entries, and that set is built at startup
 	// before the build does anything at all.
 	keys       *hashSet // known keys, from the startup index fetch + Put claims
-	indexEmpty bool     // remote index was empty at startup: nothing to batch-probe for
+	indexEmpty bool     // remote index was empty at startup.
 	// indexAuthoritative marks a fresh, server-confirmed index: an absent key can then miss without a probe.
 	indexAuthoritative bool
 	// indexKeysAtStart is the key count from the startup index fetch, reported in WebSummary to flag a dead remote.

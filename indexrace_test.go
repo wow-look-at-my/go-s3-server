@@ -13,12 +13,20 @@ import (
 	"github.com/wow-look-at-my/go-s3-server/cacheclient"
 )
 
+type tLogger struct{ t *testing.T }
+
+func (l tLogger) Infof(f string, a ...any)  { l.t.Logf(time.Now().Format("15:04:05.000 ")+f, a...) }
+func (l tLogger) Warnf(f string, a ...any)  { l.t.Logf(time.Now().Format("15:04:05.000 ")+f, a...) }
+func (l tLogger) Debugf(f string, a ...any) { l.t.Logf(time.Now().Format("15:04:05.000 ")+f, a...) }
+
 // A key absent from a young copy misses as soon as the index load proves it
 // absent. It must not wait for the probe the copy's doubt started.
 func TestAbsentKeyMissesWhenTheLoadLandsNotWhenTheProbeDoes(t *testing.T) {
 	if !inOwnProcess(t) {
 		return
 	}
+	cacheclient.SetLogger(tLogger{t})
+	t.Cleanup(func() { cacheclient.SetLogger(nil) })
 	ts, _ := testSetupWithStorage(t)
 	const probeDelay = 3 * time.Second
 	target, err := url.Parse(ts.URL)

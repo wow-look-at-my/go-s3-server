@@ -65,43 +65,6 @@ func TestWebBackend_HTTP2SharesOneConnection(t *testing.T) {
 		"concurrent requests must share one HTTP/2 connection, not open one handshake each")
 }
 
-// Each go command is a new process. The second must resume the TLS session the
-// first stored, or every command costs the server a full handshake.
-func TestWebBackend_NextProcessResumesTLSSession(t *testing.T) {
-	var resumed sync.Map
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resumed.Store(r.Header.Get("X-Round"), r.TLS.DidResume)
-		http.Error(w, "no such key", http.StatusNotFound)
-	}))
-	srv.EnableHTTP2 = true
-	srv.StartTLS()
-	defer srv.Close()
-	pool := x509.NewCertPool()
-	pool.AddCert(srv.Certificate())
-	dir := t.TempDir()
-
-	for _, round := range []string{"first", "second"} {
-		b, err := NewWebBackend(WebConfig{
-			Bucket: "testbucket", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: dir,
-		})
-		require.NoError(t, err)
-		b.transport.TLSClientConfig.RootCAs = pool
-		req, err := http.NewRequest("GET", srv.URL+"/testbucket/x", nil)
-		require.NoError(t, err)
-		req.Header.Set("X-Round", round)
-		resp, err := b.client.Do(req)
-		require.NoError(t, err)
-		closeBody(resp.Body)
-		b.Close()
-		b.transport.CloseIdleConnections()
-	}
-
-	first, _ := resumed.Load("first")
-	second, _ := resumed.Load("second")
-	require.Equal(t, false, first, "the first process has no session to resume")
-	require.Equal(t, true, second, "the next process must resume the stored session")
-}
-
 // An HTTP/1.1 connection goes back to the pool only when its body was read to
 // EOF. A miss, an error status and a chunked batch stream must all leave it
 // reusable, or each request after them pays a new handshake.

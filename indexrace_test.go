@@ -13,22 +13,15 @@ import (
 	"github.com/wow-look-at-my/go-s3-server/cacheclient"
 )
 
-type tLogger struct{ t *testing.T }
-
-func (l tLogger) Infof(f string, a ...any)  { l.t.Logf(time.Now().Format("15:04:05.000 ")+f, a...) }
-func (l tLogger) Warnf(f string, a ...any)  { l.t.Logf(time.Now().Format("15:04:05.000 ")+f, a...) }
-func (l tLogger) Debugf(f string, a ...any) { l.t.Logf(time.Now().Format("15:04:05.000 ")+f, a...) }
-
 // A key absent from a young copy misses as soon as the index load proves it
-// absent. It must not wait for the probe the copy's doubt started.
+// absent. It must not wait for the probe the copy's doubt started. The probe
+// delay is far above the bound, so a loaded machine does not blur both.
 func TestAbsentKeyMissesWhenTheLoadLandsNotWhenTheProbeDoes(t *testing.T) {
 	if !inOwnProcess(t) {
 		return
 	}
-	cacheclient.SetLogger(tLogger{t})
-	t.Cleanup(func() { cacheclient.SetLogger(nil) })
 	ts, _ := testSetupWithStorage(t)
-	const probeDelay = 3 * time.Second
+	const probeDelay, bound = 20 * time.Second, 10 * time.Second
 	target, err := url.Parse(ts.URL)
 	require.NoError(t, err)
 	proxy := httputil.NewSingleHostReverseProxy(target)
@@ -54,5 +47,5 @@ func TestAbsentKeyMissesWhenTheLoadLandsNotWhenTheProbeDoes(t *testing.T) {
 	start := time.Now()
 	_, _, _, miss = reader.Get(objs[1].actionID)
 	require.True(t, miss)
-	require.Less(t, time.Since(start), probeDelay, "the miss waited for the probe, not for the index")
+	require.Less(t, time.Since(start), bound,"the miss waited for the probe, not for the index")
 }

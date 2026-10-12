@@ -340,11 +340,7 @@ func handleBatchPut(w http.ResponseWriter, r *http.Request, storage *Storage, ma
 		byDataName[name] = &pending{entry: e, result: &results[i]}
 	}
 
-<<<<<<< HEAD
-	// Stream the data members. storeOneObject reads each body through a bounded per-member reader (maxObjectBytes) so a single oversized member cannot blow the budget.
-=======
 	// Stream the data members.
->>>>>>> origin/master
 	var nStored, nDropped, nConflict, nError int
 	for {
 		hdr, err := tr.Next()

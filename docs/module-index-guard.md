@@ -14,27 +14,17 @@ A short literal run still settles the common case: a compiled Go object starts `
 
 ## The rest of the guard
 
-<<<<<<< HEAD
-`looksLikeGoModuleIndex`: detects a Go module index blob (optionally lz4-compressed) via the `go index v` magic. **The detection decodes the body's full first lz4 block, NOT a fixed-size compressed peek** — this is the load-bearing correctness point.
-
-The go-toolchain client packs each cached body into a **single lz4 block. Pierrec/lz4's reader needs the **entire** block before it can decode any output. The guard used to peek only the first **512 compressed bytes** (`const indexPeekBytes = 512`) and lz4-decompress that prefix. But real module indexes compress. To **521 B – ~36 KB** (always > 512), so the reader, handed a truncated 512-byte prefix. That B is returned `n=0` (unexpected EOF). The magic was never seen, and **the poison was served on
-=======
 `looksLikeGoModuleIndex`: detects a blob of the Go module index (optionally lz4-compressed) via the `go index v` magic. **The detection decodes the body's full first lz4 block, NOT a fixed-size compressed peek** — this is the load-bearing correctness point.
 
 The go-toolchain client packs each cached body into a **single lz4 block. Pierrec/lz4's reader needs the **entire** block before it can decode any output. The guard used to peek only the first **512 compressed bytes** (`const indexPeekBytes = 512`) and lz4-decompress that prefix. But real module indexes compress. To **521 B – ~36 KB** (always > 512), so the reader, handed a truncated 512-byte prefix. That B is returned `n=0` (unexpected EOF).
 
 The magic was never seen, and **the poison was served on
->>>>>>> origin/master
 
 READ and stored on PUT** — both paths broken by the same truncation. (The old synthetic test passed only because its 2 KiB-of-`x` payload compressed to many bytes, fitting in 512 — non-representative, verified against 5 real `s3.pazer.io` blobs that the old code returned false for all and the fix returns true for all.) The fix feeds the detector enough input to decode the first block: `indexMagicProbeBytes` (16) decompressed bytes are read. The **read path streams an `lz4.Reader` straight off
 
 the open file** (it pulls exactly one block, however large), while the **PUT path reads a bounded but block-sized prefix** (capped at `indexPutPeekBytes`, 1 MiB — comfortably above the observed ~36 KB max and well below lz4's 4 MiB block ceiling). **The PUT peek self-sizes to the
 
-<<<<<<< HEAD
-body** (`io.ReadAll(io.LimitReader(body, indexPutPeekBytes))`). That PUT is allocating ~the body's actual size while `LimitReader` still caps the worst case at exactly `indexPutPeekBytes`. Detection input is byte-identical to the old fixed cap. This replaced a `make([]byte, indexPutPeekBytes)` + `io.ReadFull` that pre-allocated the **full 1 MiB on every PUT** regardless of body size (a measured ~1 MB/op of pointless allocation churn). Under a CI burst of ~7000 PUTs that thrashed GC and **saturated the admission-control
-=======
 body** (`io.ReadAll(io.LimitReader(body, indexPutPeekBytes))`). That PUT allocats ~the body's actual size while `LimitReader` still caps the worst case at exactly `indexPutPeekBytes`. Detection input is byte-same to the old fixed cap. This replaced a `make([]byte, indexPutPeekBytes)` + `io.ReadFull` that pre-allocated the **full 1 MiB on every PUT** regardless of body size (a measured ~1 MB/op of pointless allocation churn). Under a CI burst of ~7000 PUTs that thrashed GC and **saturated the admission-control
->>>>>>> origin/master
 
 `sem`**, shedding excess PUTs with `503` so nothing got stored/indexed. The next build then saw an empty `/_index` (`hits=0`) and blew the second-build time gate. The detection cap stays at 1 MiB (it bounds only the worst case now, not every PUT), so a real index's first block is always fully covered. Used to refuse a module index on **both** the write **and** read paths. **Write
 
@@ -44,13 +34,6 @@ prefetch):** `evictModuleIndexOnRead` (for a GET that holds the open file — de
 
 it** via `evictModuleIndex` → `storage.Delete` (drops the file and the `/_index` entry, the same lever DeleteObject uses), bump `s3_module_index_evictions_total`. The same lever DeleteObject signal a miss so the client recomputes the index locally. Both read variants are **scoped to indexed cacheprog
 
-<<<<<<< HEAD
-keys** (`go-buildcache/v1<64-hex>`, via `extractActionHash`). Exactly like the outputid self-heal — so an arbitrary/non-cache object is never inspected or touched. This is what removes already-stored poison. The PUT guard only blocks NEW indexes, while a blob uploaded before the guard existed (and surviving because the one-time v3 startup purge already ran) was otherwise served verbatim. This happens on every GET and re-advertised in `/_index` on every restart. That GET is with the client — which never re-uploads an index and has no remote DELETE — refusing and re-fetching it forever. The read guard sheds each poisoned key on its **first
-
-post-deploy
-
-fetch** (a lazy, incremental self-heal that needs no cache-wide `currentCacheVersion` bump and works regardless of client version). It runs orthogonally to, and **before**, the outputid self-heal: a module index carries an outputid, so `ensureOutputID` will pass it. A garbled-but-READABLE `lz4` body is treated as not-an-index (fail-open) on read, not an error that will fail the serve path. A genuine source I/O error, however, is now distinguished (`errTrackingReader` wraps the source). It surfaces as a refused serve — `guardPeekError` → `miss_peek_error` — instead of fail-opening into a 200 that dies mid-copy. The GET-path guard returns a three-way `readGuardVerdict` (`guardServe`/`guardEvicted`/`guardPeekError`) so the distinct miss reasons are counted. **Perf**: every probe calls `zr.Reset(nil)` after the 16-byte magic read, returning pierrec/lz4's pooled buffers. An abandoned reader never returns them, and before this fix every peek churned ~8.4 MiB of allocation on every GET/PUT/batch/prefetch inspection (BenchmarkPutObjectPeek: 8.49 MB/op → ~133 KB/op). Repeat probes are skipped entirely via the known-clean memo (`cleanmemo.go`). The batch peek opens through `storage.openRaw` so it neither double-counts the "get" storage op nor stamps last-access onto candidates that are never served. Pairs with the go-toolchain client, which also refuses to upload/serve/ingest index blobs.
-=======
 keys** (`go-buildcache/v1<64-hex>`, via `extractActionHash`). Exactly like the outputid self-heal — so an arbitrary/non-cache object is never inspected or touched. This is what removes already-stored poison. The PUT guard only blocks NEW indexes, while a blob uploaded before the guard existed (and surviving because the one-time v3 startup purge already ran) was otherwise served verbatim. This happens on every GET and re-advertised in `/_index` on every start. That GET is with the client — which never re-uploads an index and has no remote DELETE — refusing and re-fetching it forever.
 
 The read guard sheds each poisoned key on its **first
@@ -60,4 +43,3 @@ post-deploy
 fetch** (a lazy, incremental self-heal that needs no cache-wide `currentCacheVersion` bump and works regardless of client version). It runs orthogonally to, and **before**, the outputid self-heal: a module index carries an outputid, so `ensureOutputID` will pass it. A garbled-but-READABLE `lz4` body is treated as not-an-index (fail-open) on read, not an error that will fail the serve path. A genuine source I/O error, however, is now distinguished (`errTrackingReader` wraps the source). It surfaces as a refused serve — `guardPeekError` → `miss_peek_error` — instead of fail-opening into a 200 that dies mid-copy. The GET-path guard returns a three-way `readGuardVerdict` (`guardServe`/`guardEvicted`/`guardPeekError`) so the distinct miss reasons are counted.
 
 **Perf**: every probe calls `zr.Reset(nil)` after the 16-byte magic read, returning pierrec/lz4's pooled buffers. An abandoned reader never returns them, and before this fix every peek churned ~8.4 MiB of allocation on every GET/PUT/batch/prefetch inspection (BenchmarkPutObjectPeek: 8.49 MB/op → ~133 KB/op). Repeat probes are skipped fully via the known-clean memo (`cleanmemo.go`). The batch peek opens through `storage.openRaw` so it neither double-counts the "get" storage op nor stamps last-access onto candidates that are never served. Pairs with the go-toolchain client, which also refuses to upload/serve/ingest index blobs.
->>>>>>> origin/master

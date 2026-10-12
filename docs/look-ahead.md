@@ -4,11 +4,7 @@
 
 A build asks for one cache key at a time, in dependency order. It cannot name the next key until this one answers. A package's action ID is computed from its dependencies' output IDs. So the number of keys a build has outstanding is its own `-p`. No amount of batching on the client changes that. A four-way build offers keys, waits a round trip, then offers four more.
 
-<<<<<<< HEAD
-That has consequences the client is built around. The number of round trips is fixed by the graph's depth. On a link with a real round-trip time, that latency IS the cost of a cached build. The only way to spend fewer round trips is to fetch objects nobody has asked for yet.
-=======
 That has consequences the client is built around. The graph's depth fixes the number of round trips. On a link with a real round-trip time, that latency IS the cost of a cached build. The only way to spend fewer round trips is to fetch objects nobody asked for yet.
->>>>>>> origin/master
 
 ## Where the speculative fetching runs
 
@@ -34,13 +30,9 @@ A pool pointed at a default server therefore fetches nothing.
 
 ## What the pool is worth
 
-<<<<<<< HEAD
-`BenchmarkBuildShape` walks a 12-level graph, keys wide, against a real HTTP server. Shapes. `none` is the critical path alone, with nothing fetched ahead of it. `blocking` is the old wire shape, where speculative bodies ride the request the build is waiting on. `lookahead` is the pool, turned on for that arm. It fetches the same window off the critical path. The bodies go into the local tier the build reads next.
-=======
 `BenchmarkBuildShape` walks a 12-level graph, keys wide, against a real HTTP server. Shapes. `none` is the critical path alone, with nothing fetched ahead of it. `blocking` is the old wire shape, where speculative bodies ride the request the build is waiting on. `lookahead` is the pool, turned on for that arm. It fetches the same window off the critical path.
 
 The bodies go into the local tier the build reads next.
->>>>>>> origin/master
 
 Every arm installs that tier. A run without one measures a client whose look-ahead is switched OFF, because `expand` returns at once when `OnBatchEntries` is nil. The benchmark used to omit it, so its old numbers described a shape nothing ships.
 
@@ -87,11 +79,8 @@ Things a reader did per hit cost more than they had to.
 
 The body was decompressed through `io.ReadAll`. That function cannot know the answer, so it grows a buffer by repeated reallocation. The uploader records the uncompressed length as `body-size`, and every read path carries it back. `DecompressSized` therefore allocates once. A declared size past `maxPresizedBody` is ignored. The value comes off the wire.
 
-<<<<<<< HEAD
-=======
 It must not turn one response into an out-of-memory kill.
 
->>>>>>> origin/master
 The index was built as one prefixed hex string per key. A key string is the same bytes written as many hex characters behind a fixed prefix. A string set therefore costs a few times the memory. It also charges a hex encode and an allocation per entry. A production index is over 750,000 keys, and that work all lands at startup before the build does anything. The client indexes by the raw hash instead.
 
 ## Provenance

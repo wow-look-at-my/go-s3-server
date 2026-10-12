@@ -217,11 +217,7 @@ A build cache accumulates entries forever as code changes. Every new action ID i
 
 Eviction never threatens correctness: a incorrectly evicted entry is simply a cache miss that the next build recomputes and re-uploads. Evicted counts and reclaimed bytes are exported as `s3_evictions_total`, `s3_evicted_bytes_total`, and `s3_cache_bytes` (see below).
 
-<<<<<<< HEAD
-The sweeper runs its **first sweep a jittered 1-5 minutes after startup**, then every `interval`. (Waiting a full interval for the first sweep meant a deployment that restarts more often than the interval — rolling updates — never evicted at all.) Between sweeps the `s3_cache_bytes` gauge is refreshed every few minutes from a size-only walk, so growth is visible without waiting for a sweep. Before deleting a victim the sweeper re-checks its on-disk mtime, and skips anything overwritten since the scan. Every victim is dropped from `/_index` *before* its file is unlinked. A mid-sweep fetch therefore sees a re-uploadable miss, not a 404 on an advertised key. Leftover `.tmp-*` files from interrupted uploads are swept once at startup.
-=======
 The sweeper runs its **first sweep a jittered 1-5 minutes after startup**, then every `interval`. (Waiting a full interval for the first sweep meant a deployment that restarts more frequently than the interval — rolling updates — never evicted at all.) Between sweeps the `s3_cache_bytes` gauge is refreshed every few minutes from a size-only walk, so growth is visible without waiting for a sweep. Before deleting a victim the sweeper re-checks its on-disk mtime, and skips anything overwritten since the scan. Every victim is dropped from `/_index` *before* its file is unlinked. A mid-sweep fetch therefore sees a re-uploadable miss, not a 404 on an advertised key.
->>>>>>> origin/master
 
 Leftover `.tmp-*` files from interrupted uploads are swept once at startup.
 

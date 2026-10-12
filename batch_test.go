@@ -213,11 +213,7 @@ func batchGetManifestFor(t *testing.T, ts *httptest.Server, req batchGetRequest)
 }
 
 // With the server's prefetch config off, which is the default, the client's
-<<<<<<< HEAD
-// flags change nothing: a batch carries exactly the requested keys, even from
-=======
 // flags change nothing. A batch carries exactly the requested keys, even from
->>>>>>> origin/master
 // a client that still sets prefetch on the request its build is blocked on. A
 // look-ahead request for the window alone comes back empty.
 func TestBatchGet_PrefetchOffIgnoresClientFlags(t *testing.T) {

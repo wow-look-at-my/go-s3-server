@@ -8,11 +8,7 @@ object handlers (GetObject, PutObject, DeleteObject) plus `handleGetIndex` for t
 
 A body that cannot be decompressed is reported as a clean `404`, counted, DE-advertised from `/_index`. It left on disk for the normal eviction policy. Non-cacheprog keys are served as stored. GetObject and PutObject **stream** bodies (no whole-object buffering): GET `io.Copy`s from `storage.Open`. PUT streams via `storage.PutStream` wrapped in `http.MaxBytesReader(max_object_bytes)` (413 over the limit).
 
-<<<<<<< HEAD
-PutObject **refuses Go module-index blobs**: it peeks a bounded but block-sized prefix of the upload (`io.ReadAll(io.LimitReader(body, indexPutPeekBytes))`, capped at `indexPutPeekBytes` = 1 MiB. The read **self-sizes** to the body's actual length rather than pre-allocating the full cap. A typical small object allocates ~its own size, not 1 MiB. See the `modindex.go` bullet for why) and, if it decompresses to the `go index v` magic (`looksLikeGoModuleIndex` in `modindex.go`), accepts the request (`200`) but stores nothing.
-=======
 PutObject **refuses Go module-index blobs**: it peeks a bounded but block-sized prefix of the upload (`io.ReadAll(io.LimitReader(body, indexPutPeekBytes))`, capped at `indexPutPeekBytes` = 1 MiB. The read **self-sizes** to the body's actual length rather than pre-allocating the full cap. A typical small object allocates ~its own size, not 1 MiB. See the `modindex.go` bullet for why) and, if it decompresses to the `go index v` magic (`looksLikeGoModuleIndex` in `modindex.go`), accepts the request (`200`). But stores nothing.
->>>>>>> origin/master
 
 A mis-keyed module index poisons every consumer's build at package load and this shared Go build cache must never hold one (the client recomputes the index locally on the resulting miss). A non-index body is stitched back together via `io.MultiReader` and stored intact. GetObject **also refuses + evicts a module-index blob on READ** (`evictModuleIndexOnRead`, scoped to indexed cacheprog keys), running it **before** the outputid self-heal. It streams an `lz4.Reader` over the already-open file to recover the magic (`readIsModuleIndex`).
 
@@ -22,11 +18,7 @@ And on a hit `storage.Delete`s the object (file + `/_index` entry) and returns `
 
 This is the lazy, per-key self-heal that removes module-index poison **already on disk** (the PUT guard only blocks new ones) — see the `modindex.go` bullet — with **no `currentCacheVersion` bump**. PutObject writes audit xattrs (`content_length` is filled in by PutStream from the bytes actually streamed). The module-index refusal is **counted and logged** (`s3_put_refusals_total{reason="module_index"}` + a per-refusal log line naming the key) — the counter moving during CI activity is the guard's liveness proof.
 
-<<<<<<< HEAD
-That refusal is closing the blind spot that hid the 512-byte-peek bug. A refused PUT never reaches `Index.Put` (that call sits after PutStream's rename). A refused key is never advertised. Every single-object GET lands in `s3_get_requests_total{outcome}`: `hit`, `miss_not_found`, `miss_advertised_unservable` (404 on a key whose action hash `Index.Contains` still reports advertised — the index/store-divergence signature, must be ~0), `miss_module_index_evicted`, `miss_peek_error` (guard can not inspect/rewind), `miss_selfheal_failed`.
-=======
 That refusal closes the blind spot that hid the 512-byte-peek bug. A refused PUT never reaches `Index.Put` (that call sits after PutStream's rename). A refused key is never advertised. Every single-object GET lands in `s3_get_requests_total{outcome}`: `hit`, `miss_not_found`, `miss_advertised_unservable` (404 on a key whose action hash `Index.Contains` still reports advertised — the index/store-divergence signature, must be ~0), `miss_module_index_evicted`, `miss_peek_error` (guard can not inspect/rewind), `miss_selfheal_failed`.
->>>>>>> origin/master
 
 The GET body copy keeps `f` as the direct `io.Copy` source (preserving the ReadFrom/sendfile path) and logs disk-side copy failures (`*fs.PathError`) — client disconnects stay unlogged. `handleHeadObject` answers `HEAD /{bucket}/{key}`: Stat-based, the exact GET header surface (both meta prefixes + Content-Length + Last-Modified), no body, no guard probe, no self-heal, no last-access stamp. DeleteObject is idempotent (204 even for a missing key) and is the surgical eviction lever for a poisoned cache entry.
 

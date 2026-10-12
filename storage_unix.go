@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -37,6 +38,20 @@ func setMetadata(path string, meta map[string]string) error {
 			optional = append(optional, k)
 		}
 	}
+	if len(optional) == 0 {
+		return nil
+	}
+	// The optional keys go in a single attribute: on ZFS with xattr=on every attribute is a file of its own.
+	packed := make(map[string]string, len(optional))
+	for _, k := range optional {
+		packed[k] = meta[k]
+	}
+	if err := setPackedXattr(path, packedMetaAttr, packed); err == nil {
+		return nil
+	} else if !errors.Is(err, unix.E2BIG) && !errors.Is(err, unix.ENOSPC) && !errors.Is(err, unix.EDQUOT) {
+		return fmt.Errorf("set xattr %s: %w", packedMetaAttr, err)
+	}
+	// Too large for one attribute: fall back to a key each, which drops the keys that do not fit instead of all of them.
 	sort.Strings(optional) // deterministic write order under space pressure
 
 	var dropped []string
@@ -91,6 +106,34 @@ func getMetadataValueFd(f *os.File, key string) string {
 // metaAttrPrefix is the xattr namespace user metadata lives in.
 const metaAttrPrefix = "user.s3."
 
+// packedMetaAttr and packedAuditAttr each hold many keys as a single JSON
+// object.
+const (
+	packedMetaAttr  = metaAttrPrefix + "packed"
+	packedAuditAttr = auditAttrPrefix + "packed"
+)
+
+func setPackedXattr(path, name string, kv map[string]string) error {
+	data, err := json.Marshal(kv)
+	if err != nil {
+		return err
+	}
+	return unix.Setxattr(path, name, data, 0)
+}
+
+// unpackXattr adds the keys a packed value holds to into. A value that does
+// not decode is logged and skipped: the per-key attributes still read.
+func unpackXattr(path, name string, val []byte, into map[string]string) {
+	var kv map[string]string
+	if err := json.Unmarshal(val, &kv); err != nil {
+		log.Printf("metadata: %s on %s does not decode: %v", name, path, err)
+		return
+	}
+	for k, v := range kv {
+		into[k] = v
+	}
+}
+
 func isUserMetaAttr(name string) bool {
 	return strings.HasPrefix(name, metaAttrPrefix) && !strings.HasPrefix(name, auditAttrPrefix)
 }
@@ -105,9 +148,15 @@ func getMetadata(path string, meta *ObjectMeta) {
 		if !isUserMetaAttr(attr) {
 			continue
 		}
-		if val, err := getXattrBuf(path, attr, buf[:]); err == nil {
-			meta.Metadata[strings.TrimPrefix(attr, metaAttrPrefix)] = string(val)
+		val, err := getXattrBuf(path, attr, buf[:])
+		if err != nil {
+			continue
 		}
+		if attr == packedMetaAttr {
+			unpackXattr(path, attr, val, meta.Metadata)
+			continue
+		}
+		meta.Metadata[strings.TrimPrefix(attr, metaAttrPrefix)] = string(val)
 	}
 }
 
@@ -204,11 +253,11 @@ func getOriginalKey(path string) (string, error) {
 const auditAttrPrefix = "user.s3audit."
 
 func setAudit(path string, audit map[string]string) error {
-	for k, v := range audit {
-		attrName := auditAttrPrefix + k
-		if err := unix.Setxattr(path, attrName, []byte(v), 0); err != nil {
-			return fmt.Errorf("set xattr %s: %w", attrName, err)
-		}
+	if len(audit) == 0 {
+		return nil
+	}
+	if err := setPackedXattr(path, packedAuditAttr, audit); err != nil {
+		return fmt.Errorf("set xattr %s: %w", packedAuditAttr, err)
 	}
 	return nil
 }
@@ -220,12 +269,18 @@ func getAudit(path string) map[string]string {
 	}
 	out := make(map[string]string)
 	for _, attr := range attrs {
-		if strings.HasPrefix(attr, auditAttrPrefix) {
-			val, err := getXattr(path, attr)
-			if err == nil {
-				out[strings.TrimPrefix(attr, auditAttrPrefix)] = string(val)
-			}
+		if !strings.HasPrefix(attr, auditAttrPrefix) {
+			continue
 		}
+		val, err := getXattr(path, attr)
+		if err != nil {
+			continue
+		}
+		if attr == packedAuditAttr {
+			unpackXattr(path, attr, val, out)
+			continue
+		}
+		out[strings.TrimPrefix(attr, auditAttrPrefix)] = string(val)
 	}
 	return out
 }

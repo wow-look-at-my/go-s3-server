@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/http"
@@ -90,6 +91,7 @@ func (b *WebBackend) resolveIndexMaxAge(indexPath string) time.Duration {
 // support it.
 type WebBackend struct {
 	client    *http.Client
+	transport *http.Transport
 	bucket    string
 	prefix    string
 	endpoint  string
@@ -276,6 +278,40 @@ const (
 	batchReqChBuf     = 1024
 )
 
+// drainLimit bounds what closeBody reads to save a connection.
+const drainLimit = 256 << 10
+
+// closeBody reads the rest of a response body, then closes it. An HTTP/1.1
+// connection goes back to the pool only when its body was read to EOF.
+func closeBody(body io.ReadCloser) {
+	io.Copy(io.Discard, io.LimitReader(body, drainLimit))
+	body.Close()
+}
+
+// firstDial makes the first request of a process run alone.
+type firstDial struct {
+	next    *http.Transport
+	started atomic.Bool
+	ready   chan struct{}
+}
+
+func (gate *firstDial) RoundTrip(req *http.Request) (*http.Response, error) {
+	if gate.started.CompareAndSwap(false, true) {
+		defer close(gate.ready)
+		return gate.next.RoundTrip(req)
+	}
+	select {
+	case <-gate.ready:
+	case <-req.Context().Done():
+		return nil, req.Context().Err()
+	}
+	return gate.next.RoundTrip(req)
+}
+
+func (gate *firstDial) CloseIdleConnections() {
+	gate.next.CloseIdleConnections()
+}
+
 // NewWebBackend creates a web backend from the given config.
 // Returns nil if bucket is empty.
 func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
@@ -303,25 +339,18 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 		endpoint = "https://" + endpoint
 	}
 
-	// Tune the transport for high-throughput cache uploads. The default Go
-	// transport keeps very few idle connections per host, which forces a new
-	// TCP+TLS handshake for nearly every request. We allow many more
-	// concurrent connections and keep them all alive in the idle pool.
+	// A TLS endpoint gets HTTP/2: every request of this process shares one
+	// connection and one handshake. A server that cannot do HTTP/2 gets the
+	// HTTP/1.1 pool, and the session cache resumes each later handshake.
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		TLSClientConfig: &tls.Config{},
-		// This workload is many independent blobs and wants many independent
-		// windows, which is what the connection pool gives it a single time
-		// nothing collapses them.
-		//
-		// H2's advantages -- header compression, a single handshake -- are
-		// worth little here: the requests are few and large, and the bodies
-		// dwarf the headers.
-		ForceAttemptHTTP2:     false,
-		TLSNextProto:          map[string]func(string, *tls.Conn) http.RoundTripper{},
+		TLSClientConfig: &tls.Config{
+			ClientSessionCache: tls.NewLRUClientSessionCache(0),
+		},
+		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          MaxConnsPerHost,
 		MaxIdleConnsPerHost:   MaxConnsPerHost,
 		MaxConnsPerHost:       MaxConnsPerHost,
@@ -344,8 +373,9 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 		// Liveness is the transport's job instead: ResponseHeaderTimeout above
 		// bounds a server that never answers, which is what a deadline here was
 		// reaching for. The index fetch adds its own stall guard on top.
+		transport: transport,
 		client: &http.Client{
-			Transport: transport,
+			Transport: &firstDial{next: transport, ready: make(chan struct{})},
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
 					return fmt.Errorf("stopped after 10 redirects")

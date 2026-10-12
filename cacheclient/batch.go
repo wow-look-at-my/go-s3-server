@@ -275,7 +275,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 	}
 
 	if resp.StatusCode != 200 {
-		resp.Body.Close()
+		closeBody(resp.Body)
 		b.Pool.Release()
 		// Not-found or method-not-allowed → server has no batch endpoint; fall back to individual
 		// GETs for every caller in this batch.
@@ -323,7 +323,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 		hit = append(hit, r.key)
 		r.resp <- batchResp{outputID: e.OutputID, data: data, t: time.Now()}
 	})
-	resp.Body.Close()
+	closeBody(resp.Body)
 	b.Pool.Release()
 	if err != nil {
 		logging.Warnf("cacheprog: web batch get: parse: %v; asking for the %d keys it did not answer one at a time", err, len(reqByKey))

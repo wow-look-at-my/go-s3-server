@@ -106,6 +106,10 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 		return
 	}
 
+	if !prefetchEnabled {
+		// A look-ahead request to this server gets an empty answer, so the client stops sending them.
+		w.Header().Set(headerPrefetch, "off")
+	}
 	var req batchGetRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
 		writeError(w, 400, "invalid_request", fmt.Sprintf("invalid JSON: %v", err))

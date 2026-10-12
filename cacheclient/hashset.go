@@ -26,6 +26,44 @@ type hashSet struct {
 	// sorted. removed holds keys deleted since then and present in sorted.
 	pending set.Set[actionHash]
 	removed set.Set[actionHash]
+	// prefixOnly marks a set built from a short index blob.
+	prefixOnly bool
+}
+
+// gbciPrefixSize is the hash width of the short index form the client asks for.
+const gbciPrefixSize = 8
+
+// toPrefixOnly cuts every hash the set holds to gbciPrefixSize bytes. A
+// short-form delta can merge into a set built from a full-width blob.
+func (s *hashSet) toPrefixOnly() {
+	if s == nil || s.prefixOnly {
+		return
+	}
+	s.compact()
+	s.prefixOnly = true
+	for i := range s.sorted {
+		s.sorted[i] = s.norm(s.sorted[i])
+	}
+	// Cutting keeps the order, and hashes that now match sit next to each other.
+	s.sorted = slices.CompactFunc(s.sorted, func(a, b actionHash) bool { return a == b })
+}
+
+// addAll adds every hash in src. A short-form src first cuts s to its width.
+func (s *hashSet) addAll(src *hashSet) {
+	if src.prefixOnly {
+		s.toPrefixOnly()
+	}
+	for h := range src.All() {
+		s.Add(h)
+	}
+}
+
+// norm cuts h to the width the set holds.
+func (s *hashSet) norm(h actionHash) actionHash {
+	if s.prefixOnly {
+		clear(h[gbciPrefixSize:])
+	}
+	return h
 }
 
 // compactAt is how many buffered mutations force a merge into the sorted slice.
@@ -71,6 +109,7 @@ func (s *hashSet) Contains(h actionHash) bool {
 	if s == nil {
 		return false
 	}
+	h = s.norm(h)
 	if s.removed.Contains(h) {
 		return false
 	}
@@ -85,6 +124,7 @@ func (s *hashSet) Add(h actionHash) {
 	if s == nil {
 		return
 	}
+	h = s.norm(h)
 	// A key in removed is still in the sorted slice, so re-adding it is the
 	// deletion going away rather than a new entry.
 	if s.removed.Contains(h) {
@@ -107,6 +147,7 @@ func (s *hashSet) Remove(h actionHash) {
 	if s == nil {
 		return
 	}
+	h = s.norm(h)
 	if s.pending.Contains(h) {
 		s.pending.Remove(h)
 		return

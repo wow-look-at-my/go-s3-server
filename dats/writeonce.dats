@@ -41,13 +41,13 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19030","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","write_once":{"action":"deny","notification":"content_differs"},"credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:19060","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","write_once":{"action":"deny","notification":"content_differs"},"credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19030/test-cache
+				base=http://127.0.0.1:19060/test-cache
 				curl -sf -u testuser:testpass -X PUT --data-binary 'first write' "$base/wo/v1first000000000001" > /dev/null
 				curl -sf -u testuser:testpass "$base/wo/v1first000000000001"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19030 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} 19060 {inputs.check.sh}
 	  outputs:
 		stdout:
 			0: "^first write$"
@@ -56,13 +56,13 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19031","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","write_once":{"action":"deny","notification":"content_differs"},"credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:19061","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","write_once":{"action":"deny","notification":"content_differs"},"credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19031/test-cache
+				base=http://127.0.0.1:19061/test-cache
 				curl -sf -u testuser:testpass -X PUT --data-binary 'idempotent content' "$base/wo/v1idempotent0000001" > /dev/null
 				echo "resend $(curl -s -o /dev/null -w '%{http_code}' -u testuser:testpass -X PUT --data-binary 'idempotent content' "$base/wo/v1idempotent0000001")"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19031 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} 19061 {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "resend 200"
@@ -71,14 +71,14 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19032","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","write_once":{"action":"deny","notification":"content_differs"},"credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:19062","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","write_once":{"action":"deny","notification":"content_differs"},"credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19032/test-cache
+				base=http://127.0.0.1:19062/test-cache
 				curl -sf -u testuser:testpass -X PUT --data-binary 'original' "$base/wo/v1conflict000000001" > /dev/null
 				echo "conflict $(curl -s -o /dev/null -w '%{http_code}' -u testuser:testpass -X PUT --data-binary 'different' "$base/wo/v1conflict000000001")"
 				echo "stored $(curl -sf -u testuser:testpass "$base/wo/v1conflict000000001")"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19032 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} 19062 {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "conflict 409"
@@ -90,13 +90,13 @@ tests:
 		env:
 			DATA_DIR: "{outputs.data}"
 		files:
-			config.json: '{"listen":"127.0.0.1:19033","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","write_once":{"action":"deny","notification":"content_differs"},"credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:19063","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","write_once":{"action":"deny","notification":"content_differs"},"credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19033/test-cache
+				base=http://127.0.0.1:19063/test-cache
 				curl -sf -u testuser:testpass -X PUT --data-binary 'wosharddata' "$base/woshard/v1aabbccdd99887766" > /dev/null
 				sed 's/^/shard /' "$DATA_DIR/woshard/v1/aa/bbccdd99887766"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19033 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} 19063 {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "shard wosharddata"

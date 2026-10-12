@@ -132,6 +132,11 @@ type WebBackend struct {
 	// keysJournal records the claims and drops made while a background index
 	// load runs, so the set it installs keeps them. Nil when no load runs.
 	keysJournal *keysJournal
+	// liveGen is the add-log position the live key set is complete up to, zero when the server named none. keysMu guards it.
+	liveGen indexGen
+	// deltaMu serializes the live delta refreshes; deltaAt is when the last one started.
+	deltaMu sync.Mutex
+	deltaAt time.Time
 	// indexBytes is what that fetch cost on the wire, which no hit or put total covers.
 	indexBytes AtomicBytes
 	missesMu   sync.RWMutex
@@ -468,7 +473,8 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 		return "", nil, time.Time{}, true
 	}
 	b.ensureIndex()
-	if b.keyKnown(h) {
+	// Another build can store the key after this process loads its index, so an absence first fetches the keys added since.
+	if b.keyKnown(h) || (b.refreshLiveDelta() && b.keyKnown(h)) {
 		r := b.getBatch(actionID, b.key(actionID), h)
 		return r.outputID, r.data, r.t, r.miss
 	}

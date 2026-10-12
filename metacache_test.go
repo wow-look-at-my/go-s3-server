@@ -139,9 +139,10 @@ func TestMetaCache_SharesRepeatedValues(t *testing.T) {
 
 	e, ok := storage.metaCache.Get(keys[1])
 	require.True(t, ok)
-	unique := len(keys[1]) + metaEntryOverhead + 64 + 32*len(e.kv)
-	require.LessOrEqual(t, metaEntrySize(keys[1], e), int64(unique+len("outputid")),
-		"only the outputid value is unique to the entry; the shared values are paid for once")
+	// The outputid and the stored digest Put records are the values unique to an object.
+	unique := len(keys[1]) + metaEntryOverhead + 32*len(e.kv) + len(e.kvValue("outputid")) + len(e.kvValue(storedDigestMetaKey))
+	require.Equal(t, int64(unique), metaEntrySize(keys[1], e),
+		"an entry pays for its unique values only; the shared ones are paid for once")
 	for _, p := range e.kv {
 		if sharedMetaValueKeys.Contains(p.k) {
 			require.True(t, p.shared, "%s repeats across objects and must be shared", p.k)
@@ -275,6 +276,16 @@ func batchGetDirect(t *testing.T, storage *Storage, keys []string) (batchGetMani
 
 // maxMetaEntryBytes bounds the single-entry overshoot the cache allows: an insert never evicts the entry it made.
 const maxMetaEntryBytes = 4096
+
+// kvValue answers the cached value of attribute k, or "".
+func (e metaEntry) kvValue(k string) string {
+	for _, p := range e.kv {
+		if p.k == k {
+			return p.v
+		}
+	}
+	return ""
+}
 
 // cacheEntryFor reports how many cached metadata attributes the cache holds for
 // key, regardless of whether the entry still validates.

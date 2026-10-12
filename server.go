@@ -18,8 +18,8 @@ const retryAfterSeconds = 2
 // admissionWait is how long a request waits for a work slot before it is shed.
 const admissionWait = 10 * time.Second
 
-// queuedPerSlot bounds the requests waiting for a slot, per slot.
-const queuedPerSlot = 8
+// maxQueuedRequests bounds the requests waiting for a slot.
+const maxQueuedRequests = 1024
 
 // healthPath is the unauthenticated liveness/readiness probe.
 const healthPath = "/_health"
@@ -63,7 +63,7 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 		storage:    storage,
 		sem:        make(chan struct{}, cfg.MaxConcurrentRequests),
 		admitWait:  admissionWait,
-		maxQueued:  int64(cfg.MaxConcurrentRequests) * queuedPerSlot,
+		maxQueued:  maxQueuedRequests,
 		mem:        newMemController(memoryBudget),
 		verboseLog: cfg.LogMode == logModeVerbose,
 	}

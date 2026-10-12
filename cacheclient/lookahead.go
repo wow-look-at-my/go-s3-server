@@ -111,7 +111,7 @@ const minChunkBudget = 256 << 10
 // across the workers is what makes the budget describe the pool rather than a single fetch.
 func chunkBudget(budget int64, workers int) int64 {
 	if budget <= 0 || workers <= 0 {
-		return 0 // unbounded, as an unset budget asks for
+		return 0 // unbounded, as an unset budget asks.
 	}
 	per := budget / int64(workers)
 	if per < minChunkBudget {
@@ -260,7 +260,7 @@ func (la *lookAhead) expand(seed []string) {
 		return
 	}
 	if resp.StatusCode != 200 {
-		resp.Body.Close()
+		closeBody(resp.Body)
 		b.Pool.Release()
 		return
 	}
@@ -305,7 +305,7 @@ func (la *lookAhead) expand(seed []string) {
 	}
 
 	err = streamBatchResponse(resp.Body, ingest)
-	resp.Body.Close()
+	closeBody(resp.Body)
 	b.Pool.Release()
 	if err != nil {
 		return

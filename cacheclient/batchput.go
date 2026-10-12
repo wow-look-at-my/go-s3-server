@@ -206,8 +206,7 @@ func (b *WebBackend) sendBatchPut(reqs []putReq) {
 	// so all subsequent PUTs this process take the single-PUT path, and re-issue
 	// every object in THIS batch on that path now.
 	if resp.StatusCode == 404 || resp.StatusCode == 405 {
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		closeBody(resp.Body)
 		b.Pool.Release()
 		b.batchPutUnsupported.Store(true)
 		for _, r := range reqs {
@@ -220,7 +219,7 @@ func (b *WebBackend) sendBatchPut(reqs []putReq) {
 
 	if resp.StatusCode != 200 {
 		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		closeBody(resp.Body)
 		b.Pool.Release()
 		b.errLog.Record("web batch put", resp.StatusCode, reqs[0].actionID, string(respBody))
 		for _, r := range reqs {
@@ -230,7 +229,7 @@ func (b *WebBackend) sendBatchPut(reqs []putReq) {
 	}
 
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	closeBody(resp.Body)
 	b.Pool.Release()
 	if err != nil {
 		logging.Warnf("cacheprog: web batch put: read response: %v", err)
@@ -308,8 +307,7 @@ func (b *WebBackend) putSingle(pr putReq) error {
 		return fmt.Errorf("web put %s: %w", ShortID(pr.actionID), err)
 	}
 	defer func() {
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		closeBody(resp.Body)
 	}()
 
 	if resp.StatusCode != 200 {

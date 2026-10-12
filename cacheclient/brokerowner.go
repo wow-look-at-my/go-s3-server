@@ -6,7 +6,6 @@ package cacheclient
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"strconv"
 	"sync"
@@ -264,7 +263,7 @@ func (bkr *brokerServer) ownerGet(id ActionID) (Entry, string, error) {
 	return entry, TierDisk, err
 }
 
-// brokerNotice reports what the broker did.
+// brokerNotice reports what the broker did, to the installed Logger.
 func brokerNotice(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "go: "+format+"\n", args...)
+	logging.Infof(format, args...)
 }

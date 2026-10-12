@@ -340,15 +340,15 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	}
 
 	// A TLS endpoint gets HTTP/2: every request of this process shares one
-	// connection and one handshake. A server that cannot do HTTP/2 gets the
-	// HTTP/1.1 pool, and the session cache resumes each later handshake.
+	// connection and one handshake. The session cache on disk lets the next
+	// process resume that handshake instead of a full one.
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		TLSClientConfig: &tls.Config{
-			ClientSessionCache: tls.NewLRUClientSessionCache(0),
+			ClientSessionCache: newDiskSessions(cfg.IndexDir),
 		},
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          MaxConnsPerHost,

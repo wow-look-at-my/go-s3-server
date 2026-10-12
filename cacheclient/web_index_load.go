@@ -77,7 +77,12 @@ func (b *WebBackend) startIndexLoad() {
 	path := b.indexCachePath()
 	disk := b.readDiskIndex(path)
 	maxAge := b.resolveIndexMaxAge(path)
+	if disk.blob != nil && maxAge > 0 && disk.age() < maxAge && disk.gen.epoch != 0 {
+		b.startDeltaLoad(path, disk)
+		return
+	}
 	if disk.blob != nil && maxAge > 0 && disk.age() < maxAge {
+		// A server that names no position cannot send a delta, so the copy is trusted as it stands.
 		logging.Infof("cacheprog: web index: %d keys from a copy %v old", disk.count, disk.age().Round(time.Second))
 		b.keysMu.Lock()
 		b.keys = disk.keys

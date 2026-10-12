@@ -155,3 +155,16 @@ func TestBrokerOffSwitchServesNothing(t *testing.T) {
 	assert.Empty(t, os.Getenv(BrokerEnv), "the off switch must leave no endpoint to find")
 	assert.Empty(t, BrokerEnviron())
 }
+
+// A broker notice goes to the installed Logger. The client never writes to
+// stderr itself, because a consumer's tests can require an empty stderr.
+func TestBrokerNoticeGoesToTheInstalledLogger(t *testing.T) {
+	t.Serial() // the logger is package state
+	var got []string
+	SetLogger(recordingLogger{&got})
+	t.Cleanup(func() { SetLogger(nil) })
+
+	brokerNotice("cache: serving the build cache as %s", "gobuildcache-test")
+
+	require.Equal(t, []string{"cache: serving the build cache as gobuildcache-test"}, got)
+}

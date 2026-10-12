@@ -45,6 +45,32 @@ func TestPlausibleProjectName(t *testing.T) {
 	assert.False(t, plausibleProjectName("with\x7fdel"))
 }
 
+// The Prometheus label folds a name past the bound into "other". The exact
+// totals the dashboard reads must not.
+func TestExactProjectsKeepANamePastTheLabelBound(t *testing.T) {
+	exact := &exactProjects{rows: map[string]*projectRow{}}
+	for idx := range maxProjectLabels + 10 {
+		exact.add("example.com/exact-"+strings.Repeat("x", idx), objKindHit, 1, 100)
+	}
+	last := "example.com/exact-" + strings.Repeat("x", maxProjectLabels+9)
+	exact.add(last, objKindMiss, 3, 0)
+
+	rows := exact.snapshot()
+	require.Len(t, rows, maxProjectLabels+10, "every name keeps its own row")
+	assert.Equal(t, projectRow{Hit: 1, Miss: 3, HitBytes: 100}, rows[last])
+	assert.NotContains(t, rows, otherProject)
+}
+
+func TestExactProjectsCountEachKind(t *testing.T) {
+	exact := &exactProjects{rows: map[string]*projectRow{}}
+	exact.add("m", objKindPut, 1, 50)
+	exact.add("m", objKindLookAhead, 2, 70)
+	exact.add("", objKindMiss, 1, 0)
+	rows := exact.snapshot()
+	assert.Equal(t, projectRow{Put: 1, PutBytes: 50, LookAhead: 2, LookAheadBytes: 70}, rows["m"])
+	assert.Equal(t, projectRow{Miss: 1}, rows[unknownProject], "a request with no module counts under unknown")
+}
+
 func TestNoteProjectMissIgnoresANonPositiveCount(t *testing.T) {
 	// A batch that found everything asks for no miss to be recorded, and a
 	// negative count would otherwise subtract from a counter and panic.

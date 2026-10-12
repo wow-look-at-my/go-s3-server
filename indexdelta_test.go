@@ -4,7 +4,9 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -118,10 +120,95 @@ func TestIndexHandlerServesTheDelta(t *testing.T) {
 	assert.Equal(t, http.StatusGone, gone.Code)
 }
 
+// The short form carries the first gbciPrefixSize bytes of each hash, once
+// each, sorted, and is a quarter of the full download.
+func TestIndexShortForm(t *testing.T) {
+	idx := newDeltaIndex(t)
+	for n := byte(1); n <= 4; n++ {
+		key, _ := deltaKey(n)
+		idx.Put(key, 1)
+	}
+	// Same first bytes as deltaKey(1), so the short form holds it once.
+	var twin [gbciHashSize]byte
+	twin[0], twin[31] = 1, 0xee
+	idx.Put(gbciKeyPrefix+hex.EncodeToString(twin[:]), 1)
+
+	short := httptest.NewRecorder()
+	handleGetIndex(short, httptest.NewRequest("GET", "/b/_index?hash=8", nil), idx)
+	require.Equal(t, http.StatusOK, short.Code)
+	body := short.Body.Bytes()
+	assert.Equal(t, byte(gbciPrefixSize), body[5])
+	assert.Len(t, body, gbciHeaderSize+4*gbciPrefixSize+32, "five keys, four distinct prefixes")
+
+	full := httptest.NewRecorder()
+	handleGetIndex(full, httptest.NewRequest("GET", "/b/_index", nil), idx)
+	assert.Equal(t, byte(gbciHashSize), full.Body.Bytes()[5])
+	assert.Len(t, full.Body.Bytes(), gbciHeaderSize+5*gbciHashSize+32)
+	assert.NotEqual(t, short.Header().Get("ETag"), full.Header().Get("ETag"), "each form has its own ETag")
+	assert.Equal(t, short.Header().Get(headerIndexSeq), full.Header().Get(headerIndexSeq), "both forms name the same position")
+
+	k5, _ := deltaKey(5)
+	idx.Put(k5, 1)
+	delta := httptest.NewRecorder()
+	handleGetIndex(delta, httptest.NewRequest("GET", "/b/_index?hash=8&epoch="+short.Header().Get(headerIndexEpoch)+"&seq="+short.Header().Get(headerIndexSeq), nil), idx)
+	require.Equal(t, http.StatusOK, delta.Code)
+	assert.Len(t, delta.Body.Bytes(), gbciHeaderSize+gbciPrefixSize+32, "the delta is short too")
+}
+
 func TestIndexHeadersMatchTheClient(t *testing.T) {
 	assert.Equal(t, cacheclient.HeaderIndexEpoch, headerIndexEpoch)
 	assert.Equal(t, cacheclient.HeaderIndexSeq, headerIndexSeq)
 	assert.Equal(t, cacheclient.HeaderIndexDelta, headerIndexDelta)
+	assert.Equal(t, cacheclient.HeaderPrefetch, headerPrefetch)
+}
+
+// A server with prefetch off says so on every batch answer, so a client's
+// look-ahead pool stops after its first request.
+func TestBatchAnswerSaysPrefetchIsOff(t *testing.T) {
+	ts, _ := testSetupWithStorage(t)
+	resp, err := http.Post(ts.URL+"/testbucket/_batch/get", "application/json",
+		strings.NewReader(`{"keys":["go-buildcache/v1aa"],"prefetch":true,"prefetch_only":true}`))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "off", resp.Header.Get(headerPrefetch))
+}
+
+// A key another build stores while this process runs is a hit. The process
+// must not decide the miss alone from the index it loaded at start.
+func TestRunningClientLearnsKeysStoredDuringItsRun(t *testing.T) {
+	if !inOwnProcess(t) {
+		return
+	}
+	t.Setenv("GO_TOOLCHAIN_CACHE_PUT_WINDOW_MS", "30000")
+	ts, _ := testSetupWithStorage(t)
+	base := cacheclient.WebConfig{Bucket: "testbucket", Endpoint: ts.URL, AccessKey: "anyone", SecretKey: "unchecked"}
+
+	readerCfg := base
+	readerCfg.IndexDir = t.TempDir()
+	reader, err := cacheclient.NewWebBackend(readerCfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { reader.Close() })
+	objs := makeWireObjects(3)
+	_, _, _, miss := reader.Get(objs[0].actionID)
+	require.True(t, miss, "nothing is stored yet; this loads the reader's index")
+
+	writerCfg := base
+	writerCfg.IndexDir = t.TempDir()
+	writerCfg.IndexMaxAge = -1
+	w, err := cacheclient.NewWebBackend(writerCfg)
+	require.NoError(t, err)
+	for _, o := range objs[1:] {
+		require.NoError(t, w.Put(o.actionID, o.outputID, o.body))
+	}
+	require.NoError(t, w.Close())
+
+	time.Sleep(cacheclient.LiveDeltaInterval)
+	for _, o := range objs[1:] {
+		_, got, _, miss := reader.Get(o.actionID)
+		require.False(t, miss, "a key stored during the run must be served")
+		require.Equal(t, o.body, got)
+	}
 }
 
 // Consider a key stored after a client. That key wrote its disk copy is a hit

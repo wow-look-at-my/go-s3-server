@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -125,6 +126,7 @@ func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex
 			now := time.Now()
 			_ = os.Chtimes(path, now, now)
 			writeIndexGen(path, diskETag, reply.gen)
+			b.setLiveGen(reply.gen)
 			logging.Infof("cacheprog: web index: %d keys", disk.count)
 			return diskKeys, true
 		}
@@ -152,6 +154,7 @@ func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex
 	}
 	b.writeIndexBlob(path, blob)
 	writeIndexGen(path, etag, reply.gen)
+	b.setLiveGen(reply.gen)
 	logging.Infof("cacheprog: web index: %d keys", keys.Len())
 	return keys, true
 }
@@ -232,9 +235,10 @@ func (b *WebBackend) doIndexGET(ctx context.Context, rawQuery, ifNoneMatch strin
 		return err
 	}
 
-	target := b.endpoint + "/" + b.bucket + "/_index"
+	// Every request asks for the short form. A server that predates it ignores the parameter and sends full hashes, which parse too.
+	target := b.endpoint + "/" + b.bucket + "/_index?hash=" + strconv.Itoa(gbciPrefixSize)
 	if rawQuery != "" {
-		target += "?" + rawQuery
+		target += "&" + rawQuery
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", target, nil)
 	if err != nil {
@@ -329,13 +333,14 @@ func parseIndexBlob(blob []byte) (*hashSet, string, error) {
 	if blob[4] != gbciVersion {
 		return nil, "", fmt.Errorf("unsupported version %d", blob[4])
 	}
-	if blob[5] != gbciHashSize {
+	width := int(blob[5])
+	if width != gbciHashSize && width != gbciPrefixSize {
 		return nil, "", fmt.Errorf("unsupported hash size %d", blob[5])
 	}
 	count := binary.LittleEndian.Uint64(blob[16:24])
-	bodyEnd := gbciHeaderSize + int(count)*gbciHashSize
+	bodyEnd := gbciHeaderSize + int(count)*width
 	if bodyEnd+sha256.Size != len(blob) {
-		return nil, "", fmt.Errorf("length %d != header+%d*%d+trailer", len(blob), count, gbciHashSize)
+		return nil, "", fmt.Errorf("length %d != header+%d*%d+trailer", len(blob), count, width)
 	}
 	expected := sha256.Sum256(blob[:bodyEnd])
 	if !bytes.Equal(expected[:], blob[bodyEnd:]) {
@@ -347,10 +352,11 @@ func parseIndexBlob(blob []byte) (*hashSet, string, error) {
 	// that work all lands before the build starts.
 	hashes := make([]actionHash, count)
 	for i := uint64(0); i < count; i++ {
-		off := gbciHeaderSize + int(i)*gbciHashSize
-		copy(hashes[i][:], blob[off:off+gbciHashSize])
+		off := gbciHeaderSize + int(i)*width
+		copy(hashes[i][:], blob[off:off+width])
 	}
 	keys := newHashSetFromSorted(hashes)
+	keys.prefixOnly = width == gbciPrefixSize
 	etag := `"` + hex.EncodeToString(blob[bodyEnd:]) + `"`
 	return keys, etag, nil
 }

@@ -78,6 +78,9 @@ func (b *WebBackend) fetchManifest(id string) {
 	if miss {
 		return
 	}
+	b.keysMu.RLock()
+	authoritative := b.indexAuthoritative
+	b.keysMu.RUnlock()
 	var keys []string
 	for _, line := range strings.Split(string(data), "\n") {
 		h, ok := parseActionHash(line)
@@ -85,7 +88,8 @@ func (b *WebBackend) fetchManifest(id string) {
 			continue
 		}
 		b.manifest.Named.Increment()
-		if !b.keyKnown(h) || b.isHeld(h) {
+		// Only an authoritative index proves a key absent.
+		if (authoritative && !b.keyKnown(h)) || b.isHeld(h) {
 			continue
 		}
 		keys = append(keys, b.key(line))

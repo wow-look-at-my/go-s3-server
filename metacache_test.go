@@ -116,6 +116,45 @@ func TestMetaCache_DeleteAndEvictionForget(t *testing.T) {
 	}
 }
 
+// Objects of one package carry the same pkg, src and versions. The cache holds
+// those values once, so an entry is charged only for what is unique to it,
+// and every attribute still reads back whole.
+func TestMetaCache_SharesRepeatedValues(t *testing.T) {
+	_, storage := testSetupWithStorage(t)
+	src := strings.Repeat("file.go ", 30)
+	common := map[string]string{"pkg": "example.com/shared/pkg", "src": src, "go-version": "go1.27", "target": "linux/amd64", "object-type": "go-archive"}
+	var keys []string
+	for i := range 2 {
+		key := "go-buildcache/v1" + strings.Repeat(string(rune('p'+i)), 64)
+		meta := map[string]string{"outputid": strings.Repeat(string(rune('0'+i)), 64)}
+		for k, v := range common {
+			meta[k] = v
+		}
+		require.NoError(t, storage.Put(key, []byte("body"), meta, nil))
+		got, err := storage.Stat(key)
+		require.NoError(t, err)
+		require.Equal(t, src, got.Metadata["src"])
+		keys = append(keys, key)
+	}
+
+	e, ok := storage.metaCache.Get(keys[1])
+	require.True(t, ok)
+	unique := len(keys[1]) + metaEntryOverhead + 64 + 32*len(e.kv)
+	require.LessOrEqual(t, metaEntrySize(keys[1], e), int64(unique+len("outputid")),
+		"only the outputid value is unique to the entry; the shared values are paid for once")
+	for _, p := range e.kv {
+		if sharedMetaValueKeys.Contains(p.k) {
+			require.True(t, p.shared, "%s repeats across objects and must be shared", p.k)
+		}
+	}
+
+	stripStoredMetadata(t, storage.keyToPath(keys[1]))
+	got, err := storage.Stat(keys[1])
+	require.NoError(t, err)
+	require.Equal(t, src, got.Metadata["src"], "a warm entry serves the shared value")
+	require.Equal(t, "example.com/shared/pkg", got.Metadata["pkg"])
+}
+
 // TestMetaCache_Bound: exceeding the bound clears the cache wholesale rather
 // than growing without limit, and it keeps working afterwards.
 func TestMetaCache_Bound(t *testing.T) {

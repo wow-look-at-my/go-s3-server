@@ -300,6 +300,12 @@ func (la *lookAhead) expand(seed []string) {
 				return
 			}
 			count++
+			// Stated as held, so the next window leaves it out.
+			if actionID, ok := b.ActionIDFromKey(e.Key); ok {
+				if h, ok := parseActionHash(actionID); ok {
+					b.noteHeld(h)
+				}
+			}
 			chunk = append(chunk, e)
 			chunkSize += int64(len(e.Data))
 			if len(chunk) >= lookAheadChunk || (la.chunk > 0 && chunkSize >= la.chunk) {

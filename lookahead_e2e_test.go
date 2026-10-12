@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/wow-look-at-my/go-containers/set"
 	"github.com/wow-look-at-my/go-s3-server/cacheclient"
 )
 
@@ -37,12 +38,12 @@ func TestLookAheadBringsTheRestOfABuild(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { reader.Close() })
 	var mu sync.Mutex
-	got := map[string]bool{}
+	got := set.New[string]()
 	reader.OnBatchEntries = func(entries []cacheclient.BatchEntry) {
 		mu.Lock()
 		defer mu.Unlock()
 		for _, e := range entries {
-			got[e.Key] = true
+			got.Add(e.Key)
 		}
 	}
 
@@ -51,6 +52,6 @@ func TestLookAheadBringsTheRestOfABuild(t *testing.T) {
 	require.Eventually(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		return len(got) == len(objs)-1
+		return got.Len() == len(objs)-1
 	}, 10*time.Second, 20*time.Millisecond, "the window around the first hit must carry the rest of the build")
 }

@@ -119,7 +119,7 @@ var projects = newProjectLabeller()
 // noteProjectObject counts a single object against the project that moved
 // it. It sits beside recordObject, on the same events, so the log and the
 // metrics can never disagree about who moved what.
-func noteProjectObject(prov requestProvenance, meta map[string]string, wire int64, put bool) {
+func noteProjectObject(prov requestProvenance, wire int64, put bool) {
 	kind := objKindHit
 	switch {
 	case put:
@@ -127,7 +127,7 @@ func noteProjectObject(prov requestProvenance, meta map[string]string, wire int6
 	case prov.lookAhead:
 		kind = objKindLookAhead
 	}
-	label := projects.label(projectOf(meta, prov))
+	label := projects.label(projectOf(prov))
 	projectObjectsTotal.WithLabelValues(label, kind).Inc()
 	if wire > 0 {
 		projectBytesTotal.WithLabelValues(label, kind).Add(float64(wire))

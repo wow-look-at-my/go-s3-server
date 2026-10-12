@@ -46,7 +46,7 @@ The client keeps a copy of `/_index`. When that copy is fresh, the client misses
 
 The client therefore reports those skips. It sends `POST /{bucket}/_skips` from a skip that comes at least `skipReportInterval` after the last send, and again at `Close`. That `POST /{bucket}/_skips` is with the counts since the last report the server accepted. A failed report leaves the counts in place for the next one. The code is `cacheclient/skipreport.go` and `skips.go`.
 
-The server counts each report in `s3_client_skips_total{op,reason}`. Each skipped get is also a miss in `s3_project_objects_total` for the project that asked. The hit rate tile and the hit chart divide `found` by `requested` plus the skipped gets.
+The server counts each report in `s3_client_skips_total{op,reason}`. Each skipped get is also a miss in `s3_project_objects_total` for the project that asked. The hit rate tile divides `found` plus the single-GET hits by `requested` plus the skipped gets plus the single GETs. The hit chart takes the same ratio over the keys asked since the previous poll. A drop shows at once and does not fade into the lifetime average.
 
 A server older than the endpoint answers 405. The client then stops reporting for that run and logs one warning, because that server's hit rate stays too high.
 
@@ -55,6 +55,10 @@ A server older than the endpoint answers 405. The client then stops reporting fo
 A shared cache gets one question more than any other. The hit rate reads fine overall, so whose builds are the ones missing?
 
 The panel answers it from `s3_project_objects_total{project,kind}`. The chart is a stacked area: one band per project, each column the total objects per second the cache moved for it. The total and the split that makes it up therefore read off one picture. The table beside it carries each project's hit rate, `hit / (hit + miss)`, worst first. The chart cannot show that. A project can be a thin band and still hit almost nothing it asks for.
+
+Every kind counts for the project that sent the request, the `X-Cache-Module` header. A miss has no object. The requester is the only name it can carry. A hit therefore uses the requester too, not the module stored on the object. That stored module names the build that first wrote the object. A shared std archive will credit every later build's hit to that writer.
+
+The row will divide one project's hits by another project's misses. A request with no header counts under `unknown` for every kind. `projectOf` in `logagg.go` holds the rule.
 
 A look-ahead request (`prefetch_only`) names keys the client has just hit, as anchors for the window around them. It asks for none of them. Those keys count as `s3_batch_keys_total{kind="anchors"}`,never as `requested` or as a project miss. Counted as misses, each hit will also read as a miss.
 

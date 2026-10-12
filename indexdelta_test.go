@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -136,6 +137,43 @@ func TestBatchAnswerSaysPrefetchIsOff(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "off", resp.Header.Get(headerPrefetch))
+}
+
+// A key another build stores while this process runs is a hit, not a miss the
+// process decides alone from the index it loaded at start.
+func TestRunningClientLearnsKeysStoredDuringItsRun(t *testing.T) {
+	if !inOwnProcess(t) {
+		return
+	}
+	t.Setenv("GO_TOOLCHAIN_CACHE_PUT_WINDOW_MS", "30000")
+	ts, _ := testSetupWithStorage(t)
+	base := cacheclient.WebConfig{Bucket: "testbucket", Endpoint: ts.URL, AccessKey: "anyone", SecretKey: "unchecked"}
+
+	readerCfg := base
+	readerCfg.IndexDir = t.TempDir()
+	reader, err := cacheclient.NewWebBackend(readerCfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { reader.Close() })
+	objs := makeWireObjects(3)
+	_, _, _, miss := reader.Get(objs[0].actionID)
+	require.True(t, miss, "nothing is stored yet; this loads the reader's index")
+
+	writerCfg := base
+	writerCfg.IndexDir = t.TempDir()
+	writerCfg.IndexMaxAge = -1
+	w, err := cacheclient.NewWebBackend(writerCfg)
+	require.NoError(t, err)
+	for _, o := range objs[1:] {
+		require.NoError(t, w.Put(o.actionID, o.outputID, o.body))
+	}
+	require.NoError(t, w.Close())
+
+	time.Sleep(cacheclient.LiveDeltaInterval)
+	for _, o := range objs[1:] {
+		_, got, _, miss := reader.Get(o.actionID)
+		require.False(t, miss, "a key stored during the run must be served")
+		require.Equal(t, o.body, got)
+	}
 }
 
 // Consider a key stored after a client. That key wrote its disk copy is a hit

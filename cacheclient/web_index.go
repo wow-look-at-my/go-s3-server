@@ -125,6 +125,7 @@ func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex
 			now := time.Now()
 			_ = os.Chtimes(path, now, now)
 			writeIndexGen(path, diskETag, reply.gen)
+			b.setLiveGen(reply.gen)
 			logging.Infof("cacheprog: web index: %d keys", disk.count)
 			return diskKeys, true
 		}
@@ -152,6 +153,7 @@ func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex
 	}
 	b.writeIndexBlob(path, blob)
 	writeIndexGen(path, etag, reply.gen)
+	b.setLiveGen(reply.gen)
 	logging.Infof("cacheprog: web index: %d keys", keys.Len())
 	return keys, true
 }

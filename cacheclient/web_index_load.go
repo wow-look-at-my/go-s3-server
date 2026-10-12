@@ -192,6 +192,7 @@ func (b *WebBackend) refreshIndex(ctx context.Context, path string, disk diskInd
 	// this fetch would repeat.
 	if cur, ok := b.refreshedSince(path, disk); ok {
 		logging.Infof("cacheprog: web index: %d keys from another process's refresh", cur.count)
+		b.setLiveGen(cur.gen)
 		return cur.keys, true, "another process fetched it"
 	}
 	keys, authoritative := b.fetchIndex(ctx, path, disk)

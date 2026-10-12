@@ -347,6 +347,9 @@ func (b *WebBackend) reportManifest() {
 	if m == nil || m.Named.Load() == 0 {
 		return
 	}
-	logging.Infof("cacheprog: manifest: named %d keys, fetched %d ahead, %d lookups waited for them, %d answered as misses while the index loaded",
-		m.Named.Load(), m.Fetched.Load(), m.Waited.Load(), m.AbsentSkips.Load())
+	m.mu.Lock()
+	knownMissed, missed := m.knownMissed.Len(), m.missed.Len()
+	m.mu.Unlock()
+	logging.Infof("cacheprog: manifest: named %d keys and %d misses, fetched %d ahead, %d lookups waited for them, %d answered as misses while the index loaded; this build missed %d",
+		m.Named.Load(), knownMissed, m.Fetched.Load(), m.Waited.Load(), m.AbsentSkips.Load(), missed)
 }

@@ -122,7 +122,7 @@ type WebBackend struct {
 	// hundreds of thousands of entries, and that set is built at startup
 	// before the build does anything at all.
 	keys       *hashSet // known keys, from the startup index fetch + Put claims
-	indexEmpty bool     // remote index was empty at startup: nothing to batch-probe for
+	indexEmpty bool     // remote index was empty at startup.
 	// indexAuthoritative marks a fresh, server-confirmed index: an absent key can then miss without a probe.
 	indexAuthoritative bool
 	// indexKeysAtStart is the key count from the startup index fetch, reported in WebSummary to flag a dead remote.
@@ -204,6 +204,12 @@ type WebBackend struct {
 
 	// SkippedNotInIndex counts clean misses skipped because the authoritative index omits the key.
 	SkippedNotInIndex AtomicCounter
+
+	// SkippedKnownMiss counts clean misses skipped because the server already said this run that the key is absent.
+	SkippedKnownMiss AtomicCounter
+
+	// skips sends the skip counters to the server, so its hit rate counts the misses it never saw.
+	skips skipReporter
 
 	// Reclaimed404 counts stale index claims dropped after the server reported the key absent.
 	Reclaimed404 AtomicCounter
@@ -444,6 +450,8 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 	alreadyMissed := b.knownMiss.Contains(h)
 	b.missesMu.RUnlock()
 	if alreadyMissed {
+		b.SkippedKnownMiss.Increment()
+		b.noteSkip()
 		return "", nil, time.Time{}, true
 	}
 
@@ -457,11 +465,13 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 		} else {
 			b.SkippedNotInIndex.Increment()
 		}
+		b.noteSkip()
 		return "", nil, time.Time{}, true
 	}
 	if b.batchProbingOff() {
 		// Backoff tripped: the remote has proven empty for this run. Miss without probing.
 		b.SkippedBatchBackoff.Increment()
+		b.noteSkip()
 		return "", nil, time.Time{}, true
 	}
 	r := b.getBatch(actionID, b.key(actionID), h)
@@ -548,6 +558,7 @@ func (b *WebBackend) Close() error {
 		close(b.batchStop)
 		<-b.batchDone
 	}
+	b.stopSkipReporter()
 	// The coalescer is done, so no further hand-off can start; the ones running
 	// still owe the consumer their callback.
 	b.prefetchWG.Wait()

@@ -2,7 +2,9 @@
 
 Shared build cache server for [go-toolchain](https://github.com/wow-look-at-my/go-toolchain), backed by the local filesystem. (Slated to be renamed **go-toolchain-cache**.)
 
-This server speaks go-toolchain's native cache protocol. It began life S3-compatible, but S3 is not an efficient format for exchanging build-cache objects. So the protocol was replaced with a faster, purpose-built design — a binary key index (`/_index`, GBCI v1) and a batched tar transfer (`/_batch/get`) with prefetch. The only S3 surface that remains is **deprecated, not removed**. The legacy `X-Amz-Meta-*` request headers are still accepted, so not-yet-upgraded clients keep working. Every use is logged once and counted in `s3_deprecated_requests_total`. The shim will be dropped when the repository is renamed. See [Cache protocol & deprecations](#cache-protocol--deprecations).
+This server speaks go-toolchain's native cache protocol. It began life S3-compatible, but S3 is not an efficient format for exchanging build-cache objects. So the protocol was replaced with a faster, purpose-built design — a binary key index (`/_index`, GBCI v1) and a batched tar transfer (`/_batch/get`) with prefetch. The only S3 surface that remains is **deprecated, not removed**. The legacy `X-Amz-Meta-*` request headers are still accepted, so not-yet-upgraded clients keep working. Every use is logged once and counted in `s3_deprecated_requests_total`.
+
+The shim will be dropped when the repository is renamed. See [Cache protocol & deprecations](#cache-protocol--deprecations).
 
 ## Features
 
@@ -13,7 +15,7 @@ This server speaks go-toolchain's native cache protocol. It began life S3-compat
 - **HTTP Basic Auth** — multiple users, or explicitly disable with `disable_auth: true`
 - **Write-once mode** — deny overwriting existing keys with configurable conflict notification (ideal for content-addressable caches)
 - **Bounded cache (automatic eviction)** — a background sweeper prunes by idle age (`max_age`) and total size (`max_bytes`). The `data_dir` therefore cannot fill the disk. Eviction goes by *last use*, not write time. See [Cache eviction](#cache-eviction).
-- **Sharded storage** — keys are automatically split into a two-level directory tree to avoid huge flat directories
+- **Sharded storage** — keys are automatically split into a two-level directory tree to avoid large flat directories
 - **Streaming, OOM-safe under load** — bodies stream straight to and from disk, so no whole object is ever buffered. A concurrency limit sheds excess load with `503 + Retry-After` rather than queueing until it OOMs. See [Behavior under load](#behavior-under-load).
 - **Graceful drain on shutdown** — on `SIGTERM`/`SIGINT` the server stops taking new requests and lets in-flight ones finish. A rolling update therefore cuts off no CI transfer. An unauthenticated `GET /_health` returns `200` when ready and `503` while draining. See [Graceful shutdown & rolling updates](#graceful-shutdown--rolling-updates).
 - **Container image, synthesized by buildhost** — `oci.pazer.build/go-s3-server`, built from the published binary. This repo carries no Dockerfile. See [Docker](#docker).
@@ -106,7 +108,7 @@ All flags except `--config` override the corresponding config file value.
 | `notification` | `never`, `always`, `content_differs` | `never` | When to return HTTP 409 on overwrite attempts |
 
 - `action: "deny"` + `notification: "never"` — silently skip overwrites (200 response)
-- `action: "deny"` + `notification: "always"` — reject any overwrite attempt (409 response)
+- `action: "deny"` + `notification: "always"` — reject any overwrite try (409 response)
 - `action: "deny"` + `notification: "content_differs"` — reject only when content differs. Same content is idempotent (ideal for content-addressable caches)
 
 ### `eviction` options
@@ -119,7 +121,7 @@ The cache is an **LRU**: it is bounded by size, and over budget the least recent
 | `max_age` | duration | `"0"` (off) | Also remove entries not *used* within this window, however small the cache is. A Go duration string (`"720h"`, `"30m"`) or seconds. |
 | `interval` | duration | `"24h"` | How often the background sweeper runs. The last sweep is recorded in `data_dir`, so a restart does not reset the schedule: the server sweeps at startup when the last one is at least an interval old, and otherwise waits out the remainder. |
 
-Setting both `max_bytes: 0` and `max_age: "0"` disables eviction entirely (the server logs a warning that the cache will grow without bound).
+Setting both `max_bytes: 0` and `max_age: "0"` disables eviction fully (the server logs a warning that the cache will grow without bound).
 
 "Last used" is the latest of an entry's write time, its filesystem access time, and any read this process saw. Access times survive restarts, so an old entry that is still being read is never mistaken for an idle one. A `noatime` mount carries no such signal. The server says so at startup and tracks reads in memory instead.
 
@@ -133,7 +135,7 @@ cache 1s: put=0 get=58 batched=72% compressed=3.4KiB/s uncompressed=13KiB/s rati
 
 Those fields are objects stored, objects served, and the share of them that went through the batch endpoints. Then the byte rates on and off the wire, the resulting compression ratio, and the modules the traffic belonged to.
 
-`verbose` prints one line per request instead, with any handler detail (a batch's key counts, for example) on that same line. It is for following one client. Under CI load the per-request lines bury what you are looking for. Depth: [docs/logging.md](docs/logging.md).
+`verbose` prints one line per request instead, with any handler detail (a batch's key counts, for example) on that same line. It is for following one client. Under CI load the per-request lines bury what you looks for. Depth: [docs/logging.md](docs/logging.md).
 
 ## Dashboard
 
@@ -200,7 +202,7 @@ The same fields are written to the server's request log on every request.
 
 ## Cache version
 
-The server stamps each `data_dir` with a cache version marker (`.cache_version`). On startup, a stored version that does not match the server's current version wipes the entire `data_dir` before any request is served. This is a one-way safety net: when the maintainers ship a fix that must invalidate previously-stored content (for example, after closing a vulnerability that can let an attacker populate the cache), they bump the version. Next restart on every deployment forces the cache to be rebuilt from trusted inputs.
+The server stamps each `data_dir` with a cache version marker (`.cache_version`). On startup, a stored version that does not match the server's current version wipes the entire `data_dir` before any request is served. This is a one-way safety net: when the maintainers ship a fix that must invalidate previously-stored content (for example, after closing a vulnerability that can let an attacker populate the cache), they bump the version. Next start on every deployment forces the cache to be rebuilt from trusted inputs.
 
 A corrupt or unparseable marker file is a startup error — fix it manually, do not leave it to a silent purge.
 
@@ -211,13 +213,15 @@ A build cache accumulates entries forever as code changes. Every new action ID i
 - **`max_age`** — remove entries not used within the window (a later default days).
 - **`max_bytes`** — keep the total cache size under a budget, evicting least-recently-used entries first when it is exceeded.
 
-"Used" means the later of an entry's write time (mtime) and its last read. Last-read time is tracked in memory while the server runs. A frequently fetched but rarely rewritten object therefore stays alive, which is what a content-addressed cache wants. Read time is *not* written back to the file's mtime. mtime stays the entry's write time, which the prefetch system groups "same build" entries by. Across a restart the in-memory read times reset, so entries age from their mtime until read again. At worst that delays an eviction, and it never hastens one wrongly.
+"Used" means the later of an entry's write time (mtime) and its last read. Last-read time is tracked in memory while the server runs. A frequently fetched but rarely rewritten object therefore stays alive, which is what a content-addressed cache wants. Read time is *not* written back to the file's mtime. mtime stays the entry's write time, which the prefetch system groups "same build" entries by. Across a start the in-memory read times reset, so entries age from their mtime until read again. At worst that delays an eviction, and it never hastens one incorrectly.
 
-Eviction never threatens correctness: a wrongly evicted entry is simply a cache miss that the next build recomputes and re-uploads. Evicted counts and reclaimed bytes are exported as `s3_evictions_total`, `s3_evicted_bytes_total`, and `s3_cache_bytes` (see below).
+Eviction never threatens correctness: a incorrectly evicted entry is simply a cache miss that the next build recomputes and re-uploads. Evicted counts and reclaimed bytes are exported as `s3_evictions_total`, `s3_evicted_bytes_total`, and `s3_cache_bytes` (see below).
 
-The sweeper runs its **first sweep a jittered 1-5 minutes after startup**, then every `interval`. (Waiting a full interval for the first sweep meant a deployment that restarts more often than the interval — rolling updates — never evicted at all.) Between sweeps the `s3_cache_bytes` gauge is refreshed every few minutes from a size-only walk, so growth is visible without waiting for a sweep. Before deleting a victim the sweeper re-checks its on-disk mtime, and skips anything overwritten since the scan. Every victim is dropped from `/_index` *before* its file is unlinked. A mid-sweep fetch therefore sees a re-uploadable miss, not a 404 on an advertised key. Leftover `.tmp-*` files from interrupted uploads are swept once at startup.
+The sweeper runs its **first sweep a jittered 1-5 minutes after startup**, then every `interval`. (Waiting a full interval for the first sweep meant a deployment that restarts more frequently than the interval — rolling updates — never evicted at all.) Between sweeps the `s3_cache_bytes` gauge is refreshed every few minutes from a size-only walk, so growth is visible without waiting for a sweep. Before deleting a victim the sweeper re-checks its on-disk mtime, and skips anything overwritten since the scan. Every victim is dropped from `/_index` *before* its file is unlinked. A mid-sweep fetch therefore sees a re-uploadable miss, not a 404 on an advertised key.
 
-Eviction is **on by default** with a conservative 30-day idle window. To opt out entirely, set both limits off:
+Leftover `.tmp-*` files from interrupted uploads are swept once at startup.
+
+Eviction is **on by default** with a conservative 30-day idle window. To opt out fully, set both limits off:
 
 ```json
 "eviction": {"max_age": "0", "max_bytes": 0}
@@ -252,7 +256,7 @@ All alongside the standard Go runtime and process collectors (`go_memstats_*`, `
 
 When told to stop, the server drains in-flight requests instead of dropping them. A rolling deploy, or any `docker stop`, therefore cuts off no CI upload or batch download.
 
-- **`GET /_health`** — an unauthenticated readiness probe. Returns `200` with body `ok` while serving, and `503` (with `Retry-After`) once a shutdown has begun. It is answered *before* authentication and admission control. So it needs no S3 credentials and is never shed under load — point your reverse proxy and orchestrator at it.
+- **`GET /_health`** — an unauthenticated readiness probe. Returns `200` with body `ok` while serving, and `503` (with `Retry-After`) once a shutdown began. It is answered *before* authentication and admission control. So it needs no S3 credentials and is never shed under load — point your reverse proxy and orchestrator at it.
 - **Drain on signal.** On `SIGTERM`/`SIGINT` the server marks `/_health` unhealthy (`503`) and calls `http.Server.Shutdown`. The listener closes immediately, so new connections are refused. In-flight requests get a 280s drain budget to finish, which is kept under a typical container stop grace period.
 - **Where the `503` actually reroutes traffic.** The `503` tells a **health-checking** proxy or load balancer in front to take this instance out of rotation. New requests then go to the replacement. It is *not* automatic. docker-updater does not poll the old container's `/_health` while draining, and Docker's DNS round-robin is not health-aware. With no health-aware front end the `503` is informational — rerouting then comes only from the closed listener refusing new connections, not from the probe.
 

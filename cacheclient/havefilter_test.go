@@ -28,9 +28,9 @@ func TestHaveFilterVector(t *testing.T) {
 	f := &haveFilter{Bits: make([]byte, 32), K: 3}
 	m := uint32(len(f.Bits) * 8)
 	for _, fill := range []byte{1, 2, 3, 4} {
-		h := vectorHash(fill)
+		key := keyOf(vectorHash(fill))
 		for i := 0; i < f.K; i++ {
-			idx := haveFilterBit(h, i, m)
+			idx := haveFilterBit(key, i, m)
 			f.Bits[idx/8] |= 1 << (idx % 8)
 		}
 	}
@@ -48,7 +48,11 @@ func TestHaveFilterNeverLosesAKey(t *testing.T) {
 	for i := range hashes {
 		hashes[i] = sha256.Sum256([]byte{byte(i), byte(i >> 8)})
 	}
-	f := newHaveFilter(len(hashes), slices.Values(hashes))
+	keys := make([]hashKey, len(hashes))
+	for i, h := range hashes {
+		keys[i] = keyOf(h)
+	}
+	f := newHaveFilter(len(keys), slices.Values(keys))
 	require.NotNil(t, f)
 	for _, h := range hashes {
 		require.True(t, f.contains(h), "the filter must never lose a key it was given")
@@ -75,7 +79,7 @@ func TestHaveFilterSizing(t *testing.T) {
 	require.Equal(t, 10000*haveFilterBitsPerKey/8, haveFilterBytes(10000))
 
 	var none *haveFilter
-	require.Nil(t, newHaveFilter(0, slices.Values([]actionHash{})), "a client holding nothing states nothing")
+	require.Nil(t, newHaveFilter(0, slices.Values([]hashKey{})), "a client holding nothing states nothing")
 	require.False(t, none.contains(vectorHash(1)))
 }
 

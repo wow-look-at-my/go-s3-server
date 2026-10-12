@@ -278,8 +278,7 @@ func indexedKey(num int) string {
 }
 
 // holdFilter is a request's statement that the client holds keys, built the
-// way the client builds it. K positions per hash, bytes of the hash each,
-// modulo the bit count.
+// way the client builds it: K positions per hash.
 func holdFilter(t *testing.T, size int, keys ...string) *haveFilter {
 	t.Helper()
 	filter := &haveFilter{Bits: make([]byte, size), K: 6}

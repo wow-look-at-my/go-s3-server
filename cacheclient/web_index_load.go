@@ -60,20 +60,6 @@ func (b *WebBackend) dropKeyLocked(h actionHash) {
 	}
 }
 
-// indexLoading reports whether a load of the key index is running now.
-func (b *WebBackend) indexLoading() bool {
-	load := b.indexLoad.Load()
-	if load == nil {
-		return false
-	}
-	select {
-	case <-load.done:
-		return false
-	default:
-		return true
-	}
-}
-
 // ensureIndex loads the key index the earliest time the cache is used.
 // Every path that reads or claims a key calls it earliest.
 //

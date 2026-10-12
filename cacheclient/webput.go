@@ -62,11 +62,8 @@ func (b *WebBackend) enqueuePut(actionID, outputID string, data []byte, path str
 		return fmt.Errorf("web put: %q is not an action ID", actionID)
 	}
 
-	// Atomically check-and-claim: skip if the key is already known or being
-	// uploaded.
-	if !b.indexLoading() {
-		b.ensureIndex()
-	}
+	// Atomically check-and-claim: skip if the key is already known or being uploaded.
+	b.ensureIndex()
 	b.keysMu.Lock()
 	if b.keys.Contains(h) {
 		b.keysMu.Unlock()

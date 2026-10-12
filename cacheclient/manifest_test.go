@@ -107,6 +107,8 @@ func TestManifestStoresWhatTheBuildUsed(t *testing.T) {
 func TestAwaitPrefetchWaitsForTheFetch(t *testing.T) {
 	b := NewBareBackend("go-buildcache/")
 	b.manifest = newBuildManifest()
+	b.manifest.started.Store(true)
+	close(b.manifest.ready)
 	onWire := strings.Repeat("e5", 32)
 	clear := b.manifest.markPending([]string{onWire})
 	require.False(t, b.AwaitPrefetch(strings.Repeat("f6", 32)))

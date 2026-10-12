@@ -62,6 +62,9 @@ type Index struct {
 	addEpoch  uint64
 	added     [][gbciHashSize]byte
 	cachedGen indexGen
+	// cachedPrefix is cachedBlob in the short form (gbciPrefixSize-byte hashes), built with it.
+	cachedPrefix     []byte
+	cachedPrefixETag string
 	// addLogLimit overrides maxAddLog when nonzero, for a test.
 	addLogLimit int
 }
@@ -525,6 +528,9 @@ func (idx *Index) BlobGen() ([]byte, string, indexGen) {
 	blob := marshalGBCI(idx.hashes)
 	idx.cachedBlob = blob
 	idx.cachedETag = `"` + hex.EncodeToString(blob[len(blob)-sha256.Size:]) + `"`
+	prefix := marshalGBCIWidth(idx.hashes, gbciPrefixSize)
+	idx.cachedPrefix = prefix
+	idx.cachedPrefixETag = `"` + hex.EncodeToString(prefix[len(prefix)-sha256.Size:]) + `"`
 	// Every hash in the add log is in pending or hashes, so the blob holds them all.
 	idx.cachedGen = indexGen{epoch: idx.addEpoch, seq: uint64(len(idx.added))}
 	idx.builtAt = time.Now()
@@ -609,6 +615,8 @@ func (idx *Index) applyRebuild(b *indexBuild) (int, int) {
 	// pending and pendingEntries intentionally survive (see doc comment above).
 	idx.cachedBlob = nil
 	idx.cachedETag = ""
+	idx.cachedPrefix = nil
+	idx.cachedPrefixETag = ""
 	idx.resetAddLogLocked()
 	hashCount := len(idx.hashes) + len(idx.pending)
 	idx.updateGaugesLocked()

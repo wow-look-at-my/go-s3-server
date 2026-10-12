@@ -120,6 +120,41 @@ func TestIndexHandlerServesTheDelta(t *testing.T) {
 	assert.Equal(t, http.StatusGone, gone.Code)
 }
 
+// The short form carries the first gbciPrefixSize bytes of each hash, once
+// each, sorted, and is a quarter of the full download.
+func TestIndexShortForm(t *testing.T) {
+	idx := newDeltaIndex(t)
+	for n := byte(1); n <= 4; n++ {
+		key, _ := deltaKey(n)
+		idx.Put(key, 1)
+	}
+	// Same first bytes as deltaKey(1), so the short form holds it once.
+	var twin [gbciHashSize]byte
+	twin[0], twin[31] = 1, 0xee
+	idx.Put(gbciKeyPrefix+hex.EncodeToString(twin[:]), 1)
+
+	short := httptest.NewRecorder()
+	handleGetIndex(short, httptest.NewRequest("GET", "/b/_index?hash=8", nil), idx)
+	require.Equal(t, http.StatusOK, short.Code)
+	body := short.Body.Bytes()
+	assert.Equal(t, byte(gbciPrefixSize), body[5])
+	assert.Len(t, body, gbciHeaderSize+4*gbciPrefixSize+32, "five keys, four distinct prefixes")
+
+	full := httptest.NewRecorder()
+	handleGetIndex(full, httptest.NewRequest("GET", "/b/_index", nil), idx)
+	assert.Equal(t, byte(gbciHashSize), full.Body.Bytes()[5])
+	assert.Len(t, full.Body.Bytes(), gbciHeaderSize+5*gbciHashSize+32)
+	assert.NotEqual(t, short.Header().Get("ETag"), full.Header().Get("ETag"), "each form has its own ETag")
+	assert.Equal(t, short.Header().Get(headerIndexSeq), full.Header().Get(headerIndexSeq), "both forms name the same position")
+
+	k5, _ := deltaKey(5)
+	idx.Put(k5, 1)
+	delta := httptest.NewRecorder()
+	handleGetIndex(delta, httptest.NewRequest("GET", "/b/_index?hash=8&epoch="+short.Header().Get(headerIndexEpoch)+"&seq="+short.Header().Get(headerIndexSeq), nil), idx)
+	require.Equal(t, http.StatusOK, delta.Code)
+	assert.Len(t, delta.Body.Bytes(), gbciHeaderSize+gbciPrefixSize+32, "the delta is short too")
+}
+
 func TestIndexHeadersMatchTheClient(t *testing.T) {
 	assert.Equal(t, cacheclient.HeaderIndexEpoch, headerIndexEpoch)
 	assert.Equal(t, cacheclient.HeaderIndexSeq, headerIndexSeq)

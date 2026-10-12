@@ -268,8 +268,12 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 		writeError(w, 500, "internal_error", "index unavailable")
 		return
 	}
+	width := gbciHashSize
+	if r.URL.Query().Get("hash") == strconv.Itoa(gbciPrefixSize) {
+		width = gbciPrefixSize
+	}
 	if from, asked := indexGenFromQuery(r); asked {
-		delta, to, ok := idx.Delta(from)
+		delta, to, ok := idx.DeltaWidth(from, width)
 		if !ok {
 			writeError(w, http.StatusGone, "index_epoch_gone", "the index changed beyond a delta; fetch it whole")
 			return
@@ -281,7 +285,7 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 		_, _ = w.Write(delta)
 		return
 	}
-	blob, etag, gen := idx.BlobGen()
+	blob, etag, gen := idx.BlobGenWidth(width)
 	// The blob is shared by every request and already built, so the transfer holds no memory of its own.
 	releaseSlot(r)
 	w.Header().Set("Content-Type", "application/octet-stream")

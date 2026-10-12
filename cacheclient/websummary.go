@@ -35,6 +35,7 @@ type WebSummary struct {
 	SkippedEmptyIndex   uint32 `json:"skipped_empty_index"`
 	SkippedNotInIndex   uint32 `json:"skipped_not_in_index"`
 	SkippedBatchBackoff uint32 `json:"skipped_batch_backoff"`
+	SkippedKnownMiss    uint32 `json:"skipped_known_miss"`
 	Reclaimed404        uint32 `json:"reclaimed_404"`
 
 	// What the server's prefetch window carried on the blocking path, and how
@@ -93,6 +94,7 @@ func (b *WebBackend) SummarySnapshot() WebSummary {
 		SkippedEmptyIndex:   b.SkippedEmptyIndex.Load(),
 		SkippedNotInIndex:   b.SkippedNotInIndex.Load(),
 		SkippedBatchBackoff: b.SkippedBatchBackoff.Load(),
+		SkippedKnownMiss:    b.SkippedKnownMiss.Load(),
 		Reclaimed404:        b.Reclaimed404.Load(),
 		PrefetchOffered:     b.PrefetchOffered.Load(),
 		PrefetchStored:      b.PrefetchStored.Load(),

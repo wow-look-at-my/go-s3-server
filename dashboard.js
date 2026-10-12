@@ -154,15 +154,23 @@ function setState(text, led) {
 	el.toggleAttribute("live", led !== "bad");
 }
 
+// batchReads is every key a build asked for on the batch path. A client misses
+// a key its index lacks without a request, and reports those skips later. The
+// server never saw them, so they are added here as misses.
+function batchReads(stats) {
+	const kinds = byLabel(stats, "s3_batch_keys_total", "kind");
+	const skipped = byLabel(stats, "s3_client_skips_total", "op").get || 0;
+	const found = kinds.found || 0;
+	return { found, skipped, asked: (kinds.requested || 0) + skipped };
+}
+
 // hitRateTile reports the batch path, which is where every read of the current
 // client goes. A single-object GET is an older client. It counts only when
 // there is no batch traffic to report.
 function hitRateTile(stats) {
-	const kinds = byLabel(stats, "s3_batch_keys_total", "kind");
-	const requested = kinds.requested || 0;
-	if (requested) {
-		const found = kinds.found || 0;
-		return tile("hit rate", percent(found, requested), `${count(found)} of ${count(requested)} keys asked for in batches`);
+	const { found, asked, skipped } = batchReads(stats);
+	if (asked) {
+		return tile("hit rate", percent(found, asked), `${count(found)} of ${count(asked)} keys builds asked for; ${count(skipped)} missed in the client's index`);
 	}
 	const outcomes = byLabel(stats, "s3_get_requests_total", "outcome");
 	const reads = sum(outcomes);
@@ -259,11 +267,10 @@ function drawRate(stats) {
 
 // Both gauges beside the rate. Both read straight off the snapshot, so
 // neither needs a previous sample and both start drawing on the earliest
-// poll. The batch series is the same a single hitRateTile reads, for the same reason.
+// poll.
 function drawGauges(stats) {
-	const kinds = byLabel(stats, "s3_batch_keys_total", "kind");
-	const requested = kinds.requested || 0;
-	if (requested) $("hit-chart").push(((kinds.found || 0) / requested) * 100);
+	const { found, asked } = batchReads(stats);
+	if (asked) $("hit-chart").push((found / asked) * 100);
 	$("inflight-chart").push(value(stats, "cache_http_in_flight_requests"));
 }
 

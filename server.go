@@ -288,6 +288,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// POST is the semantically sound method for a body-carrying batch lookup (GET-with-a-body is proxy-hostile).
 		route = "BatchGet"
 		handleBatchGet(rec, r, s.storage, s.logAgg, s.config.Prefetch)
+	case r.Method == "POST" && key == skipReportKey:
+		route = "SkipReport"
+		handleSkipReport(rec, r)
 	case r.Method == "GET" && key != "":
 		route = "GetObject"
 		handleGetObject(rec, r, s.storage, key, s.logAgg)

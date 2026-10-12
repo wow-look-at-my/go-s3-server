@@ -15,6 +15,12 @@ import (
 
 const retryAfterSeconds = 2
 
+// admissionWait is how long a request waits for a work slot before it is shed.
+const admissionWait = 10 * time.Second
+
+// maxQueuedRequests bounds the requests waiting for a slot.
+const maxQueuedRequests = 1024
+
 // healthPath is the unauthenticated liveness/readiness probe.
 const healthPath = "/_health"
 
@@ -33,6 +39,10 @@ type Server struct {
 	// a 502). A request whose remaining work is only a body transfer hands its
 	// slot back early (releaseSlot). Buffered to MaxConcurrentRequests.
 	sem chan struct{}
+	// admitWait and maxQueued bound the wait for a full sem; see admit.
+	admitWait time.Duration
+	maxQueued int64
+	queued    atomic.Int64
 	// mem scales the in-memory caches to fit the process's memory budget.
 	mem *memController
 	// verboseLog prints a single line per request.
@@ -56,6 +66,8 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 		config:     cfg,
 		storage:    storage,
 		sem:        make(chan struct{}, cfg.MaxConcurrentRequests),
+		admitWait:  admissionWait,
+		maxQueued:  maxQueuedRequests,
 		mem:        newMemController(memoryBudget),
 		verboseLog: cfg.LogMode == logModeVerbose,
 	}
@@ -120,6 +132,41 @@ func (a *admission) release() {
 }
 
 type admissionKey struct{}
+
+// admit takes a work slot, waiting for one when every slot is busy. A slot
+// comes free in the time a single request's work takes. A burst past the
+// limit is served a moment late instead of being shed into a retry that costs
+// the client seconds. Waiters are served in arrival order. It reports false
+// when the wait is already full, when admitWait passes, or when the client
+// goes away.
+func (s *Server) admit(ctx context.Context) bool {
+	select {
+	case s.sem <- struct{}{}:
+		return true
+	default:
+	}
+	if s.queued.Add(1) > s.maxQueued {
+		s.queued.Add(-1)
+		return false
+	}
+	httpQueuedRequests.Inc()
+	start := time.Now()
+	timer := time.NewTimer(s.admitWait)
+	defer func() {
+		timer.Stop()
+		s.queued.Add(-1)
+		httpQueuedRequests.Dec()
+		httpAdmissionWait.Observe(time.Since(start).Seconds())
+	}()
+	select {
+	case s.sem <- struct{}{}:
+		return true
+	case <-timer.C:
+		return false
+	case <-ctx.Done():
+		return false
+	}
+}
 
 // releaseSlot hands the request's concurrency slot back before a transfer
 // that holds no per-request memory: a shared.
@@ -234,11 +281,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// The slot is released on return, or earlier by a handler whose remaining work is a body transfer that holds no per-request memory.
 	slot := &admission{sem: s.sem}
-	select {
-	case s.sem <- struct{}{}:
+	if s.admit(r.Context()) {
 		httpAdmittedRequests.Inc()
 		defer slot.release()
-	default:
+	} else {
 		route = "Overload"
 		httpRejectedTotal.Inc()
 		rec.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))

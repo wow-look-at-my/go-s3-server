@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -115,10 +116,37 @@ func (b *WebBackend) startManifest(module string) {
 	}()
 }
 
+// readManifest reads the manifest over its own request. On the build's batch
+// path a slow answer would hold up the lookups that share its batch.
+func (b *WebBackend) readManifest(id string) ([]byte, bool) {
+	h, ok := parseActionHash(id)
+	if !ok {
+		return nil, false
+	}
+	b.ensureIndex()
+	b.keysMu.RLock()
+	authoritative := b.indexAuthoritative
+	b.keysMu.RUnlock()
+	if authoritative && !b.keyKnown(h) {
+		return nil, false
+	}
+	var data []byte
+	found := false
+	_, err := b.postNamed([]string{b.key(id)}, func(e BatchEntry) {
+		if body, ok := b.verify("manifest", id, e.OutputID, e.Data, e.RawSize); ok {
+			data, found = body, true
+		}
+	})
+	if err != nil {
+		logging.Warnf("cacheprog: manifest: read: %v", err)
+	}
+	return data, found
+}
+
 // fetchManifest reads the manifest and pulls what it names.
 func (b *WebBackend) fetchManifest(id string) {
-	_, data, _, miss := b.Get(id)
-	if miss {
+	data, found := b.readManifest(id)
+	if !found {
 		return
 	}
 	b.keysMu.RLock()
@@ -186,16 +214,16 @@ func (b *WebBackend) isHeld(h actionHash) bool {
 	return b.held.Contains(h)
 }
 
-// fetchNamed asks for keys by name and hands the entries to the local tier.
-// Nobody waits on it, so it rides the look-ahead kind.
-func (b *WebBackend) fetchNamed(keys []string) {
+// postNamed asks for keys by name on a request of its own and hands each entry
+// to each. Nobody waits on it, so it rides the look-ahead kind.
+func (b *WebBackend) postNamed(keys []string, each func(BatchEntry)) (int, error) {
 	body, err := json.Marshal(batchGetRequest{Keys: keys})
 	if err != nil {
-		return
+		return 0, err
 	}
 	req, err := http.NewRequest("POST", b.endpoint+"/"+b.bucket+"/_batch/get", bytes.NewReader(body))
 	if err != nil {
-		return
+		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	b.signRequest(req)
@@ -203,28 +231,34 @@ func (b *WebBackend) fetchNamed(keys []string) {
 
 	start := time.Now()
 	b.Pool.Acquire()
+	defer b.Pool.Release()
 	resp, err := b.doRetryGET(req)
 	if err != nil {
-		b.Pool.Release()
-		logging.Warnf("cacheprog: manifest: fetch: %v", err)
-		return
+		return 0, err
 	}
+	defer closeBody(resp.Body)
 	if resp.StatusCode != 200 {
-		logging.Warnf("cacheprog: manifest: fetch: HTTP %d", resp.StatusCode)
-		closeBody(resp.Body)
-		b.Pool.Release()
-		return
+		return 0, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	var chunk []BatchEntry
 	count := 0
+	err = streamBatchResponse(resp.Body, func(e BatchEntry) {
+		count++
+		each(e)
+	})
+	b.batchTiming.recordLookAhead(count, time.Since(start))
+	return count, err
+}
+
+// fetchNamed asks for keys by name and hands the entries to the local tier.
+func (b *WebBackend) fetchNamed(keys []string) {
+	var chunk []BatchEntry
 	flush := func() {
 		if len(chunk) > 0 {
 			b.OnBatchEntries(chunk)
 			chunk = nil
 		}
 	}
-	err = streamBatchResponse(resp.Body, func(e BatchEntry) {
-		count++
+	count, err := b.postNamed(keys, func(e BatchEntry) {
 		if actionID, ok := b.ActionIDFromKey(e.Key); ok {
 			if h, ok := parseActionHash(actionID); ok {
 				b.noteHeld(h)
@@ -235,14 +269,11 @@ func (b *WebBackend) fetchNamed(keys []string) {
 			flush()
 		}
 	})
-	closeBody(resp.Body)
-	b.Pool.Release()
 	flush()
 	if err != nil {
-		logging.Warnf("cacheprog: manifest: read: %v", err)
+		logging.Warnf("cacheprog: manifest: fetch: %v", err)
 	}
 	b.manifest.Fetched.Add(uint32(count))
-	b.batchTiming.recordLookAhead(count, time.Since(start))
 }
 
 // storeManifest writes what this build used, for the next build. It runs

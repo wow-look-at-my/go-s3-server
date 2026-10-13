@@ -94,8 +94,8 @@ func (m *buildManifest) markPending(ids []string) func() {
 	}
 }
 
-// manifestFormat names what a manifest holds: lookups, in lookup order.
-const manifestFormat = "2"
+// manifestFormat names what a manifest holds: lookups and stores, in first-use order.
+const manifestFormat = "3"
 
 // manifestID is the action ID the manifest for this module is stored under.
 func manifestID(module, version, target string) string {
@@ -103,7 +103,8 @@ func manifestID(module, version, target string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// note records an action ID this build looked up, from any tier. A key stored without a lookup is not one the next build asks for.
+// note records an action ID this build looked up, from any tier, or stored. A cold build stores
+// about half its objects without a lookup first, and the next build looks every one of them up.
 func (m *buildManifest) note(actionID string) {
 	if m == nil {
 		return

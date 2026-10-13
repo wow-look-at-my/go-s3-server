@@ -147,7 +147,7 @@ func TestManifestStoresWhatTheBuildUsed(t *testing.T) {
 	}
 	require.True(t, found, "Close must upload the manifest")
 	require.True(t, b.manifest.used.Contains(used), "a looked-up key is named")
-	require.False(t, b.manifest.used.Contains(storedOnly), "a key stored without a lookup is not")
+	require.True(t, b.manifest.used.Contains(storedOnly), "a key stored without a lookup is named: the next build looks it up")
 }
 
 // A lookup the disk tier answers is named too, or a warm build stores a manifest that names almost nothing.

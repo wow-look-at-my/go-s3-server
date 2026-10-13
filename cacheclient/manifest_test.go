@@ -62,6 +62,47 @@ func TestManifestFetchesWhatItNames(t *testing.T) {
 	require.NoError(t, b.Close())
 }
 
+// A found manifest stops the server look-ahead, which would only fetch bodies the build does not use.
+func TestManifestCoversTheLookAhead(t *testing.T) {
+	t.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "2")
+	store := map[string][]byte{}
+	meta := map[string]map[string]string{}
+	one := strings.Repeat("a7", 32)
+	seedObject(t, store, meta, one, []byte("object one"))
+	seedObject(t, store, meta, manifestID("example.com/m", "", ""), []byte(one))
+	srv := fakeBatchServer(t, store, meta)
+	t.Cleanup(srv.Close)
+
+	b, err := NewWebBackend(WebConfig{Bucket: "testbucket", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: t.TempDir()})
+	require.NoError(t, err)
+	b.shortenIndexWait(10 * time.Millisecond)
+	b.OnBatchEntries = func([]BatchEntry) {}
+	require.False(t, b.lookAhead.covered.Load())
+	b.SetModule("example.com/m")
+	b.manifestWG.Wait()
+
+	require.True(t, b.lookAhead.covered.Load())
+	b.lookAhead.Seed([]string{"go-buildcache/v1" + one})
+	require.NoError(t, b.Close())
+	require.Equal(t, uint32(0), b.lookAhead.Requests.Load(), "a covered pool sends nothing")
+}
+
+// With no manifest on the server, the look-ahead stays on.
+func TestNoManifestLeavesTheLookAhead(t *testing.T) {
+	t.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "2")
+	srv := fakeBatchServer(t, map[string][]byte{}, map[string]map[string]string{})
+	t.Cleanup(srv.Close)
+
+	b, err := NewWebBackend(WebConfig{Bucket: "testbucket", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: t.TempDir()})
+	require.NoError(t, err)
+	b.shortenIndexWait(10 * time.Millisecond)
+	b.OnBatchEntries = func([]BatchEntry) {}
+	b.SetModule("example.com/m")
+	b.manifestWG.Wait()
+	require.False(t, b.lookAhead.covered.Load())
+	require.NoError(t, b.Close())
+}
+
 // Close stores the action IDs the build used under the module's manifest key.
 func TestManifestStoresWhatTheBuildUsed(t *testing.T) {
 	t.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "0")

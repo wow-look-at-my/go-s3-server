@@ -137,6 +137,9 @@ func (b *WebBackend) fetchManifest(id string) {
 		}
 		ids = append(ids, line)
 	}
+	if b.manifest.Named.Load() > 0 {
+		b.lookAhead.cover()
+	}
 	if len(ids) == 0 {
 		return
 	}

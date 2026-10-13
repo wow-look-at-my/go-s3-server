@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // A build asks for keys the way a dependency graph lets it: a level at a time,
@@ -56,17 +58,17 @@ func benchKeyIndex(key string) (int, bool) {
 // already put on disk instead of reaching the network.
 type localTier struct {
 	mu   sync.Mutex
-	objs map[string]struct{}
+	objs set.Set[string]
 	Hits int
 }
 
-func newLocalTier() *localTier { return &localTier{objs: map[string]struct{}{}} }
+func newLocalTier() *localTier { return &localTier{objs: set.New[string]()} }
 
 func (t *localTier) store(entries []BatchEntry) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for _, e := range entries {
-		t.objs[e.Key] = struct{}{}
+		t.objs.Add(e.Key)
 	}
 }
 
@@ -74,7 +76,7 @@ func (t *localTier) store(entries []BatchEntry) {
 func (t *localTier) take(key string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, ok := t.objs[key]; !ok {
+	if !t.objs.Contains(key) {
 		return false
 	}
 	t.Hits++

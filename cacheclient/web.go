@@ -255,6 +255,10 @@ type WebBackend struct {
 	// lookAhead fetches objects the build has not asked for yet, on its own
 	// goroutines. See lookahead.go.
 	lookAhead *lookAhead
+
+	// manifest lists what this build used, and fetches what the last one used.
+	manifest   *buildManifest
+	manifestWG sync.WaitGroup
 	// prep runs a Put's compression off the build's goroutine. See webput.go.
 	prep *prepPool
 }
@@ -427,6 +431,7 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	go b.batchPutCoalescer()
 	b.prep = newPrepPool(b)
 	b.lookAhead = newLookAhead(b)
+	b.manifest = newBuildManifest()
 	// The same knob bounds both speculative paths, since both hold bodies the
 	// build never asked for.
 	b.prefetchHold.limit = lookAheadBudget()
@@ -468,6 +473,17 @@ func (b *WebBackend) url(key string) string {
 //   - Key absent but the index fetch FAILED: batch-probe the key (the recovery
 //     path), bounded by the consecutive-empty-batch backoff.
 func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.Time, miss bool) {
+	if b.manifest != nil && !b.manifest.started.Load() {
+		b.startManifest(b.moduleName())
+	}
+	outputID, data, t, miss = b.get(actionID)
+	if !miss {
+		b.manifest.note(actionID)
+	}
+	return outputID, data, t, miss
+}
+
+func (b *WebBackend) get(actionID string) (outputID string, data []byte, t time.Time, miss bool) {
 	h, ok := parseActionHash(actionID)
 	if !ok {
 		return "", nil, time.Time{}, true
@@ -510,8 +526,34 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 		b.noteSkip()
 		return "", nil, time.Time{}, true
 	}
-	r := b.getBatch(actionID, b.key(actionID), h)
+	r := b.probeDuringLoad(actionID, h)
 	return r.outputID, r.data, r.t, r.miss
+}
+
+// probeDuringLoad asks the server for a key the unconfirmed index does not
+// hold. A running index load races the probe: once the load proves the key
+// absent, the miss returns at once and the probe finishes unread.
+func (b *WebBackend) probeDuringLoad(actionID string, h actionHash) batchResp {
+	load := b.indexLoad.Load()
+	if load == nil {
+		return b.getBatch(actionID, b.key(actionID), h)
+	}
+	probe := make(chan batchResp, 1)
+	go func() { probe <- b.getBatch(actionID, b.key(actionID), h) }()
+	select {
+	case r := <-probe:
+		return r
+	case <-load.done:
+	}
+	b.keysMu.RLock()
+	absent := b.indexAuthoritative && !b.keys.Contains(h)
+	b.keysMu.RUnlock()
+	if !absent {
+		return <-probe
+	}
+	b.SkippedNotInIndex.Increment()
+	b.noteSkip()
+	return batchResp{miss: true}
 }
 
 // Verify decompresses and checks a stored body from a look-ahead entry, under
@@ -580,6 +622,10 @@ func (b *WebBackend) Close() error {
 		l.cancel()
 		<-l.done
 	}
+	// The manifest fetch reads through the GET coalescer.
+	b.manifestWG.Wait()
+	b.storeManifest()
+	b.reportManifest()
 	// The prep pool since it still owes the coalescer every object it holds.
 	b.prep.Close()
 	// Flush the PUT coalescer up front: an unflushed upload was claimed in the index but never stored.
@@ -635,6 +681,7 @@ func (b *WebBackend) signRequest(req *http.Request) {
 func (b *WebBackend) SetModule(path string) {
 	if path != "" {
 		b.moduleLate.Store(&path)
+		b.startManifest(path)
 	}
 }
 

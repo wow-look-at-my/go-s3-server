@@ -84,6 +84,9 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 		if storage.cleanKeys != nil {
 			s.mem.Register(cleanMemoKind, storage.cleanKeys.Budget(), storage.cleanKeys)
 		}
+		if storage.digestOK != nil {
+			s.mem.Register(digestMemoKind, storage.digestOK.Budget(), storage.digestOK)
+		}
 	}
 	return s
 }
@@ -334,7 +337,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case (r.Method == "GET" || r.Method == "POST") && key == "_batch/get":
 		// POST is the semantically sound method for a body-carrying batch lookup (GET-with-a-body is proxy-hostile).
 		route = "BatchGet"
-		handleBatchGet(rec, r, s.storage, s.logAgg, s.config.Prefetch)
+		handleBatchGet(rec, r, s.storage, s.logAgg, s.config.PrefetchEnabled())
 	case r.Method == "POST" && key == skipReportKey:
 		route = "SkipReport"
 		handleSkipReport(rec, r)

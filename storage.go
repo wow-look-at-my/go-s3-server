@@ -54,6 +54,8 @@ type Storage struct {
 
 	// cleanKeys memoizes indexed cacheprog keys whose stored body already passed the read-path module-index probe.
 	cleanKeys *lruCache[cleanKey, struct{}]
+	// digestOK memoizes the file version of each key whose body last matched its stored digest.
+	digestOK *lruCache[cleanKey, fileIdentity]
 }
 
 type ObjectMeta struct {
@@ -94,6 +96,7 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 		writeOnce: writeOnce,
 		unlock:    unlock,
 		cleanKeys: newCleanKeyMemo(cacheBudget(cleanMemoBudgetFraction, defaultCleanMemoBytes)),
+		digestOK:  newDigestMemo(cacheBudget(cleanMemoBudgetFraction, defaultCleanMemoBytes)),
 		metaCache: newMetaCache(cacheBudget(metaCacheBudgetFraction, defaultMetaCacheBytes)),
 	}
 
@@ -222,12 +225,15 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 	path := s.keyToPath(key)
 	hashed := !isKeySafe(key)
 
+	// The directory almost always exists, so the put makes it only when the create fails.
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("create dirs: %w", err)
-	}
-
 	tmp, err := os.CreateTemp(dir, tempFilePrefix+"*")
+	if errors.Is(err, fs.ErrNotExist) {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("create dirs: %w", err)
+		}
+		tmp, err = os.CreateTemp(dir, tempFilePrefix+"*")
+	}
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}
@@ -292,18 +298,13 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 	stored := make(map[string]string, len(meta)+1)
 	maps.Copy(stored, meta)
 	stored[storedDigestMetaKey] = digest
-	if err := setMetadata(tmpPath, stored); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-
-	// Audit is best-effort: if the filesystem does not support extended
-	// attributes, the request log still captures the same fields.
 	if audit != nil {
 		audit["content_length"] = strconv.FormatInt(n, 10)
 	}
-	if err := setAudit(tmpPath, audit); err != nil {
-		log.Printf("audit: failed to persist xattrs for key %q (request log still has the data): %v", key, err)
+	// One write holds the metadata and the audit fields together.
+	if err := setObjectAttrs(tmpPath, stored, audit); err != nil {
+		os.Remove(tmpPath)
+		return err
 	}
 
 	if hashed {

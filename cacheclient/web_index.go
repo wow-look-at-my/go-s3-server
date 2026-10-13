@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -346,41 +346,29 @@ func parseIndexBlob(blob []byte) (*hashSet, string, error) {
 	if !bytes.Equal(expected[:], blob[bodyEnd:]) {
 		return nil, "", fmt.Errorf("trailer hash mismatch")
 	}
-	// The body IS the hashes, ascending, which is the order the set holds them
-	// in. Each entry is copied as it stands, with no hex encode, no per-key
-	// allocation and no sort: on a cache of hundreds of thousands of entries
-	// that work all lands before the build starts.
-	hashes := make([]actionHash, count)
-	for i := uint64(0); i < count; i++ {
-		off := gbciHeaderSize + int(i)*width
-		copy(hashes[i][:], blob[off:off+width])
+	// The body IS the hashes, ascending, which is the order the set holds them in.
+	keys := make([]hashKey, count)
+	for idx := range keys {
+		off := gbciHeaderSize + idx*width
+		keys[idx] = binary.BigEndian.Uint64(blob[off : off+gbciPrefixSize])
 	}
-	keys := newHashSetFromSorted(hashes)
-	keys.prefixOnly = width == gbciPrefixSize
+	set := newHashSetFromSorted(keys)
 	etag := `"` + hex.EncodeToString(blob[bodyEnd:]) + `"`
-	return keys, etag, nil
+	return set, etag, nil
 }
 
 // marshalIndex encodes the given hash set as a GBCI v1 blob. Used by tests.
 func marshalIndex(keys *hashSet) []byte {
-	hashes := make([]actionHash, 0, keys.Len())
-	for h := range keys.All() {
-		hashes = append(hashes, h)
-	}
-	sort.Slice(hashes, func(i, j int) bool {
-		return bytes.Compare(hashes[i][:], hashes[j][:]) < 0
-	})
-	blob := make([]byte, gbciHeaderSize+len(hashes)*gbciHashSize+sha256.Size)
+	sorted := slices.Sorted(keys.All())
+	blob := make([]byte, gbciHeaderSize+len(sorted)*gbciPrefixSize+sha256.Size)
 	copy(blob[0:4], gbciMagic[:])
 	blob[4] = gbciVersion
-	blob[5] = gbciHashSize
-	binary.LittleEndian.PutUint16(blob[6:8], 0)
-	binary.LittleEndian.PutUint64(blob[8:16], 0)
-	binary.LittleEndian.PutUint64(blob[16:24], uint64(len(hashes)))
+	blob[5] = gbciPrefixSize
+	binary.LittleEndian.PutUint64(blob[16:24], uint64(len(sorted)))
 	off := gbciHeaderSize
-	for i := range hashes {
-		copy(blob[off:off+gbciHashSize], hashes[i][:])
-		off += gbciHashSize
+	for _, key := range sorted {
+		binary.BigEndian.PutUint64(blob[off:], key)
+		off += gbciPrefixSize
 	}
 	digest := sha256.Sum256(blob[:off])
 	copy(blob[off:], digest[:])

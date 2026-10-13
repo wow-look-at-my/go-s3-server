@@ -64,7 +64,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	// Every object is checked against the digest recorded with it before it is
 	// served.
 	{
-		ok, verifyErr := verifyStoredDigest(f, meta.Metadata)
+		ok, verifyErr := storage.verifyStoredDigestFor(key, f, meta.Metadata)
 		switch {
 		case verifyErr != nil:
 			log.Printf("stored digest: cannot verify %q, so not serving it: %v", key, verifyErr)

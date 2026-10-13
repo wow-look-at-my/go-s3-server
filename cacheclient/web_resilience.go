@@ -84,13 +84,14 @@ func (b *WebBackend) noteBatchEntries(n int) {
 		return
 	}
 	if b.consecutiveEmptyBatches.Add(1) >= int64(b.emptyBatchBackoffThreshold) {
-		if b.batchProbingDisabled.CompareAndSwap(false, true) {
-			b.batchBackoffLogOnce.Do(func() {
-				logging.Infof("cacheprog: remote returned %d empty batches; "+
-					"disabling further batch probes for this run (endpoint=%s)",
-					b.emptyBatchBackoffThreshold, b.endpoint)
-			})
-		}
+		// The notice goes out before the flag is set. A probe can finish on its
+		// own goroutine, so a reader that sees the flag must also see the notice.
+		b.batchBackoffLogOnce.Do(func() {
+			logging.Infof("cacheprog: remote returned %d empty batches; "+
+				"disabling further batch probes for this run (endpoint=%s)",
+				b.emptyBatchBackoffThreshold, b.endpoint)
+			b.batchProbingDisabled.Store(true)
+		})
 	}
 }
 

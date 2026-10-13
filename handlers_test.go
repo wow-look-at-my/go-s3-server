@@ -32,7 +32,7 @@ func testSetupPrefetch(t *testing.T, prefetch bool) *httptest.Server {
 		DataDir:     dir,
 		WriteOnce:   WriteOnceConfig{Action: "allow"},
 		DisableAuth: true,
-		Prefetch:    prefetch,
+		Prefetch:    &prefetch,
 	}
 
 	storage, err := NewStorage(cfg.DataDir, cfg.WriteOnce)

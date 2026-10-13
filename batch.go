@@ -138,37 +138,20 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 		req.Prefetch, req.PrefetchOnly = false, false
 	}
 
-	// Stat is cheap (os.Stat + xattrs).
-	var entries []batchEntry
 	requestedSet := set.New[string](len(lookup))
-	var minMod, maxMod time.Time
-
 	for _, key := range lookup {
 		requestedSet.Add(key)
-		meta, err := storage.Stat(key)
-		if err != nil {
-			if !errors.Is(err, ErrNotFound) {
-				log.Printf("batch get: %s: %v", key, err)
-			}
-			continue
+	}
+	entries := parallelFilter(lookup, func(key string) (batchEntry, bool) {
+		return servableEntry(storage, key, false)
+	})
+	var minMod, maxMod time.Time
+	for _, e := range entries {
+		if minMod.IsZero() || e.meta.ModTime.Before(minMod) {
+			minMod = e.meta.ModTime
 		}
-		// Module-index guard: refuse + evict a stored Go module-index blob (same
-		// rationale as handleGetObject) before it ever enters the manifest.
-		if evictModuleIndexOnReadByKey(storage, key, meta) {
-			continue
-		}
-		// Self-heal: repair an outputid-less object in place (same rationale as
-		// handleGetObject) so it can be served as a hit.
-		if !ensureOutputID(storage, key, meta, nil) {
-			continue
-		}
-		entries = append(entries, batchEntry{key: key, meta: meta})
-
-		if minMod.IsZero() || meta.ModTime.Before(minMod) {
-			minMod = meta.ModTime
-		}
-		if maxMod.IsZero() || meta.ModTime.After(maxMod) {
-			maxMod = meta.ModTime
+		if maxMod.IsZero() || e.meta.ModTime.After(maxMod) {
+			maxMod = e.meta.ModTime
 		}
 	}
 
@@ -471,52 +454,52 @@ type openedEntry struct {
 // out and evicted, so the client reads it as a miss and the next upload
 // replaces it. The caller owns the returned files.
 func openVerifiedEntries(storage *Storage, entries []batchEntry) []openedEntry {
-	opened := make([]openedEntry, 0, len(entries))
-	for _, e := range entries {
+	return parallelFilter(entries, func(e batchEntry) (openedEntry, bool) {
 		f, size, err := storage.OpenBody(e.key)
 		if err != nil {
-			continue
+			return openedEntry{}, false
 		}
-		ok, verifyErr := verifyStoredDigest(f, e.meta.Metadata)
+		ok, verifyErr := storage.verifyStoredDigestFor(e.key, f, e.meta.Metadata)
 		if verifyErr == nil && ok {
-			opened = append(opened, openedEntry{batchEntry: e, f: f, size: size})
-			continue
+			return openedEntry{batchEntry: e, f: f, size: size}, true
 		}
 		f.Close()
 		if verifyErr != nil {
-			continue
+			return openedEntry{}, false
 		}
 		storedDigestMismatchTotal.WithLabelValues("batch_get").Inc()
 		log.Printf("stored digest: %q no longer hashes to the digest stored with it; evicting", e.key)
 		if delErr := storage.Delete(e.key); delErr != nil && !errors.Is(delErr, ErrNotFound) {
 			log.Printf("stored digest: evicting %q: %v", e.key, delErr)
 		}
-	}
-	return opened
+		return openedEntry{}, false
+	})
 }
 
-// buildPrefetchEntries stats the given prefetch keys and applies the same
-// guard/heal gates the requested-key loop uses, returning servable entries
-// (metadata only). Bodies are not read here — they are streamed later
-// alongside the explicitly requested ones. The caller has already run tracker
-// suppression, so every key here is genuinely about to be offered.
-func buildPrefetchEntries(storage *Storage, keys []string) []batchEntry {
-	var out []batchEntry
-	for _, key := range keys {
-		meta, err := storage.Stat(key)
-		if err != nil {
-			continue
+// servableEntry stats key and applies the read guards. It refuses and evicts
+// a stored module-index blob, and it repairs an object with no outputid in
+// place. Bodies are not read here.
+func servableEntry(storage *Storage, key string, prefetch bool) (batchEntry, bool) {
+	meta, err := storage.Stat(key)
+	if err != nil {
+		if !prefetch && !errors.Is(err, ErrNotFound) {
+			log.Printf("batch get: %s: %v", key, err)
 		}
-		// Module-index guard here too: never prefetch a stored module-index blob.
-		if evictModuleIndexOnReadByKey(storage, key, meta) {
-			continue
-		}
-		// Self-heal here too: repair an outputid-less object in place so it is
-		// usable prefetch.
-		if !ensureOutputID(storage, key, meta, nil) {
-			continue
-		}
-		out = append(out, batchEntry{key: key, meta: meta, prefetch: true})
+		return batchEntry{}, false
 	}
-	return out
+	if evictModuleIndexOnReadByKey(storage, key, meta) {
+		return batchEntry{}, false
+	}
+	if !ensureOutputID(storage, key, meta, nil) {
+		return batchEntry{}, false
+	}
+	return batchEntry{key: key, meta: meta, prefetch: prefetch}, true
+}
+
+// buildPrefetchEntries returns the servable entries for the prefetch keys. The
+// caller has already left out the keys the client holds.
+func buildPrefetchEntries(storage *Storage, keys []string) []batchEntry {
+	return parallelFilter(keys, func(key string) (batchEntry, bool) {
+		return servableEntry(storage, key, true)
+	})
 }

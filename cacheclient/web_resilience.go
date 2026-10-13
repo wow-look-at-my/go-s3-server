@@ -269,9 +269,14 @@ func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response,
 			stalled.Store(true)
 			cancel()
 		})
+		sent := time.Now()
 		resp, err = b.client.Do(req.WithContext(ctx))
 		if err == nil {
-			b.noteAnswered()
+			if waited := time.Since(sent); waited > slowAnswer && req.Header.Get(HeaderKind) == KindCritical {
+				b.noteNoAnswer(fmt.Errorf("a lookup waited %s for an answer", waited.Round(time.Millisecond)))
+			} else {
+				b.noteAnswered()
+			}
 		} else if isNoAnswer(err) || stalled.Load() {
 			// A retry waits the same silence out again. The build compiles instead.
 			watchdog.Stop()
@@ -307,6 +312,9 @@ func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response,
 // downProbeEvery is how often a request still goes out while the server is down. The first to get an answer brings the server back.
 var downProbeEvery = 5 * time.Second
 
+// slowAnswer is how long a lookup the build waits on may wait for an answer before the server counts as down.
+var slowAnswer = 5 * time.Second
+
 // errServerDown answers a request that was not sent because the server had stopped answering.
 var errServerDown = errors.New("not sent: the cache server stopped answering; the build compiles instead")
 
@@ -335,7 +343,7 @@ func (b *WebBackend) noteNoAnswer(err error) {
 	now := time.Now().UnixNano()
 	b.probeAt.Store(now + int64(downProbeEvery))
 	if b.downSince.CompareAndSwap(0, now) {
-		logging.Warnf("cacheprog: the cache server gave no answer (%v); every lookup is a miss and the build compiles, with a single request every %s to find it again", err, downProbeEvery)
+		logging.Warnf("cacheprog: the cache server does not answer in time (%v); every lookup is a miss and the build compiles, with a single request every %s to find it again", err, downProbeEvery)
 	}
 }
 

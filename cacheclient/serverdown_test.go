@@ -66,3 +66,37 @@ func TestServerDownSkipsRequestsUntilItAnswers(t *testing.T) {
 	require.Zero(t, b.downSince.Load(), "an answer brings the server back")
 	require.NoError(t, ask())
 }
+
+// A lookup the build waits on that gets a slow answer takes the answer, and
+// marks the server down. A look-ahead request with the same delay does not.
+func TestSlowAnswerToALookupMarksTheServerDown(t *testing.T) {
+	t.Serial() // slowAnswer and downProbeEvery are package state
+	oldSlow, oldProbe := slowAnswer, downProbeEvery
+	slowAnswer, downProbeEvery = 100*time.Millisecond, time.Hour
+	defer func() { slowAnswer, downProbeEvery = oldSlow, oldProbe }()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	b := testBackend(t, srv.URL)
+	defer b.Close()
+	ask := func(kind string) error {
+		req, err := http.NewRequest("POST", srv.URL+"/x", nil)
+		require.NoError(t, err)
+		req.Header.Set(HeaderKind, kind)
+		resp, err := b.doRetryGET(req)
+		if err == nil {
+			closeBody(resp.Body)
+		}
+		return err
+	}
+
+	require.NoError(t, ask(KindLookAhead))
+	require.Zero(t, b.downSince.Load(), "nobody waits on a look-ahead request")
+	require.NoError(t, ask(KindCritical), "the slow answer is still used")
+	require.NotZero(t, b.downSince.Load())
+	require.ErrorIs(t, ask(KindCritical), errServerDown)
+}

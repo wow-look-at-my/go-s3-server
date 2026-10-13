@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -233,4 +235,45 @@ func TestGatherFlattensHistogramsAndMultiLabelSeries(t *testing.T) {
 	assert.InDelta(t, 2, *got["cache_op_seconds_count"].Value, 0)
 	assert.InDelta(t, 1.0, *got["cache_op_seconds_sum"].Value, 0.001)
 	assert.InDelta(t, 1, seriesValue(t, got["cache_http_requests_total"].Series, map[string]string{"method": "GET", "route": "GetObject", "status": "200"}), 0)
+}
+
+func TestDashboardReportsTheIndexWireSize(t *testing.T) {
+	d := testDashboard(t, prometheus.NewRegistry())
+	stats, err := d.snapshot()
+	require.NoError(t, err)
+	assert.Zero(t, stats.Index.WireBytes, "a server with no storage has no index to size")
+
+	d.srv.storage = newTestStorage(t)
+	idx := d.srv.storage.Index
+	for i := 0; i < 5; i++ {
+		idx.Put(gbciKeyPrefix+fmt.Sprintf("%064x", i), 1)
+	}
+
+	// Pending hashes count before anything serializes.
+	stats, err = d.snapshot()
+	require.NoError(t, err)
+	assert.EqualValues(t, gbciHeaderSize+5*gbciHashSize+sha256.Size, stats.Index.WireBytes)
+
+	// The figure is the body a client gets, whether the blob is cached yet or not.
+	blob, _ := idx.Blob()
+	stats, err = d.snapshot()
+	require.NoError(t, err)
+	assert.EqualValues(t, len(blob), stats.Index.WireBytes)
+
+	// An unserialized add shows at once when the cached blob is too old to serve.
+	idx.SetBlobInterval(0)
+	idx.Put(gbciKeyPrefix+fmt.Sprintf("%064x", 5), 1)
+	idx.Put(gbciKeyPrefix+fmt.Sprintf("%064x", 5), 1)
+	stats, err = d.snapshot()
+	require.NoError(t, err)
+	fresh, _ := idx.Blob()
+	assert.EqualValues(t, len(fresh), stats.Index.WireBytes, "a duplicate pending hash is one entry")
+	assert.EqualValues(t, gbciHeaderSize+6*gbciHashSize+sha256.Size, len(fresh))
+}
+
+func TestDashboardShowsTheIndexSizeInMB(t *testing.T) {
+	script, err := dashboardAssets.ReadFile("dashboard.js")
+	require.NoError(t, err)
+	assert.Contains(t, string(script), `stats.index`)
+	assert.Contains(t, string(script), `MB`)
 }

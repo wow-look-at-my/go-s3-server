@@ -229,3 +229,106 @@ func TestManifestNeedsAModule(t *testing.T) {
 	b.storeManifest()
 	b.reportManifest()
 }
+
+// The walk reads generations in order and uses the newest one, and a missing generation ends it.
+func TestManifestWalkPicksTheNewestGeneration(t *testing.T) {
+	t.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "0")
+	store := map[string][]byte{}
+	meta := map[string]map[string]string{}
+	base := manifestID("example.com/m", "", "")
+	keys := []string{strings.Repeat("a1", 32), strings.Repeat("b2", 32), strings.Repeat("c3", 32), strings.Repeat("d4", 32)}
+	for _, k := range keys {
+		seedObject(t, store, meta, k, []byte("object "+k))
+	}
+	seedObject(t, store, meta, manifestGenID(base, 0), []byte(keys[0]))
+	seedObject(t, store, meta, manifestGenID(base, 1), []byte(strings.Join(keys[:2], "\n")))
+	seedObject(t, store, meta, manifestGenID(base, 2), []byte(strings.Join(keys[:3], "\n")))
+	// Generation 4 is past a gap, so the walk never reaches it.
+	seedObject(t, store, meta, manifestGenID(base, 4), []byte(strings.Join(keys, "\n")))
+	srv := fakeBatchServer(t, store, meta)
+	t.Cleanup(srv.Close)
+
+	b, err := NewWebBackend(WebConfig{Bucket: "testbucket", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: t.TempDir()})
+	require.NoError(t, err)
+	b.shortenIndexWait(10 * time.Millisecond)
+	b.OnBatchEntries = func([]BatchEntry) {}
+	b.SetModule("example.com/m")
+	b.manifestWG.Wait()
+
+	require.Equal(t, 2, b.manifest.newest)
+	require.Equal(t, 3, b.manifest.newestKeys)
+	require.Equal(t, uint32(3), b.manifest.Named.Load())
+	require.NoError(t, b.Close())
+}
+
+// storeManifestAfter runs a build that notes count keys against a walk that found
+// generation newest with newestKeys keys, and returns the bodies it uploaded.
+func storeManifestAfter(t *testing.T, newest, newestKeys, count int) [][]byte {
+	t.Helper()
+	t.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "0")
+	var mu sync.Mutex
+	var uploads [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if r.Method == "PUT" || strings.HasSuffix(r.URL.Path, "/_batch/put") {
+			mu.Lock()
+			uploads = append(uploads, body)
+			mu.Unlock()
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte("{}"))
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	t.Cleanup(srv.Close)
+
+	b, err := NewWebBackend(WebConfig{Bucket: "testbucket", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: t.TempDir()})
+	require.NoError(t, err)
+	b.shortenIndexWait(10 * time.Millisecond)
+	b.OnBatchEntries = func([]BatchEntry) {}
+	b.SetModule("example.com/m")
+	b.manifestWG.Wait()
+	b.manifest.mu.Lock()
+	b.manifest.newest, b.manifest.newestKeys = newest, newestKeys
+	b.manifest.mu.Unlock()
+	for i := range count {
+		b.manifest.note(hex.EncodeToString([]byte(strings.Repeat(string(rune('a'+i)), 32))))
+	}
+	require.NoError(t, b.Close())
+	mu.Lock()
+	defer mu.Unlock()
+	return uploads
+}
+
+func uploadedAny(uploads [][]byte, id string) bool {
+	for _, u := range uploads {
+		if bytes.Contains(u, []byte(id)) {
+			return true
+		}
+	}
+	return false
+}
+
+// A newest generation that names too few keys gets a successor with this build's list.
+func TestManifestShortGenerationGetsASuccessor(t *testing.T) {
+	base := manifestID("example.com/m", "", "")
+	uploads := storeManifestAfter(t, 1, 5, 10)
+	require.True(t, uploadedAny(uploads, manifestGenID(base, 2)), "a short generation 1 gets generation 2")
+	require.False(t, uploadedAny(uploads, base))
+	require.False(t, uploadedAny(uploads, manifestGenID(base, 1)))
+}
+
+// A newest generation within 10% of this build's keys stays the newest.
+func TestManifestNearCompleteGenerationStays(t *testing.T) {
+	base := manifestID("example.com/m", "", "")
+	uploads := storeManifestAfter(t, 0, 9, 10)
+	for gen := range manifestGenerations {
+		require.False(t, uploadedAny(uploads, manifestGenID(base, gen)), "generation %d", gen)
+	}
+}
+
+// With no generation on the server, the build writes generation 0.
+func TestManifestFirstGenerationIsTheBaseID(t *testing.T) {
+	uploads := storeManifestAfter(t, -1, 0, 10)
+	require.True(t, uploadedAny(uploads, manifestID("example.com/m", "", "")))
+}

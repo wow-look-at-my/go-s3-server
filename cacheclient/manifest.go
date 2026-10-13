@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +36,9 @@ type buildManifest struct {
 	order   []string                 // used, in the order of the first lookup
 	pending map[string]chan struct{} // action IDs a fetch has on the wire, closed when they land
 
+	newest     int // the newest manifest generation the walk found, or -1
+	newestKeys int // the keys that generation names
+
 	Waited AtomicCounter // lookups that waited for a fetch already on the wire
 	GaveUp AtomicCounter // lookups that stopped waiting after manifestWaitCap and asked on their own
 
@@ -43,7 +47,7 @@ type buildManifest struct {
 }
 
 func newBuildManifest() *buildManifest {
-	return &buildManifest{used: set.New[string](), pending: map[string]chan struct{}{}}
+	return &buildManifest{used: set.New[string](), pending: map[string]chan struct{}{}, newest: -1}
 }
 
 // AwaitPrefetch waits while the manifest fetch has actionID on the wire. It
@@ -103,6 +107,29 @@ func manifestID(module, version, target string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// manifestGenerations caps the walk. A write-once server keeps each generation, so a short one gets a successor.
+const manifestGenerations = 16
+
+// manifestGenID is the action ID of generation gen of the manifest stored under base. Generation 0 is base.
+func manifestGenID(base string, gen int) string {
+	if gen == 0 {
+		return base
+	}
+	sum := sha256.Sum256([]byte("go-build-manifest-gen\x00" + base + "\x00" + strconv.Itoa(gen)))
+	return hex.EncodeToString(sum[:])
+}
+
+// manifestKeys returns the action IDs a manifest body names.
+func manifestKeys(data []byte, self string) []string {
+	var ids []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if _, ok := parseActionHash(line); ok && line != self {
+			ids = append(ids, line)
+		}
+	}
+	return ids
+}
+
 // note records an action ID this build looked up, from any tier, or stored. A cold build stores
 // about half its objects without a lookup first, and the next build looks every one of them up.
 func (m *buildManifest) note(actionID string) {
@@ -160,21 +187,38 @@ func (b *WebBackend) readManifest(id string) ([]byte, bool) {
 	return data, found
 }
 
-// fetchManifest reads the manifest and pulls what it names.
-func (b *WebBackend) fetchManifest(id string) {
-	data, found := b.readManifest(id)
-	if !found {
+// walkManifest reads generations 0, 1, 2, ... of the manifest under base and
+// returns the newest one that exists, or -1. It records that generation and its
+// key count for storeManifest.
+func (b *WebBackend) walkManifest(base string) (int, []string) {
+	newest := -1
+	var named []string
+	for gen := range manifestGenerations {
+		data, found := b.readManifest(manifestGenID(base, gen))
+		if !found {
+			break
+		}
+		newest, named = gen, manifestKeys(data, base)
+	}
+	m := b.manifest
+	m.mu.Lock()
+	m.newest, m.newestKeys = newest, len(named)
+	m.mu.Unlock()
+	return newest, named
+}
+
+// fetchManifest reads the newest manifest generation and pulls what it names.
+func (b *WebBackend) fetchManifest(base string) {
+	newest, named := b.walkManifest(base)
+	if newest < 0 {
 		return
 	}
 	b.keysMu.RLock()
 	authoritative := b.indexAuthoritative
 	b.keysMu.RUnlock()
 	var ids []string
-	for _, line := range strings.Split(string(data), "\n") {
-		h, ok := parseActionHash(line)
-		if !ok || line == id {
-			continue
-		}
+	for _, line := range named {
+		h, _ := parseActionHash(line)
 		b.manifest.Named.Increment()
 		// Only an authoritative index proves a key absent.
 		if (authoritative && !b.keyKnown(h)) || b.isHeld(h) {
@@ -312,14 +356,28 @@ func (b *WebBackend) storeManifest() {
 			ids = append(ids, actionID)
 		}
 	}
+	newest, newestKeys := m.newest, m.newestKeys
 	m.mu.Unlock()
 	if len(ids) == 0 {
 		return
 	}
+	gen := 0
+	if newest >= 0 {
+		// A generation that names 90% of this build's keys or more stays the newest.
+		if newestKeys*10 >= len(ids)*9 {
+			return
+		}
+		gen = newest + 1
+	}
+	if gen >= manifestGenerations {
+		logging.Warnf("cacheprog: manifest: generation %d names %d keys of %d, and the walk reads no later generation", newest, newestKeys, len(ids))
+		return
+	}
+	target := manifestGenID(*id, gen)
 	data := []byte(strings.Join(ids, "\n"))
 	// Put skips a key the index already holds. A write-once server keeps the first manifest under an ID.
-	b.ForgetStale(*id)
-	if err := b.Put(*id, StoredDigest(data), data); err != nil {
+	b.ForgetStale(target)
+	if err := b.Put(target, StoredDigest(data), data); err != nil {
 		logging.Warnf("cacheprog: manifest: store: %v", err)
 	}
 }

@@ -3,9 +3,11 @@ package cacheclient
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -248,6 +250,9 @@ func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response,
 			b.sleepQuiet(attempt, quiet)
 			continue
 		}
+		if !b.mayAsk() {
+			return nil, errServerDown
+		}
 		// Rewind the body for a retry (batch get carries a small JSON body; a
 		// PUT carries the compressed object).
 		if attempt > 0 && req.GetBody != nil {
@@ -265,6 +270,15 @@ func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response,
 			cancel()
 		})
 		resp, err = b.client.Do(req.WithContext(ctx))
+		if err == nil {
+			b.noteAnswered()
+		} else if isNoAnswer(err) || stalled.Load() {
+			// A retry waits the same silence out again. The build compiles instead.
+			watchdog.Stop()
+			cancel()
+			b.noteNoAnswer(err)
+			return resp, err
+		}
 		if err == nil && !transientStatus(resp.StatusCode) {
 			resp.Body = &guardedBody{ReadCloser: resp.Body, watchdog: watchdog, cancel: cancel, stalled: stalled}
 			return resp, nil
@@ -287,6 +301,50 @@ func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response,
 		}
 		// Honor a server Retry-After (e.g. an admission shed), but never sleep less than the jittered backoff.
 		b.sleepBackoff(attempt, retryAfter)
+	}
+}
+
+// downProbeEvery is how often a request still goes out while the server is down. The first to get an answer brings the server back.
+var downProbeEvery = 5 * time.Second
+
+// errServerDown answers a request that was not sent because the server had stopped answering.
+var errServerDown = errors.New("not sent: the cache server stopped answering; the build compiles instead")
+
+// isNoAnswer reports a request that timed out before any answer came back.
+func isNoAnswer(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// mayAsk reports whether a request may go out. While the server is down, a single request per downProbeEvery goes out to find out whether it is back.
+func (b *WebBackend) mayAsk() bool {
+	if b.downSince.Load() == 0 {
+		return true
+	}
+	now := time.Now().UnixNano()
+	next := b.probeAt.Load()
+	if now >= next && b.probeAt.CompareAndSwap(next, now+int64(downProbeEvery)) {
+		return true
+	}
+	b.SkippedDown.Increment()
+	return false
+}
+
+// noteNoAnswer marks the server down. Only the first request to find it so says so.
+func (b *WebBackend) noteNoAnswer(err error) {
+	now := time.Now().UnixNano()
+	b.probeAt.Store(now + int64(downProbeEvery))
+	if b.downSince.CompareAndSwap(0, now) {
+		logging.Warnf("cacheprog: the cache server gave no answer (%v); every lookup is a miss and the build compiles, with a single request every %s to find it again", err, downProbeEvery)
+	}
+}
+
+// noteAnswered brings a down server back.
+func (b *WebBackend) noteAnswered() {
+	since := b.downSince.Swap(0)
+	if since != 0 {
+		logging.Warnf("cacheprog: the cache server answers again after %s; %d requests were not sent meanwhile",
+			time.Since(time.Unix(0, since)).Round(time.Millisecond), b.SkippedDown.Load())
 	}
 }
 

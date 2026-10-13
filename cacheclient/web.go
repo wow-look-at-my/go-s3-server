@@ -235,6 +235,12 @@ type WebBackend struct {
 	shedUntil atomic.Int64
 	// ShedWaits counts attempts held back, unsent, because the server had asked for quiet.
 	ShedWaits AtomicCounter
+	// downSince is the UnixNano time a request last timed out with no answer, or empty while the server answers.
+	downSince atomic.Int64
+	// probeAt is the UnixNano time the next request may go out while the server is down.
+	probeAt atomic.Int64
+	// SkippedDown counts requests answered as a miss, unsent, because the server had stopped answering.
+	SkippedDown AtomicCounter
 
 	errLog *httpErrLogger
 

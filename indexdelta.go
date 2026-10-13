@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"sort"
 	"time"
 )
 
@@ -140,4 +142,26 @@ func marshalGBCIWidth(hashes [][gbciHashSize]byte, width int) []byte {
 	digest := sha256.Sum256(blob[:off])
 	copy(blob[off:], digest[:])
 	return blob
+}
+
+// WireSize is the length in bytes of the body GET /_index sends right now, which is before any compression.
+// It answers from the cached blob when the handler would serve it, and counts the merged list otherwise.
+// It never serializes and never changes the index.
+func (idx *Index) WireSize() int64 {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	if idx.blobServableLocked() {
+		return int64(len(idx.cachedBlob))
+	}
+	n := len(idx.hashes)
+	if len(idx.pending) > 0 {
+		fresh := sortDedupeHashes(append([][gbciHashSize]byte(nil), idx.pending...))
+		for _, h := range fresh {
+			i := sort.Search(len(idx.hashes), func(i int) bool { return bytes.Compare(idx.hashes[i][:], h[:]) >= 0 })
+			if i == len(idx.hashes) || idx.hashes[i] != h {
+				n++
+			}
+		}
+	}
+	return int64(gbciHeaderSize + n*gbciHashSize + sha256.Size)
 }

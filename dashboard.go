@@ -57,11 +57,18 @@ type dashboardEvictionInfo struct {
 	Interval string `json:"interval"`
 }
 
+// dashboardIndexInfo is what a client downloads from GET /_index right now.
+type dashboardIndexInfo struct {
+	// WireBytes is the body length before compression. Zero when the server has no index.
+	WireBytes int64 `json:"wire_bytes"`
+}
+
 type dashboardStats struct {
 	GeneratedAt   time.Time              `json:"generated_at"`
 	UptimeSeconds float64                `json:"uptime_seconds"`
 	Server        dashboardServerInfo    `json:"server"`
 	Eviction      dashboardEvictionInfo  `json:"eviction"`
+	Index         dashboardIndexInfo     `json:"index"`
 	Metrics       map[string]metricValue `json:"metrics"`
 	// Projects holds every project's exact totals.
 	Projects map[string]projectRow `json:"projects"`
@@ -137,6 +144,13 @@ func (d *dashboard) serveStats(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (d *dashboard) indexInfo() dashboardIndexInfo {
+	if d.srv == nil || d.srv.storage == nil || d.srv.storage.Index == nil {
+		return dashboardIndexInfo{}
+	}
+	return dashboardIndexInfo{WireBytes: d.srv.storage.Index.WireSize()}
+}
+
 func (d *dashboard) snapshot() (*dashboardStats, error) {
 	metrics, err := gatherDashboardMetrics(d.gatherer)
 	if err != nil {
@@ -165,6 +179,7 @@ func (d *dashboard) snapshot() (*dashboardStats, error) {
 			MaxAge:   d.cfg.Eviction.AgeLimit().String(),
 			Interval: d.cfg.Eviction.Interval.Std().String(),
 		},
+		Index:    d.indexInfo(),
 		Metrics:  metrics,
 		Projects: projectTotals.snapshot(),
 	}, nil

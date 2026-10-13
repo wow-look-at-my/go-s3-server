@@ -20,6 +20,9 @@ import (
 // manifestMaxKeys bounds what a manifest names, and so what a build fetches ahead.
 const manifestMaxKeys = 20000
 
+// manifestWaitCap is how long a lookup waits for a manifest fetch that has its object on the wire.
+var manifestWaitCap = time.Second
+
 // manifestFetchWidth is how many manifest batches go out at the same time.
 const manifestFetchWidth = 8
 
@@ -33,6 +36,7 @@ type buildManifest struct {
 	pending map[string]chan struct{} // action IDs a fetch has on the wire, closed when they land
 
 	Waited AtomicCounter // lookups that waited for a fetch already on the wire
+	GaveUp AtomicCounter // lookups that stopped waiting after manifestWaitCap and asked on their own
 
 	Fetched AtomicCounter // entries the manifest brought into the local tier
 	Named   AtomicCounter // action IDs the manifest named
@@ -56,9 +60,17 @@ func (b *WebBackend) AwaitPrefetch(actionID string) bool {
 	if !ok {
 		return false
 	}
-	<-done
-	m.Waited.Increment()
-	return true
+	timer := time.NewTimer(manifestWaitCap)
+	defer timer.Stop()
+	select {
+	case <-done:
+		m.Waited.Increment()
+		return true
+	case <-timer.C:
+		// The fetch is slow. A lookup of its own is small, and the slow-server rule covers it.
+		m.GaveUp.Increment()
+		return false
+	}
 }
 
 // markPending records that a fetch has these action IDs on the wire, and
@@ -317,5 +329,6 @@ func (b *WebBackend) reportManifest() {
 	if m == nil || m.Named.Load() == 0 {
 		return
 	}
-	logging.Infof("cacheprog: manifest: named %d keys, fetched %d ahead, %d lookups waited for them", m.Named.Load(), m.Fetched.Load(), m.Waited.Load())
+	logging.Infof("cacheprog: manifest: named %d keys, fetched %d ahead, %d lookups waited for them, %d gave up waiting",
+		m.Named.Load(), m.Fetched.Load(), m.Waited.Load(), m.GaveUp.Load())
 }

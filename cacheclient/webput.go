@@ -56,6 +56,7 @@ func (b *WebBackend) PutFile(actionID, outputID, path string) error {
 // the thing thing that happens on the caller's goroutine, because it is what
 // stops callers uploading the same object.
 func (b *WebBackend) enqueuePut(actionID, outputID string, data []byte, path string) error {
+	b.manifest.note(actionID)
 	h, ok := parseActionHash(actionID)
 	if !ok {
 		return fmt.Errorf("web put: %q is not an action ID", actionID)

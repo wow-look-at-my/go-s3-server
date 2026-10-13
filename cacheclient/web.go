@@ -10,6 +10,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"os"
 	"strings"
 	"sync"
@@ -303,17 +304,21 @@ func closeBody(body io.ReadCloser) {
 	body.Close()
 }
 
-// firstDial makes the first request of a process run alone.
+// firstDial makes the first request of a process dial alone, so the others
+// share its connection.
 type firstDial struct {
 	next    *http.Transport
 	started atomic.Bool
 	ready   chan struct{}
+	once    sync.Once
 }
 
 func (gate *firstDial) RoundTrip(req *http.Request) (*http.Response, error) {
 	if gate.started.CompareAndSwap(false, true) {
-		defer close(gate.ready)
-		return gate.next.RoundTrip(req)
+		release := func() { gate.once.Do(func() { close(gate.ready) }) }
+		defer release()
+		trace := &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { release() }}
+		return gate.next.RoundTrip(req.WithContext(httptrace.WithClientTrace(req.Context(), trace)))
 	}
 	select {
 	case <-gate.ready:

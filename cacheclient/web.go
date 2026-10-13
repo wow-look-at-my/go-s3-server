@@ -476,11 +476,15 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 	if b.manifest != nil && !b.manifest.started.Load() {
 		b.startManifest(b.moduleName())
 	}
-	outputID, data, t, miss = b.get(actionID)
-	if !miss {
-		b.manifest.note(actionID)
+	b.manifest.note(actionID)
+	return b.get(actionID)
+}
+
+// NoteUsed records a lookup another tier answered, so the manifest names it too.
+func (b *WebBackend) NoteUsed(id [32]byte) {
+	if b.manifest != nil {
+		b.manifest.note(hex.EncodeToString(id[:]))
 	}
-	return outputID, data, t, miss
 }
 
 func (b *WebBackend) get(actionID string) (outputID string, data []byte, t time.Time, miss bool) {

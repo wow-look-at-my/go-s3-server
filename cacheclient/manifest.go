@@ -28,7 +28,7 @@ type buildManifest struct {
 	started atomic.Bool
 
 	mu      sync.Mutex
-	used    set.Set[string]          // action IDs this process served or stored
+	used    set.Set[string]          // action IDs this process looked up
 	pending map[string]chan struct{} // action IDs a fetch has on the wire, closed when they land
 
 	Waited AtomicCounter // lookups that waited for a fetch already on the wire
@@ -87,7 +87,7 @@ func manifestID(module, version, target string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// note records an action ID this build used.
+// note records an action ID this build looked up, from any tier. A key stored without a lookup is not one the next build asks for.
 func (m *buildManifest) note(actionID string) {
 	if m == nil {
 		return

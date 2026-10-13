@@ -2,6 +2,7 @@ package cacheclient
 
 import (
 	"bytes"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -128,7 +129,11 @@ func TestManifestStoresWhatTheBuildUsed(t *testing.T) {
 	b.OnBatchEntries = func([]BatchEntry) {}
 	b.SetModule("example.com/m")
 	used := strings.Repeat("c3", 32)
+	_, _, _, miss := b.Get(used)
+	require.True(t, miss)
 	require.NoError(t, b.Put(used, StoredDigest([]byte("body")), []byte("body")))
+	storedOnly := strings.Repeat("c4", 32)
+	require.NoError(t, b.Put(storedOnly, StoredDigest([]byte("other")), []byte("other")))
 	require.NoError(t, b.Close())
 
 	id := manifestID("example.com/m", "", "")
@@ -141,6 +146,25 @@ func TestManifestStoresWhatTheBuildUsed(t *testing.T) {
 		}
 	}
 	require.True(t, found, "Close must upload the manifest")
+	require.True(t, b.manifest.used.Contains(used), "a looked-up key is named")
+	require.False(t, b.manifest.used.Contains(storedOnly), "a key stored without a lookup is not")
+}
+
+// A lookup the disk tier answers is named too, or a warm build stores a manifest that names almost nothing.
+func TestManifestNamesDiskHits(t *testing.T) {
+	b := NewBareBackend("go-buildcache/")
+	b.manifest = newBuildManifest()
+	disk, err := Open(t.TempDir())
+	require.NoError(t, err)
+	tier := layerStore(disk, b)
+	var id ActionID
+	id[0] = 7
+	_, _, err = disk.Put(id, bytes.NewReader([]byte("body")))
+	require.NoError(t, err)
+	_, tierName, err := tier.GetTiered(id)
+	require.NoError(t, err)
+	require.Equal(t, TierDisk, tierName)
+	require.True(t, b.manifest.used.Contains(hex.EncodeToString(id[:])))
 }
 
 // A lookup for an object the manifest fetch has on the wire waits for it, and

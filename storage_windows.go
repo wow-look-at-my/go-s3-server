@@ -113,6 +113,14 @@ func getOriginalKey(path string) (string, error) {
 	return string(data), nil
 }
 
+// setObjectAttrs writes a new object's metadata and audit fields.
+func setObjectAttrs(path string, meta, audit map[string]string) error {
+	if err := setMetadata(path, meta); err != nil {
+		return err
+	}
+	return setAudit(path, audit)
+}
+
 func setAudit(path string, audit map[string]string) error {
 	if len(audit) == 0 {
 		return nil

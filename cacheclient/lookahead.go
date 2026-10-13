@@ -3,6 +3,8 @@ package cacheclient
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -68,6 +70,16 @@ type lookAhead struct {
 	Requests AtomicCounter // look-ahead round trips issued
 	Entries  AtomicCounter // entries they brought back
 	Dropped  AtomicCounter // seeds refused: the queue was full, or the budget was spent
+	Failed   AtomicCounter // requests that brought back an error, not a window
+	Empty    AtomicCounter // requests the server answered with an empty window
+
+	lastFailure atomic.Pointer[string] // the most recent failure, for the report
+}
+
+// fail records a request that brought back no window, and why.
+func (la *lookAhead) fail(why string) {
+	la.Failed.Increment()
+	la.lastFailure.Store(&why)
 }
 
 // lookAheadBudget is what a single pool may hold in memory at the same time.
@@ -126,13 +138,16 @@ func chunkBudget(budget int64, workers int) int64 {
 // HeaderPrefetch is "off" on a batch answer from a server that never sends a look-ahead window.
 const HeaderPrefetch = "X-Cache-Prefetch"
 
+// defaultLookAheadWorkers is the pool an unset GO_TOOLCHAIN_CACHE_LOOKAHEAD gets.
+const defaultLookAheadWorkers = 4
+
 // maxLookAheadWorkers caps the pool however large GO_TOOLCHAIN_CACHE_LOOKAHEAD is.
 const maxLookAheadWorkers = 64
 
 // lookAheadDefaults returns the worker count and queue depth. A positive count
 // is capped at maxLookAheadWorkers.
 func lookAheadDefaults() (workers, depth int) {
-	workers = envInt("GO_TOOLCHAIN_CACHE_LOOKAHEAD", 0)
+	workers = envInt("GO_TOOLCHAIN_CACHE_LOOKAHEAD", defaultLookAheadWorkers)
 	if workers > maxLookAheadWorkers {
 		workers = maxLookAheadWorkers
 	}
@@ -209,8 +224,15 @@ func (la *lookAhead) report() {
 	if reqs == 0 {
 		return
 	}
-	logging.Infof("cacheprog: look-ahead: %d requests -> %d entries, %d seeds dropped",
-		reqs, la.Entries.Load(), la.Dropped.Load())
+	logging.Infof("cacheprog: look-ahead: %d requests -> %d entries, %d seeds dropped, %d empty windows",
+		reqs, la.Entries.Load(), la.Dropped.Load(), la.Empty.Load())
+	if failed := la.Failed.Load(); failed > 0 {
+		why := ""
+		if last := la.lastFailure.Load(); last != nil {
+			why = *last
+		}
+		logging.Warnf("cacheprog: look-ahead: %d of %d requests failed; the last: %s", failed, reqs, why)
+	}
 }
 
 func (la *lookAhead) worker() {
@@ -263,9 +285,12 @@ func (la *lookAhead) expand(seed []string) {
 	resp, err := b.doRetryGET(req)
 	if err != nil {
 		b.Pool.Release()
+		la.fail(err.Error())
 		return
 	}
 	if resp.StatusCode != 200 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		la.fail(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, bytes.TrimSpace(msg)))
 		closeBody(resp.Body)
 		b.Pool.Release()
 		return
@@ -297,6 +322,12 @@ func (la *lookAhead) expand(seed []string) {
 				return
 			}
 			count++
+			// Stated as held, so the next window leaves it out.
+			if actionID, ok := b.ActionIDFromKey(e.Key); ok {
+				if h, ok := parseActionHash(actionID); ok {
+					b.noteHeld(h)
+				}
+			}
 			chunk = append(chunk, e)
 			chunkSize += int64(len(e.Data))
 			if len(chunk) >= lookAheadChunk || (la.chunk > 0 && chunkSize >= la.chunk) {
@@ -322,10 +353,12 @@ func (la *lookAhead) expand(seed []string) {
 	closeBody(resp.Body)
 	b.Pool.Release()
 	if err != nil {
+		la.fail("read the window: " + err.Error())
 		return
 	}
 	flush()
 	if count == 0 {
+		la.Empty.Increment()
 		return
 	}
 

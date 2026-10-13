@@ -150,7 +150,7 @@ type Config struct {
 	MaxObjectBytes int64 `json:"max_object_bytes"`
 
 	// Prefetch lets /_batch/get add the keys stored near the requested ones.
-	Prefetch bool `json:"prefetch"`
+	Prefetch *bool `json:"prefetch"`
 
 	// Eviction bounds the on-disk cache so it does not grow until the disk fills. See EvictionConfig.
 	Eviction EvictionConfig `json:"eviction"`
@@ -167,6 +167,11 @@ const (
 	// defaultEvictionInterval is how often the sweeper runs when eviction is on.
 	defaultEvictionInterval = 24 * time.Hour
 )
+
+// PrefetchEnabled reports whether /_batch/get sends a look-ahead window: on unless the config says false.
+func (c *Config) PrefetchEnabled() bool {
+	return c.Prefetch == nil || *c.Prefetch
+}
 
 // DashboardListenAddr returns the dashboard's listen address, "" when the
 // dashboard is switched off.

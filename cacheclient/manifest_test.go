@@ -189,6 +189,17 @@ func TestAwaitPrefetchWaitsForTheFetch(t *testing.T) {
 	require.Equal(t, uint32(1), b.manifest.Waited.Load())
 }
 
+// The manifest names keys in the order the build first looked them up, so the next build fetches the first ones first.
+func TestManifestKeepsLookupOrder(t *testing.T) {
+	m := newBuildManifest()
+	ids := []string{strings.Repeat("f1", 32), strings.Repeat("a2", 32), strings.Repeat("c3", 32)}
+	for _, id := range ids {
+		m.note(id)
+	}
+	m.note(ids[1])
+	require.Equal(t, ids, m.order)
+}
+
 // A build with no module stores no manifest and fetches nothing.
 func TestManifestNeedsAModule(t *testing.T) {
 	b := NewBareBackend("go-buildcache/")

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,6 +29,7 @@ type buildManifest struct {
 
 	mu      sync.Mutex
 	used    set.Set[string]          // action IDs this process looked up
+	order   []string                 // used, in the order of the first lookup
 	pending map[string]chan struct{} // action IDs a fetch has on the wire, closed when they land
 
 	Waited AtomicCounter // lookups that waited for a fetch already on the wire
@@ -82,9 +82,12 @@ func (m *buildManifest) markPending(ids []string) func() {
 	}
 }
 
+// manifestFormat names what a manifest holds: lookups, in lookup order.
+const manifestFormat = "2"
+
 // manifestID is the action ID the manifest for this module is stored under.
 func manifestID(module, version, target string) string {
-	sum := sha256.Sum256([]byte("go-build-manifest\x00" + module + "\x00" + version + "\x00" + target))
+	sum := sha256.Sum256([]byte("go-build-manifest\x00" + manifestFormat + "\x00" + module + "\x00" + version + "\x00" + target))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -94,8 +97,9 @@ func (m *buildManifest) note(actionID string) {
 		return
 	}
 	m.mu.Lock()
-	if m.used.Len() < manifestMaxKeys {
+	if m.used.Len() < manifestMaxKeys && !m.used.Contains(actionID) {
 		m.used.Add(actionID)
+		m.order = append(m.order, actionID)
 	}
 	m.mu.Unlock()
 }
@@ -288,8 +292,9 @@ func (b *WebBackend) storeManifest() {
 		return
 	}
 	m.mu.Lock()
-	ids := make([]string, 0, m.used.Len())
-	for actionID := range m.used.All() {
+	// Lookup order is the order the next build needs the objects in, so the fetch brings the first ones first.
+	ids := make([]string, 0, len(m.order))
+	for _, actionID := range m.order {
 		if actionID != *id {
 			ids = append(ids, actionID)
 		}
@@ -298,9 +303,8 @@ func (b *WebBackend) storeManifest() {
 	if len(ids) == 0 {
 		return
 	}
-	sort.Strings(ids)
 	data := []byte(strings.Join(ids, "\n"))
-	// Put skips a key the index already holds. The manifest replaces the last one.
+	// Put skips a key the index already holds. A write-once server keeps the first manifest under an ID.
 	b.ForgetStale(*id)
 	if err := b.Put(*id, StoredDigest(data), data); err != nil {
 		logging.Warnf("cacheprog: manifest: store: %v", err)

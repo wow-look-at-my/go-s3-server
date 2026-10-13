@@ -34,12 +34,16 @@ func (s *Storage) markKeyClean(h cleanKey) {
 	}
 }
 
-// forgetClean invalidates the known-clean memo entry for key.
+// forgetClean invalidates the known-clean and digest memo entries for key.
 func (s *Storage) forgetClean(key string) {
-	if s.cleanKeys == nil {
+	h, ok := extractActionHash(key)
+	if !ok {
 		return
 	}
-	if h, ok := extractActionHash(key); ok {
+	if s.cleanKeys != nil {
 		s.cleanKeys.Forget(h)
+	}
+	if s.digestOK != nil {
+		s.digestOK.Forget(h)
 	}
 }

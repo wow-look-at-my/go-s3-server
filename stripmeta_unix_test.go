@@ -14,11 +14,7 @@ import (
 // cache.
 func stripStoredMetadata(t *testing.T, path string) {
 	t.Helper()
-	attrs, err := listXattrs(path)
-	require.NoError(t, err)
-	for _, a := range attrs {
-		if isUserMetaAttr(a) {
-			require.NoError(t, unix.Removexattr(path, a))
-		}
-	}
+	attrs := readObjAttrsPath(path)
+	attrs.meta = nil
+	require.NoError(t, unix.Setxattr(path, objAttr, encodeObjAttrs(attrs), 0))
 }

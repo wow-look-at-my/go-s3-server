@@ -44,7 +44,7 @@ func TestLookAheadWorkerCount(t *testing.T) {
 		set     bool
 		workers int
 	}{
-		{set: false, workers: 0},
+		{set: false, workers: defaultLookAheadWorkers},
 		{env: "0", set: true, workers: 0},
 		{env: "-3", set: true, workers: 0},
 		{env: "1", set: true, workers: 1},

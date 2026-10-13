@@ -77,7 +77,8 @@ func (b *WebBackend) startIndexLoad() {
 	path := b.indexCachePath()
 	disk := b.readDiskIndex(path)
 	maxAge := b.resolveIndexMaxAge(path)
-	if disk.blob != nil && maxAge > 0 && disk.age() < maxAge && disk.gen.epoch != 0 {
+	// A copy that names a position asks for the keys added since, at any age.
+	if disk.blob != nil && disk.gen.epoch != 0 {
 		b.startDeltaLoad(path, disk)
 		return
 	}

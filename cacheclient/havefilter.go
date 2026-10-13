@@ -6,11 +6,11 @@ import "iter"
 //
 // Only the client knows what it kept.
 //
-// The statement is a Bloom filter over action hashes. A hash is a sha256 and
-// already uniformly distributed, so the filter has no hash function of its
-// own: each of the k bit positions is bytes read straight out of the hash,
-// modulo the bit count. The server's copy of this arithmetic is in
-// havefilter.go at the repo root, and haveFilterVector pins both together.
+// The statement is a Bloom filter over the first several bytes of each action
+// hash. A hash is a sha256 and already uniformly distributed. The filter has
+// no hash function of its own: the k bit positions come from double hashing
+// over both halves of those bytes. The server's copy of this arithmetic is in
+// havefilter.go at the repo root.
 //
 // It fails toward sending. The filter's error is a false positive, which says
 // the client holds a key it does not: the server declines to send that body
@@ -46,15 +46,15 @@ type haveFilter struct {
 // It takes a sequence rather than a slice because the held set is held under
 // a lock and can be large; materializing it per request is the copy this
 // avoids.
-func newHaveFilter(n int, all iter.Seq[actionHash]) *haveFilter {
+func newHaveFilter(n int, all iter.Seq[hashKey]) *haveFilter {
 	if n == 0 {
 		return nil
 	}
 	f := &haveFilter{Bits: make([]byte, haveFilterBytes(n)), K: haveFilterHashes}
 	m := uint32(len(f.Bits) * 8)
-	for h := range all {
+	for key := range all {
 		for i := 0; i < f.K; i++ {
-			idx := haveFilterBit(h, i, m)
+			idx := haveFilterBit(key, i, m)
 			f.Bits[idx/8] |= 1 << (idx % 8)
 		}
 	}
@@ -80,8 +80,9 @@ func (f *haveFilter) contains(h actionHash) bool {
 		return false
 	}
 	m := uint32(len(f.Bits) * 8)
+	key := keyOf(h)
 	for i := 0; i < f.K; i++ {
-		idx := haveFilterBit(h, i, m)
+		idx := haveFilterBit(key, i, m)
 		if f.Bits[idx/8]&(1<<(idx%8)) == 0 {
 			return false
 		}
@@ -89,10 +90,9 @@ func (f *haveFilter) contains(h actionHash) bool {
 	return true
 }
 
-// haveFilterBit is position i of hash h in a filter of m bits. The server
-// computes this exact expression; neither side may change it alone.
-func haveFilterBit(h actionHash, i int, m uint32) uint32 {
-	off := i * 3
-	v := uint32(h[off])<<16 | uint32(h[off+1])<<8 | uint32(h[off+2])
-	return v % m
+// haveFilterBit is position i of key in a filter of m bits, by double hashing
+// over both halves of the key.
+func haveFilterBit(key hashKey, i int, m uint32) uint32 {
+	h1, h2 := uint32(key>>32), uint32(key)|1
+	return (h1 + uint32(i)*h2) % m
 }

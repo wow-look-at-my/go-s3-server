@@ -252,8 +252,8 @@ func TestBatchGet_PrefetchOnWindowOnly(t *testing.T) {
 	}
 }
 
-// The config field is off unless the file turns it on.
-func TestConfigPrefetchDefaultsOff(t *testing.T) {
+// Prefetch is on unless the file turns it off.
+func TestConfigPrefetchDefaultsOn(t *testing.T) {
 	dir := t.TempDir()
 	load := func(extra map[string]any) *Config {
 		path := filepath.Join(dir, "config.json")
@@ -266,8 +266,9 @@ func TestConfigPrefetchDefaultsOff(t *testing.T) {
 		require.NoError(t, err)
 		return cfg
 	}
-	assert.False(t, load(nil).Prefetch)
-	assert.True(t, load(map[string]any{"prefetch": true}).Prefetch)
+	assert.True(t, load(nil).PrefetchEnabled(), "absent means on")
+	assert.True(t, load(map[string]any{"prefetch": true}).PrefetchEnabled())
+	assert.False(t, load(map[string]any{"prefetch": false}).PrefetchEnabled(), "an explicit false turns it off")
 }
 
 // indexedKey is a real cacheprog key: the prefix plus a 64-hex action hash.
@@ -277,8 +278,7 @@ func indexedKey(num int) string {
 }
 
 // holdFilter is a request's statement that the client holds keys, built the
-// way the client builds it. K positions per hash, bytes of the hash each,
-// modulo the bit count.
+// way the client builds it: K positions per hash.
 func holdFilter(t *testing.T, size int, keys ...string) *haveFilter {
 	t.Helper()
 	filter := &haveFilter{Bits: make([]byte, size), K: 6}
@@ -385,7 +385,7 @@ func TestBatchGet_PrefetchAdvancesAsTheClientStatesMore(t *testing.T) {
 }
 
 // haveFilterVectorBits is the filter's bit arithmetic, pinned.
-const haveFilterVectorBits = "c2643f18fd57b6aa9bb7cb286f32b9ee7c655c83b95e78ca11591a166bd6658a"
+const haveFilterVectorBits = "0149c9d142d7626524be75881516b6bbabdb6cce15a4a7dd204e0e8030a15946"
 
 func TestHaveFilterVector(t *testing.T) {
 	f := &haveFilter{Bits: make([]byte, 32), K: 3}

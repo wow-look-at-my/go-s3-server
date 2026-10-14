@@ -170,13 +170,13 @@ func newLookAhead(b *WebBackend) *lookAhead {
 	}
 	budget := lookAheadBudget()
 	la := &lookAhead{
-		b:      b,
-		seeds:  make(chan []string, depth),
-		stop:   make(chan struct{}),
+		b:       b,
+		seeds:   make(chan []string, depth),
+		stop:    make(chan struct{}),
 		seeded:  set.New[string](),
 		brought: set.New[actionHash](),
 		budget:  budget,
-		chunk:  chunkBudget(budget, workers),
+		chunk:   chunkBudget(budget, workers),
 	}
 	la.wg.Add(workers)
 	for range workers {

@@ -243,7 +243,7 @@ func TestManifestWalkPicksTheNewestGeneration(t *testing.T) {
 	seedObject(t, store, meta, manifestGenID(base, 0), []byte(keys[0]))
 	seedObject(t, store, meta, manifestGenID(base, 1), []byte(strings.Join(keys[:2], "\n")))
 	seedObject(t, store, meta, manifestGenID(base, 2), []byte(strings.Join(keys[:3], "\n")))
-	// Generation 4 is past a gap, so the walk never reaches it.
+	// A later generation is past a gap, so the walk never reaches it.
 	seedObject(t, store, meta, manifestGenID(base, 4), []byte(strings.Join(keys, "\n")))
 	srv := fakeBatchServer(t, store, meta)
 	t.Cleanup(srv.Close)
@@ -318,7 +318,6 @@ func TestManifestShortGenerationGetsASuccessor(t *testing.T) {
 	require.False(t, uploadedAny(uploads, manifestGenID(base, 1)))
 }
 
-// A newest generation within 10% of this build's keys stays the newest.
 func TestManifestNearCompleteGenerationStays(t *testing.T) {
 	base := manifestID("example.com/m", "", "")
 	uploads := storeManifestAfter(t, 0, 9, 10)
@@ -327,7 +326,7 @@ func TestManifestNearCompleteGenerationStays(t *testing.T) {
 	}
 }
 
-// With no generation on the server, the build writes generation 0.
+// With no generation on the server, the build writes one generation.
 func TestManifestFirstGenerationIsTheBaseID(t *testing.T) {
 	uploads := storeManifestAfter(t, -1, 0, 10)
 	require.True(t, uploadedAny(uploads, manifestID("example.com/m", "", "")))

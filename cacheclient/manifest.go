@@ -36,7 +36,7 @@ type buildManifest struct {
 	order   []string                 // used, in the order of the first lookup
 	pending map[string]chan struct{} // action IDs a fetch has on the wire, closed when they land
 
-	newest     int // the newest manifest generation the walk found, or -1
+	newest     int
 	newestKeys int // the keys that generation names
 
 	Waited AtomicCounter // lookups that waited for a fetch already on the wire
@@ -110,7 +110,7 @@ func manifestID(module, version, target string) string {
 // manifestGenerations caps the walk. A write-once server keeps each generation, so a short one gets a successor.
 const manifestGenerations = 16
 
-// manifestGenID is the action ID of generation gen of the manifest stored under base. Generation 0 is base.
+// manifestGenID is the action ID of generation gen of the manifest stored under base. One generation is base.
 func manifestGenID(base string, gen int) string {
 	if gen == 0 {
 		return base
@@ -187,9 +187,7 @@ func (b *WebBackend) readManifest(id string) ([]byte, bool) {
 	return data, found
 }
 
-// walkManifest reads generations 0, 1, 2, ... of the manifest under base and
-// returns the newest one that exists, or -1. It records that generation and its
-// key count for storeManifest.
+// It records that generation and its key count for storeManifest.
 func (b *WebBackend) walkManifest(base string) (int, []string) {
 	newest := -1
 	var named []string
@@ -363,7 +361,6 @@ func (b *WebBackend) storeManifest() {
 	}
 	gen := 0
 	if newest >= 0 {
-		// A generation that names 90% of this build's keys or more stays the newest.
 		if newestKeys*10 >= len(ids)*9 {
 			return
 		}

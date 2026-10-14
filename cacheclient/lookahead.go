@@ -241,6 +241,13 @@ func (la *lookAhead) cover() {
 	}
 }
 
+// uncover lets the pool send again: a guess that covered it stopped.
+func (la *lookAhead) uncover() {
+	if la != nil {
+		la.covered.Store(false)
+	}
+}
+
 // hold keeps the workers from sending until release.
 func (la *lookAhead) hold() {
 	if la == nil {

@@ -42,6 +42,10 @@ type buildManifest struct {
 	newest      int
 	newestNamed []string // the keys that generation names
 
+	fallback  atomic.Pointer[manifestFallback] // the module fallback, when this command has no manifest
+	closing   chan struct{}                     // closed when Close starts; the fallback fetch stops
+	closeOnce sync.Once
+
 	Waited AtomicCounter // lookups that waited for a fetch already on the wire
 	GaveUp AtomicCounter // lookups that stopped waiting after manifestWaitCap and asked on their own
 
@@ -52,7 +56,7 @@ type buildManifest struct {
 }
 
 func newBuildManifest() *buildManifest {
-	return &buildManifest{used: set.New[string](), pending: map[string]chan struct{}{}, newest: -1, trace: newManifestTrace()}
+	return &buildManifest{used: set.New[string](), pending: map[string]chan struct{}{}, newest: -1, closing: make(chan struct{}), trace: newManifestTrace()}
 }
 
 // AwaitPrefetch waits while the manifest fetch has actionID on the wire. It
@@ -212,6 +216,7 @@ var manifestCloseWait = 30 * time.Second
 // awaitManifest waits for the manifest fetch. After manifestCloseWait it
 // cancels the fetch, so a stalled request cannot keep the process alive.
 func (b *WebBackend) awaitManifest() {
+	b.manifest.endFallback()
 	done := make(chan struct{})
 	go func() {
 		b.manifestWG.Wait()
@@ -326,7 +331,11 @@ func (b *WebBackend) walkManifest(base string) (int, []string) {
 // fetchManifest reads the newest manifest generation and pulls what it names.
 func (b *WebBackend) fetchManifest(base string) {
 	newest, named := b.walkManifest(base)
-	if newest < 0 || len(named) == 0 {
+	if newest < 0 {
+		b.fetchFallback()
+		return
+	}
+	if len(named) == 0 {
 		return
 	}
 	b.keysMu.RLock()
@@ -371,7 +380,8 @@ func (b *WebBackend) fetchManifest(base string) {
 		go func() {
 			defer wg.Done()
 			for next := range work {
-				b.fetchNamed(next.keys)
+				count, _ := b.fetchNamed(next.keys)
+				b.manifest.Fetched.Add(uint32(count))
 				next.clear()
 			}
 		}()
@@ -437,9 +447,11 @@ func (b *WebBackend) postNamed(keys []string, each func(BatchEntry)) (int, error
 	return count, err
 }
 
-// fetchNamed asks for keys by name and hands the entries to the local tier.
-func (b *WebBackend) fetchNamed(keys []string) {
+// fetchNamed asks for keys by name and hands the entries to the local tier. It
+// answers the count of entries and the action IDs they carry.
+func (b *WebBackend) fetchNamed(keys []string) (int, []string) {
 	var chunk []BatchEntry
+	var arrived []string
 	flush := func() {
 		if len(chunk) > 0 {
 			b.OnBatchEntries(chunk)
@@ -450,6 +462,7 @@ func (b *WebBackend) fetchNamed(keys []string) {
 		if actionID, ok := b.ActionIDFromKey(e.Key); ok {
 			if h, ok := parseActionHash(actionID); ok {
 				b.noteHeld(h)
+				arrived = append(arrived, actionID)
 			}
 		}
 		chunk = append(chunk, e)
@@ -461,33 +474,58 @@ func (b *WebBackend) fetchNamed(keys []string) {
 	if err != nil {
 		logging.Warnf("cacheprog: manifest: fetch: %v", err)
 	}
-	b.manifest.Fetched.Add(uint32(count))
+	return count, arrived
 }
 
 // storeManifest writes what this build used, for the next build. It runs
 // before the PUT coalescer closes.
 func (b *WebBackend) storeManifest() {
-	target, data, ok := b.manifestToStore()
-	if !ok {
-		return
-	}
-	// Put skips a key the index already holds. A write-once server keeps the first manifest under an ID.
-	b.ForgetStale(target)
-	if err := b.Put(target, StoredDigest(data), data); err != nil {
-		logging.Warnf("cacheprog: manifest: store: %v", err)
+	for _, write := range b.manifestToStore() {
+		// Put skips a key the index already holds. A write-once server keeps the first manifest under an ID.
+		b.ForgetStale(write.id)
+		if err := b.Put(write.id, StoredDigest(write.body), write.body); err != nil {
+			logging.Warnf("cacheprog: manifest: store: %v", err)
+		}
 	}
 }
 
-// manifestToStore answers the action ID and the body of the manifest this
-// build must store, or false when it stores none.
-func (b *WebBackend) manifestToStore() (string, []byte, bool) {
+// manifestWrite is one manifest body and the action ID it goes under.
+type manifestWrite struct {
+	id   string
+	body []byte
+}
+
+// manifestToStore answers the manifests this build must store: its own
+// command's, and the module fallback.
+func (b *WebBackend) manifestToStore() []manifestWrite {
+	own, ok := b.ownManifestToStore()
+	if !ok {
+		if own.body == nil {
+			return nil
+		}
+		if fallback, ok := b.fallbackToStore(false, own.body); ok {
+			return []manifestWrite{fallback}
+		}
+		return nil
+	}
+	writes := []manifestWrite{own}
+	if fallback, ok := b.fallbackToStore(true, own.body); ok {
+		writes = append(writes, fallback)
+	}
+	return writes
+}
+
+// ownManifestToStore answers the manifest of this build's command, or false
+// when it stores none. A false answer still carries the body when the build
+// used keys and only the drift check held the write back.
+func (b *WebBackend) ownManifestToStore() (manifestWrite, bool) {
 	m := b.manifest
 	if m == nil {
-		return "", nil, false
+		return manifestWrite{}, false
 	}
 	id := m.id.Load()
 	if id == nil {
-		return "", nil, false
+		return manifestWrite{}, false
 	}
 	m.mu.Lock()
 	// Lookup order is the order the next build needs the objects in, so the fetch brings the first ones first.
@@ -500,22 +538,23 @@ func (b *WebBackend) manifestToStore() (string, []byte, bool) {
 	newest, named := m.newest, m.newestNamed
 	m.mu.Unlock()
 	if len(ids) == 0 {
-		return "", nil, false
+		return manifestWrite{}, false
 	}
+	body := manifestBody(ids)
 	gen := 0
 	if newest >= 0 {
 		if !manifestDrifted(named, ids) {
-			return "", nil, false
+			return manifestWrite{body: body}, false
 		}
 		gen = newest + 1
 	}
 	if gen >= manifestGenerations {
 		logging.Warnf("cacheprog: manifest: generation %d names %d keys and this build used %d, and the walk reads no later generation", newest, len(named), len(ids))
-		return "", nil, false
+		return manifestWrite{body: body}, false
 	}
 	target := manifestGenID(*id, gen)
 	m.trace.add("store", target)
-	return target, []byte(strings.Join(ids, "\n")), true
+	return manifestWrite{id: target, body: body}, true
 }
 
 // manifestDrift is the share of the used keys, in percent, that the named and the used sets may differ by.
@@ -552,6 +591,9 @@ func (b *WebBackend) reportManifest() {
 		return
 	}
 	m.trace.write()
+	if line := m.reportFallback(); line != "" {
+		logging.Infof("%s", line)
+	}
 	if m.Named.Load() == 0 {
 		return
 	}

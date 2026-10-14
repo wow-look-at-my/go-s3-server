@@ -139,7 +139,7 @@ func (b *WebBackend) closeHandOff() error {
 	}
 	b.stopManifest()
 	b.manifestWG.Wait()
-	manifestID, manifestBody, hasManifest := b.manifestToStore()
+	manifests := b.manifestToStore()
 	b.reportManifest()
 	b.prep.Close()
 	if b.putBatchStop != nil {
@@ -155,8 +155,8 @@ func (b *WebBackend) closeHandOff() error {
 	b.lookAhead.Close()
 
 	entries := b.pendingEntries()
-	if hasManifest {
-		entries = append(entries, spoolEntry{ActionID: manifestID, OutputID: StoredDigest(manifestBody), Data: manifestBody, Replace: true})
+	for _, write := range manifests {
+		entries = append(entries, spoolEntry{ActionID: write.id, OutputID: StoredDigest(write.body), Data: write.body, Replace: true})
 	}
 	if len(entries) > 0 {
 		if err := b.handOff(entries); err != nil {

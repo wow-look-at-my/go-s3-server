@@ -473,6 +473,9 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 		b.startManifest(b.moduleName())
 	}
 	b.manifest.note(actionID, "get")
+	if b.manifest != nil {
+		b.manifest.fallback.Load().noteLookup(actionID, false)
+	}
 	b.lookAhead.noteLookup()
 	return b.get(actionID)
 }
@@ -480,7 +483,9 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 // NoteUsed records a lookup another tier answered, so the manifest names it too.
 func (b *WebBackend) NoteUsed(id [32]byte) {
 	if b.manifest != nil {
-		b.manifest.note(hex.EncodeToString(id[:]), "disk")
+		actionID := hex.EncodeToString(id[:])
+		b.manifest.note(actionID, "disk")
+		b.manifest.fallback.Load().noteLookup(actionID, true)
 	}
 	b.lookAhead.noteUsed(id)
 }

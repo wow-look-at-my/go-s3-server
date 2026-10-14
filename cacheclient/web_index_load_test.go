@@ -192,6 +192,47 @@ func TestNoCopyGetIsBoundedWhileIndexLoads(t *testing.T) {
 	requireIndexLockFree(t, b)
 }
 
+// TestNoCopyGetDoesNotWaitByDefault pins the default: with no disk copy a Get
+// asks the server at once and never blocks on the index download.
+func TestNoCopyGetDoesNotWaitByDefault(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bk/_index" {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+
+	b, err := NewWebBackend(WebConfig{Bucket: "bk", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: t.TempDir()})
+	require.NoError(t, err)
+
+	var absent [gbciHashSize]byte
+	absent[0] = 0x98
+	got := make(chan bool)
+	go func() {
+		_, _, _, miss := b.Get(hex.EncodeToString(absent[:]))
+		got <- miss
+	}()
+	select {
+	case miss := <-got:
+		require.True(t, miss)
+	case <-time.After(5 * time.Second):
+		releaseOnce.Do(func() { close(release) })
+		<-got
+		t.Fatal("a Get waited on an index download that never finishes")
+	}
+	require.False(t, b.SummarySnapshot().IndexAuthoritative, "the index is still loading")
+	require.Equal(t, uint32(1), b.MissHTTP404.Load(), "the Get asked the server")
+	releaseOnce.Do(func() { close(release) })
+	require.NoError(t, b.Close())
+}
+
 // TestConcurrentClientsDownloadIndexOnce pins single-flight across processes
 // that share an IndexDir. backends stand in for go commands: they share no
 // memory, only the directory. the thing that takes the lock downloads; the

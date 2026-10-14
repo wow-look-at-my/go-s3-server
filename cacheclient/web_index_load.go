@@ -9,9 +9,8 @@ import (
 	"github.com/wow-look-at-my/go-s3-server/cacheclient/cachedisk"
 )
 
-// IndexWaitDefault is how long the earliest Get or Put waits for the key
-// index when no disk copy exists.
-const IndexWaitDefault = 15 * time.Second
+// IndexWaitDefault is how long the earliest Get or Put waits for the key index when no disk copy exists.
+const IndexWaitDefault = 0
 
 // indexSlowLoad is the load time past which the load is reported at warning
 // level, so a slow index shows in a CI log without debug output.
@@ -67,7 +66,7 @@ func (b *WebBackend) dropKeyLocked(h actionHash) {
 // than the max age is authoritative and final. An older a single is
 // installed at the same time as non-authoritative, and the refresh runs in
 // the background. With no copy at all the earliest use waits up to
-// indexTiming.wait for the load, then goes on non-authoritative while the load continues.
+// indexTiming.wait, zero by default, then goes on non-authoritative while the load continues.
 func (b *WebBackend) ensureIndex() {
 	b.indexOnce.Do(b.startIndexLoad)
 }
@@ -117,6 +116,9 @@ func (b *WebBackend) startIndexLoad() {
 
 	if disk.blob != nil {
 		logging.Infof("cacheprog: web index: loaded %d keys from a copy %v old", disk.count, disk.age().Round(time.Second))
+		return
+	}
+	if b.indexTiming.wait <= 0 {
 		return
 	}
 	// Only this wait holds up the build, so it is what reports at warning level.

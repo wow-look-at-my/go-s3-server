@@ -4,6 +4,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"strconv"
 	"sync/atomic"
@@ -342,11 +343,21 @@ func statusStr(code int) string {
 	return strconv.Itoa(code)
 }
 
-// startMetricsServer serves /metrics on addr.
+// startMetricsServer binds addr, logs the bound address and serves /metrics in
+// the background. A bind failure is logged, and the cache continues without
+// metrics.
 func startMetricsServer(addr string) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Printf("metrics server unavailable (continuing WITHOUT metrics): %v", err)
+		return
+	}
+	log.Printf("metrics server listening on %s", ln.Addr())
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		log.Printf("metrics server unavailable (continuing WITHOUT metrics): %v", err)
-	}
+	go func() {
+		if err := http.Serve(ln, mux); err != nil {
+			log.Printf("metrics server stopped (continuing WITHOUT metrics): %v", err)
+		}
+	}()
 }

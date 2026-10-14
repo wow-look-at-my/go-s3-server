@@ -4,23 +4,31 @@ shared:
 	files:
 		serve.sh: |
 			# Runs a single check script against a server this starts and
-			# stops. usage: serve.sh <config.json> <port> <check.sh>
+			# stops. usage: serve.sh <config.json> <check.sh>
+			# The config listens on port 0, so the kernel picks a free port and
+			# the server log names it. Concurrent runs never share a server.
+			# The check reads the port from $PORT.
 			set -euo pipefail
 			config="$1"
-			port="$2"
-			check="$3"
+			check="$2"
 			log="$(mktemp)"
 			"${SERVER:-./build/go-s3-server}" --config "$config" > "$log" 2>&1 &
 			server=$!
 			trap 'kill "$server" 2>/dev/null || true; wait "$server" 2>/dev/null || true' EXIT
+			port_re='listening on [^ ]*:([0-9]+) bucket='
+			PORT=""
 			ready=""
 			for _ in $(seq 1 100); do
-				if curl -so /dev/null "http://127.0.0.1:$port/_health"; then ready=yes; break; fi
+				while [ -z "$PORT" ] && IFS= read -r line; do
+					if [[ "$line" =~ $port_re ]]; then PORT="${BASH_REMATCH[1]}"; fi
+				done < "$log"
+				if [ -n "$PORT" ] && curl -so /dev/null "http://127.0.0.1:$PORT/_health"; then ready=yes; break; fi
 				if ! kill -0 "$server" 2>/dev/null; then break; fi
 				sleep 0.1
 			done
+			export PORT
 			if [ -z "$ready" ]; then
-				echo "the server never answered on port $port" >&2
+				echo "the server never answered on port ${PORT:-(none in its log)}" >&2
 				sed 's/^/server: /' "$log" >&2
 				exit 1
 			fi
@@ -41,13 +49,13 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19010","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19010/test-cache
+				base=http://127.0.0.1:$PORT/test-cache
 				curl -sf -u testuser:testpass -X PUT --data-binary 'hello world cache data' "$base/api/v1test000000000001" > /dev/null
 				curl -sf -u testuser:testpass "$base/api/v1test000000000001"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19010 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			0: "^hello world cache data$"
@@ -56,15 +64,15 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19011","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19011/test-cache
+				base=http://127.0.0.1:$PORT/test-cache
 				body="$(mktemp)"
 				code=$(curl -s -o "$body" -w '%{http_code}' -u testuser:testpass "$base/nonexistent/v1xxxx000000000000")
 				echo "status $code"
 				sed 's/^/body /' "$body"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19011 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "status 404"
@@ -76,14 +84,14 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19012","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19012/test-cache
+				base=http://127.0.0.1:$PORT/test-cache
 				curl -sf -u testuser:testpass -X PUT --data-binary 'first' "$base/overwrite/v1test000000000002" > /dev/null
 				curl -sf -u testuser:testpass -X PUT --data-binary 'second' "$base/overwrite/v1test000000000002" > /dev/null
 				curl -sf -u testuser:testpass "$base/overwrite/v1test000000000002"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19012 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			0: "^second$"
@@ -94,13 +102,13 @@ tests:
 		env:
 			DATA_DIR: "{outputs.data}"
 		files:
-			config.json: '{"listen":"127.0.0.1:19013","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19013/test-cache
+				base=http://127.0.0.1:$PORT/test-cache
 				curl -sf -u testuser:testpass -X PUT --data-binary 'sharddata' "$base/shardtest/v1aabbccdd11223344" > /dev/null
 				sed 's/^/shard /' "$DATA_DIR/shardtest/v1/aa/bbccdd11223344"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19013 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "shard sharddata"
@@ -109,17 +117,17 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19014","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19014/test-cache
+				base=http://127.0.0.1:$PORT/test-cache
 				curl -sf -u testuser:testpass -X PUT --data-binary 'metabody' \
 					-H 'X-Cache-Meta-Outputid: abc123' -H 'X-Cache-Meta-Custom: val2' \
 					"$base/metatest/v1meta000000000001" > /dev/null
 				headers="$(mktemp)"
 				curl -sf -u testuser:testpass -D "$headers" -o /dev/null "$base/metatest/v1meta000000000001"
 				tr -d '\r' < "$headers" | grep -i '^x-cache-meta-'
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19014 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "Outputid: abc123"
@@ -131,17 +139,17 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19015","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19015/test-cache
+				base=http://127.0.0.1:$PORT/test-cache
 				curl -sf -u testuser:testpass -X PUT --data-binary 'legacymeta' \
 					-H 'X-Amz-Meta-Outputid: legacy456' \
 					"$base/metatest/v1meta000000000002" > /dev/null
 				headers="$(mktemp)"
 				curl -sf -u testuser:testpass -D "$headers" -o /dev/null "$base/metatest/v1meta000000000002"
 				tr -d '\r' < "$headers" | grep -i 'meta-outputid'
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19015 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "X-Cache-Meta-Outputid: legacy456"
@@ -151,10 +159,10 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19016","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","index_blob_interval":"0s","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","index_blob_interval":"0s","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19016/test-cache
+				base=http://127.0.0.1:$PORT/test-cache
 				auth=testuser:testpass
 				put() { curl -sf -u "$auth" -X PUT --data-binary 'data' "$base/go-buildcache/v1$1" > /dev/null; }
 				for c in a b c; do put "$(printf "$c%.0s" $(seq 64))"; done
@@ -182,7 +190,7 @@ tests:
 				echo "after-new-key $(stat -c %s "$body2")"
 				etag2=$(tr -d '\r' < "$headers2" | awk 'tolower($1) == "etag:" {print $2}')
 				test "$etag2" != "$etag" && echo "etag moved"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19016 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "status 200"
@@ -198,14 +206,14 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19017","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
 				body="$(mktemp)"
-				code=$(curl -s -o "$body" -w '%{http_code}' http://127.0.0.1:19017/_health)
+				code=$(curl -s -o "$body" -w '%{http_code}' http://127.0.0.1:$PORT/_health)
 				echo "status $code"
 				sed 's/^/body /' "$body"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19017 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "status 200"
@@ -215,15 +223,15 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19019","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
 				body="$(mktemp)"
-				code=$(curl -s -o "$body" -w '%{http_code}' http://127.0.0.1:19019/_version)
+				code=$(curl -s -o "$body" -w '%{http_code}' http://127.0.0.1:$PORT/_version)
 				echo "status $code"
 				echo "keys $(jq -r 'keys | join(",")' "$body")"
 				echo "go $(jq -r '.go' "$body")"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19019 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "status 200"
@@ -234,14 +242,14 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19018","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19018/test-cache
+				base=http://127.0.0.1:$PORT/test-cache
 				echo "wrong-password $(curl -s -o /dev/null -w '%{http_code}' -u testuser:wrongpassword "$base/auth/v1test000000000001")"
 				echo "unknown-user $(curl -s -o /dev/null -w '%{http_code}' -u unknownuser:testpass "$base/auth/v1test000000000002")"
 				echo "no-credentials $(curl -s -o /dev/null -w '%{http_code}' "$base/auth/v1test000000000003")"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19018 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "wrong-password 403"

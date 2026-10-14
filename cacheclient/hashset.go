@@ -35,11 +35,20 @@ const gbciPrefixSize = 8
 
 func keyOf(h actionHash) hashKey { return binary.BigEndian.Uint64(h[:gbciPrefixSize]) }
 
-// addAll adds every key in src.
+// addAll adds every key in src with a single merge into the sorted slice. A
+// merge per compactAt keys moves the whole slice each time.
 func (s *hashSet) addAll(src *hashSet) {
 	for k := range src.All() {
-		s.addKey(k)
+		if s.removed.Contains(k) {
+			s.removed.Remove(k)
+			continue
+		}
+		if _, found := slices.BinarySearch(s.sorted, k); found {
+			continue
+		}
+		s.pending.Add(k)
 	}
+	s.compact()
 }
 
 // compactAt is how many buffered mutations force a merge into the sorted slice.

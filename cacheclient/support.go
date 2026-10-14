@@ -41,3 +41,17 @@ func (b *WebBackend) Present(actionID string) bool {
 	h, ok := parseActionHash(actionID)
 	return ok && b.keyKnown(h)
 }
+
+// Holds reports whether the store holds actionID, by an index the server
+// confirmed in this run. An index that is not confirmed answers false: it can
+// name a key the store has since evicted.
+func (b *WebBackend) Holds(actionID string) bool {
+	h, ok := parseActionHash(actionID)
+	if !ok {
+		return false
+	}
+	b.ensureIndex()
+	b.keysMu.RLock()
+	defer b.keysMu.RUnlock()
+	return b.indexAuthoritative && b.keys.Contains(h)
+}

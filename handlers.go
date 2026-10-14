@@ -268,12 +268,9 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 		writeError(w, 500, "internal_error", "index unavailable")
 		return
 	}
-	width := gbciHashSize
-	if r.URL.Query().Get("hash") == strconv.Itoa(gbciPrefixSize) {
-		width = gbciPrefixSize
-	}
+	form := indexFormFromQuery(r)
 	if from, asked := indexGenFromQuery(r); asked {
-		delta, to, ok := idx.DeltaWidth(from, width)
+		delta, to, ok := idx.DeltaForm(from, form)
 		if !ok {
 			writeError(w, http.StatusGone, "index_epoch_gone", "the index changed beyond a delta; fetch it whole")
 			return
@@ -285,13 +282,28 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 		_, _ = w.Write(delta)
 		return
 	}
-	blob, etag, gen := idx.BlobGenWidth(width)
+	blob, etag, gen := idx.BlobGenForm(form)
 	// The blob is shared by every request and already built, so the transfer holds no memory of its own.
 	releaseSlot(r)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("ETag", etag)
 	setIndexGenHeaders(w, gen)
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(blob))
+}
+
+// indexFormFromQuery reads the form a request asks for. enc=rice asks for the
+// compact form. A client sends hash=8 with it, so a server that does not know
+// enc answers the gbciPrefixSize form.
+func indexFormFromQuery(r *http.Request) indexForm {
+	q := r.URL.Query()
+	switch {
+	case q.Get("enc") == riceEncoding:
+		return formRice
+	case q.Get("hash") == strconv.Itoa(gbciPrefixSize):
+		return formPrefix
+	default:
+		return formFull
+	}
 }
 
 // The add-log position travels as decimal headers on the response and as

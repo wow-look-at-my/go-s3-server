@@ -2,13 +2,11 @@ package cacheclient
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -149,7 +147,11 @@ func (b *WebBackend) persistDelta(path string, disk diskIndex, added *hashSet, g
 		writeIndexGen(path, disk.etag, gen)
 		return
 	}
-	blob := mergeIndexBlob(disk.blob, added)
+	blob, err := mergeIndexBlob(disk.blob, added)
+	if err != nil {
+		logging.Warnf("cacheprog: web index: disk copy does not parse: %v", err)
+		return
+	}
 	_, etag, err := parseIndexBlob(blob)
 	if err != nil {
 		logging.Warnf("cacheprog: web index: merged copy does not parse: %v", err)
@@ -159,30 +161,15 @@ func (b *WebBackend) persistDelta(path string, disk diskIndex, added *hashSet, g
 	writeIndexGen(path, etag, gen)
 }
 
-// mergeIndexBlob is a short-form GBCI blob of the keys in base and added.
-// base is a valid blob of either width.
-func mergeIndexBlob(base []byte, added *hashSet) []byte {
-	width := int(base[5])
-	count := int(binary.LittleEndian.Uint64(base[16:24]))
-	extra := slices.Sorted(added.All())
-	merged := make([]hashKey, 0, count+len(extra))
-	next := 0
-	for idx := range count {
-		off := gbciHeaderSize + idx*width
-		key := binary.BigEndian.Uint64(base[off : off+gbciPrefixSize])
-		for next < len(extra) && extra[next] < key {
-			merged = append(merged, extra[next])
-			next++
-		}
-		if next < len(extra) && extra[next] == key {
-			next++
-		}
-		if len(merged) == 0 || merged[len(merged)-1] != key {
-			merged = append(merged, key)
-		}
+// mergeIndexBlob is a blob of the keys in base and added, at the narrower of
+// their widths.
+func mergeIndexBlob(base []byte, added *hashSet) ([]byte, error) {
+	keys, _, err := parseIndexBlob(base)
+	if err != nil {
+		return nil, err
 	}
-	merged = append(merged, extra[next:]...)
-	return marshalSortedIndex(merged)
+	keys.addAll(added)
+	return marshalIndex(keys), nil
 }
 
 // probingNote says whether a key the copy lacks is probed.

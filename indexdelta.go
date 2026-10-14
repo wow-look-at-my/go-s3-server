@@ -1,10 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"sync/atomic"
 	"time"
 )
 
@@ -42,8 +42,69 @@ func (idx *Index) resetAddLogLocked() {
 	idx.added = nil
 	idx.builtAt = time.Time{}
 	idx.dirty.Store(true)
-	idx.prefixBuiltAt = time.Time{}
-	idx.prefixDirty.Store(true)
+	idx.prefixForm.stale()
+	idx.riceForm.stale()
+}
+
+// formCache holds the last blob of a short index form.
+type formCache struct {
+	blob    []byte
+	etag    string
+	gen     indexGen
+	builtAt time.Time
+	dirty   atomic.Bool
+}
+
+// stale makes the next read rebuild the blob. The caller holds idx.mu.
+func (c *formCache) stale() {
+	c.builtAt = time.Time{}
+	c.dirty.Store(true)
+}
+
+// drop discards the blob. The caller holds idx.mu.
+func (c *formCache) drop() {
+	c.blob = nil
+	c.etag = ""
+}
+
+// servable is blobServableLocked for a short form. The caller holds idx.mu.
+func (c *formCache) servable(interval time.Duration) bool {
+	if c.blob == nil {
+		return false
+	}
+	return !c.dirty.Load() || time.Since(c.builtAt) < interval
+}
+
+// indexForm names one of the encodings GET /_index serves.
+type indexForm int
+
+const (
+	// formFull is gbciHashSize-byte hashes.
+	formFull indexForm = iota
+	// formPrefix is gbciPrefixSize-byte hashes.
+	formPrefix
+	// formRice is gbciCompactWidth-byte prefixes in Rice code.
+	formRice
+)
+
+// marshal encodes sorted hashes in the form.
+func (f indexForm) marshal(hashes [][gbciHashSize]byte) []byte {
+	switch f {
+	case formPrefix:
+		return marshalGBCIWidth(hashes, gbciPrefixSize)
+	case formRice:
+		return marshalGBCIRice(hashes, gbciCompactWidth)
+	default:
+		return marshalGBCI(hashes)
+	}
+}
+
+// formCacheLocked is the cache of a short form. The caller holds idx.mu.
+func (idx *Index) formCacheLocked(form indexForm) *formCache {
+	if form == formRice {
+		return &idx.riceForm
+	}
+	return &idx.prefixForm
 }
 
 // indexGen is a position in the add log.
@@ -52,51 +113,43 @@ type indexGen struct {
 	seq   uint64
 }
 
-// BlobGenWidth is BlobGen in the form a client asked for: gbciPrefixSize-byte
-// hashes, or the full gbciHashSize.
-func (idx *Index) BlobGenWidth(width int) ([]byte, string, indexGen) {
-	if width != gbciPrefixSize {
+// BlobGenForm is BlobGen in the form a client asked for.
+func (idx *Index) BlobGenForm(form indexForm) ([]byte, string, indexGen) {
+	if form == formFull {
 		return idx.BlobGen()
 	}
+	interval := idx.BlobInterval()
 	idx.mu.RLock()
-	blob, etag, gen, fresh := idx.cachedPrefix, idx.cachedPrefixETag, idx.cachedPrefixGen, idx.prefixServableLocked()
+	c := idx.formCacheLocked(form)
+	blob, etag, gen, fresh := c.blob, c.etag, c.gen, c.servable(interval)
 	idx.mu.RUnlock()
 	if fresh {
 		return blob, etag, gen
 	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
-	if idx.prefixServableLocked() {
-		return idx.cachedPrefix, idx.cachedPrefixETag, idx.cachedPrefixGen
+	if c.servable(interval) {
+		return c.blob, c.etag, c.gen
 	}
 	gen = idx.mergePendingLocked()
-	idx.cachedPrefix = marshalGBCIWidth(idx.hashes, gbciPrefixSize)
-	idx.cachedPrefixETag = blobETag(idx.cachedPrefix)
-	idx.cachedPrefixGen = gen
-	idx.prefixBuiltAt = time.Now()
-	idx.prefixDirty.Store(false)
+	c.blob = form.marshal(idx.hashes)
+	c.etag = blobETag(c.blob)
+	c.gen = gen
+	c.builtAt = time.Now()
+	c.dirty.Store(false)
 	idx.updateGaugesLocked()
-	return idx.cachedPrefix, idx.cachedPrefixETag, idx.cachedPrefixGen
+	return c.blob, c.etag, c.gen
 }
 
-// prefixServableLocked is blobServableLocked for the short form. The caller holds idx.mu.
-func (idx *Index) prefixServableLocked() bool {
-	if idx.cachedPrefix == nil {
-		return false
-	}
-	return !idx.prefixDirty.Load() || time.Since(idx.prefixBuiltAt) < idx.BlobInterval()
-}
-
-// Delta is DeltaWidth at the full hash width.
+// Delta is DeltaForm in the full form.
 func (idx *Index) Delta(from indexGen) (blob []byte, to indexGen, ok bool) {
-	return idx.DeltaWidth(from, gbciHashSize)
+	return idx.DeltaForm(from, formFull)
 }
 
-// DeltaWidth answers a GBCI blob of the first width bytes of each hash added
-// after from, and the position it brings the client to. ok is false when from
-// is not in the current epoch or is ahead of the log: the client must make a
-// full fetch.
-func (idx *Index) DeltaWidth(from indexGen, width int) (blob []byte, to indexGen, ok bool) {
+// DeltaForm answers a GBCI blob in form of each hash added after from, and
+// the position it brings the client to. ok is false when from is not in the
+// current epoch or is ahead of the log: the client must make a full fetch.
+func (idx *Index) DeltaForm(from indexGen, form indexForm) (blob []byte, to indexGen, ok bool) {
 	idx.mu.RLock()
 	if from.epoch != idx.addEpoch || from.seq > uint64(len(idx.added)) {
 		idx.mu.RUnlock()
@@ -105,7 +158,7 @@ func (idx *Index) DeltaWidth(from indexGen, width int) (blob []byte, to indexGen
 	tail := append([][gbciHashSize]byte(nil), idx.added[from.seq:]...)
 	to = indexGen{epoch: idx.addEpoch, seq: uint64(len(idx.added))}
 	idx.mu.RUnlock()
-	return marshalGBCIWidth(sortDedupeHashes(tail), width), to, true
+	return form.marshal(sortDedupeHashes(tail)), to, true
 }
 
 // gbciPrefixSize is the hash width of the short index form.
@@ -144,40 +197,15 @@ func marshalGBCIWidth(hashes [][gbciHashSize]byte, width int) []byte {
 }
 
 // WireSize is the length in bytes of the body a cacheclient gets from a full GET /_index right now, before any compression.
-// The client asks for the gbciPrefixSize form, so this sizes that form and not the full-width one.
+// GET /_index right now, before any compression. The client asks for the
 // It answers from the cached blob when the handler would serve it, and counts the merged list otherwise.
 // It never serializes and never changes the index.
 func (idx *Index) WireSize() int64 {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	if idx.prefixServableLocked() {
-		return int64(len(idx.cachedPrefix))
+	if idx.riceForm.servable(idx.BlobInterval()) {
+		return int64(len(idx.riceForm.blob))
 	}
 	fresh := sortDedupeHashes(append([][gbciHashSize]byte(nil), idx.pending...))
-	n := countDistinctPrefixes(idx.hashes, fresh, gbciPrefixSize)
-	return int64(gbciHeaderSize + n*gbciPrefixSize + sha256.Size)
-}
-
-// countDistinctPrefixes counts the distinct first width bytes over the union of sorted lists a and b.
-// This is the hash count marshalGBCIWidth writes for the merged list. It does not allocate.
-func countDistinctPrefixes(a, b [][gbciHashSize]byte, width int) int {
-	n := 0
-	var prev []byte
-	i, j := 0, 0
-	for i < len(a) || j < len(b) {
-		var cur []byte
-		switch {
-		case j == len(b) || (i < len(a) && bytes.Compare(a[i][:], b[j][:]) <= 0):
-			cur = a[i][:width]
-			i++
-		default:
-			cur = b[j][:width]
-			j++
-		}
-		if prev == nil || !bytes.Equal(prev, cur) {
-			n++
-			prev = cur
-		}
-	}
-	return n
+	return riceWireSize(idx.hashes, fresh, gbciCompactWidth)
 }

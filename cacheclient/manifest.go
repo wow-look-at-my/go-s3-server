@@ -307,6 +307,9 @@ func (b *WebBackend) walkManifest(base string) (int, []string) {
 		}
 	}
 	m := b.manifest
+	if newest >= 0 {
+		m.trace.add("newest", manifestGenID(base, newest))
+	}
 	m.mu.Lock()
 	m.newest, m.newestNamed = newest, named
 	m.mu.Unlock()
@@ -502,7 +505,9 @@ func (b *WebBackend) manifestToStore() (string, []byte, bool) {
 		logging.Warnf("cacheprog: manifest: generation %d names %d keys and this build used %d, and the walk reads no later generation", newest, len(named), len(ids))
 		return "", nil, false
 	}
-	return manifestGenID(*id, gen), []byte(strings.Join(ids, "\n")), true
+	target := manifestGenID(*id, gen)
+	m.trace.add("store", target)
+	return target, []byte(strings.Join(ids, "\n")), true
 }
 
 // manifestDrift is the share of the used keys, in percent, that the named and the used sets may differ by.

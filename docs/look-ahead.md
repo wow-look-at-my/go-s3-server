@@ -28,6 +28,14 @@ The pool is on by default, with `defaultLookAheadWorkers` workers. `GO_TOOLCHAIN
 
 The pool stops at the first one.
 
+## The build manifest
+
+A build manifest (`manifest.go`) names the action IDs one command of one module looked up or stored, in first-use order. The next run of that command fetches them before it asks. A found manifest turns the pool off. The pool waits for the manifest walk before it sends anything. A seed from the first lookups cannot fetch a window the manifest makes useless.
+
+A manifest is write-once, so a stale one gets a successor generation. A generation is stale when the keys it names and the keys this build used differ by more than `manifestDrift` percent of the used keys. Both directions count. A key named and not used is a download the next build never reads. An authoritative index names the newest generation with no request.
+
+`GO_CACHE_MANIFEST_TRACE=<file>` appends one line per event to that file: `named`, `fetch`, `ahead`, `get`, `disk` and `put`, each with its action ID. Compare the `named` and `fetch` keys with the `get`. `disk` keys to find what a build fetched and never read.
+
 ## What the pool is worth
 
 `BenchmarkBuildShape` walks a 12-level graph, keys wide, against a real HTTP server. Shapes. `none` is the critical path alone, with nothing fetched ahead of it. `blocking` is the old wire shape, where speculative bodies ride the request the build is waiting on. `lookahead` is the pool, turned on for that arm. It fetches the same window off the critical path.

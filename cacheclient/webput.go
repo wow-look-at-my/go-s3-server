@@ -55,7 +55,7 @@ func (b *WebBackend) PutFile(actionID, outputID, path string) error {
 // the thing thing that happens on the caller's goroutine, because it is what
 // stops callers uploading the same object.
 func (b *WebBackend) enqueuePut(actionID, outputID string, data []byte, path string) error {
-	b.manifest.note(actionID)
+	b.manifest.note(actionID, "put")
 	h, ok := parseActionHash(actionID)
 	if !ok {
 		return fmt.Errorf("web put: %q is not an action ID", actionID)
@@ -117,7 +117,7 @@ func (b *WebBackend) prepare(j putJob) {
 	// and nothing about which one, so whoever reads it starts from nothing.
 	if act, ok := BuildIDMatchesAction(j.actionID, j.data); !ok {
 		b.PutRefusedBuildID.Increment()
-		logging.Warnf("cacheprog: web put %s (%s): refusing upload, build-id action mismatch (want action=%s, got action=%s); object does not belong under this key",
+		logging.Warnf("cacheprog: web put %s (%s): refusing upload, build-id action mismatch (want action=%s, got action=%s)",
 			ShortID(j.actionID), describeObject(j.data), ExpectedBuildIDAction(j.actionID), act)
 		b.dropUpload(j.hash)
 		return

@@ -329,7 +329,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 	closeBody(resp.Body)
 	b.Pool.Release()
 	if err != nil {
-		logging.Warnf("cacheprog: web batch get: parse: %v; asking for the %d keys it did not answer one at a time", err, len(reqByKey))
+		logging.Warnf("cacheprog: web batch get: parse: %v; retrying %d keys one by one", err, len(reqByKey))
 		// A cut stream says nothing about the keys it never reached, so each is
 		// asked for on its own.
 		for _, r := range reqByKey {

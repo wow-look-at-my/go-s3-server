@@ -39,18 +39,20 @@ type buildManifest struct {
 	ctx     context.Context          // the fetch runs under it
 	cancel  context.CancelFunc       // stops the fetch when Close has waited long enough
 
-	newest     int
-	newestKeys int // the keys that generation names
+	newest      int
+	newestNamed []string // the keys that generation names
 
 	Waited AtomicCounter // lookups that waited for a fetch already on the wire
 	GaveUp AtomicCounter // lookups that stopped waiting after manifestWaitCap and asked on their own
 
 	Fetched AtomicCounter // entries the manifest brought into the local tier
 	Named   AtomicCounter // action IDs the manifest named
+
+	trace *manifestTrace
 }
 
 func newBuildManifest() *buildManifest {
-	return &buildManifest{used: set.New[string](), pending: map[string]chan struct{}{}, newest: -1}
+	return &buildManifest{used: set.New[string](), pending: map[string]chan struct{}{}, newest: -1, trace: newManifestTrace()}
 }
 
 // AwaitPrefetch waits while the manifest fetch has actionID on the wire. It
@@ -119,8 +121,8 @@ func manifestScope(module, command string) string {
 	return module + "\x00" + command
 }
 
-// manifestGenerations caps the walk. A write-once server keeps each generation, so a short one gets a successor.
-const manifestGenerations = 16
+// manifestGenerations caps the walk. A write-once server keeps each generation, so a stale one gets a successor.
+const manifestGenerations = 64
 
 // manifestGenID is the action ID of generation gen of the manifest stored under base. One generation is base.
 func manifestGenID(base string, gen int) string {
@@ -144,10 +146,11 @@ func manifestKeys(data []byte, self string) []string {
 
 // note records an action ID this build looked up, from any tier, or stored. A cold build stores
 // about half its objects without a lookup first, and the next build looks every one of them up.
-func (m *buildManifest) note(actionID string) {
+func (m *buildManifest) note(actionID, event string) {
 	if m == nil {
 		return
 	}
+	m.trace.add(event, actionID)
 	m.mu.Lock()
 	if m.used.Len() < manifestMaxKeys && !m.used.Contains(actionID) {
 		m.used.Add(actionID)
@@ -169,10 +172,13 @@ func (b *WebBackend) startManifest(module string) {
 	m.mu.Lock()
 	m.ctx, m.cancel = ctx, cancel
 	m.mu.Unlock()
+	// The look-ahead waits for the walk. A window sent before it would only fetch what a manifest names or what the build does not use.
+	b.lookAhead.hold()
 	b.manifestWG.Add(1)
 	go func() {
 		defer b.manifestWG.Done()
 		defer cancel()
+		defer b.lookAhead.release()
 		b.fetchManifest(id)
 	}()
 }
@@ -211,7 +217,7 @@ func (b *WebBackend) awaitManifest() {
 		return
 	case <-timer.C:
 	}
-	logging.Warnf("cacheprog: manifest: the fetch ran past %v at exit, so it is cancelled", manifestCloseWait)
+	logging.Warnf("cacheprog: manifest: fetch cancelled at exit after %v", manifestCloseWait)
 	b.stopManifest()
 	<-done
 }
@@ -257,21 +263,52 @@ func (b *WebBackend) readManifest(id string) ([]byte, bool) {
 	return data, found
 }
 
-// walkManifest reads each generation of the manifest in turn, newest last.
-// It records that generation and its key count for storeManifest.
-func (b *WebBackend) walkManifest(base string) (int, []string) {
+// newestKnownGen answers the newest generation of base that the index holds,
+// with no request. It answers false when the index is not authoritative.
+func (b *WebBackend) newestKnownGen(base string) (int, bool) {
+	b.ensureIndex()
+	b.keysMu.RLock()
+	authoritative := b.indexAuthoritative
+	b.keysMu.RUnlock()
+	if !authoritative {
+		return -1, false
+	}
 	newest := -1
-	var named []string
 	for gen := range manifestGenerations {
-		data, found := b.readManifest(manifestGenID(base, gen))
-		if !found {
+		h, _ := parseActionHash(manifestGenID(base, gen))
+		if !b.keyKnown(h) {
 			break
 		}
-		newest, named = gen, manifestKeys(data, base)
+		newest = gen
+	}
+	return newest, true
+}
+
+// walkManifest finds the newest generation of the manifest and reads it. An
+// authoritative index names the newest generation, so the walk reads one body.
+// Otherwise it reads each generation in turn. It records the generation and its
+// keys for storeManifest.
+func (b *WebBackend) walkManifest(base string) (int, []string) {
+	newest, known := b.newestKnownGen(base)
+	var named []string
+	if known {
+		if newest >= 0 {
+			if data, found := b.readManifest(manifestGenID(base, newest)); found {
+				named = manifestKeys(data, base)
+			}
+		}
+	} else {
+		for gen := range manifestGenerations {
+			data, found := b.readManifest(manifestGenID(base, gen))
+			if !found {
+				break
+			}
+			newest, named = gen, manifestKeys(data, base)
+		}
 	}
 	m := b.manifest
 	m.mu.Lock()
-	m.newest, m.newestKeys = newest, len(named)
+	m.newest, m.newestNamed = newest, named
 	m.mu.Unlock()
 	return newest, named
 }
@@ -279,7 +316,7 @@ func (b *WebBackend) walkManifest(base string) (int, []string) {
 // fetchManifest reads the newest manifest generation and pulls what it names.
 func (b *WebBackend) fetchManifest(base string) {
 	newest, named := b.walkManifest(base)
-	if newest < 0 {
+	if newest < 0 || len(named) == 0 {
 		return
 	}
 	b.keysMu.RLock()
@@ -289,15 +326,16 @@ func (b *WebBackend) fetchManifest(base string) {
 	for _, line := range named {
 		h, _ := parseActionHash(line)
 		b.manifest.Named.Increment()
+		b.manifest.trace.add("named", line)
 		// Only an authoritative index proves a key absent.
 		if (authoritative && !b.keyKnown(h)) || b.isHeld(h) || b.hasLocal(h) {
 			continue
 		}
 		ids = append(ids, line)
+		b.manifest.trace.add("fetch", line)
 	}
-	if b.manifest.Named.Load() > 0 {
-		b.lookAhead.cover()
-	}
+	b.lookAhead.cover()
+	b.lookAhead.release()
 	if len(ids) == 0 {
 		return
 	}
@@ -448,29 +486,60 @@ func (b *WebBackend) manifestToStore() (string, []byte, bool) {
 			ids = append(ids, actionID)
 		}
 	}
-	newest, newestKeys := m.newest, m.newestKeys
+	newest, named := m.newest, m.newestNamed
 	m.mu.Unlock()
 	if len(ids) == 0 {
 		return "", nil, false
 	}
 	gen := 0
 	if newest >= 0 {
-		if newestKeys*10 >= len(ids)*9 {
+		if !manifestDrifted(named, ids) {
 			return "", nil, false
 		}
 		gen = newest + 1
 	}
 	if gen >= manifestGenerations {
-		logging.Warnf("cacheprog: manifest: generation %d names %d keys of %d, and the walk reads no later generation", newest, newestKeys, len(ids))
+		logging.Warnf("cacheprog: manifest: generation %d names %d keys and this build used %d, and the walk reads no later generation", newest, len(named), len(ids))
 		return "", nil, false
 	}
 	return manifestGenID(*id, gen), []byte(strings.Join(ids, "\n")), true
 }
 
+// manifestDrift is the share of the used keys, in percent, that the named and the used sets may differ by.
+const manifestDrift = 10
+
+// manifestDrifted reports whether a generation that names named is stale for a
+// build that used used. A key named and not used is a download the next build
+// does not read. A key used and not named is a lookup the next build waits for.
+// Both count, so a generation that names a superset of the build is stale too.
+func manifestDrifted(named, used []string) bool {
+	usedSet := set.New[string]()
+	for _, id := range used {
+		usedSet.Add(id)
+	}
+	namedSet := set.New[string]()
+	common := 0
+	for _, id := range named {
+		if namedSet.Contains(id) {
+			continue
+		}
+		namedSet.Add(id)
+		if usedSet.Contains(id) {
+			common++
+		}
+	}
+	differ := namedSet.Len() - common + usedSet.Len() - common
+	return differ*100 > usedSet.Len()*manifestDrift
+}
+
 // reportManifest states what the manifest did.
 func (b *WebBackend) reportManifest() {
 	m := b.manifest
-	if m == nil || m.Named.Load() == 0 {
+	if m == nil {
+		return
+	}
+	m.trace.write()
+	if m.Named.Load() == 0 {
 		return
 	}
 	logging.Infof("cacheprog: manifest: named %d keys, fetched %d ahead, %d lookups waited for them, %d gave up waiting",

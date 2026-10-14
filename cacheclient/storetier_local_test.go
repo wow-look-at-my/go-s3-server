@@ -19,7 +19,7 @@ func TestLocalTierNeverReachesTheStore(t *testing.T) {
 	require.NoError(t, err)
 	tier := layerStore(disk, b)
 	local := cachedisk.Local(tier)
-	require.IsType(t, localTier{}, local, "a tier with a store answers its disk half")
+	require.IsType(t, diskOnly{}, local, "a tier with a store answers its disk half")
 
 	var id ActionID
 	id[0] = 9

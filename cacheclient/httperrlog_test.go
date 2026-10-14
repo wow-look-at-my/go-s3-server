@@ -340,7 +340,7 @@ func TestHTTPErrLogger_BatchHTTPSingleMiss(t *testing.T) {
 	require.NoError(t, l.Close())
 
 	require.Equal(t,
-		"cacheprog: batch GET: 100 keys → 0 entries (server has no entries for any of them) in 47ms\n",
+		"cacheprog: batch GET: 100 keys → 0 entries in 47ms\n",
 		cap.String())
 }
 
@@ -356,7 +356,7 @@ func TestHTTPErrLogger_BatchHTTPCoalescedMisses(t *testing.T) {
 	require.NoError(t, l.Close())
 
 	require.Equal(t,
-		"cacheprog: batch GET ×3: 300 keys → 0 entries (server has no entries), 120ms total\n",
+		"cacheprog: batch GET ×3: 300 keys → 0 entries, 120ms total\n",
 		cap.String())
 }
 
@@ -372,6 +372,20 @@ func TestHTTPErrLogger_BatchHTTPCoalescedHits(t *testing.T) {
 
 	require.Equal(t,
 		"cacheprog: batch GET ×2: 200 keys → 55 entries, 97ms total\n",
+		cap.String())
+}
+
+func TestHTTPErrLogger_BatchHTTPLongTotalInSeconds(t *testing.T) {
+	var buf bytes.Buffer
+	l := newTestLogger(&buf)
+	cap := newCaptureLogger(t)
+
+	l.RecordBatchHTTP(30, 30, 100*time.Second)
+	l.RecordBatchHTTP(19, 19, 43424*time.Millisecond)
+	require.NoError(t, l.Close())
+
+	require.Equal(t,
+		"cacheprog: batch GET ×2: 49 keys → 49 entries, 143.4s total\n",
 		cap.String())
 }
 
@@ -412,7 +426,7 @@ func TestHTTPErrLogger_MixedHTTPErrAndBatchHTTP(t *testing.T) {
 
 	require.Contains(t, buf.String(), "HTTP 502")
 	require.NotContains(t, buf.String(), "0 entries")
-	require.Contains(t, cap.String(), "0 entries (server has no entries for any of them)")
+	require.Contains(t, cap.String(), "100 keys → 0 entries")
 	require.NotContains(t, cap.String(), "HTTP 502")
 }
 

@@ -110,7 +110,7 @@ func (b *WebBackend) refreshLiveDelta() bool {
 	reply, err := b.doIndexGET(context.Background(), deltaQuery(gen), "")
 	if reply.status == http.StatusGone {
 		// The epoch ended. The set stays as it is, and no later miss asks again.
-		logging.Infof("cacheprog: web index: the server's add log moved past this process's position; misses stop refreshing")
+		logging.Infof("cacheprog: web index: live updates stopped (HTTP 410)")
 		b.setLiveGen(indexGen{})
 		return false
 	}
@@ -158,7 +158,7 @@ func (b *WebBackend) startDeltaLoad(path string, disk diskIndex) {
 		defer cancel()
 		b.applyDelta(ctx, path, disk)
 	}()
-	logging.Infof("cacheprog: web index: %d keys from a copy %v old; fetching the keys added since", disk.count, disk.age().Round(time.Second))
+	logging.Infof("cacheprog: web index: loaded %d keys from a copy %v old", disk.count, disk.age().Round(time.Second))
 }
 
 // applyDelta adds the keys stored since the copy to the live set and makes it
@@ -168,7 +168,7 @@ func (b *WebBackend) applyDelta(ctx context.Context, path string, disk diskIndex
 	reply, err := b.doIndexGET(ctx, deltaQuery(disk.gen), "")
 	if err != nil && reply.status != http.StatusGone {
 		if ctx.Err() == nil {
-			logging.Infof("cacheprog: web index delta: %v; using %d cached keys (batch probing enabled)", err, disk.count)
+			logging.Infof("cacheprog: web index delta: %v; using %d cached keys", err, disk.count)
 		}
 		b.adoptIndex(nil, false)
 		return
@@ -176,7 +176,7 @@ func (b *WebBackend) applyDelta(ctx context.Context, path string, disk diskIndex
 	if reply.status == http.StatusOK && reply.delta {
 		added, _, perr := parseIndexBlob(reply.body)
 		if perr != nil {
-			logging.Warnf("cacheprog: web index delta parse: %v; using %d cached keys (batch probing enabled)", perr, disk.count)
+			logging.Warnf("cacheprog: web index delta parse: %v; using %d cached keys", perr, disk.count)
 			b.adoptIndex(nil, false)
 			return
 		}

@@ -472,7 +472,8 @@ func (b *WebBackend) fetchNamed(keys []string) (int, []string) {
 		}
 	})
 	flush()
-	if err != nil {
+	// A fetch that Close cancels is not a failure.
+	if err != nil && b.manifestCtx().Err() == nil {
 		logging.Warnf("cacheprog: manifest: fetch: %v", err)
 	}
 	return count, arrived

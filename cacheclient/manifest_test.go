@@ -284,6 +284,54 @@ func TestCloseCancelsAStalledManifestFetch(t *testing.T) {
 	}
 }
 
+// A fetch of what the manifest names that Close cancels logs no warning.
+func TestCloseCancelsAStalledManifestFetchQuietly(t *testing.T) {
+	t.Serial() // the logger is package state
+	t.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "0")
+	store := map[string][]byte{}
+	meta := map[string]map[string]string{}
+	one := strings.Repeat("a1", 32)
+	seedObject(t, store, meta, one, []byte("object one"))
+	seedObject(t, store, meta, manifestID("example.com/m", "", ""), []byte(one))
+	inner := fakeBatchServer(t, store, meta)
+	t.Cleanup(inner.Close)
+	stalled := make(chan struct{})
+	var stallOnce sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "go-buildcache/v1"+one) {
+			stallOnce.Do(func() { close(stalled) })
+			<-r.Context().Done()
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		inner.Config.Handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	saved := manifestCloseWait
+	manifestCloseWait = 200 * time.Millisecond
+	t.Cleanup(func() { manifestCloseWait = saved })
+
+	b, err := NewWebBackend(WebConfig{Bucket: "testbucket", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: t.TempDir()})
+	require.NoError(t, err)
+	b.shortenIndexWait(10 * time.Millisecond)
+	b.OnBatchEntries = func([]BatchEntry) {}
+	var logged []string
+	SetLogger(recordingLogger{&logged})
+	t.Cleanup(func() { SetLogger(nil) })
+	b.SetModule("example.com/m")
+	select {
+	case <-stalled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the manifest fetch never reached the server")
+	}
+
+	require.NoError(t, b.Close())
+	for _, msg := range logged {
+		require.NotContains(t, msg, "manifest: fetch:", "a fetch that Close cancels is not a failure")
+	}
+}
+
 // A lookup the disk tier answers is named too, or a warm build stores a manifest that names almost nothing.
 func TestManifestNamesDiskHits(t *testing.T) {
 	b := NewBareBackend("go-buildcache/")

@@ -36,8 +36,8 @@ func (idx *Index) appendAddLocked(hash [gbciHashSize]byte) {
 	idx.added = append(idx.added, hash)
 }
 
-// resetAddLogLocked starts a new epoch. Every cached blob names the old one,
-// so each is rebuilt on its next read. The caller holds idx.mu.
+// resetAddLogLocked starts a new epoch. Every cached blob names the one, so
+// each is rebuilt on its next read. The caller holds idx.mu.
 func (idx *Index) resetAddLogLocked() {
 	idx.addEpoch = newIndexEpoch()
 	idx.added = nil

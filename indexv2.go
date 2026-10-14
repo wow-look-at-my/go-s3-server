@@ -7,11 +7,7 @@ import (
 	"math/bits"
 )
 
-// The v2 index form: Rice-coded gaps between sorted hash prefixes. The
-// decoder, and the format, are in cacheclient/indexv2.go. This encoder must
-// write the same bytes as cacheclient.MarshalIndexV2, and a test holds it to
-// that. The server stays off the client module so both meet only on the
-// wire.
+// The v2 index form: Rice-coded gaps between sorted hash prefixes.
 
 // gbciVersion2 is the wire-format version byte of the v2 form.
 const gbciVersion2 = 2

@@ -159,7 +159,7 @@ func TestIndexShortForm(t *testing.T) {
 
 // v=2 names the Rice-coded form. It carries each distinct prefix once at the
 // server's width, parses with the client's decoder, has its own ETag, and
-// answers a delta in the same form.
+// answers a delta. That delta is in the same form.
 func TestIndexV2Form(t *testing.T) {
 	idx := newDeltaIndex(t)
 	for n := byte(1); n <= 4; n++ {

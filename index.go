@@ -47,12 +47,10 @@ type Index struct {
 	// pending is an unsorted append-only buffer of new hashes added by Put.
 	pending [][gbciHashSize]byte
 
-	// mutations counts every change to the advertised hash set. A cached blob
-	// built at the current count is current.
+	// mutations counts every change to the advertised hash set. A cached blob built at the current count is current.
 	mutations uint64
 
-	// forms holds each serialization a client asked for, built on its first
-	// request and served for blobMinInterval after that, current or not.
+	// forms holds each serialization.
 	forms map[indexForm]*indexBlobCache
 	// blobMinInterval is the least time between serializations, in nanoseconds.
 	blobMinInterval atomic.Int64
@@ -85,9 +83,7 @@ type indexBlobCache struct {
 	mutation uint64
 }
 
-// defaultIndexHashBits is the prefix width of the v2 form unless the config
-// says otherwise. A lookup on a prefix that is present for another key costs
-// one probe that answers not found.
+// defaultIndexHashBits is the prefix width of the v2 form unless the config says otherwise.
 const defaultIndexHashBits = 40
 
 // SetHashBits sets the prefix width of the v2 form, in bits. Call it before serving.

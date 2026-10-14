@@ -2,11 +2,13 @@ package cacheclient
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -132,6 +134,51 @@ func (b *WebBackend) refreshLiveDelta() bool {
 	return true
 }
 
+// persistDelta writes the copy merged with added, at position gen, over the
+// copy at path.
+func (b *WebBackend) persistDelta(path string, disk diskIndex, added *hashSet, gen indexGen) {
+	if added.Len() == 0 {
+		now := time.Now()
+		_ = os.Chtimes(path, now, now)
+		writeIndexGen(path, disk.etag, gen)
+		return
+	}
+	blob := mergeIndexBlob(disk.blob, added)
+	_, etag, err := parseIndexBlob(blob)
+	if err != nil {
+		logging.Warnf("cacheprog: web index: merged copy does not parse: %v", err)
+		return
+	}
+	b.writeIndexBlob(path, blob)
+	writeIndexGen(path, etag, gen)
+}
+
+// mergeIndexBlob is a short-form GBCI blob of the keys in base and added.
+// base is a valid blob of either width.
+func mergeIndexBlob(base []byte, added *hashSet) []byte {
+	width := int(base[5])
+	count := int(binary.LittleEndian.Uint64(base[16:24]))
+	extra := slices.Sorted(added.All())
+	merged := make([]hashKey, 0, count+len(extra))
+	next := 0
+	for idx := range count {
+		off := gbciHeaderSize + idx*width
+		key := binary.BigEndian.Uint64(base[off : off+gbciPrefixSize])
+		for next < len(extra) && extra[next] < key {
+			merged = append(merged, extra[next])
+			next++
+		}
+		if next < len(extra) && extra[next] == key {
+			next++
+		}
+		if len(merged) == 0 || merged[len(merged)-1] != key {
+			merged = append(merged, key)
+		}
+	}
+	merged = append(merged, extra[next:]...)
+	return marshalSortedIndex(merged)
+}
+
 func deltaQuery(gen indexGen) string {
 	q := url.Values{}
 	q.Set("epoch", strconv.FormatUint(gen.epoch, 10))
@@ -189,6 +236,8 @@ func (b *WebBackend) applyDelta(ctx context.Context, path string, disk diskIndex
 		b.indexEmpty = b.keys.Len() == 0
 		b.keysMu.Unlock()
 		logging.Infof("cacheprog: web index: %d keys added since the copy", added.Len())
+		// The next go command then asks only for what this did not see.
+		b.persistDelta(path, disk, added, reply.gen)
 		return
 	}
 	keys, authoritative, _ := b.refreshIndex(ctx, path, disk)

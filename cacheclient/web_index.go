@@ -357,9 +357,13 @@ func parseIndexBlob(blob []byte) (*hashSet, string, error) {
 	return set, etag, nil
 }
 
-// marshalIndex encodes the given hash set as a GBCI v1 blob. Used by tests.
+// marshalIndex encodes the given hash set as a GBCI v1 blob.
 func marshalIndex(keys *hashSet) []byte {
-	sorted := slices.Sorted(keys.All())
+	return marshalSortedIndex(slices.Sorted(keys.All()))
+}
+
+// marshalSortedIndex encodes ascending, distinct keys as a GBCI v1 blob.
+func marshalSortedIndex(sorted []hashKey) []byte {
 	blob := make([]byte, gbciHeaderSize+len(sorted)*gbciPrefixSize+sha256.Size)
 	copy(blob[0:4], gbciMagic[:])
 	blob[4] = gbciVersion

@@ -23,8 +23,11 @@ type indexTiming struct {
 	wait time.Duration
 }
 
+// defaultIndexWait is the wait each new backend starts with.
+var defaultIndexWait time.Duration = IndexWaitDefault
+
 func defaultIndexTiming() indexTiming {
-	return indexTiming{wait: IndexWaitDefault}
+	return indexTiming{wait: defaultIndexWait}
 }
 
 // indexLoad is a load running in the background.

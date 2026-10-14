@@ -211,6 +211,7 @@ func TestNoCopyGetDoesNotWaitByDefault(t *testing.T) {
 
 	b, err := NewWebBackend(WebConfig{Bucket: "bk", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: t.TempDir()})
 	require.NoError(t, err)
+	b.shortenIndexWait(IndexWaitDefault)
 
 	var absent [gbciHashSize]byte
 	absent[0] = 0x98

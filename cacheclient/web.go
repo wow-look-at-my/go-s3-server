@@ -127,6 +127,8 @@ type WebBackend struct {
 	// and carry COMPRESSED bodies: a consumer that already holds an object
 	// locally drops it without paying to decompress it. Verify anything kept with Verify.
 	OnBatchEntries func(entries []BatchEntry)
+	// HasLocal reports whether the local tier holds an action. A fetch ahead skips such a key.
+	HasLocal func(h actionHash) bool
 
 	// Miss reason counters for diagnostics.
 	MissNotInIndex  AtomicCounter

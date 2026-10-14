@@ -35,6 +35,10 @@ func layerStore(disk *DiskCache, store *WebBackend) *storeTier {
 	// turns it on: an object lands on disk before the build asks for it, so
 	// the ask is a local read.
 	store.OnBatchEntries = tier.populate
+	store.HasLocal = func(h actionHash) bool {
+		_, err := disk.Get(ActionID(h))
+		return err == nil
+	}
 	return tier
 }
 

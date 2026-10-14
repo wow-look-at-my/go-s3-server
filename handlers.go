@@ -265,8 +265,7 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request, storage *Storage
 // handleGetIndex serves the precomputed GBCI binary cache-key index, in the
 // form the request names. v=2 is the Rice-coded form of cacheclient/indexv2.go,
 // at the server's prefix width. Without it, hash=8 is the v1 short form and
-// nothing is v1 with whole hashes. A v past 2 gets the newest form this server
-// has, which every client parses by its header.
+// nothing is v1 with whole hashes.
 func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 	if idx == nil {
 		writeError(w, 500, "internal_error", "index unavailable")

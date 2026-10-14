@@ -88,7 +88,7 @@ type indexBlobCache struct {
 
 // defaultIndexHashBits is the prefix width of the v2 form unless the config
 // says otherwise. A lookup on a prefix that is present for another key costs
-// one probe that answers not found. At 40 bits that is one in 2^40/n lookups.
+// one probe that answers not found.
 const defaultIndexHashBits = 40
 
 // SetHashBits sets the prefix width of the v2 form, in bits. Call it before serving.

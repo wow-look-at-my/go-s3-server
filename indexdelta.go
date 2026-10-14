@@ -90,8 +90,8 @@ func marshalForm(hashes [][gbciHashSize]byte, form indexForm) []byte {
 	return marshalGBCIWidth(hashes, form.width)
 }
 
-// prefixValues yields the first bits bits of each hash in the union of two
-// sorted, deduplicated lists, ascending and once each.
+// prefixValues yields the prefixes of the hashes in the union of both sorted
+// lists, ascending, each once.
 func prefixValues(a, b [][gbciHashSize]byte, bits int) iter.Seq[uint64] {
 	shift := 64 - bits
 	return func(yield func(uint64) bool) {

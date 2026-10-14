@@ -159,6 +159,13 @@ func (m *buildManifest) note(actionID, event string) {
 	m.mu.Unlock()
 }
 
+// lookedUp reports whether this process already looked up or stored actionID.
+func (m *buildManifest) lookedUp(actionID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.used.Contains(actionID)
+}
+
 // startManifest learns the module and starts the fetch of its manifest. It
 // runs one time per process.
 func (b *WebBackend) startManifest(module string) {
@@ -331,7 +338,8 @@ func (b *WebBackend) fetchManifest(base string) {
 		b.manifest.Named.Increment()
 		b.manifest.trace.add("named", line)
 		// Only an authoritative index proves a key absent.
-		if (authoritative && !b.keyKnown(h)) || b.isHeld(h) || b.hasLocal(h) {
+		// A key this build already looked up while the walk ran has its own request.
+		if (authoritative && !b.keyKnown(h)) || b.isHeld(h) || b.hasLocal(h) || b.manifest.lookedUp(line) {
 			continue
 		}
 		ids = append(ids, line)

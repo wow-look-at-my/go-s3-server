@@ -10,6 +10,9 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
+
+	ipc "github.com/wow-look-at-my/go-ipc"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -126,6 +129,27 @@ func TestBrokerDeadNameMakesTheNextProcessTheOwner(t *testing.T) {
 	t.Setenv(brokerOffEnv, "")
 	t.Setenv(BrokerEnv, "gobuildcache-nobody-holds-this")
 	assert.Nil(t, dialBroker(t.TempDir()), "a name nobody answers must not be dialed")
+}
+
+// A queue that outlives its owner still opens, but nobody answers the hello.
+// The dial must give up at the deadline, not wait forever.
+func TestBrokerQueueWithNoOwnerTimesOut(t *testing.T) {
+	name := endpointName("gobuildcache-orphan")
+	queue, err := ipc.CreateQueue(name)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		queue.Close()
+		queue.Unlink()
+	})
+	t.Setenv(brokerOffEnv, "")
+	t.Setenv(BrokerEnv, name)
+	saved := brokerDialTimeout
+	brokerDialTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { brokerDialTimeout = saved })
+
+	start := time.Now()
+	assert.Nil(t, dialBroker(t.TempDir()), "a queue nobody reads must not be dialed")
+	assert.Less(t, time.Since(start), 5*time.Second, "the dial did not stop at its deadline")
 }
 
 // A process that sets its own GOCACHE under a build must get that cache. The

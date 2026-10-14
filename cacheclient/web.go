@@ -10,6 +10,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"os"
 	"strings"
 	"sync"
@@ -235,6 +236,12 @@ type WebBackend struct {
 	shedUntil atomic.Int64
 	// ShedWaits counts attempts held back, unsent, because the server had asked for quiet.
 	ShedWaits AtomicCounter
+	// downSince is the UnixNano time a request last timed out with no answer, or empty while the server answers.
+	downSince atomic.Int64
+	// probeAt is the UnixNano time the next request may go out while the server is down.
+	probeAt atomic.Int64
+	// SkippedDown counts requests answered as a miss, unsent, because the server had stopped answering.
+	SkippedDown AtomicCounter
 
 	errLog *httpErrLogger
 
@@ -297,17 +304,21 @@ func closeBody(body io.ReadCloser) {
 	body.Close()
 }
 
-// firstDial makes the first request of a process run alone.
+// firstDial makes the first request of a process dial alone, so the others
+// share its connection.
 type firstDial struct {
 	next    *http.Transport
 	started atomic.Bool
 	ready   chan struct{}
+	once    sync.Once
 }
 
 func (gate *firstDial) RoundTrip(req *http.Request) (*http.Response, error) {
 	if gate.started.CompareAndSwap(false, true) {
-		defer close(gate.ready)
-		return gate.next.RoundTrip(req)
+		release := func() { gate.once.Do(func() { close(gate.ready) }) }
+		defer release()
+		trace := &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { release() }}
+		return gate.next.RoundTrip(req.WithContext(httptrace.WithClientTrace(req.Context(), trace)))
 	}
 	select {
 	case <-gate.ready:
@@ -476,11 +487,15 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 	if b.manifest != nil && !b.manifest.started.Load() {
 		b.startManifest(b.moduleName())
 	}
-	outputID, data, t, miss = b.get(actionID)
-	if !miss {
-		b.manifest.note(actionID)
+	b.manifest.note(actionID)
+	return b.get(actionID)
+}
+
+// NoteUsed records a lookup another tier answered, so the manifest names it too.
+func (b *WebBackend) NoteUsed(id [32]byte) {
+	if b.manifest != nil {
+		b.manifest.note(hex.EncodeToString(id[:]))
 	}
-	return outputID, data, t, miss
 }
 
 func (b *WebBackend) get(actionID string) (outputID string, data []byte, t time.Time, miss bool) {

@@ -5,8 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +20,9 @@ import (
 // manifestMaxKeys bounds what a manifest names, and so what a build fetches ahead.
 const manifestMaxKeys = 20000
 
+// manifestWaitCap is how long a lookup waits for a manifest fetch that has its object on the wire.
+var manifestWaitCap = time.Second
+
 // manifestFetchWidth is how many manifest batches go out at the same time.
 const manifestFetchWidth = 8
 
@@ -28,10 +31,12 @@ type buildManifest struct {
 	started atomic.Bool
 
 	mu      sync.Mutex
-	used    set.Set[string]          // action IDs this process served or stored
+	used    set.Set[string]          // action IDs this process looked up
+	order   []string                 // used, in the order of the first lookup
 	pending map[string]chan struct{} // action IDs a fetch has on the wire, closed when they land
 
 	Waited AtomicCounter // lookups that waited for a fetch already on the wire
+	GaveUp AtomicCounter // lookups that stopped waiting after manifestWaitCap and asked on their own
 
 	Fetched AtomicCounter // entries the manifest brought into the local tier
 	Named   AtomicCounter // action IDs the manifest named
@@ -55,9 +60,17 @@ func (b *WebBackend) AwaitPrefetch(actionID string) bool {
 	if !ok {
 		return false
 	}
-	<-done
-	m.Waited.Increment()
-	return true
+	timer := time.NewTimer(manifestWaitCap)
+	defer timer.Stop()
+	select {
+	case <-done:
+		m.Waited.Increment()
+		return true
+	case <-timer.C:
+		// The fetch is slow. A lookup of its own is small, and the slow-server rule covers it.
+		m.GaveUp.Increment()
+		return false
+	}
 }
 
 // markPending records that a fetch has these action IDs on the wire, and
@@ -81,20 +94,25 @@ func (m *buildManifest) markPending(ids []string) func() {
 	}
 }
 
+// manifestFormat names what a manifest holds: lookups and stores, in first-use order.
+const manifestFormat = "3"
+
 // manifestID is the action ID the manifest for this module is stored under.
 func manifestID(module, version, target string) string {
-	sum := sha256.Sum256([]byte("go-build-manifest\x00" + module + "\x00" + version + "\x00" + target))
+	sum := sha256.Sum256([]byte("go-build-manifest\x00" + manifestFormat + "\x00" + module + "\x00" + version + "\x00" + target))
 	return hex.EncodeToString(sum[:])
 }
 
-// note records an action ID this build used.
+// note records an action ID this build looked up, from any tier, or stored. A cold build stores
+// about half its objects without a lookup first, and the next build looks every one of them up.
 func (m *buildManifest) note(actionID string) {
 	if m == nil {
 		return
 	}
 	m.mu.Lock()
-	if m.used.Len() < manifestMaxKeys {
+	if m.used.Len() < manifestMaxKeys && !m.used.Contains(actionID) {
 		m.used.Add(actionID)
+		m.order = append(m.order, actionID)
 	}
 	m.mu.Unlock()
 }
@@ -115,10 +133,37 @@ func (b *WebBackend) startManifest(module string) {
 	}()
 }
 
+// readManifest reads the manifest over its own request. On the build's batch
+// path a slow answer would hold up the lookups that share its batch.
+func (b *WebBackend) readManifest(id string) ([]byte, bool) {
+	h, ok := parseActionHash(id)
+	if !ok {
+		return nil, false
+	}
+	b.ensureIndex()
+	b.keysMu.RLock()
+	authoritative := b.indexAuthoritative
+	b.keysMu.RUnlock()
+	if authoritative && !b.keyKnown(h) {
+		return nil, false
+	}
+	var data []byte
+	found := false
+	_, err := b.postNamed([]string{b.key(id)}, func(e BatchEntry) {
+		if body, ok := b.verify("manifest", id, e.OutputID, e.Data, e.RawSize); ok {
+			data, found = body, true
+		}
+	})
+	if err != nil {
+		logging.Warnf("cacheprog: manifest: read: %v", err)
+	}
+	return data, found
+}
+
 // fetchManifest reads the manifest and pulls what it names.
 func (b *WebBackend) fetchManifest(id string) {
-	_, data, _, miss := b.Get(id)
-	if miss {
+	data, found := b.readManifest(id)
+	if !found {
 		return
 	}
 	b.keysMu.RLock()
@@ -136,6 +181,9 @@ func (b *WebBackend) fetchManifest(id string) {
 			continue
 		}
 		ids = append(ids, line)
+	}
+	if b.manifest.Named.Load() > 0 {
+		b.lookAhead.cover()
 	}
 	if len(ids) == 0 {
 		return
@@ -183,16 +231,16 @@ func (b *WebBackend) isHeld(h actionHash) bool {
 	return b.held.Contains(h)
 }
 
-// fetchNamed asks for keys by name and hands the entries to the local tier.
-// Nobody waits on it, so it rides the look-ahead kind.
-func (b *WebBackend) fetchNamed(keys []string) {
+// postNamed asks for keys by name on a request of its own and hands each entry
+// to each. Nobody waits on it, so it rides the look-ahead kind.
+func (b *WebBackend) postNamed(keys []string, each func(BatchEntry)) (int, error) {
 	body, err := json.Marshal(batchGetRequest{Keys: keys})
 	if err != nil {
-		return
+		return 0, err
 	}
 	req, err := http.NewRequest("POST", b.endpoint+"/"+b.bucket+"/_batch/get", bytes.NewReader(body))
 	if err != nil {
-		return
+		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	b.signRequest(req)
@@ -200,28 +248,34 @@ func (b *WebBackend) fetchNamed(keys []string) {
 
 	start := time.Now()
 	b.Pool.Acquire()
+	defer b.Pool.Release()
 	resp, err := b.doRetryGET(req)
 	if err != nil {
-		b.Pool.Release()
-		logging.Warnf("cacheprog: manifest: fetch: %v", err)
-		return
+		return 0, err
 	}
+	defer closeBody(resp.Body)
 	if resp.StatusCode != 200 {
-		logging.Warnf("cacheprog: manifest: fetch: HTTP %d", resp.StatusCode)
-		closeBody(resp.Body)
-		b.Pool.Release()
-		return
+		return 0, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	var chunk []BatchEntry
 	count := 0
+	err = streamBatchResponse(resp.Body, func(e BatchEntry) {
+		count++
+		each(e)
+	})
+	b.batchTiming.recordLookAhead(count, time.Since(start))
+	return count, err
+}
+
+// fetchNamed asks for keys by name and hands the entries to the local tier.
+func (b *WebBackend) fetchNamed(keys []string) {
+	var chunk []BatchEntry
 	flush := func() {
 		if len(chunk) > 0 {
 			b.OnBatchEntries(chunk)
 			chunk = nil
 		}
 	}
-	err = streamBatchResponse(resp.Body, func(e BatchEntry) {
-		count++
+	count, err := b.postNamed(keys, func(e BatchEntry) {
 		if actionID, ok := b.ActionIDFromKey(e.Key); ok {
 			if h, ok := parseActionHash(actionID); ok {
 				b.noteHeld(h)
@@ -232,14 +286,11 @@ func (b *WebBackend) fetchNamed(keys []string) {
 			flush()
 		}
 	})
-	closeBody(resp.Body)
-	b.Pool.Release()
 	flush()
 	if err != nil {
-		logging.Warnf("cacheprog: manifest: read: %v", err)
+		logging.Warnf("cacheprog: manifest: fetch: %v", err)
 	}
 	b.manifest.Fetched.Add(uint32(count))
-	b.batchTiming.recordLookAhead(count, time.Since(start))
 }
 
 // storeManifest writes what this build used, for the next build. It runs
@@ -254,8 +305,9 @@ func (b *WebBackend) storeManifest() {
 		return
 	}
 	m.mu.Lock()
-	ids := make([]string, 0, m.used.Len())
-	for actionID := range m.used.All() {
+	// Lookup order is the order the next build needs the objects in, so the fetch brings the first ones first.
+	ids := make([]string, 0, len(m.order))
+	for _, actionID := range m.order {
 		if actionID != *id {
 			ids = append(ids, actionID)
 		}
@@ -264,9 +316,8 @@ func (b *WebBackend) storeManifest() {
 	if len(ids) == 0 {
 		return
 	}
-	sort.Strings(ids)
 	data := []byte(strings.Join(ids, "\n"))
-	// Put skips a key the index already holds. The manifest replaces the last one.
+	// Put skips a key the index already holds. A write-once server keeps the first manifest under an ID.
 	b.ForgetStale(*id)
 	if err := b.Put(*id, StoredDigest(data), data); err != nil {
 		logging.Warnf("cacheprog: manifest: store: %v", err)
@@ -279,5 +330,6 @@ func (b *WebBackend) reportManifest() {
 	if m == nil || m.Named.Load() == 0 {
 		return
 	}
-	logging.Infof("cacheprog: manifest: named %d keys, fetched %d ahead, %d lookups waited for them", m.Named.Load(), m.Fetched.Load(), m.Waited.Load())
+	logging.Infof("cacheprog: manifest: named %d keys, fetched %d ahead, %d lookups waited for them, %d gave up waiting",
+		m.Named.Load(), m.Fetched.Load(), m.Waited.Load(), m.GaveUp.Load())
 }

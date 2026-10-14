@@ -251,7 +251,7 @@ func TestServerV2EncoderMatchesTheClient(t *testing.T) {
 				hashes[i] = sha256.Sum256(binary.BigEndian.AppendUint64(nil, uint64(i)))
 			}
 			hashes = sortDedupeHashes(hashes)
-			var values []uint64
+			values := []uint64{}
 			for v := range prefixValues(hashes, nil, bits) {
 				values = append(values, v)
 			}

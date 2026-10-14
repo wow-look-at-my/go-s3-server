@@ -240,14 +240,14 @@ func BenchmarkIndexForms(b *testing.B) {
 		return rec.Body.Len()
 	}
 	old, compact := body("hash=8"), body("hash=8&enc=rice")
-	b.ReportMetric(float64(len(hashes)), "keys")
-	b.ReportMetric(float64(old), "old-bytes")
-	b.ReportMetric(float64(compact), "compact-bytes")
-	b.ReportMetric(float64(compact-gbciHeaderSize-sha256.Size)/float64(len(hashes)), "compact-bytes/key")
 	b.ResetTimer()
 	for range b.N {
 		marshalGBCIRice(idx.hashes, gbciCompactWidth)
 	}
+	b.ReportMetric(float64(len(hashes)), "keys")
+	b.ReportMetric(float64(old), "old-bytes")
+	b.ReportMetric(float64(compact), "compact-bytes")
+	b.ReportMetric(float64(compact-gbciHeaderSize-sha256.Size)/float64(len(hashes)), "compact-bytes/key")
 }
 
 // indexCopyHashes reads the keys of a v1 index copy at path as hashes padded

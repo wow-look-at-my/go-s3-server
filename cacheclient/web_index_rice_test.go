@@ -327,12 +327,12 @@ func TestCompactDeltaOverAnOldCopy(t *testing.T) {
 func BenchmarkParseRiceIndex(b *testing.B) {
 	keys := randomCompactKeys(21, 2_960_000)
 	blob := marshalRiceIndex(keys, gbciCompactWidth)
-	b.ReportMetric(float64(len(keys)), "keys")
-	b.ReportMetric(float64(len(blob)), "bytes")
 	b.SetBytes(int64(len(blob)))
 	b.ReportAllocs()
 	for b.Loop() {
 		_, _, err := parseIndexBlob(blob)
 		require.NoError(b, err)
 	}
+	b.ReportMetric(float64(len(keys)), "keys")
+	b.ReportMetric(float64(len(blob)), "blob-bytes")
 }

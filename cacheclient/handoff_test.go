@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -103,19 +104,26 @@ func TestCloseHandsOffWithoutWaitingOnTheServer(t *testing.T) {
 		return nil
 	})
 	asked := make(chan struct{}, 1)
+	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/testbucket/_batch/put" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
+		// The server sees a client hang up only after it reads the whole body.
+		_, _ = io.Copy(io.Discard, r.Body)
 		select {
 		case asked <- struct{}{}:
 		default:
 		}
 		// The upload never gets an answer while the client waits.
-		<-r.Context().Done()
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
 	}))
 	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
 
 	store := newTestBackend(t, srv.URL)
 	disk, err := Open(t.TempDir())

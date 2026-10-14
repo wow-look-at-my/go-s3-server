@@ -70,6 +70,12 @@ type lookAhead struct {
 	// covered is set when a build manifest names this build's keys. The window then only adds bodies the build does not use.
 	covered atomic.Bool
 
+	// brought holds the keys the pool fetched that the build has not used yet. Used counts those it then used.
+	brought set.Set[actionHash]
+	Used    AtomicCounter
+	// wasteful is set when the build uses too little of what the pool fetched. The pool then stops.
+	wasteful atomic.Bool
+
 	Requests AtomicCounter // look-ahead round trips issued
 	Entries  AtomicCounter // entries they brought back
 	Dropped  AtomicCounter // seeds refused: the queue was full, or the budget was spent
@@ -167,8 +173,9 @@ func newLookAhead(b *WebBackend) *lookAhead {
 		b:      b,
 		seeds:  make(chan []string, depth),
 		stop:   make(chan struct{}),
-		seeded: set.New[string](),
-		budget: budget,
+		seeded:  set.New[string](),
+		brought: set.New[actionHash](),
+		budget:  budget,
 		chunk:  chunkBudget(budget, workers),
 	}
 	la.wg.Add(workers)
@@ -182,7 +189,7 @@ func newLookAhead(b *WebBackend) *lookAhead {
 // never blocks: a full queue means the pool is already saturated with work of
 // the same kind, and a build goroutine must never wait on speculation.
 func (la *lookAhead) Seed(keys []string) {
-	if la == nil || len(keys) == 0 || la.serverOff.Load() || la.covered.Load() {
+	if la == nil || len(keys) == 0 || la.off() {
 		return
 	}
 	fresh := keys[:0:0]
@@ -212,6 +219,58 @@ func (la *lookAhead) cover() {
 	}
 }
 
+// off reports whether the pool sends nothing more.
+func (la *lookAhead) off() bool {
+	return la.serverOff.Load() || la.covered.Load() || la.wasteful.Load()
+}
+
+// lookAheadJudgeAfter is how many entries the pool fetches before its use is judged.
+var lookAheadJudgeAfter = 2048
+
+// lookAheadMinUse is the share of the fetched entries, in percent, the build must use for the pool to go on.
+const lookAheadMinUse = 20
+
+// noteBrought records the keys a window brought.
+func (la *lookAhead) noteBrought(hashes []actionHash) {
+	la.mu.Lock()
+	for _, h := range hashes {
+		la.brought.Add(h)
+	}
+	la.mu.Unlock()
+}
+
+// noteUsed counts a lookup the pool answered ahead of time.
+func (la *lookAhead) noteUsed(h actionHash) {
+	if la == nil {
+		return
+	}
+	la.mu.Lock()
+	found := la.brought.Contains(h)
+	if found {
+		la.brought.Remove(h)
+	}
+	la.mu.Unlock()
+	if found {
+		la.Used.Increment()
+	}
+}
+
+// judge stops the pool when the build uses too little of what it fetched. Each
+// unused entry costs a download and a disk write the build waits behind.
+func (la *lookAhead) judge() {
+	fetched := int64(la.Entries.Load())
+	if fetched < int64(lookAheadJudgeAfter) || la.wasteful.Load() {
+		return
+	}
+	used := int64(la.Used.Load())
+	if used*100 >= fetched*lookAheadMinUse {
+		return
+	}
+	if !la.wasteful.Swap(true) {
+		logging.Infof("cacheprog: look-ahead: the build used %d of %d entries it fetched; this process stops asking", used, fetched)
+	}
+}
+
 func (la *lookAhead) Close() {
 	if la == nil {
 		return
@@ -234,8 +293,8 @@ func (la *lookAhead) report() {
 	if reqs == 0 {
 		return
 	}
-	logging.Infof("cacheprog: look-ahead: %d requests -> %d entries, %d seeds dropped, %d empty windows",
-		reqs, la.Entries.Load(), la.Dropped.Load(), la.Empty.Load())
+	logging.Infof("cacheprog: look-ahead: %d requests -> %d entries, %d used, %d seeds dropped, %d empty windows",
+		reqs, la.Entries.Load(), la.Used.Load(), la.Dropped.Load(), la.Empty.Load())
 	if failed := la.Failed.Load(); failed > 0 {
 		why := ""
 		if last := la.lastFailure.Load(); last != nil {
@@ -263,7 +322,7 @@ func (la *lookAhead) worker() {
 // those bytes.
 func (la *lookAhead) expand(seed []string) {
 	b := la.b
-	if b.OnBatchEntries == nil || la.covered.Load() {
+	if b.OnBatchEntries == nil || la.covered.Load() || la.wasteful.Load() {
 		return
 	}
 	// Over budget, this seed goes on the floor. Waiting for room would hold a
@@ -319,6 +378,7 @@ func (la *lookAhead) expand(seed []string) {
 	// times the workers, plus the re-check after each hand-off.
 	var (
 		chunk     []BatchEntry
+		brought   []actionHash
 		chunkSize int64
 		count     int
 		full      bool
@@ -336,6 +396,7 @@ func (la *lookAhead) expand(seed []string) {
 			if actionID, ok := b.ActionIDFromKey(e.Key); ok {
 				if h, ok := parseActionHash(actionID); ok {
 					b.noteHeld(h)
+					brought = append(brought, h)
 				}
 			}
 			chunk = append(chunk, e)
@@ -351,11 +412,13 @@ func (la *lookAhead) expand(seed []string) {
 			return
 		}
 		release := la.charge(chunk)
-		// Each worker ingests its own answer, so verification and the local write
-		// run at the pool's width rather than a single batch at a time.
+		// Recorded before the hand-off, so a lookup that lands at once counts as used.
+		la.noteBrought(brought)
+		// Each worker ingests its own answer.
 		b.OnBatchEntries(chunk)
 		release()
 		chunk = nil
+		brought = nil
 		chunkSize = 0
 	}
 
@@ -374,4 +437,5 @@ func (la *lookAhead) expand(seed []string) {
 
 	la.Entries.Add(uint32(count))
 	b.batchTiming.recordLookAhead(count, time.Since(start))
+	la.judge()
 }

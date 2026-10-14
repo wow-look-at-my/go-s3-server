@@ -34,7 +34,7 @@ A build manifest (`manifest.go`) names the action IDs one command of one module 
 
 A manifest is write-once, so a stale one gets a successor generation. A generation is stale when the keys it names and the keys this build used differ by more than `manifestDrift` percent of the used keys. Both directions count. A key named and not used is a download the next build never reads. An authoritative index names the newest generation with no request.
 
-`GO_CACHE_MANIFEST_TRACE=<file>` appends one line per event to that file: `named`, `fetch`, `ahead`, `get`, `disk` and `put`, each with its action ID. Compare the `named` and `fetch` keys with the `get`. `disk` keys to find what a build fetched and never read.
+`GO_CACHE_MANIFEST_TRACE=<file>` appends one line per event to that file: `newest` and `store` (the generation read and the one written), `named`, `fetch`, `ahead`, `get`, `disk` and `put`, each with its action ID. Compare the `named` and `fetch` keys with the `get`. `disk` keys to find what a build fetched and never read.
 
 ## What the pool is worth
 

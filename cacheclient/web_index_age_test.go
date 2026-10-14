@@ -42,7 +42,7 @@ func sevenKeys() set.Set[string] {
 // TestIndexLoadsOnFirstUse pins that NewWebBackend makes no request. A go
 // command that never asks the cache for a key never downloads the index.
 func TestIndexLoadsOnFirstUse(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	useTempDir(t)
 	f := newIndexFixture(t, "bk", sevenKeys())
 
 	b, err := NewWebBackend(WebConfig{Bucket: "bk", Endpoint: f.srv.URL, AccessKey: "k", SecretKey: "s"})

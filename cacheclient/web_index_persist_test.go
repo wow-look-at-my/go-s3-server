@@ -50,9 +50,11 @@ func TestDeltaIsSavedForTheNextProcess(t *testing.T) {
 	defer srv.Close()
 
 	cfg := WebConfig{Bucket: "bk", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: dir}
+	var path string
 	for run := range 3 {
 		b, err := NewWebBackend(cfg)
 		require.NoError(t, err)
+		path = b.indexCachePath()
 		b.awaitIndex()
 		// The first process takes the full index, which predates the delta.
 		require.Equal(t, run > 0, b.Present(idOf(extraKey())), "the delta's key is in the live set")
@@ -60,8 +62,7 @@ func TestDeltaIsSavedForTheNextProcess(t *testing.T) {
 		b.Close()
 	}
 
-	reader := &WebBackend{indexDir: dir, endpoint: srv.URL, bucket: "bk"}
-	disk := reader.readDiskIndex(reader.indexCachePath())
+	disk := (&WebBackend{}).readDiskIndex(path)
 	require.Equal(t, keys.Len()+1, disk.count, "the disk copy carries the delta")
 	require.Equal(t, indexGen{epoch: 9, seq: 2}, disk.gen)
 

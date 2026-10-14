@@ -109,6 +109,15 @@ func manifestID(module, version, target string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// manifestScope is what one manifest covers: the module, narrowed to one
+// command when the caller names it.
+func manifestScope(module, command string) string {
+	if command == "" {
+		return module
+	}
+	return module + "\x00" + command
+}
+
 // manifestGenerations caps the walk. A write-once server keeps each generation, so a short one gets a successor.
 const manifestGenerations = 16
 
@@ -153,7 +162,7 @@ func (b *WebBackend) startManifest(module string) {
 	if m == nil || module == "" || b.OnBatchEntries == nil || !m.started.CompareAndSwap(false, true) {
 		return
 	}
-	id := manifestID(module, b.version, b.target)
+	id := manifestID(manifestScope(module, b.command), b.version, b.target)
 	m.id.Store(&id)
 	ctx, cancel := context.WithCancel(context.Background())
 	m.mu.Lock()

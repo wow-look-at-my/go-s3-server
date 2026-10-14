@@ -25,6 +25,17 @@ func seedObject(t *testing.T, store map[string][]byte, meta map[string]map[strin
 	meta[key] = map[string]string{"outputid": StoredDigest(body)}
 }
 
+// Each command of a module gets its own manifest. No command keeps the
+// module-wide key that older clients read and write.
+func TestManifestScopeSeparatesCommands(t *testing.T) {
+	module := "example.com/m"
+	require.Equal(t, manifestID(module, "v", "t"), manifestID(manifestScope(module, ""), "v", "t"))
+	test := manifestID(manifestScope(module, "test runtime"), "v", "t")
+	build := manifestID(manifestScope(module, "build std"), "v", "t")
+	require.NotEqual(t, test, build)
+	require.NotEqual(t, manifestID(module, "v", "t"), test)
+}
+
 // The manifest names objects, and the client pulls them into the local tier
 // before the build asks.
 func TestManifestFetchesWhatItNames(t *testing.T) {

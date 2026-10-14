@@ -34,6 +34,8 @@ type WebConfig struct {
 	Version   string // go-toolchain version, stored as object metadata
 	Module    string // main module path, stored as object metadata (provenance)
 	Target    string // GOOS/GOARCH this build is producing, sent as provenance
+	// Command names what this process builds, for example a digest of its arguments.
+	Command string
 	// IndexDir is where the key index's disk copy lives. Empty means the
 	// process temporary directory. A consumer whose builds share a cache
 	// directory but not a temporary directory points it at the cache.
@@ -101,7 +103,8 @@ type WebBackend struct {
 	version   string // go-toolchain version for object metadata
 	module    string // main module path for object metadata (provenance)
 	target    string // GOOS/GOARCH this build produces, for request provenance
-	indexDir  string // where the key index's disk copy lives; empty is os.TempDir
+	command   string // what this process builds; part of the manifest key
+	indexDir string // where the key index's disk copy lives; empty is os.TempDir
 	// indexMaxAge is how long the disk copy is served with no request. The
 	// index loads on the earliest Get or Put, under indexOnce, so a go
 	// command that never touches the cache never pays for it.
@@ -428,6 +431,7 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 		version:   cfg.Version,
 		module:    cfg.Module,
 		target:    cfg.Target,
+		command:   cfg.Command,
 		indexDir:  cfg.IndexDir,
 	}
 

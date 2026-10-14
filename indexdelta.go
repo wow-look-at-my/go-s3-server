@@ -120,11 +120,6 @@ func prefixValues(a, b [][gbciHashSize]byte, bits int) iter.Seq[uint64] {
 	}
 }
 
-// marshalGBCI encodes sorted hashes as a GBCI v1 blob.
-func marshalGBCI(hashes [][gbciHashSize]byte) []byte {
-	return marshalGBCIWidth(hashes, gbciHashSize)
-}
-
 // marshalGBCIWidth encodes the first width bytes of each sorted hash as a v1
 // blob. Hashes that share those bytes are written a single time, so the body
 // stays sorted and deduped.

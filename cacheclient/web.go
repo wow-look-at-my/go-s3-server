@@ -473,6 +473,7 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 		b.startManifest(b.moduleName())
 	}
 	b.manifest.note(actionID, "get")
+	b.lookAhead.noteLookup()
 	return b.get(actionID)
 }
 
@@ -688,6 +689,11 @@ func (b *WebBackend) SetModule(path string) {
 		b.moduleLate.Store(&path)
 		b.startManifest(path)
 	}
+}
+
+// Module is the module this backend names in its requests, or "" before one is known.
+func (b *WebBackend) Module() string {
+	return b.moduleName()
 }
 
 // moduleName is the configured module path, or a single set later.

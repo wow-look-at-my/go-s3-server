@@ -2,6 +2,7 @@ package cacheclient
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -81,6 +82,21 @@ type lookAhead struct {
 	Used    AtomicCounter
 	// wasteful is set when the build uses too little of what the pool fetched. The pool then stops.
 	wasteful atomic.Bool
+
+	// sampled counts the entries the windows brought, as they arrive. lookups counts the build's lookups.
+	sampled atomic.Int64
+	lookups atomic.Int64
+	// paused is set while a sample waits for its verdict. The pool sends nothing while it is set.
+	paused atomic.Bool
+	// judgeMu guards the verdict state below.
+	judgeMu   sync.Mutex
+	nextJudge int64 // the sampled count of the next verdict; empty means lookAheadJudgeAfter
+	pausedAt  int64 // lookups when the pause started
+
+	// winCtx is the context the windows run under. A pause cancels it, so no window goes on past the sample.
+	ctxMu     sync.Mutex
+	winCtx    context.Context
+	winCancel context.CancelFunc
 
 	Requests AtomicCounter // look-ahead round trips issued
 	Entries  AtomicCounter // entries they brought back
@@ -268,14 +284,70 @@ func (la *lookAhead) wait() bool {
 
 // off reports whether the pool sends nothing more.
 func (la *lookAhead) off() bool {
-	return la.serverOff.Load() || la.covered.Load() || la.wasteful.Load()
+	return la.serverOff.Load() || la.covered.Load() || la.wasteful.Load() || la.paused.Load()
 }
 
-// lookAheadJudgeAfter is how many entries the pool fetches before its use is judged.
-var lookAheadJudgeAfter = 2048
+// lookAheadJudgeAfter is how many entries the pool fetches before the first verdict on its use.
+var lookAheadJudgeAfter int64 = 256
 
 // lookAheadMinUse is the share of the fetched entries, in percent, the build must use for the pool to go on.
 const lookAheadMinUse = 20
+
+// windowCtx is the context a window runs under. A pause cancels it.
+func (la *lookAhead) windowCtx() context.Context {
+	la.ctxMu.Lock()
+	defer la.ctxMu.Unlock()
+	if la.winCtx == nil {
+		parent := context.Background()
+		if la.b != nil {
+			parent = la.b.requestCtx()
+		}
+		la.winCtx, la.winCancel = context.WithCancel(parent)
+	}
+	return la.winCtx
+}
+
+// cancelWindows stops every window in flight. The next window gets a new context.
+func (la *lookAhead) cancelWindows() {
+	la.ctxMu.Lock()
+	cancel := la.winCancel
+	la.winCtx, la.winCancel = nil, nil
+	la.ctxMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// noteSampled counts entries a window brought. At the sample size, the pool
+// pauses: no window goes on until the build shows whether it uses them.
+func (la *lookAhead) noteSampled(n int64) {
+	sampled := la.sampled.Add(n)
+	la.judgeMu.Lock()
+	due := la.nextJudge
+	if due == 0 {
+		due = lookAheadJudgeAfter
+	}
+	if sampled < due || la.paused.Load() || la.wasteful.Load() {
+		la.judgeMu.Unlock()
+		return
+	}
+	la.paused.Store(true)
+	la.pausedAt = la.lookups.Load()
+	la.judgeMu.Unlock()
+	la.cancelWindows()
+	la.judge()
+}
+
+// noteLookup counts a lookup the build made.
+func (la *lookAhead) noteLookup() {
+	if la == nil {
+		return
+	}
+	la.lookups.Add(1)
+	if la.paused.Load() {
+		la.judge()
+	}
+}
 
 // noteBrought records the keys a window brought.
 func (la *lookAhead) noteBrought(hashes []actionHash) {
@@ -289,7 +361,7 @@ func (la *lookAhead) noteBrought(hashes []actionHash) {
 	la.mu.Unlock()
 }
 
-// noteUsed counts a lookup the pool answered ahead of time.
+// noteUsed counts a lookup the local tier answered, and whether the pool brought it.
 func (la *lookAhead) noteUsed(h actionHash) {
 	if la == nil {
 		return
@@ -303,22 +375,31 @@ func (la *lookAhead) noteUsed(h actionHash) {
 	if found {
 		la.Used.Increment()
 	}
+	la.noteLookup()
 }
 
-// judge stops the pool when the build uses too little of what it fetched. Each
+// judge decides a paused sample. The pool goes on when the build uses at least
+// lookAheadMinUse percent of what it fetched. It stops for good when the build
+// makes half as many lookups as the pool fetched and still uses less. Each
 // unused entry costs a download and a disk write the build waits behind.
 func (la *lookAhead) judge() {
-	fetched := int64(la.Entries.Load())
-	if fetched < int64(lookAheadJudgeAfter) || la.wasteful.Load() {
+	la.judgeMu.Lock()
+	defer la.judgeMu.Unlock()
+	if !la.paused.Load() || la.wasteful.Load() {
 		return
 	}
+	fetched := la.sampled.Load()
 	used := int64(la.Used.Load())
 	if used*100 >= fetched*lookAheadMinUse {
+		la.nextJudge = 2 * fetched
+		la.paused.Store(false)
 		return
 	}
-	if !la.wasteful.Swap(true) {
-		logging.Infof("cacheprog: look-ahead: the build used %d of %d entries it fetched; this process stops asking", used, fetched)
+	if la.lookups.Load()-la.pausedAt < (fetched+1)/2 {
+		return
 	}
+	la.wasteful.Store(true)
+	logging.Infof("cacheprog: look-ahead: the build used %d of %d entries it fetched; this process stops asking", used, fetched)
 }
 
 func (la *lookAhead) Close() {
@@ -372,7 +453,7 @@ func (la *lookAhead) worker() {
 // those bytes.
 func (la *lookAhead) expand(seed []string) {
 	b := la.b
-	if b.OnBatchEntries == nil || !la.wait() || la.covered.Load() || la.wasteful.Load() {
+	if b.OnBatchEntries == nil || !la.wait() || la.off() {
 		return
 	}
 	// Over budget, this seed goes on the floor. Waiting for room would hold a
@@ -388,7 +469,10 @@ func (la *lookAhead) expand(seed []string) {
 	if err != nil {
 		return
 	}
-	req, err := http.NewRequestWithContext(b.requestCtx(), "POST", b.endpoint+"/"+b.bucket+"/_batch/get", bytes.NewReader(body))
+	// A pause cancels the pool context. The window's own cancel ends it when it streams into a pause.
+	ctx, stopWindow := context.WithCancel(la.windowCtx())
+	defer stopWindow()
+	req, err := http.NewRequestWithContext(ctx, "POST", b.endpoint+"/"+b.bucket+"/_batch/get", bytes.NewReader(body))
 	if err != nil {
 		return
 	}
@@ -404,7 +488,10 @@ func (la *lookAhead) expand(seed []string) {
 	resp, err := b.doRetryGET(req)
 	if err != nil {
 		b.Pool.Release()
-		la.fail(err.Error())
+		// A window the pool cancelled did not fail.
+		if ctx.Err() == nil {
+			la.fail(err.Error())
+		}
 		return
 	}
 	if resp.StatusCode != 200 {
@@ -437,11 +524,17 @@ func (la *lookAhead) expand(seed []string) {
 			// The pool filled up while this window was streaming. The rest of it
 			// goes on the floor rather than into memory nobody asked for: the
 			// keys stay in the index, so a later hit asks for them again.
+			if !full && la.off() {
+				// A pause or a stop came while this window streamed. The rest of it is not read.
+				full = true
+				stopWindow()
+			}
 			if full {
 				la.Dropped.Increment()
 				return
 			}
 			count++
+			la.noteSampled(1)
 			// Stated as held, so the next window leaves it out.
 			if actionID, ok := b.ActionIDFromKey(e.Key); ok {
 				if h, ok := parseActionHash(actionID); ok {
@@ -475,17 +568,19 @@ func (la *lookAhead) expand(seed []string) {
 	err = streamBatchResponse(resp.Body, ingest)
 	closeBody(resp.Body)
 	b.Pool.Release()
+	// The entries already read are whole. They go to the populator even when the window stopped early.
+	flush()
+	if count > 0 {
+		la.Entries.Add(uint32(count))
+		b.batchTiming.recordLookAhead(count, time.Since(start))
+	}
 	if err != nil {
-		la.fail("read the window: " + err.Error())
+		if ctx.Err() == nil {
+			la.fail("read the window: " + err.Error())
+		}
 		return
 	}
-	flush()
 	if count == 0 {
 		la.Empty.Increment()
-		return
 	}
-
-	la.Entries.Add(uint32(count))
-	b.batchTiming.recordLookAhead(count, time.Since(start))
-	la.judge()
 }

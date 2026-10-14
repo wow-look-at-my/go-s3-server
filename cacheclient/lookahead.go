@@ -2,6 +2,7 @@ package cacheclient
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -69,6 +70,11 @@ type lookAhead struct {
 
 	// covered is set when a build manifest names this build's keys. The window then only adds bodies the build does not use.
 	covered atomic.Bool
+
+	// gate holds the workers while the manifest walk decides whether a manifest covers the build. Nil holds nothing.
+	gateMu   sync.Mutex
+	gate     chan struct{}
+	gateOpen bool
 
 	// brought holds the keys the pool fetched that the build has not used yet. Used counts those it then used.
 	brought set.Set[actionHash]
@@ -219,6 +225,47 @@ func (la *lookAhead) cover() {
 	}
 }
 
+// hold keeps the workers from sending until release.
+func (la *lookAhead) hold() {
+	if la == nil {
+		return
+	}
+	la.gateMu.Lock()
+	if la.gate == nil {
+		la.gate = make(chan struct{})
+	}
+	la.gateMu.Unlock()
+}
+
+// release lets the held workers go on.
+func (la *lookAhead) release() {
+	if la == nil {
+		return
+	}
+	la.gateMu.Lock()
+	if la.gate != nil && !la.gateOpen {
+		la.gateOpen = true
+		close(la.gate)
+	}
+	la.gateMu.Unlock()
+}
+
+// wait blocks while the pool is held. It reports false when the pool stops first.
+func (la *lookAhead) wait() bool {
+	la.gateMu.Lock()
+	gate := la.gate
+	la.gateMu.Unlock()
+	if gate == nil {
+		return true
+	}
+	select {
+	case <-gate:
+		return true
+	case <-la.stop:
+		return false
+	}
+}
+
 // off reports whether the pool sends nothing more.
 func (la *lookAhead) off() bool {
 	return la.serverOff.Load() || la.covered.Load() || la.wasteful.Load()
@@ -235,6 +282,9 @@ func (la *lookAhead) noteBrought(hashes []actionHash) {
 	la.mu.Lock()
 	for _, h := range hashes {
 		la.brought.Add(h)
+		if la.b != nil && la.b.manifest != nil {
+			la.b.manifest.trace.add("ahead", hex.EncodeToString(h[:]))
+		}
 	}
 	la.mu.Unlock()
 }
@@ -322,7 +372,7 @@ func (la *lookAhead) worker() {
 // those bytes.
 func (la *lookAhead) expand(seed []string) {
 	b := la.b
-	if b.OnBatchEntries == nil || la.covered.Load() || la.wasteful.Load() {
+	if b.OnBatchEntries == nil || !la.wait() || la.covered.Load() || la.wasteful.Load() {
 		return
 	}
 	// Over budget, this seed goes on the floor. Waiting for room would hold a

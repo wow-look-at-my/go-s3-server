@@ -304,9 +304,9 @@ func TestManifestKeepsLookupOrder(t *testing.T) {
 	m := newBuildManifest()
 	ids := []string{strings.Repeat("f1", 32), strings.Repeat("a2", 32), strings.Repeat("c3", 32)}
 	for _, id := range ids {
-		m.note(id)
+		m.note(id, "get")
 	}
-	m.note(ids[1])
+	m.note(ids[1], "get")
 	require.Equal(t, ids, m.order)
 }
 
@@ -314,7 +314,7 @@ func TestManifestKeepsLookupOrder(t *testing.T) {
 func TestManifestNeedsAModule(t *testing.T) {
 	b := NewBareBackend("go-buildcache/")
 	b.manifest = newBuildManifest()
-	b.manifest.note(strings.Repeat("d4", 32))
+	b.manifest.note(strings.Repeat("d4", 32), "get")
 	b.startManifest("")
 	require.Nil(t, b.manifest.id.Load())
 	b.storeManifest()
@@ -347,14 +347,28 @@ func TestManifestWalkPicksTheNewestGeneration(t *testing.T) {
 	b.manifestWG.Wait()
 
 	require.Equal(t, 2, b.manifest.newest)
-	require.Equal(t, 3, b.manifest.newestKeys)
+	require.Equal(t, keys[:3], b.manifest.newestNamed)
 	require.Equal(t, uint32(3), b.manifest.Named.Load())
 	require.NoError(t, b.Close())
 }
 
+// usedKey is the action ID storeManifestAfter notes as the build's key idx.
+func usedKey(idx int) string {
+	return hex.EncodeToString([]byte(strings.Repeat(string(rune('a'+idx)), 32)))
+}
+
+// usedKeys is usedKey for each index from first up to, but not including, last.
+func usedKeys(first, last int) []string {
+	var keys []string
+	for idx := first; idx < last; idx++ {
+		keys = append(keys, usedKey(idx))
+	}
+	return keys
+}
+
 // storeManifestAfter runs a build that notes count keys against a walk that found
-// generation newest with newestKeys keys, and returns the bodies it uploaded.
-func storeManifestAfter(t *testing.T, newest, newestKeys, count int) [][]byte {
+// generation newest naming named, and returns the bodies it uploaded.
+func storeManifestAfter(t *testing.T, newest int, named []string, count int) [][]byte {
 	t.Helper()
 	t.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "0")
 	var mu sync.Mutex
@@ -380,10 +394,10 @@ func storeManifestAfter(t *testing.T, newest, newestKeys, count int) [][]byte {
 	b.SetModule("example.com/m")
 	b.manifestWG.Wait()
 	b.manifest.mu.Lock()
-	b.manifest.newest, b.manifest.newestKeys = newest, newestKeys
+	b.manifest.newest, b.manifest.newestNamed = newest, named
 	b.manifest.mu.Unlock()
-	for i := range count {
-		b.manifest.note(hex.EncodeToString([]byte(strings.Repeat(string(rune('a'+i)), 32))))
+	for idx := range count {
+		b.manifest.note(usedKey(idx), "get")
 	}
 	require.NoError(t, b.Close())
 	mu.Lock()
@@ -403,7 +417,7 @@ func uploadedAny(uploads [][]byte, id string) bool {
 // A newest generation that names too few keys gets a successor with this build's list.
 func TestManifestShortGenerationGetsASuccessor(t *testing.T) {
 	base := manifestID("example.com/m", "", "")
-	uploads := storeManifestAfter(t, 1, 5, 10)
+	uploads := storeManifestAfter(t, 1, usedKeys(0, 5), 10)
 	require.True(t, uploadedAny(uploads, manifestGenID(base, 2)), "a short generation 1 gets generation 2")
 	require.False(t, uploadedAny(uploads, base))
 	require.False(t, uploadedAny(uploads, manifestGenID(base, 1)))
@@ -411,14 +425,102 @@ func TestManifestShortGenerationGetsASuccessor(t *testing.T) {
 
 func TestManifestNearCompleteGenerationStays(t *testing.T) {
 	base := manifestID("example.com/m", "", "")
-	uploads := storeManifestAfter(t, 0, 9, 10)
+	uploads := storeManifestAfter(t, 0, usedKeys(0, 9), 10)
 	for gen := range manifestGenerations {
 		require.False(t, uploadedAny(uploads, manifestGenID(base, gen)), "generation %d", gen)
 	}
 }
 
+// A generation that names every key this build used and many keys it did not
+// is stale. Each extra key is a download the next build never reads.
+func TestManifestSupersetGenerationGetsASuccessor(t *testing.T) {
+	base := manifestID("example.com/m", "", "")
+	uploads := storeManifestAfter(t, 0, usedKeys(0, 16), 10)
+	require.True(t, uploadedAny(uploads, manifestGenID(base, 1)), "a generation that names 6 unused keys of 10 gets a successor")
+	var successor []byte
+	for _, upload := range uploads {
+		if bytes.Contains(upload, []byte(manifestGenID(base, 1))) {
+			successor = upload
+		}
+	}
+	for _, key := range usedKeys(10, 16) {
+		require.False(t, bytes.Contains(successor, []byte(key)), "the successor does not name the unused key %s", key)
+	}
+}
+
+// A generation with the same count of keys but other keys is stale. A count alone does not show that.
+func TestManifestSameSizeOtherKeysGetsASuccessor(t *testing.T) {
+	base := manifestID("example.com/m", "", "")
+	uploads := storeManifestAfter(t, 0, usedKeys(5, 15), 10)
+	require.True(t, uploadedAny(uploads, manifestGenID(base, 1)))
+}
+
+func TestManifestDrifted(t *testing.T) {
+	used := usedKeys(0, 20)
+	require.False(t, manifestDrifted(used, used))
+	require.False(t, manifestDrifted(usedKeys(0, 18), used), "2 missing keys of 20 are 10%")
+	require.False(t, manifestDrifted(usedKeys(0, 22), used), "2 extra keys of 20 are 10%")
+	require.True(t, manifestDrifted(usedKeys(0, 23), used), "3 extra keys of 20 are 15%")
+	require.True(t, manifestDrifted(usedKeys(1, 22), used), "1 missing and 2 extra keys of 20 are 15%")
+	require.False(t, manifestDrifted(append(usedKeys(0, 20), usedKey(0)), used), "a repeated key counts one time")
+}
+
 // With no generation on the server, the build writes one generation.
 func TestManifestFirstGenerationIsTheBaseID(t *testing.T) {
-	uploads := storeManifestAfter(t, -1, 0, 10)
+	uploads := storeManifestAfter(t, -1, nil, 10)
 	require.True(t, uploadedAny(uploads, manifestID("example.com/m", "", "")))
+}
+
+// An authoritative index names the newest generation with no request, and a gap ends the walk.
+func TestNewestKnownGenReadsTheIndex(t *testing.T) {
+	b := NewBareBackend("go-buildcache/")
+	base := manifestID("example.com/m", "", "")
+	for _, gen := range []int{0, 1, 2, 4} {
+		b.MarkPresent(manifestGenID(base, gen))
+	}
+	newest, known := b.newestKnownGen(base)
+	require.False(t, known, "an index that is not authoritative cannot name the newest generation")
+	require.Equal(t, -1, newest)
+	b.keysMu.Lock()
+	b.indexAuthoritative = true
+	b.keysMu.Unlock()
+	newest, known = b.newestKnownGen(base)
+	require.True(t, known)
+	require.Equal(t, 2, newest)
+}
+
+// A seed that arrives while the manifest walk runs waits for it. When the walk
+// finds a manifest, the seed never goes out.
+func TestLookAheadWaitsForTheManifestWalk(t *testing.T) {
+	t.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "2")
+	srv := fakeBatchServer(t, map[string][]byte{}, map[string]map[string]string{})
+	t.Cleanup(srv.Close)
+	b, err := NewWebBackend(WebConfig{Bucket: "testbucket", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: t.TempDir()})
+	require.NoError(t, err)
+	b.shortenIndexWait(10 * time.Millisecond)
+	b.OnBatchEntries = func([]BatchEntry) {}
+	la := b.lookAhead
+	la.hold()
+	la.Seed([]string{"go-buildcache/v1" + strings.Repeat("a8", 32)})
+	require.Eventually(t, func() bool { return len(la.seeds) == 0 }, 5*time.Second, time.Millisecond, "a worker takes the seed")
+	la.cover()
+	la.release()
+	require.NoError(t, b.Close())
+	require.Zero(t, la.Requests.Load(), "a seed held through the walk is not sent once a manifest covers the build")
+}
+
+// A walk that finds no manifest lets the held seed go out.
+func TestLookAheadGoesOnWithoutAManifest(t *testing.T) {
+	t.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "2")
+	srv := fakeBatchServer(t, map[string][]byte{}, map[string]map[string]string{})
+	t.Cleanup(srv.Close)
+	b, err := NewWebBackend(WebConfig{Bucket: "testbucket", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: t.TempDir()})
+	require.NoError(t, err)
+	b.shortenIndexWait(10 * time.Millisecond)
+	b.OnBatchEntries = func([]BatchEntry) {}
+	b.SetModule("example.com/m")
+	b.manifestWG.Wait()
+	b.lookAhead.Seed([]string{"go-buildcache/v1" + strings.Repeat("a9", 32)})
+	require.Eventually(t, func() bool { return b.lookAhead.Requests.Load() == 1 }, 5*time.Second, time.Millisecond)
+	require.NoError(t, b.Close())
 }

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,7 +20,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/go-containers/set"
-	ipc "github.com/wow-look-at-my/go-ipc"
+	"github.com/wow-look-at-my/go-s3-server/cacheclient/cachedisk"
 )
 
 // idOf is the action ID a test key string names.
@@ -246,7 +247,7 @@ const indexLockHolderEnv = "CACHECLIENT_TEST_INDEX_LOCK_HOLDER"
 // holdIndexLockUntilKilled takes the lock at path, says so on stdout, and
 // blocks on stdin, which the parent never writes or closes.
 func holdIndexLockUntilKilled(path string) {
-	if _, err := ipc.LockFile(context.Background(), path); err != nil {
+	if _, err := cachedisk.LockFile(context.Background(), path); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -260,7 +261,7 @@ func requireIndexLockFree(t *testing.T, b *WebBackend) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	unlock, err := ipc.LockFile(ctx, b.indexCachePath()+".lock")
+	unlock, err := cachedisk.LockFile(ctx, b.indexCachePath()+".lock")
 	require.NoError(t, err, "the download lock is released")
 	unlock()
 }
@@ -302,8 +303,8 @@ func TestDeadLockHolderIsTakenOver(t *testing.T) {
 // is this process and its end is the release.
 func holdIndexLock(t *testing.T, path string) (die func()) {
 	t.Helper()
-	if !spawns {
-		unlock, err := ipc.LockFile(context.Background(), path)
+	if runtime.GOOS == "js" || runtime.GOOS == "wasip1" {
+		unlock, err := cachedisk.LockFile(context.Background(), path)
 		require.NoError(t, err)
 		return unlock
 	}
@@ -346,7 +347,7 @@ func TestFailedHolderLeavesCopyNonAuthoritative(t *testing.T) {
 	// Another holder takes the lock and gives up without writing a copy.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	release, err := ipc.LockFile(ctx, b.indexCachePath()+".lock")
+	release, err := cachedisk.LockFile(ctx, b.indexCachePath()+".lock")
 	require.NoError(t, err)
 	time.AfterFunc(100*time.Millisecond, release)
 

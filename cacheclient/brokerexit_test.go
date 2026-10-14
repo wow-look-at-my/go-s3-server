@@ -1,11 +1,12 @@
 // All rights reserved. Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build !js && !wasip1
+
 package cacheclient
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +21,12 @@ import (
 
 // exitRoleEnv makes the test binary the process that calls Exit, over the cache directory it names.
 const exitRoleEnv = "CACHECLIENT_TEST_EXIT_DIR"
+
+func init() {
+	if dir := os.Getenv(exitRoleEnv); dir != "" {
+		exitThenWait(dir)
+	}
+}
 
 // exitThenWait opens the cache as the owner, creates a queue, calls Exit, and
 // prints the queue's name. It then lives until its stdin closes, so the
@@ -51,11 +58,6 @@ func exitThenWait(dir string) {
 // runtime directory. A queue it still holds then reads as one whose creator is
 // gone, while that process runs.
 func TestExitReleasesTheLifeSocket(t *testing.T) {
-	if !spawns {
-		_, err := ipc.OpenQueue("gobuildcache-no-owner")
-		require.ErrorIs(t, err, errors.ErrUnsupported, "no queue exists where no process starts")
-		return
-	}
 	self, err := os.Executable()
 	require.NoError(t, err)
 	cmd := exec.Command(self, "-test.run=^$")

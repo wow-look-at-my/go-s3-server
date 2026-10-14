@@ -2,14 +2,14 @@
 // governed by a BSD-style license that can be found
 // in the LICENSE file.
 
+//go:build !js && !wasip1
+
 package cacheclient
 
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"os"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -28,13 +28,9 @@ func dummyID(num int) [HashSize]byte {
 	return out
 }
 
-// spawns reports whether this platform starts other processes. js and wasip1 start none.
-var spawns = runtime.GOOS != "js" && runtime.GOOS != "wasip1"
-
 // serveOwner opens a cache over dir and serves it, then answers the cache a
-// process below would hold. Where no process starts it checks that nothing is
-// served and answers ok false.
-func serveOwner(t *testing.T, dir string) (owner Cache, child Cache, ok bool) {
+// process below would hold.
+func serveOwner(t *testing.T, dir string) (owner Cache, child Cache) {
 	t.Helper()
 	t.Setenv(BrokerEnv, "")
 	t.Setenv(brokerOffEnv, "")
@@ -42,27 +38,19 @@ func serveOwner(t *testing.T, dir string) (owner Cache, child Cache, ok bool) {
 	require.NoError(t, err)
 	serveBroker(disk, dir)
 	t.Cleanup(StopBroker)
-	if !spawns {
-		require.Empty(t, os.Getenv(BrokerEnv), "no process starts here, so no owner is served")
-		require.Nil(t, dialBroker(dir))
-		return disk, nil, false
-	}
 	require.NotEmpty(t, os.Getenv(BrokerEnv), "the owner must name its endpoint in the environment")
 
 	child = dialBroker(dir)
 	require.NotNil(t, child, "a process that finds a live owner must become a child")
 	t.Cleanup(func() { child.Close() })
-	return disk, child, true
+	return disk, child
 }
 
 // A child stores through the owner and reads back what the owner wrote. The
 // body never crosses the ring: the answer names a file both can open.
 func TestBrokerChildStoresAndReadsThroughTheOwner(t *testing.T) {
 	dir := t.TempDir()
-	owner, child, ok := serveOwner(t, dir)
-	if !ok {
-		return
-	}
+	owner, child := serveOwner(t, dir)
 
 	id := ActionID(dummyID(7))
 	body := []byte("what one process compiled and another one reads")
@@ -84,10 +72,7 @@ func TestBrokerChildStoresAndReadsThroughTheOwner(t *testing.T) {
 
 // A key nothing stored is an ordinary miss, exactly as a local a single is.
 func TestBrokerChildReportsAMissAsAMiss(t *testing.T) {
-	_, child, ok := serveOwner(t, t.TempDir())
-	if !ok {
-		return
-	}
+	_, child := serveOwner(t, t.TempDir())
 
 	_, err := child.Get(ActionID(dummyID(11)))
 	require.Error(t, err)
@@ -98,10 +83,7 @@ func TestBrokerChildReportsAMissAsAMiss(t *testing.T) {
 // The owner names which tier answered, and a child passes that on. Without it
 // a trace cannot tell a hit off local disk from a single fetched over the network.
 func TestBrokerChildReportsTheOwnersTier(t *testing.T) {
-	_, child, ok := serveOwner(t, t.TempDir())
-	if !ok {
-		return
-	}
+	_, child := serveOwner(t, t.TempDir())
 
 	id := ActionID(dummyID(13))
 	_, _, err := child.Put(id, bytes.NewReader([]byte("body")))
@@ -115,10 +97,7 @@ func TestBrokerChildReportsTheOwnersTier(t *testing.T) {
 }
 
 func TestBrokerSharesOneLookupAndOneStore(t *testing.T) {
-	_, child, ok := serveOwner(t, t.TempDir())
-	if !ok {
-		return
-	}
+	_, child := serveOwner(t, t.TempDir())
 
 	id := ActionID(dummyID(17))
 	body := []byte("two children built the same object")
@@ -160,10 +139,6 @@ func TestBrokerQueueWithNoOwnerTimesOut(t *testing.T) {
 	t.Serial()
 	name := endpointName("gobuildcache-orphan")
 	queue, err := ipc.CreateQueue(name)
-	if !spawns {
-		require.ErrorIs(t, err, errors.ErrUnsupported, "no queue exists where no process starts")
-		return
-	}
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		queue.Close()

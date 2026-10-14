@@ -246,29 +246,45 @@ func TestDashboardReportsTheIndexWireSize(t *testing.T) {
 	d.srv.storage = newTestStorage(t)
 	idx := d.srv.storage.Index
 	for i := 0; i < 5; i++ {
-		idx.Put(gbciKeyPrefix+fmt.Sprintf("%064x", i), 1)
+		idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", i, 0), 1)
 	}
 
-	// Pending hashes count before anything serializes.
+	// Pending hashes count before anything serializes. A client fetches the short form, so each hash costs gbciPrefixSize bytes.
 	stats, err = d.snapshot()
 	require.NoError(t, err)
-	assert.EqualValues(t, gbciHeaderSize+5*gbciHashSize+sha256.Size, stats.Index.WireBytes)
+	assert.EqualValues(t, gbciHeaderSize+5*gbciPrefixSize+sha256.Size, stats.Index.WireBytes)
 
 	// The figure is the body a client gets, whether the blob is cached yet or not.
-	blob, _ := idx.Blob()
+	blob, _, _ := idx.BlobGenWidth(gbciPrefixSize)
 	stats, err = d.snapshot()
 	require.NoError(t, err)
 	assert.EqualValues(t, len(blob), stats.Index.WireBytes)
 
-	// An unserialized add shows at once when the cached blob is too old to serve.
-	idx.SetBlobInterval(0)
-	idx.Put(gbciKeyPrefix+fmt.Sprintf("%064x", 5), 1)
-	idx.Put(gbciKeyPrefix+fmt.Sprintf("%064x", 5), 1)
+	// The full-width blob is not what a client downloads, so a cached copy of it does not change the figure.
+	full, _ := idx.Blob()
 	stats, err = d.snapshot()
 	require.NoError(t, err)
-	fresh, _ := idx.Blob()
+	assert.EqualValues(t, len(blob), stats.Index.WireBytes)
+	assert.Greater(t, len(full), len(blob))
+
+	// An unserialized add shows at once when the cached blob is too old to serve.
+	idx.SetBlobInterval(0)
+	idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", 5, 0), 1)
+	idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", 5, 0), 1)
+	stats, err = d.snapshot()
+	require.NoError(t, err)
+	fresh, _, _ := idx.BlobGenWidth(gbciPrefixSize)
 	assert.EqualValues(t, len(fresh), stats.Index.WireBytes, "a duplicate pending hash is one entry")
-	assert.EqualValues(t, gbciHeaderSize+6*gbciHashSize+sha256.Size, len(fresh))
+	assert.EqualValues(t, gbciHeaderSize+6*gbciPrefixSize+sha256.Size, len(fresh))
+
+	// Hashes that share their first gbciPrefixSize bytes are a single entry in the short form.
+	idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", 5, 1), 1)
+	idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", 7, 1), 1)
+	stats, err = d.snapshot()
+	require.NoError(t, err)
+	fresh, _, _ = idx.BlobGenWidth(gbciPrefixSize)
+	assert.EqualValues(t, len(fresh), stats.Index.WireBytes)
+	assert.EqualValues(t, gbciHeaderSize+7*gbciPrefixSize+sha256.Size, len(fresh))
 }
 
 func TestDashboardShowsTheIndexSizeInMB(t *testing.T) {

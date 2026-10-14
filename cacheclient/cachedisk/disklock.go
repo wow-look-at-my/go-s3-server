@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io/fs"
 	"os"
-	"syscall"
 	"time"
 
 	"github.com/wow-look-at-my/go-ipc/filelock"
@@ -68,10 +67,4 @@ func dirOf(path string) string {
 		}
 	}
 	return "."
-}
-
-// isETXTBSY reports whether a running program holds the file, which unix
-// refuses to replace. That is a miss rather than a failure.
-func isETXTBSY(err error) bool {
-	return errors.Is(err, syscall.ETXTBSY)
 }

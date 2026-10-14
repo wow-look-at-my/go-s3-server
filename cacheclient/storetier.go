@@ -96,6 +96,34 @@ func (tier *storeTier) Put(id ActionID, file io.ReadSeeker) (OutputID, int64, er
 	return out, size, nil
 }
 
+// Local answers the disk tier alone, for an output the store must never see.
+func (tier *storeTier) Local() Cache { return localTier{tier} }
+
+// localTier is the disk half of a storeTier. It counts in the tier's report.
+type localTier struct{ tier *storeTier }
+
+func (l localTier) Get(id ActionID) (Entry, error) {
+	entry, err := l.tier.DiskCache.Get(id)
+	if err == nil {
+		l.tier.localHits.Add(1)
+		l.tier.localHitBytes.Add(entry.Size)
+	}
+	return entry, err
+}
+
+func (l localTier) Put(id ActionID, file io.ReadSeeker) (OutputID, int64, error) {
+	out, size, err := l.tier.DiskCache.Put(id, file)
+	if err == nil {
+		l.tier.localPuts.Add(1)
+		l.tier.localPutBytes.Add(size)
+	}
+	return out, size, err
+}
+
+func (l localTier) Close() error                   { return nil }
+func (l localTier) OutputFile(out OutputID) string { return l.tier.DiskCache.OutputFile(out) }
+func (l localTier) FuzzDir() string                { return l.tier.DiskCache.FuzzDir() }
+
 // populate stores what the look-ahead pool fetched before the build asked for
 // it. It runs on that pool's goroutines, several at a time.
 func (tier *storeTier) populate(entries []BatchEntry) {

@@ -55,6 +55,8 @@ type spoolFile struct {
 	Command  string       `json:"command,omitempty"`
 	IndexDir string       `json:"index_dir,omitempty"`
 	Entries  []spoolEntry `json:"entries"`
+	// FetchIndex asks the uploader to finish the index download that the build cancelled at exit.
+	FetchIndex bool `json:"fetch_index,omitempty"`
 }
 
 // spoolEntry is one upload. Path names a body in the local cache; Data
@@ -133,7 +135,15 @@ func (b *WebBackend) handsOff() bool {
 // lost: it stays pending, so the spool carries it.
 func (b *WebBackend) closeHandOff() error {
 	b.abort()
+	fetchIndex := false
 	if l := b.indexLoad.Load(); l != nil {
+		select {
+		case <-l.done:
+		default:
+			// A short command ends before the download does. With no copy on disk, the next command would start it again.
+			_, err := os.Stat(b.indexCachePath())
+			fetchIndex = os.IsNotExist(err)
+		}
 		l.cancel()
 		<-l.done
 	}
@@ -158,8 +168,8 @@ func (b *WebBackend) closeHandOff() error {
 	for _, write := range manifests {
 		entries = append(entries, spoolEntry{ActionID: write.id, OutputID: StoredDigest(write.body), Data: write.body, Replace: true})
 	}
-	if len(entries) > 0 {
-		if err := b.handOff(entries); err != nil {
+	if len(entries) > 0 || fetchIndex {
+		if err := b.handOff(entries, fetchIndex); err != nil {
 			logging.Warnf("cacheprog: upload hand-off: %v; %d uploads are not stored", err, len(entries))
 		} else {
 			b.handedOff.Store(int64(len(entries)))
@@ -183,15 +193,16 @@ func (b *WebBackend) pendingEntries() []spoolEntry {
 }
 
 // handOff writes entries to a new spool and starts its uploader.
-func (b *WebBackend) handOff(entries []spoolEntry) error {
+func (b *WebBackend) handOff(entries []spoolEntry, fetchIndex bool) error {
 	spool := spoolFile{
-		Prefix:   b.prefix,
-		Version:  b.version,
-		Module:   b.moduleName(),
-		Target:   b.target,
-		Command:  b.command,
-		IndexDir: b.indexDir,
-		Entries:  entries,
+		Prefix:     b.prefix,
+		Version:    b.version,
+		Module:     b.moduleName(),
+		Target:     b.target,
+		Command:    b.command,
+		IndexDir:   b.indexDir,
+		Entries:    entries,
+		FetchIndex: fetchIndex,
 	}
 	path, err := writeSpool(b.spoolDir, spool)
 	if err != nil {
@@ -303,6 +314,9 @@ func RunUploadSpool(path string) error {
 		}
 	}
 	store.Close()
+	if spool.FetchIndex {
+		fetchIndexCopy(cfg)
+	}
 	failed := store.pendingCount()
 	logging.Infof("cacheprog: upload spool %s: %d of %d stored, %d bodies gone, %d failed",
 		filepath.Base(path), store.Stats.Puts.Load(), len(spool.Entries), gone, failed)
@@ -315,6 +329,22 @@ func RunUploadSpool(path string) error {
 		return fmt.Errorf("upload spool %s: %d uploads failed", path, failed)
 	}
 	return nil
+}
+
+// fetchIndexCopy downloads the key index into its disk copy for the next
+// command, and waits for the download to end.
+func fetchIndexCopy(cfg WebConfig) {
+	idx, err := NewWebBackend(cfg)
+	if err != nil {
+		logging.Warnf("cacheprog: upload spool: index download: %v", err)
+		return
+	}
+	idx.drainOnClose = true
+	idx.ensureIndex()
+	if l := idx.indexLoad.Load(); l != nil {
+		<-l.done
+	}
+	idx.Close()
 }
 
 // skipIndex makes this backend upload with no key index: every upload a

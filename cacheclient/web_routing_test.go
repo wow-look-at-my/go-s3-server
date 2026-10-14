@@ -252,7 +252,7 @@ func TestSendBatch_TransientFailureDoesNotMarkKnownMiss(t *testing.T) {
 	failing.Store(true)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/testbucket/_batch/get" {
-			w.WriteHeader(404) // index fetch => not authoritative => probing on
+			w.WriteHeader(404)
 			return
 		}
 		if failing.Load() {

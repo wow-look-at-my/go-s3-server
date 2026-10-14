@@ -74,6 +74,56 @@ func TestFailedDeltaTrustsAYoungCopy(t *testing.T) {
 	require.Zero(t, others.Load(), "a key the young copy lacks costs no request")
 }
 
+// TestYoungCopyIsAuthoritativeWhileItsDeltaLoads pins that a lookup does not
+// wait on a delta for a young copy. A key the copy lacks misses at once.
+func TestYoungCopyIsAuthoritativeWhileItsDeltaLoads(t *testing.T) {
+	dir := t.TempDir()
+	full := marshalIndex(keySetToHashes(sevenKeys()))
+	release := make(chan struct{})
+	var others atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bk/_index" {
+			others.Add(1)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set(HeaderIndexEpoch, "9")
+		if seq := r.URL.Query().Get("seq"); seq != "" {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+			w.Header().Set(HeaderIndexSeq, seq)
+			w.Header().Set(HeaderIndexDelta, "1")
+			w.Write(marshalIndex(newHashSet(0)))
+			return
+		}
+		w.Header().Set(HeaderIndexSeq, "1")
+		w.Header().Set("ETag", indexETag(full))
+		w.Write(full)
+	}))
+	defer srv.Close()
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+
+	cfg := WebConfig{Bucket: "bk", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: dir, IndexMaxAge: time.Hour}
+	seed, err := NewWebBackend(cfg)
+	require.NoError(t, err)
+	seed.awaitIndex()
+	seed.Close()
+
+	b, err := NewWebBackend(cfg)
+	require.NoError(t, err)
+	defer b.Close()
+	_, _, _, miss := b.Get(idOf(extraKey()))
+	require.True(t, miss)
+	require.Zero(t, others.Load(), "a key the young copy lacks costs no request")
+	releaseOnce.Do(func() { close(release) })
+	b.awaitIndex()
+	require.True(t, b.SummarySnapshot().IndexAuthoritative)
+}
+
 // runDeltaProcesses runs backends in turn over a single index directory. The
 // server adds a key after its first full answer. It returns the positions the
 // backends asked from and the disk copy they leave.

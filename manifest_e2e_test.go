@@ -30,6 +30,8 @@ func TestManifestBringsTheLastBuildAhead(t *testing.T) {
 	first.OnBatchEntries = func([]cacheclient.BatchEntry) {}
 	first.SetModule("example.com/m")
 	for _, o := range objs {
+		_, _, _, miss := first.Get(o.actionID)
+		require.True(t, miss)
 		require.NoError(t, first.Put(o.actionID, o.outputID, o.body))
 	}
 	require.NoError(t, first.Close())
@@ -73,6 +75,8 @@ func TestManifestIsPerModule(t *testing.T) {
 	first.OnBatchEntries = func([]cacheclient.BatchEntry) {}
 	first.SetModule("example.com/m")
 	for _, o := range objs {
+		_, _, _, miss := first.Get(o.actionID)
+		require.True(t, miss)
 		require.NoError(t, first.Put(o.actionID, o.outputID, o.body))
 	}
 	require.NoError(t, first.Close())

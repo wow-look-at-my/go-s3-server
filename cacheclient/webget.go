@@ -1,6 +1,7 @@
 package cacheclient
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"path"
@@ -25,7 +26,9 @@ func (b *WebBackend) getIndividual(actionID, key string, h actionHash) batchResp
 	if err != nil {
 		b.Pool.Release()
 		b.MissNetwork.Increment()
-		logging.Warnf("cacheprog: web get %s: %v", ShortID(actionID), err)
+		if !errors.Is(err, errServerDown) {
+			logging.Warnf("cacheprog: web get %s: %v", ShortID(actionID), err)
+		}
 		return batchResp{miss: true}
 	}
 

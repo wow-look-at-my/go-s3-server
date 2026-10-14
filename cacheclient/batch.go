@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -269,7 +270,9 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 	resp, err := b.doRetryGET(httpReq)
 	if err != nil {
 		b.Pool.Release()
-		logging.Warnf("cacheprog: web batch get: %v", err)
+		if !errors.Is(err, errServerDown) {
+			logging.Warnf("cacheprog: web batch get: %v", err)
+		}
 		respondAllMiss(&b.MissNetwork)
 		return
 	}

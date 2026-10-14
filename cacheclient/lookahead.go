@@ -67,6 +67,9 @@ type lookAhead struct {
 	// serverOff is set when the server says it sends no look-ahead window. Every later seed is then dropped unsent.
 	serverOff atomic.Bool
 
+	// covered is set when a build manifest names this build's keys. The window then only adds bodies the build does not use.
+	covered atomic.Bool
+
 	Requests AtomicCounter // look-ahead round trips issued
 	Entries  AtomicCounter // entries they brought back
 	Dropped  AtomicCounter // seeds refused: the queue was full, or the budget was spent
@@ -179,7 +182,7 @@ func newLookAhead(b *WebBackend) *lookAhead {
 // never blocks: a full queue means the pool is already saturated with work of
 // the same kind, and a build goroutine must never wait on speculation.
 func (la *lookAhead) Seed(keys []string) {
-	if la == nil || len(keys) == 0 || la.serverOff.Load() {
+	if la == nil || len(keys) == 0 || la.serverOff.Load() || la.covered.Load() {
 		return
 	}
 	fresh := keys[:0:0]
@@ -199,6 +202,13 @@ func (la *lookAhead) Seed(keys []string) {
 	case la.seeds <- fresh:
 	default:
 		la.Dropped.Add(uint32(len(fresh)))
+	}
+}
+
+// cover stops the pool: a build manifest names what this build needs.
+func (la *lookAhead) cover() {
+	if la != nil {
+		la.covered.Store(true)
 	}
 }
 
@@ -253,7 +263,7 @@ func (la *lookAhead) worker() {
 // those bytes.
 func (la *lookAhead) expand(seed []string) {
 	b := la.b
-	if b.OnBatchEntries == nil {
+	if b.OnBatchEntries == nil || la.covered.Load() {
 		return
 	}
 	// Over budget, this seed goes on the floor. Waiting for room would hold a

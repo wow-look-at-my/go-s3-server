@@ -50,11 +50,12 @@ func TestDeltaIsSavedForTheNextProcess(t *testing.T) {
 	defer srv.Close()
 
 	cfg := WebConfig{Bucket: "bk", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: dir}
-	for range 3 {
+	for run := range 3 {
 		b, err := NewWebBackend(cfg)
 		require.NoError(t, err)
 		b.awaitIndex()
-		require.True(t, b.Present(idOf(extraKey())), "the delta's key is in the live set")
+		// The first process takes the full index, which predates the delta.
+		require.Equal(t, run > 0, b.Present(idOf(extraKey())), "the delta's key is in the live set")
 		require.True(t, b.Present(idOf(anyKey(keys))), "the copy's keys are in the live set")
 		b.Close()
 	}
@@ -66,5 +67,5 @@ func TestDeltaIsSavedForTheNextProcess(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Equal(t, []string{"", "1", "2"}, seqs,"each process asks from where the last one stopped")
+	require.Equal(t, []string{"", "1", "2"}, seqs, "each process asks from where the last one stopped")
 }

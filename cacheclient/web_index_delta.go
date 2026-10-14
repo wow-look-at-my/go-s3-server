@@ -185,6 +185,14 @@ func mergeIndexBlob(base []byte, added *hashSet) []byte {
 	return marshalSortedIndex(merged)
 }
 
+// probingNote says whether a key the copy lacks is probed.
+func probingNote(trusted bool) string {
+	if trusted {
+		return "a young copy, so an absent key misses with no probe"
+	}
+	return "batch probing enabled"
+}
+
 func deltaQuery(gen indexGen) string {
 	q := url.Values{}
 	q.Set("epoch", strconv.FormatUint(gen.epoch, 10))
@@ -218,19 +226,21 @@ func (b *WebBackend) startDeltaLoad(path string, disk diskIndex) {
 // authoritative. A server that cannot answer from the copy's position gets a
 // full refresh. A failed request leaves the copy non-authoritative.
 func (b *WebBackend) applyDelta(ctx context.Context, path string, disk diskIndex) {
+	// A failed delta leaves the copy as a copy with no position will be.
+	young := disk.age() < b.resolveIndexMaxAge(path)
 	reply, err := b.doIndexGET(ctx, deltaQuery(disk.gen), "")
 	if err != nil && reply.status != http.StatusGone {
 		if ctx.Err() == nil {
-			logging.Infof("cacheprog: web index delta: %v; using %d cached keys (batch probing enabled)", err, disk.count)
+			logging.Infof("cacheprog: web index delta: %v; using %d cached keys (%s)", err, disk.count, probingNote(young))
 		}
-		b.adoptIndex(nil, false)
+		b.adoptIndex(disk.keys, young)
 		return
 	}
 	if reply.status == http.StatusOK && reply.delta {
 		added, _, perr := parseIndexBlob(reply.body)
 		if perr != nil {
-			logging.Warnf("cacheprog: web index delta parse: %v; using %d cached keys (batch probing enabled)", perr, disk.count)
-			b.adoptIndex(nil, false)
+			logging.Warnf("cacheprog: web index delta parse: %v; using %d cached keys (%s)", perr, disk.count, probingNote(young))
+			b.adoptIndex(disk.keys, young)
 			return
 		}
 		// The live set already carries every claim and drop, so the journal has nothing to replay.

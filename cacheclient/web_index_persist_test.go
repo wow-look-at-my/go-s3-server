@@ -5,7 +5,9 @@ import (
 	"net/http/httptest"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/go-containers/set"
@@ -31,6 +33,45 @@ func TestSmallDeltaLeavesTheCopy(t *testing.T) {
 	require.Equal(t, sevenKeys().Len(), disk.count, "the copy is not rewritten")
 	require.Equal(t, indexGen{epoch: 9, seq: 1}, disk.gen)
 	require.Equal(t, []string{"", "1", "1"}, seqs, "the next process asks for the same delta again")
+}
+
+// TestFailedDeltaTrustsAYoungCopy pins that a failed delta keeps a young copy
+// authoritative. A key the copy lacks then misses with no request.
+func TestFailedDeltaTrustsAYoungCopy(t *testing.T) {
+	dir := t.TempDir()
+	full := marshalIndex(keySetToHashes(sevenKeys()))
+	var others atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bk/_index" {
+			others.Add(1)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.URL.Query().Get("seq") != "" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set(HeaderIndexEpoch, "9")
+		w.Header().Set(HeaderIndexSeq, "1")
+		w.Header().Set("ETag", indexETag(full))
+		w.Write(full)
+	}))
+	defer srv.Close()
+
+	cfg := WebConfig{Bucket: "bk", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: dir, IndexMaxAge: time.Hour}
+	seed, err := NewWebBackend(cfg)
+	require.NoError(t, err)
+	seed.awaitIndex()
+	seed.Close()
+
+	b, err := NewWebBackend(cfg)
+	require.NoError(t, err)
+	defer b.Close()
+	b.awaitIndex()
+	require.True(t, b.SummarySnapshot().IndexAuthoritative, "a young copy stays authoritative when its delta fails")
+	_, _, _, miss := b.Get(idOf(extraKey()))
+	require.True(t, miss)
+	require.Zero(t, others.Load(), "a key the young copy lacks costs no request")
 }
 
 // runDeltaProcesses runs backends in turn over a single index directory. The

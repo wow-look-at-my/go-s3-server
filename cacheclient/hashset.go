@@ -25,20 +25,46 @@ type hashSet struct {
 	// pending holds keys added since the last compaction and absent.
 	pending set.Set[hashKey]
 	removed set.Set[hashKey]
+	// drop names the low bits that are zero in every key of the set.
+	drop uint
 }
 
 // hashKey is the first gbciPrefixSize bytes of an action hash, big-endian.
 type hashKey = uint64
 
-// gbciPrefixSize is the hash width of the short index form the client asks for.
+// gbciPrefixSize is the widest key a set holds, in bytes.
 const gbciPrefixSize = 8
 
 func keyOf(h actionHash) hashKey { return binary.BigEndian.Uint64(h[:gbciPrefixSize]) }
 
+// key is h at the width of the set.
+func (s *hashSet) key(h actionHash) hashKey { return keyOf(h) >> s.drop << s.drop }
+
+// width is the key width of the set, in bytes.
+func (s *hashSet) width() int { return int(64-s.drop) / 8 }
+
+// narrow cuts every key to width bytes. A wider width changes nothing: a key
+// cannot get back the bits it lost. Keys that become equal are one key.
+func (s *hashSet) narrow(width int) {
+	drop := uint(64 - 8*width)
+	if drop <= s.drop {
+		return
+	}
+	s.compact()
+	s.drop = drop
+	for i, k := range s.sorted {
+		s.sorted[i] = k >> drop << drop
+	}
+	s.sorted = slices.Compact(s.sorted)
+}
+
 // addAll adds every key in src with a single merge into the sorted slice. A
-// merge per compactAt keys moves the whole slice each time.
+// merge per compactAt keys moves the whole slice each time. When the widths
+// differ, the result has the narrower width.
 func (s *hashSet) addAll(src *hashSet) {
+	s.narrow(src.width())
 	for k := range src.All() {
+		k = k >> s.drop << s.drop
 		if s.removed.Contains(k) {
 			s.removed.Remove(k)
 			continue
@@ -92,7 +118,7 @@ func (s *hashSet) Contains(h actionHash) bool {
 	if s == nil {
 		return false
 	}
-	k := keyOf(h)
+	k := s.key(h)
 	if s.removed.Contains(k) {
 		return false
 	}
@@ -110,7 +136,9 @@ func (s *hashSet) Add(h actionHash) {
 	s.addKey(keyOf(h))
 }
 
+// addKey adds k at the width of the set.
 func (s *hashSet) addKey(k hashKey) {
+	k = k >> s.drop << s.drop
 	// A key in removed is still in the sorted slice, so re-adding it is the
 	// deletion going away rather than a new entry.
 	if s.removed.Contains(k) {
@@ -133,7 +161,7 @@ func (s *hashSet) Remove(h actionHash) {
 	if s == nil {
 		return
 	}
-	k := keyOf(h)
+	k := s.key(h)
 	if s.pending.Contains(k) {
 		s.pending.Remove(k)
 		return

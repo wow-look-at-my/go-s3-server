@@ -1,13 +1,14 @@
 package main
 
 import (
-	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"testing"
 	"time"
 
@@ -245,17 +246,28 @@ func TestDashboardReportsTheIndexWireSize(t *testing.T) {
 
 	d.srv.storage = newTestStorage(t)
 	idx := d.srv.storage.Index
+	var put [][gbciHashSize]byte
+	add := func(lead, tail int) {
+		key := gbciKeyPrefix + fmt.Sprintf("%02x%060x%02x", lead, 0, tail)
+		hash, ok := extractActionHash(key)
+		require.True(t, ok)
+		put = append(put, hash)
+		idx.Put(key, 1)
+	}
+	compactSize := func() int {
+		return len(marshalGBCIRice(sortDedupeHashes(slices.Clone(put)), gbciCompactWidth))
+	}
 	for i := 0; i < 5; i++ {
-		idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", i, 0), 1)
+		add(i, 0)
 	}
 
-	// Pending hashes count before anything serializes. A client fetches the short form, so each hash costs gbciPrefixSize bytes.
+	// Pending hashes count before anything serializes. A client fetches the compact form, so that is the size.
 	stats, err = d.snapshot()
 	require.NoError(t, err)
-	assert.EqualValues(t, gbciHeaderSize+5*gbciPrefixSize+sha256.Size, stats.Index.WireBytes)
+	assert.EqualValues(t, compactSize(), stats.Index.WireBytes)
 
 	// The figure is the body a client gets, whether the blob is cached yet or not.
-	blob, _, _ := idx.BlobGenWidth(gbciPrefixSize)
+	blob, _, _ := idx.BlobGenForm(formRice)
 	stats, err = d.snapshot()
 	require.NoError(t, err)
 	assert.EqualValues(t, len(blob), stats.Index.WireBytes)
@@ -269,22 +281,24 @@ func TestDashboardReportsTheIndexWireSize(t *testing.T) {
 
 	// An unserialized add shows at once when the cached blob is too old to serve.
 	idx.SetBlobInterval(0)
-	idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", 5, 0), 1)
-	idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", 5, 0), 1)
+	add(5, 0)
+	add(5, 0)
 	stats, err = d.snapshot()
 	require.NoError(t, err)
-	fresh, _, _ := idx.BlobGenWidth(gbciPrefixSize)
+	fresh, _, _ := idx.BlobGenForm(formRice)
 	assert.EqualValues(t, len(fresh), stats.Index.WireBytes, "a duplicate pending hash is one entry")
-	assert.EqualValues(t, gbciHeaderSize+6*gbciPrefixSize+sha256.Size, len(fresh))
+	assert.EqualValues(t, compactSize(), len(fresh))
+	assert.Equal(t, uint64(6), binary.LittleEndian.Uint64(fresh[16:24]))
 
-	// Hashes that share their first gbciPrefixSize bytes are a single entry in the short form.
-	idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", 5, 1), 1)
-	idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", 7, 1), 1)
+	// Hashes that share their first gbciCompactWidth bytes are a single entry in the compact form.
+	add(5, 1)
+	add(7, 1)
 	stats, err = d.snapshot()
 	require.NoError(t, err)
-	fresh, _, _ = idx.BlobGenWidth(gbciPrefixSize)
+	fresh, _, _ = idx.BlobGenForm(formRice)
 	assert.EqualValues(t, len(fresh), stats.Index.WireBytes)
-	assert.EqualValues(t, gbciHeaderSize+7*gbciPrefixSize+sha256.Size, len(fresh))
+	assert.EqualValues(t, compactSize(), len(fresh))
+	assert.Equal(t, uint64(7), binary.LittleEndian.Uint64(fresh[16:24]))
 }
 
 func TestDashboardShowsTheIndexSizeInMB(t *testing.T) {

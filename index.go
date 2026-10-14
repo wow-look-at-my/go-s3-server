@@ -62,12 +62,9 @@ type Index struct {
 	addEpoch  uint64
 	added     [][gbciHashSize]byte
 	cachedGen indexGen
-	// The short form (gbciPrefixSize-byte hashes) has its own cache, built only when a client asks for it.
-	cachedPrefix     []byte
-	cachedPrefixETag string
-	cachedPrefixGen  indexGen
-	prefixBuiltAt    time.Time
-	prefixDirty      atomic.Bool
+	// Each short form has its own cache, built only when a client asks for it.
+	prefixForm formCache
+	riceForm   formCache
 	// addLogLimit overrides maxAddLog when nonzero, for a test.
 	addLogLimit int
 }
@@ -174,7 +171,8 @@ func (idx *Index) Put(key string, size int64) {
 		idx.pending = append(idx.pending, hash)
 		idx.appendAddLocked(hash)
 		idx.dirty.Store(true)
-		idx.prefixDirty.Store(true)
+		idx.prefixForm.dirty.Store(true)
+		idx.riceForm.dirty.Store(true)
 	}
 	idx.updateGaugesLocked()
 }
@@ -625,8 +623,8 @@ func (idx *Index) applyRebuild(b *indexBuild) (int, int) {
 	// pending and pendingEntries intentionally survive (see doc comment above).
 	idx.cachedBlob = nil
 	idx.cachedETag = ""
-	idx.cachedPrefix = nil
-	idx.cachedPrefixETag = ""
+	idx.prefixForm.drop()
+	idx.riceForm.drop()
 	idx.resetAddLogLocked()
 	hashCount := len(idx.hashes) + len(idx.pending)
 	idx.updateGaugesLocked()

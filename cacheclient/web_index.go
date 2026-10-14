@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -235,8 +234,8 @@ func (b *WebBackend) doIndexGET(ctx context.Context, rawQuery, ifNoneMatch strin
 		return err
 	}
 
-	// Every request asks for the short form. A server that predates it ignores the parameter and sends full hashes, which parse too.
-	target := b.endpoint + "/" + b.bucket + "/_index?hash=" + strconv.Itoa(gbciPrefixSize)
+	// Every request asks for the compact form. An older server answers the 8-byte or the full form, which parse too.
+	target := b.endpoint + "/" + b.bucket + "/_index?" + riceQuery
 	if rawQuery != "" {
 		target += "&" + rawQuery
 	}
@@ -330,6 +329,9 @@ func parseIndexBlob(blob []byte) (*hashSet, string, error) {
 	if !bytes.Equal(blob[0:4], gbciMagic[:]) {
 		return nil, "", fmt.Errorf("bad magic")
 	}
+	if blob[4] == gbciRiceVersion {
+		return parseRiceBlob(blob)
+	}
 	if blob[4] != gbciVersion {
 		return nil, "", fmt.Errorf("unsupported version %d", blob[4])
 	}
@@ -357,9 +359,35 @@ func parseIndexBlob(blob []byte) (*hashSet, string, error) {
 	return set, etag, nil
 }
 
-// marshalIndex encodes the given hash set as a GBCI v1 blob.
+// parseRiceBlob is parseIndexBlob for the compact form.
+func parseRiceBlob(blob []byte) (*hashSet, string, error) {
+	bodyEnd := len(blob) - sha256.Size
+	expected := sha256.Sum256(blob[:bodyEnd])
+	if !bytes.Equal(expected[:], blob[bodyEnd:]) {
+		return nil, "", fmt.Errorf("trailer hash mismatch")
+	}
+	count := binary.LittleEndian.Uint64(blob[16:24])
+	if count > uint64(bodyEnd-gbciHeaderSize)*8 {
+		return nil, "", fmt.Errorf("%d keys in a body of %d bytes", count, bodyEnd-gbciHeaderSize)
+	}
+	width := int(blob[5])
+	keys, err := decodeRice(blob[gbciHeaderSize:bodyEnd], int(count), width, uint(blob[6]))
+	if err != nil {
+		return nil, "", err
+	}
+	set := newHashSetFromSorted(keys)
+	set.drop = uint(64 - 8*width)
+	return set, `"` + hex.EncodeToString(blob[bodyEnd:]) + `"`, nil
+}
+
+// marshalIndex encodes the given hash set: the compact form for keys
+// narrower than gbciPrefixSize, else a GBCI v1 blob.
 func marshalIndex(keys *hashSet) []byte {
-	return marshalSortedIndex(slices.Sorted(keys.All()))
+	sorted := slices.Sorted(keys.All())
+	if width := keys.width(); width < gbciPrefixSize {
+		return marshalRiceIndex(sorted, width)
+	}
+	return marshalSortedIndex(sorted)
 }
 
 // marshalSortedIndex encodes ascending, distinct keys as a GBCI v1 blob.

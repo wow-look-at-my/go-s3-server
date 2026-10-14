@@ -338,7 +338,7 @@ func (la *lookAhead) expand(seed []string) {
 	if err != nil {
 		return
 	}
-	req, err := http.NewRequest("POST", b.endpoint+"/"+b.bucket+"/_batch/get", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(b.requestCtx(), "POST", b.endpoint+"/"+b.bucket+"/_batch/get", bytes.NewReader(body))
 	if err != nil {
 		return
 	}

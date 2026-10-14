@@ -13,3 +13,8 @@ import (
 func LockFile(ctx context.Context, path string) (unlock func(), err error) {
 	return filelock.Lock(ctx, path)
 }
+
+// TryLockFile is LockFile without the wait: a lock another holder has fails at once.
+func TryLockFile(path string) (unlock func(), err error) {
+	return filelock.TryLock(path)
+}

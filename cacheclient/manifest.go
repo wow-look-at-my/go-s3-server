@@ -418,13 +418,27 @@ func (b *WebBackend) fetchNamed(keys []string) {
 // storeManifest writes what this build used, for the next build. It runs
 // before the PUT coalescer closes.
 func (b *WebBackend) storeManifest() {
+	target, data, ok := b.manifestToStore()
+	if !ok {
+		return
+	}
+	// Put skips a key the index already holds. A write-once server keeps the first manifest under an ID.
+	b.ForgetStale(target)
+	if err := b.Put(target, StoredDigest(data), data); err != nil {
+		logging.Warnf("cacheprog: manifest: store: %v", err)
+	}
+}
+
+// manifestToStore answers the action ID and the body of the manifest this
+// build must store, or false when it stores none.
+func (b *WebBackend) manifestToStore() (string, []byte, bool) {
 	m := b.manifest
 	if m == nil {
-		return
+		return "", nil, false
 	}
 	id := m.id.Load()
 	if id == nil {
-		return
+		return "", nil, false
 	}
 	m.mu.Lock()
 	// Lookup order is the order the next build needs the objects in, so the fetch brings the first ones first.
@@ -437,26 +451,20 @@ func (b *WebBackend) storeManifest() {
 	newest, newestKeys := m.newest, m.newestKeys
 	m.mu.Unlock()
 	if len(ids) == 0 {
-		return
+		return "", nil, false
 	}
 	gen := 0
 	if newest >= 0 {
 		if newestKeys*10 >= len(ids)*9 {
-			return
+			return "", nil, false
 		}
 		gen = newest + 1
 	}
 	if gen >= manifestGenerations {
 		logging.Warnf("cacheprog: manifest: generation %d names %d keys of %d, and the walk reads no later generation", newest, newestKeys, len(ids))
-		return
+		return "", nil, false
 	}
-	target := manifestGenID(*id, gen)
-	data := []byte(strings.Join(ids, "\n"))
-	// Put skips a key the index already holds. A write-once server keeps the first manifest under an ID.
-	b.ForgetStale(target)
-	if err := b.Put(target, StoredDigest(data), data); err != nil {
-		logging.Warnf("cacheprog: manifest: store: %v", err)
-	}
+	return manifestGenID(*id, gen), []byte(strings.Join(ids, "\n")), true
 }
 
 // reportManifest states what the manifest did.

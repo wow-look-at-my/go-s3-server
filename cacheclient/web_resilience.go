@@ -239,6 +239,13 @@ func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response,
 		err  error
 	)
 	for attempt := 0; ; attempt++ {
+		// A request its caller gave up on gets no further attempt.
+		if cerr := req.Context().Err(); cerr != nil {
+			if resp == nil && err == nil {
+				err = cerr
+			}
+			return resp, err
+		}
 		if quiet := b.shedRemaining(); quiet > 0 {
 			b.ShedWaits.Increment()
 			if attempt >= maxRetries {
@@ -369,6 +376,7 @@ func (b *WebBackend) sleepQuiet(attempt int, quiet time.Duration) {
 	select {
 	case <-timer.C:
 	case <-b.batchStop:
+	case <-b.abortDone():
 	}
 }
 
@@ -393,5 +401,6 @@ func (b *WebBackend) sleepBackoff(attempt int, atLeast time.Duration) {
 	select {
 	case <-timer.C:
 	case <-b.batchStop:
+	case <-b.abortDone():
 	}
 }

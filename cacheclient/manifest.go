@@ -269,7 +269,8 @@ func (b *WebBackend) readManifest(id string) ([]byte, bool) {
 			data, found = body, true
 		}
 	})
-	if err != nil {
+	// Close cancels a read the build no longer needs. That is not a failure.
+	if err != nil && b.manifestCtx().Err() == nil {
 		logging.Warnf("cacheprog: manifest: read: %v", err)
 	}
 	return data, found

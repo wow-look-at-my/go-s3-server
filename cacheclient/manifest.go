@@ -35,7 +35,8 @@ type buildManifest struct {
 	used    set.Set[string]          // action IDs this process looked up
 	order   []string                 // used, in the order of the first lookup
 	pending map[string]chan struct{} // action IDs a fetch has on the wire, closed when they land
-	cancel  context.CancelFunc       // stops the fetch; Close calls it, because a build that ended needs nothing more
+	ctx     context.Context          // the fetch runs under it
+	cancel  context.CancelFunc       // stops the fetch when Close has waited long enough
 
 	Waited AtomicCounter // lookups that waited for a fetch already on the wire
 	GaveUp AtomicCounter // lookups that stopped waiting after manifestWaitCap and asked on their own
@@ -130,14 +131,28 @@ func (b *WebBackend) startManifest(module string) {
 	m.id.Store(&id)
 	ctx, cancel := context.WithCancel(context.Background())
 	m.mu.Lock()
-	m.cancel = cancel
+	m.ctx, m.cancel = ctx, cancel
 	m.mu.Unlock()
 	b.manifestWG.Add(1)
 	go func() {
 		defer b.manifestWG.Done()
 		defer cancel()
-		b.fetchManifest(ctx, id)
+		b.fetchManifest(id)
 	}()
+}
+
+// manifestCtx is the context the manifest fetch runs under. stopManifest cancels it.
+func (b *WebBackend) manifestCtx() context.Context {
+	m := b.manifest
+	if m == nil {
+		return context.Background()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ctx == nil {
+		return context.Background()
+	}
+	return m.ctx
 }
 
 // manifestCloseWait is how long Close lets a manifest fetch finish. The fetch
@@ -181,7 +196,7 @@ func (b *WebBackend) stopManifest() {
 
 // readManifest reads the manifest over its own request. On the build's batch
 // path a slow answer would hold up the lookups that share its batch.
-func (b *WebBackend) readManifest(ctx context.Context, id string) ([]byte, bool) {
+func (b *WebBackend) readManifest(id string) ([]byte, bool) {
 	h, ok := parseActionHash(id)
 	if !ok {
 		return nil, false
@@ -195,7 +210,7 @@ func (b *WebBackend) readManifest(ctx context.Context, id string) ([]byte, bool)
 	}
 	var data []byte
 	found := false
-	_, err := b.postNamed(ctx, []string{b.key(id)}, func(e BatchEntry) {
+	_, err := b.postNamed([]string{b.key(id)}, func(e BatchEntry) {
 		if body, ok := b.verify("manifest", id, e.OutputID, e.Data, e.RawSize); ok {
 			data, found = body, true
 		}
@@ -207,8 +222,8 @@ func (b *WebBackend) readManifest(ctx context.Context, id string) ([]byte, bool)
 }
 
 // fetchManifest reads the manifest and pulls what it names.
-func (b *WebBackend) fetchManifest(ctx context.Context, id string) {
-	data, found := b.readManifest(ctx, id)
+func (b *WebBackend) fetchManifest(id string) {
+	data, found := b.readManifest(id)
 	if !found {
 		return
 	}
@@ -255,9 +270,7 @@ func (b *WebBackend) fetchManifest(ctx context.Context, id string) {
 		go func() {
 			defer wg.Done()
 			for next := range work {
-				if ctx.Err() == nil {
-					b.fetchNamed(ctx, next.keys)
-				}
+				b.fetchNamed(next.keys)
 				next.clear()
 			}
 		}()
@@ -281,7 +294,11 @@ func (b *WebBackend) isHeld(h actionHash) bool {
 
 // postNamed asks for keys by name on a request of its own and hands each entry
 // to each. Nobody waits on it, so it rides the look-ahead kind.
-func (b *WebBackend) postNamed(ctx context.Context, keys []string, each func(BatchEntry)) (int, error) {
+func (b *WebBackend) postNamed(keys []string, each func(BatchEntry)) (int, error) {
+	ctx := b.manifestCtx()
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	body, err := json.Marshal(batchGetRequest{Keys: keys})
 	if err != nil {
 		return 0, err
@@ -315,7 +332,7 @@ func (b *WebBackend) postNamed(ctx context.Context, keys []string, each func(Bat
 }
 
 // fetchNamed asks for keys by name and hands the entries to the local tier.
-func (b *WebBackend) fetchNamed(ctx context.Context, keys []string) {
+func (b *WebBackend) fetchNamed(keys []string) {
 	var chunk []BatchEntry
 	flush := func() {
 		if len(chunk) > 0 {
@@ -323,7 +340,7 @@ func (b *WebBackend) fetchNamed(ctx context.Context, keys []string) {
 			chunk = nil
 		}
 	}
-	count, err := b.postNamed(ctx, keys, func(e BatchEntry) {
+	count, err := b.postNamed(keys, func(e BatchEntry) {
 		if actionID, ok := b.ActionIDFromKey(e.Key); ok {
 			if h, ok := parseActionHash(actionID); ok {
 				b.noteHeld(h)

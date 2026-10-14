@@ -18,6 +18,8 @@ func TestMain(m *testing.M) {
 		holdIndexLockUntilKilled(path)
 	}
 	defaultIndexMaxAge = func(string) time.Duration { return -1 }
+	// Most tests read the index state right after the first lookup. TestNoCopyGetDoesNotWaitByDefault sets the shipped default back.
+	defaultIndexWait = 15 * time.Second
 	// Look-ahead is on by default. A test of it sets GO_TOOLCHAIN_CACHE_LOOKAHEAD itself; every other test counts requests without its traffic.
 	if _, set := os.LookupEnv("GO_TOOLCHAIN_CACHE_LOOKAHEAD"); !set {
 		os.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "0")

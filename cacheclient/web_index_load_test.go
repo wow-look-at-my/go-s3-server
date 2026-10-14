@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -302,7 +303,7 @@ func TestDeadLockHolderIsTakenOver(t *testing.T) {
 // is this process and its end is the release.
 func holdIndexLock(t *testing.T, path string) (die func()) {
 	t.Helper()
-	if !spawns {
+	if runtime.GOOS == "js" || runtime.GOOS == "wasip1" {
 		unlock, err := cachedisk.LockFile(context.Background(), path)
 		require.NoError(t, err)
 		return unlock

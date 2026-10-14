@@ -17,9 +17,6 @@ func TestMain(m *testing.M) {
 	if path := os.Getenv(indexLockHolderEnv); path != "" {
 		holdIndexLockUntilKilled(path)
 	}
-	if dir := os.Getenv(exitRoleEnv); dir != "" {
-		exitThenWait(dir)
-	}
 	defaultIndexMaxAge = func(string) time.Duration { return -1 }
 	// Look-ahead is on by default. A test of it sets GO_TOOLCHAIN_CACHE_LOOKAHEAD itself; every other test counts requests without its traffic.
 	if _, set := os.LookupEnv("GO_TOOLCHAIN_CACHE_LOOKAHEAD"); !set {

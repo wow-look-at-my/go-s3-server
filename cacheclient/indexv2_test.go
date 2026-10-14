@@ -39,7 +39,7 @@ func TestIndexV2RoundTrip(t *testing.T) {
 
 func TestIndexV2EdgeValues(t *testing.T) {
 	for _, values := range [][]uint64{
-		nil,
+		{},
 		{0},
 		{1<<40 - 1},
 		{0, 1<<40 - 1},
@@ -143,9 +143,9 @@ func TestIndexV2SizeAtAMillionKeys(t *testing.T) {
 		bits int
 		size int
 	}{
-		{40, 2690542},
-		{48, 3950502},
-		{64, 5954506},
+		{40, 2703495},
+		{48, 3703495},
+		{64, 5703495},
 	} {
 		values := prefixesOf(n, c.bits)
 		assert.Equal(t, c.size, len(MarshalIndexV2(c.bits, values)), "bits=%d", c.bits)

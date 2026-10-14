@@ -1,33 +1,45 @@
-# What can shrink /_index, and what cannot
+# What shrinks /_index, and what cannot
 
-The index is one sorted array of 32-byte action-ID hashes, framed by a header and a trailing digest (`index.go`, `Index.Blob`). At a million keys it is 32 MB, and every cold client fetches it.
+The index is one sorted list of action-ID hashes, framed by a header and a trailing digest (`index.go`). A client fetches it once per cold start and then asks it one question: may the server hold this key? The answer decides whether a lookup goes to the server at all.
 
-## Compressing the hashes does not work
+`GET /_index` serves it in three forms. The request's `v` field names the one the client wants; the blob's own version byte says which it got, and `cacheclient` parses any of them.
 
-An action ID is a SHA-256. Sorted, uniformly distributed, incompressible by construction: N random 256-bit values need at least `N * (256 - log2(N))` bits, so the whole theoretical prize at a million keys is 7.8%. Measured on random sorted hashes:
-
-| keys | front-coded | gzip |
+| request | form | per key |
 |---|---|---|
-| 10,000 | 99.9% | 100.0% |
-| 100,000 | 98.5% | 99.8% |
-| 1,000,000 | 97.0% | 99.5% |
+| no field | GBCI v1, whole hashes | 32 bytes |
+| `hash=8` | GBCI v1, the first eight bytes of each hash | 8 bytes |
+| `v=2` | GBCI v2, Rice-coded gaps between `index_hash_bits`-bit prefixes | about `index_hash_bits - log2(keys) + 2` bits |
 
-Front-coding a shared prefix wins 3% at a million keys and nothing at ten thousand. This is because the share of the prefix multiple neighbours is about `log2(N)` bits. Delta-coding consecutive values is the same arithmetic and lands in the same place. Neither is worth a wire-format change.
+`cacheclient` asks for `v=2&hash=8`, so a server of any age answers the smallest form it has.
 
-## Truncation does work, and the index can afford it
+## Measured, at a million keys
 
-The client consults the index in ONE direction. An absent key, with a fresh index, is a miss and skips its probe (`web.go`, the `indexAuthoritative` branch). A present key is then actually fetched, and that fetch is what answers.
+`TestIndexV2SizeAtAMillionKeys` in `cacheclient/indexv2_test.go` encodes the sha256 prefixes of a million counters and holds the blob to these lengths. `TestIndexV2RiceParameterIsNearOptimal` holds the Rice parameter to within a percent of the best one for that input.
 
-So a truncated hash can only ever cost a probe that comes back empty. It cannot skip an upload. It cannot answer a fetch incorrectly. There are no false negatives either: a key that is present keeps its prefix.
+| form | bytes | bits per key |
+|---|---|---|
+| v1, whole hashes | 32,000,056 | 256 |
+| v1, `hash=8` | 8,000,056 | 64 |
+| v2, 64 bits | 5,703,495 | 45.6 |
+| v2, 48 bits | 3,703,495 | 29.6 |
+| v2, 40 bits (the default) | 2,703,495 | 21.6 |
 
-Several bytes per hash cuts the index to a quarter. With a million keys the chance any one lookup collides is about `1e6 / 2^64`, roughly 5e-14, against a saving of 24 MB on every cold fetch.
+Each bit of width costs a million keys another 125,000 bytes, and each doubling of the key count saves a bit per key. The dashboard's index tile reports the v2 size of the live index, counted without serializing (`Index.WireSize`).
 
-The header already carries the per-entry size in `blob[5]`. The frame does not change shape. What it costs is a version bump and a client that reads the size instead of assuming it. `cacheclient` hard-codes `hashSize = 32` and types `actionHash` as `[32]byte`, and that client is vendored into the fork's `cmd/go`, so the two move together.
+## Why the gaps compress when the hashes cannot
 
-## A delta against the client's ETag also works
+An action ID is a SHA-256: uniform, and incompressible on its own. gzip on the sorted v1 body saves under a percent. A SORTED list of n uniform w-bit values is different: the gap between neighbours is about `2^w / n`, so a gap needs about `w - log2(n)` bits where the value needed `w`. The theoretical floor for n sorted distinct w-bit values is `n * (w - log2(n) + 1.44)` bits. Rice coding, with the high part of each gap in unary and the low k bits as they are, lands within a bit of that floor and decodes in one pass (`cacheclient/indexv2.go`).
 
-The client sends `If-None-Match` and takes a 304. Answering "here is what changed since that ETag" instead of the whole array is lossless and shrinks the steady state far below anything the format itself can do. It costs the server a retained history: the generation field is content-derived. Blobs have no order between them and there is nothing to diff against today.
+Front-coding and delta-coding the full 32-byte hashes are the same arithmetic at `w = 256`: a 3% saving at a million keys, which is why the prefix width matters more than the coder.
 
-## Where this leaves it
+## What a shorter prefix costs
 
-Truncation is the cheap one and the frame already has the field for it. The ETag delta is the larger win and the larger change. Front-coding, which is what this was first written down as, is measurably not worth doing.
+The client consults the index in one direction. An absent prefix, with a fresh index, is a miss and skips its probe (`web.go`, the `indexAuthoritative` branch). A present prefix is then fetched, and that fetch is what answers. So a prefix that is present for ANOTHER key costs one batch round trip that answers not found. There are no false negatives: a key that is present keeps its prefix.
+
+The PUT path is safe for the same reason. A client skips uploading a key its set holds, but every `go` command looks a key up before it stores it, and the not-found answer drops the prefix from the set (`reclaimAbsent`), so the upload goes ahead.
+
+The chance a lookup collides is about `keys / 2^index_hash_bits`: at 40 bits and 2.4 million keys, one lookup in 460,000. The config field `index_hash_bits` moves the width between 32 and 64; the server restarts with the new width and every client's next full fetch takes it. The look-ahead have-filter is unaffected: the client's held set is kept at the full 64 bits.
+
+## The delta is the other half
+
+A client holding a copy sends its add-log position and takes back only the keys stored since, in the same form (`indexdelta.go`). The forms above size the cold fetch; the delta keeps the warm one small whatever the width.

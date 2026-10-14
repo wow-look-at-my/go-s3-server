@@ -180,7 +180,7 @@ func (b *WebBackend) sendBatchPut(reqs []putReq) {
 	}
 
 	batchURL := b.endpoint + "/" + b.bucket + "/_batch/put"
-	httpReq, err := http.NewRequest("PUT", batchURL, bytes.NewReader(tarBytes))
+	httpReq, err := http.NewRequestWithContext(b.requestCtx(), "PUT", batchURL, bytes.NewReader(tarBytes))
 	if err != nil {
 		for _, r := range reqs {
 			b.removeClaimed(r.hash)
@@ -195,7 +195,7 @@ func (b *WebBackend) sendBatchPut(reqs []putReq) {
 	resp, err := b.doRetryPUT(httpReq, tarBytes)
 	if err != nil {
 		b.Pool.Release()
-		if !errors.Is(err, errServerDown) {
+		if !errors.Is(err, errServerDown) && !b.aborted() {
 			logging.Warnf("cacheprog: web batch put: %v", err)
 		}
 		for _, r := range reqs {
@@ -264,10 +264,11 @@ func (b *WebBackend) sendBatchPut(reqs []putReq) {
 			// Success: keep the optimistic claim.
 			b.Stats.Puts.Increment()
 			b.Stats.PutBytes.Add(uint64(len(r.compressed)))
+			b.settle(r.hash)
 			stored++
 		case ok && res.Status == "dropped":
-			// Server refused (module index); keep the claim, do NOT retry — the
-			// client already filters indexes so this is rare.
+			// Server refused (module index); keep the claim, do NOT retry — the client already filters indexes.
+			b.settle(r.hash)
 		default:
 			// "error" or an absent/unknown result: roll back the claim so a later run re-uploads it.
 			b.removeClaimed(r.hash)
@@ -285,7 +286,7 @@ func (b *WebBackend) sendBatchPut(reqs []putReq) {
 // optimistic index claim is already held by the caller; putSingle keeps it on
 // success and rolls it back on any failure, mirroring the original Put body.
 func (b *WebBackend) putSingle(pr putReq) error {
-	req, err := http.NewRequest("PUT", b.url(pr.key), bytes.NewReader(pr.compressed))
+	req, err := http.NewRequestWithContext(b.requestCtx(), "PUT", b.url(pr.key), bytes.NewReader(pr.compressed))
 	if err != nil {
 		b.removeClaimed(pr.hash)
 		return fmt.Errorf("web put request: %w", err)
@@ -321,6 +322,7 @@ func (b *WebBackend) putSingle(pr putReq) error {
 
 	b.Stats.Puts.Increment()
 	b.Stats.PutBytes.Add(uint64(len(pr.compressed)))
+	b.settle(pr.hash)
 	return nil
 }
 

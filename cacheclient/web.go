@@ -1,6 +1,7 @@
 package cacheclient
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/hex"
@@ -237,6 +238,19 @@ type WebBackend struct {
 	manifestWG sync.WaitGroup
 	// prep runs a Put's compression off the build's goroutine. See webput.go.
 	prep *prepPool
+
+	// abortCtx ends every upload and look-ahead request when Close hands the uploads off. See handoff.go.
+	abortCtx context.Context
+	abort    context.CancelFunc
+	// pending is every upload this backend has claimed and not settled.
+	pendingMu sync.Mutex
+	pending   map[actionHash]pendingPut
+	// spoolDir is where Close writes the spool. Empty makes Close drain.
+	spoolDir string
+	// drainOnClose makes Close drain even with a spoolDir: the uploader itself.
+	drainOnClose bool
+	// handedOff counts the uploads Close wrote to the spool.
+	handedOff atomic.Int64
 }
 
 type batchReq struct {
@@ -401,6 +415,7 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 		indexDir:  cfg.IndexDir,
 	}
 
+	b.abortCtx, b.abort = context.WithCancel(context.Background())
 	b.errLog = newHTTPErrLogger(loggerWriter{}, httpErrFlushInterval)
 	b.batchReqCh = make(chan batchReq, batchReqChBuf)
 	b.batchStop = make(chan struct{})
@@ -599,9 +614,13 @@ func (b *WebBackend) ForgetStale(actionID string) {
 	}
 }
 
-// Close drains the batch coalescer and flushes the HTTP error logger.
-
+// Close drains the batch coalescer and flushes the HTTP error logger. A
+// backend under a local cache that hands uploads off returns at once instead:
+// see closeHandOff.
 func (b *WebBackend) Close() error {
+	if b.handsOff() {
+		return b.closeHandOff()
+	}
 	// An index load still running is abandoned, and its lock on the disk copy
 	// released for the next process.
 	if l := b.indexLoad.Load(); l != nil {

@@ -257,7 +257,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 	reqBody, _ := json.Marshal(batchGetRequest{Keys: keys})
 	batchURL := b.endpoint + "/" + b.bucket + "/_batch/get"
 	// POST, not GET-with-body, since a body-carrying GET is proxy-hostile.
-	httpReq, err := http.NewRequest("POST", batchURL, bytes.NewReader(reqBody))
+	httpReq, err := http.NewRequestWithContext(b.requestCtx(), "POST", batchURL, bytes.NewReader(reqBody))
 	if err != nil {
 		respondAllMiss(nil)
 		return

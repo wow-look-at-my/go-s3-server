@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,7 @@ type storeTier struct {
 // layerStore answers the disk cache with the store under it.
 func layerStore(disk *DiskCache, store *WebBackend) *storeTier {
 	tier := &storeTier{DiskCache: disk, store: store}
+	store.spoolDir = filepath.Join(disk.Dir(), spoolDirName)
 	// The look-ahead pool has somewhere to put what it fetches, which is what
 	// turns it on: an object lands on disk before the build asks for it, so
 	// the ask is a local read.
@@ -133,8 +135,8 @@ func (tier *storeTier) keep(id ActionID, out OutputID, data []byte) {
 	tier.localPutBytes.Add(int64(len(data)))
 }
 
-// Close drains the store's uploads before the disk cache trims, so an upload
-// never loses the file it is reading.
+// Close settles the store's uploads before the disk cache trims: it drains
+// them, or hands them to the detached uploader.
 func (tier *storeTier) Close() error {
 	tier.closeOnce.Do(func() {
 		tier.closeErr = joinErrors(tier.closeStore(), tier.DiskCache.Close())
@@ -143,22 +145,23 @@ func (tier *storeTier) Close() error {
 	return tier.closeErr
 }
 
-// closeStore closes the store tier a single time: it drains the uploads and
-// gives up the index's lock. The disk cache stays open.
+// closeStore closes the store tier a single time: it drains or hands off the
+// uploads and gives up the index's lock. The disk cache stays open.
 func (tier *storeTier) closeStore() error {
 	tier.storeOnce.Do(func() { tier.storeErr = tier.store.Close() })
 	return tier.storeErr
 }
 
-// report names what each tier answered and what it moved. Close drains the
-// uploads so the totals here are final rather than in flight.
+// report names what each tier answered and what it moved. An upload that is
+// not in the pushed total is in the handed-off count.
 func (tier *storeTier) report() {
 	web := tier.store.SummarySnapshot()
-	cacheNotice("cache: local %s, %s stored | server %s, %s pushed, %s | index %s",
+	cacheNotice("cache: local %s, %s stored | server %s, %s pushed, %d handed off, %s | index %s",
 		countBytes(tier.localHits.Load(), tier.localHitBytes.Load()),
 		countBytes(tier.localPuts.Load(), tier.localPutBytes.Load()),
 		countBytes(int64(web.Hits), int64(web.HitBytes)),
 		countBytes(int64(web.Puts), int64(web.PutBytes)),
+		tier.store.HandedOff(),
 		missReasons(web),
 		formatMB(int64(web.IndexBytes)))
 }

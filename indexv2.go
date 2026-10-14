@@ -10,7 +10,7 @@ import (
 // The v2 index form: Rice-coded gaps between sorted hash prefixes. The
 // decoder, and the format, are in cacheclient/indexv2.go. This encoder must
 // write the same bytes as cacheclient.MarshalIndexV2, and a test holds it to
-// that. The server stays off the client module so the two meet only on the
+// that. The server stays off the client module so both meet only on the
 // wire.
 
 // gbciVersion2 is the wire-format version byte of the v2 form.
@@ -22,8 +22,6 @@ const (
 	indexHashBitsMax = 64
 )
 
-// riceParam is the Rice parameter for n values spread over widthBits bits: the
-// floor of log2 of the mean gap, held under 64 so a shift by it is defined.
 func riceParam(widthBits, n int) uint {
 	k := widthBits
 	if n > 1 {
@@ -32,9 +30,7 @@ func riceParam(widthBits, n int) uint {
 	return uint(max(0, min(k, 63)))
 }
 
-// marshalGBCI2 encodes values, ascending and distinct, each below
-// 2^widthBits, as a v2 blob. It reads values twice: once to count them, once
-// to write them.
+// It reads values twice: once to count them, once to write them.
 func marshalGBCI2(widthBits int, values iter.Seq[uint64]) []byte {
 	n := 0
 	for range values {

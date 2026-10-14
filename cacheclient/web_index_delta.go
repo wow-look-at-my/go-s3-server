@@ -200,15 +200,12 @@ func deltaQuery(gen indexGen) string {
 	return q.Encode()
 }
 
-// startDeltaLoad installs a disk copy and brings it current in the
-// background. A copy within the max age is authoritative at once, as a copy
-// with no position is. A lookup it lacks misses rather than waits on the
-// delta.
+// startDeltaLoad installs a young disk copy as non-authoritative and brings it
+// current in the background.
 func (b *WebBackend) startDeltaLoad(path string, disk diskIndex) {
-	young := disk.age() < b.resolveIndexMaxAge(path)
 	b.keysMu.Lock()
 	b.keys = disk.keys
-	b.indexAuthoritative = young
+	b.indexAuthoritative = false
 	b.indexEmpty = disk.count == 0
 	b.indexKeysAtStart = disk.count
 	b.keysJournal = &keysJournal{added: set.New[actionHash](), dropped: set.New[actionHash]()}

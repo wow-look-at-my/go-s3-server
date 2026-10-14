@@ -104,7 +104,7 @@ type WebBackend struct {
 	module    string // main module path for object metadata (provenance)
 	target    string // GOOS/GOARCH this build produces, for request provenance
 	command   string // what this process builds; part of the manifest key
-	indexDir string // where the key index's disk copy lives; empty is os.TempDir
+	indexDir  string // where the key index's disk copy lives; empty is os.TempDir
 	// indexMaxAge is how long the disk copy is served with no request. The
 	// index loads on the earliest Get or Put, under indexOnce, so a go
 	// command that never touches the cache never pays for it.

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/wow-look-at-my/go-containers/set"
-	ipc "github.com/wow-look-at-my/go-ipc"
+	"github.com/wow-look-at-my/go-s3-server/cacheclient/cachedisk"
 )
 
 // IndexWaitDefault is how long the earliest Get or Put waits for the key
@@ -173,13 +173,13 @@ func (b *WebBackend) adoptIndex(keys *hashSet, authoritative bool) {
 // refreshIndex brings the disk copy up to date and returns the keys to
 // install, whether they are authoritative, and where they came from.
 //
-// A single process at a time downloads into a directory, under an OS lock on
-// a file next to the copy. A process that finds the lock held blocks in the
+// A single process at a time downloads into a directory, under
+// cachedisk.LockFile on a file next to the copy. A process that finds the lock held blocks in the
 // kernel until the holder lets go, which it also does by exiting, and then
 // reads what the holder wrote. A holder whose fetch failed leaves the copy as
 // it was, and the next process to take the lock fetches itself.
 func (b *WebBackend) refreshIndex(ctx context.Context, path string, disk diskIndex) (*hashSet, bool, string) {
-	unlock, err := ipc.LockFile(ctx, path+".lock")
+	unlock, err := cachedisk.LockFile(ctx, path+".lock")
 	if err != nil && ctx.Err() != nil {
 		return nil, false, "cancelled"
 	}

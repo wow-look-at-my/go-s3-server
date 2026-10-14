@@ -12,6 +12,9 @@ import (
 	"github.com/wow-look-at-my/go-s3-server/cacheclient/cachedisk"
 )
 
+// BrokerEnv names the owner's hello queue. A process that finds it set and answering is a child.
+const BrokerEnv = "GO_BUILDCACHE_BROKER"
+
 // The broker's records. A request and a reply are each record in a
 // shared-memory ring: an opcode in the record's type word, a correlation ID in
 // the earliest bytes, and fixed-width fields after it.

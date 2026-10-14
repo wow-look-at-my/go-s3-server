@@ -2,6 +2,8 @@
 // governed by a BSD-style license that can be found
 // in the LICENSE file.
 
+//go:build !js && !wasip1
+
 package cacheclient
 
 import (
@@ -23,10 +25,6 @@ import (
 // That leaves a single writer for the directory, so the trim has a single
 // owner. Nothing spins: a send into a ring with room makes no system call, and
 // a side with nothing to do parks on a kernel wait rather than looking again.
-
-// BrokerEnv names the owner's hello queue. A process that finds it set and
-// answering is a child. A process that finds it unset becomes the owner.
-const BrokerEnv = "GO_BUILDCACHE_BROKER"
 
 // brokerOffEnv makes every process open the cache for itself, which is what a
 // bisect of a broker-shaped problem wants.

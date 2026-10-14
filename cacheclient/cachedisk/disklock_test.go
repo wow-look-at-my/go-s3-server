@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/wow-look-at-my/go-ipc/filelock"
 )
 
 // holderEnv names the lock file a child copy of this test binary takes and holds until it is killed.
@@ -30,7 +29,7 @@ func TestMain(m *testing.M) {
 // holdUntilKilled takes the lock at path, says so on stdout, and blocks on
 // stdin, which the parent never writes or closes.
 func holdUntilKilled(path string) {
-	if _, err := filelock.Lock(context.Background(), path); err != nil {
+	if _, err := LockFile(context.Background(), path); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -45,7 +44,7 @@ func holdUntilKilled(path string) {
 func startHolder(t *testing.T, path string) (release func()) {
 	t.Helper()
 	if runtime.GOOS == "js" || runtime.GOOS == "wasip1" {
-		unlock, err := filelock.Lock(context.Background(), path)
+		unlock, err := LockFile(context.Background(), path)
 		require.NoError(t, err)
 		return unlock
 	}

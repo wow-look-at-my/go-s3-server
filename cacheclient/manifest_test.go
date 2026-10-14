@@ -266,6 +266,9 @@ func TestCloseCancelsAStalledManifestFetch(t *testing.T) {
 	require.NoError(t, err)
 	b.shortenIndexWait(10 * time.Millisecond)
 	b.OnBatchEntries = func([]BatchEntry) {}
+	var logged []string
+	SetLogger(recordingLogger{&logged})
+	t.Cleanup(func() { SetLogger(nil) })
 	b.SetModule("example.com/m")
 
 	closed := make(chan error, 1)
@@ -275,6 +278,9 @@ func TestCloseCancelsAStalledManifestFetch(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(10 * time.Second):
 		t.Fatal("Close waited on a manifest fetch the server never answered")
+	}
+	for _, msg := range logged {
+		require.NotContains(t, msg, "manifest: read", "a read that Close cancels is not a failure")
 	}
 }
 

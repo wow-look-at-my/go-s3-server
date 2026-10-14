@@ -302,6 +302,8 @@ func (b *WebBackend) newestKnownGen(base string) (int, bool) {
 // Otherwise it reads each generation in turn. It records the generation and its
 // keys for storeManifest.
 func (b *WebBackend) walkManifest(base string) (int, []string) {
+	// Lookups do not wait for the index, but the walk does: without it each generation is a round trip of its own.
+	b.awaitIndexLoad()
 	newest, known := b.newestKnownGen(base)
 	var named []string
 	if known {

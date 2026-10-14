@@ -243,3 +243,68 @@ func TestUploaderEnvironNamesTheSpool(t *testing.T) {
 	require.NotContains(t, env, UploadSpoolEnv+"=/old")
 	require.NotContains(t, env, BrokerEnv+"=gobuildcache-1-x")
 }
+
+// A command that ends while the first index download runs hands the download
+// off, so the next command finds a disk copy. The next command does not
+// start over.
+func TestCloseHandsOffAnUnfinishedIndexDownload(t *testing.T) {
+	var spools []string
+	handOffTest(t, func(spool string) error {
+		spools = append(spools, spool)
+		return nil
+	})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/testbucket/_index" {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+
+	store, err := NewWebBackend(WebConfig{Bucket: "testbucket", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: t.TempDir()})
+	require.NoError(t, err)
+	store.shortenIndexWait(IndexWaitDefault)
+	disk, err := Open(t.TempDir())
+	require.NoError(t, err)
+	tier := layerStore(disk, store)
+	var id ActionID
+	id[0] = 0x42
+	_, err = tier.Get(id)
+	require.Error(t, err, "nothing is stored")
+
+	require.NoError(t, tier.Close())
+	require.Len(t, spools, 1, "Close starts an uploader even with no uploads")
+	spool := readSpool(t, spools[0])
+	require.True(t, spool.FetchIndex)
+	require.Empty(t, spool.Entries)
+}
+
+// The uploader finishes the index download into the disk copy.
+func TestRunUploadSpoolFetchesTheIndex(t *testing.T) {
+	blob := marshalIndex(keySetToHashes(sevenKeys()))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/testbucket/_index" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("ETag", indexETag(blob))
+		w.Write(blob)
+	}))
+	t.Cleanup(srv.Close)
+	useStoreConfig(t, srv.URL)
+	indexDir := t.TempDir()
+	path, err := writeSpool(t.TempDir(), spoolFile{Prefix: "go-buildcache/", IndexDir: indexDir, FetchIndex: true})
+	require.NoError(t, err)
+
+	require.NoError(t, RunUploadSpool(path))
+
+	reader, err := NewWebBackend(WebConfig{Bucket: "testbucket", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: indexDir, Prefix: "go-buildcache/"})
+	require.NoError(t, err)
+	_, err = os.Stat(reader.indexCachePath())
+	require.NoError(t, err, "the uploader wrote the disk copy")
+}

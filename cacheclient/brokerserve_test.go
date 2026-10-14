@@ -134,6 +134,7 @@ func TestBrokerDeadNameMakesTheNextProcessTheOwner(t *testing.T) {
 // A queue that outlives its owner still opens, but nobody answers the hello.
 // The dial must give up at the deadline, not wait forever.
 func TestBrokerQueueWithNoOwnerTimesOut(t *testing.T) {
+	t.Serial()
 	name := endpointName("gobuildcache-orphan")
 	queue, err := ipc.CreateQueue(name)
 	require.NoError(t, err)

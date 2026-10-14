@@ -252,7 +252,7 @@ func TestDashboardReportsTheIndexWireSize(t *testing.T) {
 		idx.Put(key(i), 1)
 	}
 
-	// Pending hashes count before anything serializes.
+	// Pending hashes count before anything serializes. A client fetches the short form, so each hash costs gbciPrefixSize bytes.
 	stats, err = d.snapshot()
 	require.NoError(t, err)
 	counted := stats.Index.WireBytes

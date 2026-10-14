@@ -639,7 +639,7 @@ func (b *WebBackend) Close() error {
 		<-l.done
 	}
 	// The manifest fetch reads through the GET coalescer.
-	b.manifestWG.Wait()
+	b.awaitManifest()
 	b.storeManifest()
 	b.reportManifest()
 	// The prep pool since it still owes the coalescer every object it holds.

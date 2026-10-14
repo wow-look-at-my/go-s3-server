@@ -150,6 +150,48 @@ func TestManifestStoresWhatTheBuildUsed(t *testing.T) {
 	require.True(t, b.manifest.used.Contains(storedOnly), "a key stored without a lookup is named: the next build looks it up")
 }
 
+// A manifest request the server never answers must not keep Close from
+// returning. Close cancels the fetch after manifestCloseWait.
+func TestCloseCancelsAStalledManifestFetch(t *testing.T) {
+	t.Serial()
+	t.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "0")
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		if strings.HasSuffix(r.URL.Path, "/_batch/get") {
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+			return
+		}
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	t.Cleanup(func() {
+		close(release)
+		srv.Close()
+	})
+	saved := manifestCloseWait
+	manifestCloseWait = 200 * time.Millisecond
+	t.Cleanup(func() { manifestCloseWait = saved })
+
+	b, err := NewWebBackend(WebConfig{Bucket: "testbucket", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: t.TempDir()})
+	require.NoError(t, err)
+	b.shortenIndexWait(10 * time.Millisecond)
+	b.OnBatchEntries = func([]BatchEntry) {}
+	b.SetModule("example.com/m")
+
+	closed := make(chan error, 1)
+	go func() { closed <- b.Close() }()
+	select {
+	case err := <-closed:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close waited on a manifest fetch the server never answered")
+	}
+}
+
 // A lookup the disk tier answers is named too, or a warm build stores a manifest that names almost nothing.
 func TestManifestNamesDiskHits(t *testing.T) {
 	b := NewBareBackend("go-buildcache/")

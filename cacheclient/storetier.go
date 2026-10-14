@@ -85,6 +85,15 @@ func (tier *storeTier) GetTiered(id ActionID) (Entry, string, error) {
 	return entry, TierShared, err
 }
 
+// Retrievable reports whether Get can supply id with no build: disk holds it,
+// or the store holds it by a confirmed index.
+func (tier *storeTier) Retrievable(id ActionID) bool {
+	if _, err := tier.DiskCache.Get(id); err == nil {
+		return true
+	}
+	return tier.store.Holds(hex.EncodeToString(id[:]))
+}
+
 // Put stores locally, then offers the body to the store. The local store is
 // what the build depends on, so its result is what Put reports.
 func (tier *storeTier) Put(id ActionID, file io.ReadSeeker) (OutputID, int64, error) {

@@ -5,6 +5,7 @@ package cacheclient
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -50,6 +51,11 @@ func exitThenWait(dir string) {
 // runtime directory. A queue it still holds then reads as one whose creator is
 // gone, while that process runs.
 func TestExitReleasesTheLifeSocket(t *testing.T) {
+	if !spawns {
+		_, err := ipc.OpenQueue("gobuildcache-no-owner")
+		require.ErrorIs(t, err, errors.ErrUnsupported, "no queue exists where no process starts")
+		return
+	}
 	self, err := os.Executable()
 	require.NoError(t, err)
 	cmd := exec.Command(self, "-test.run=^$")

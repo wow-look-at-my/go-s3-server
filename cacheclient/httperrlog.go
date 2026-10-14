@@ -138,8 +138,8 @@ func (l *httpErrLogger) wake() {
 // construction read as a dead prefetch on every build.
 func (l *httpErrLogger) RecordBatchHTTP(keysRequested, entriesReturned int, dur time.Duration) {
 	if l == nil {
-		logging.Infof("cacheprog: batch GET: %d keys → %d entries in %v",
-			keysRequested, entriesReturned, dur.Round(time.Millisecond))
+		logging.Infof("cacheprog: batch GET: %d keys → %d entries in %s",
+			keysRequested, entriesReturned, fmtDuration(dur))
 		return
 	}
 	key := batchHTTPKey{allMiss: entriesReturned == 0}
@@ -230,24 +230,21 @@ func formatGroup(k httpErrKey, g *httpErrGroup) string {
 	return fmt.Sprintf("cacheprog: %s %s: HTTP %d: %s", k.op, ids, k.status, g.bodyRaw)
 }
 
-func formatBatchHTTPGroup(k batchHTTPKey, g *batchHTTPGroup) string {
-	durMs := g.sumDur.Round(time.Millisecond).Milliseconds()
-
+func formatBatchHTTPGroup(_ batchHTTPKey, g *batchHTTPGroup) string {
 	if g.total == 1 {
-		if k.allMiss {
-			return fmt.Sprintf("cacheprog: batch GET: %d keys → 0 entries (server has no entries for any of them) in %dms",
-				g.sumKeys, durMs)
-		}
-		return fmt.Sprintf("cacheprog: batch GET: %d keys → %d entries in %dms",
-			g.sumKeys, g.sumEntries, durMs)
+		return fmt.Sprintf("cacheprog: batch GET: %d keys → %d entries in %s",
+			g.sumKeys, g.sumEntries, fmtDuration(g.sumDur))
 	}
+	return fmt.Sprintf("cacheprog: batch GET ×%d: %d keys → %d entries, %s total",
+		g.total, g.sumKeys, g.sumEntries, fmtDuration(g.sumDur))
+}
 
-	if k.allMiss {
-		return fmt.Sprintf("cacheprog: batch GET ×%d: %d keys → 0 entries (server has no entries), %dms total",
-			g.total, g.sumKeys, durMs)
+// fmtDuration prints milliseconds below one second and seconds from one second up.
+func fmtDuration(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Round(time.Millisecond).Milliseconds())
 	}
-	return fmt.Sprintf("cacheprog: batch GET ×%d: %d keys → %d entries, %dms total",
-		g.total, g.sumKeys, g.sumEntries, durMs)
+	return fmt.Sprintf("%.1fs", d.Seconds())
 }
 
 // formatIDList renders the named IDs + "and N more" tail (or a bare

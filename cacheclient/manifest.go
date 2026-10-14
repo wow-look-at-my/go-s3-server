@@ -290,7 +290,7 @@ func (b *WebBackend) fetchManifest(base string) {
 		h, _ := parseActionHash(line)
 		b.manifest.Named.Increment()
 		// Only an authoritative index proves a key absent.
-		if (authoritative && !b.keyKnown(h)) || b.isHeld(h) {
+		if (authoritative && !b.keyKnown(h)) || b.isHeld(h) || b.hasLocal(h) {
 			continue
 		}
 		ids = append(ids, line)
@@ -332,6 +332,11 @@ func (b *WebBackend) fetchManifest(base string) {
 	}
 	close(work)
 	wg.Wait()
+}
+
+// hasLocal reports whether the local tier already holds the action.
+func (b *WebBackend) hasLocal(h actionHash) bool {
+	return b.HasLocal != nil && b.HasLocal(h)
 }
 
 // isHeld reports whether this client already holds the action.

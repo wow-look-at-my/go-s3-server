@@ -74,6 +74,44 @@ func TestManifestFetchesWhatItNames(t *testing.T) {
 	require.NoError(t, b.Close())
 }
 
+// The manifest does not fetch an object the local tier already holds.
+func TestManifestSkipsWhatIsLocal(t *testing.T) {
+	t.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "0")
+	store := map[string][]byte{}
+	meta := map[string]map[string]string{}
+	one := strings.Repeat("a1", 32)
+	two := strings.Repeat("b2", 32)
+	seedObject(t, store, meta, one, []byte("object one"))
+	seedObject(t, store, meta, two, []byte("object two"))
+	seedObject(t, store, meta, manifestID("example.com/m", "", ""), []byte(one+"\n"+two))
+	srv := fakeBatchServer(t, store, meta)
+	t.Cleanup(srv.Close)
+
+	b, err := NewWebBackend(WebConfig{Bucket: "testbucket", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: t.TempDir()})
+	require.NoError(t, err)
+	b.shortenIndexWait(10 * time.Millisecond)
+	local, _ := parseActionHash(one)
+	b.HasLocal = func(h actionHash) bool { return h == local }
+	var mu sync.Mutex
+	got := set.New[string]()
+	b.OnBatchEntries = func(entries []BatchEntry) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, e := range entries {
+			got.Add(e.Key)
+		}
+	}
+	b.SetModule("example.com/m")
+	b.manifestWG.Wait()
+
+	mu.Lock()
+	require.False(t, got.Contains("go-buildcache/v1"+one), "a local object is not fetched")
+	require.True(t, got.Contains("go-buildcache/v1"+two))
+	mu.Unlock()
+	require.Equal(t, uint32(1), b.manifest.Fetched.Load())
+	require.NoError(t, b.Close())
+}
+
 // A found manifest stops the server look-ahead, which would only fetch bodies the build does not use.
 func TestManifestCoversTheLookAhead(t *testing.T) {
 	t.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "2")

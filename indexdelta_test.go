@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
@@ -236,6 +238,35 @@ func TestV2FormFoldsSharedPrefixesAcrossPendingAndMaster(t *testing.T) {
 	values, _, err := cacheclient.ParseIndexV2(blob)
 	require.NoError(t, err)
 	assert.Equal(t, []uint64{1 << 32, 2 << 32}, values)
+}
+
+// The server's encoder and the client's write the same bytes for the same
+// prefixes, at every width and count the server can be asked for. The client
+// holds the format, so a drift here is a server bug.
+func TestServerV2EncoderMatchesTheClient(t *testing.T) {
+	for _, bits := range []int{indexHashBitsMin, 40, 48, indexHashBitsMax} {
+		for _, n := range []int{0, 1, 2, 7, 1000, 50_000} {
+			hashes := make([][gbciHashSize]byte, n)
+			for i := range hashes {
+				hashes[i] = sha256.Sum256(binary.BigEndian.AppendUint64(nil, uint64(i)))
+			}
+			hashes = sortDedupeHashes(hashes)
+			var values []uint64
+			for v := range prefixValues(hashes, nil, bits) {
+				values = append(values, v)
+			}
+			server := marshalGBCI2(bits, prefixValues(hashes, nil, bits))
+			require.Equal(t, cacheclient.MarshalIndexV2(bits, values), server, "bits=%d n=%d", bits, n)
+			assert.Equal(t, len(server), gbci2Size(bits, prefixValues(hashes, nil, bits)))
+			got, width, err := cacheclient.ParseIndexV2(server)
+			require.NoError(t, err)
+			assert.Equal(t, bits, width)
+			assert.Equal(t, values, got)
+		}
+	}
+	assert.EqualValues(t, cacheclient.IndexV2Version, gbciVersion2)
+	assert.EqualValues(t, cacheclient.IndexV2MinBits, indexHashBitsMin)
+	assert.EqualValues(t, cacheclient.IndexV2MaxBits, indexHashBitsMax)
 }
 
 func TestLoadConfigBoundsIndexHashBits(t *testing.T) {

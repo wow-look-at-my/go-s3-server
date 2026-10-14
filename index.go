@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/wow-look-at-my/go-containers/set"
-	"github.com/wow-look-at-my/go-s3-server/cacheclient"
 )
 
 // gbciKeyPrefix is the constant leading portion of every cacheprog cache key.
@@ -115,7 +114,7 @@ func (idx *Index) hashBitsLocked() int {
 
 // FormV2 is the v2 form at the configured width.
 func (idx *Index) FormV2() indexForm {
-	return indexForm{version: cacheclient.IndexV2Version, width: idx.HashBits()}
+	return indexForm{version: gbciVersion2, width: idx.HashBits()}
 }
 
 // defaultIndexBlobInterval is the least time between serializations of the index unless the config says otherwise.

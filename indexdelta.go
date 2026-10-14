@@ -7,8 +7,6 @@ import (
 	"encoding/binary"
 	"iter"
 	"time"
-
-	"github.com/wow-look-at-my/go-s3-server/cacheclient"
 )
 
 // The add log lets a client that holds a copy of /_index fetch only the hashes stored since that copy.
@@ -80,12 +78,8 @@ const gbciPrefixSize = 8
 
 // marshalForm encodes sorted, deduplicated hashes in form.
 func marshalForm(hashes [][gbciHashSize]byte, form indexForm) []byte {
-	if form.version == cacheclient.IndexV2Version {
-		var values []uint64
-		for v := range prefixValues(hashes, nil, form.width) {
-			values = append(values, v)
-		}
-		return cacheclient.MarshalIndexV2(form.width, values)
+	if form.version == gbciVersion2 {
+		return marshalGBCI2(form.width, prefixValues(hashes, nil, form.width))
 	}
 	return marshalGBCIWidth(hashes, form.width)
 }
@@ -155,12 +149,12 @@ func (idx *Index) WireSize() int64 {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	bits := idx.hashBitsLocked()
-	if c := idx.forms[indexForm{version: cacheclient.IndexV2Version, width: bits}]; idx.blobServableLocked(c) {
+	if c := idx.forms[indexForm{version: gbciVersion2, width: bits}]; idx.blobServableLocked(c) {
 		return int64(len(c.blob))
 	}
 	var fresh [][gbciHashSize]byte
 	if len(idx.pending) > 0 {
 		fresh = sortDedupeHashes(append([][gbciHashSize]byte(nil), idx.pending...))
 	}
-	return int64(cacheclient.IndexV2Size(bits, prefixValues(idx.hashes, fresh, bits)))
+	return int64(gbci2Size(bits, prefixValues(idx.hashes, fresh, bits)))
 }

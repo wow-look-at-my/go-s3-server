@@ -11,8 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/wow-look-at-my/go-s3-server/cacheclient"
 )
 
 // writeError sends a native plain-text error response. The body is "<code>:
@@ -273,7 +271,7 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 	}
 	q := r.URL.Query()
 	form := indexFormV1(gbciHashSize)
-	if v, _ := strconv.Atoi(q.Get("v")); v >= cacheclient.IndexV2Version {
+	if v, _ := strconv.Atoi(q.Get("v")); v >= gbciVersion2 {
 		form = idx.FormV2()
 	} else if q.Get("hash") == strconv.Itoa(gbciPrefixSize) {
 		form = indexFormV1(gbciPrefixSize)

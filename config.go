@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/wow-look-at-my/go-s3-server/cacheclient"
 )
 
 // ConfigString is a string that can be specified as a literal or as an
@@ -234,8 +232,8 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.MaxObjectBytes <= 0 {
 		cfg.MaxObjectBytes = defaultMaxObjectBytes
 	}
-	if cfg.IndexHashBits != 0 && (cfg.IndexHashBits < cacheclient.IndexV2MinBits || cfg.IndexHashBits > cacheclient.IndexV2MaxBits) {
-		return nil, fmt.Errorf("config: index_hash_bits must be %d..%d, got %d", cacheclient.IndexV2MinBits, cacheclient.IndexV2MaxBits, cfg.IndexHashBits)
+	if cfg.IndexHashBits != 0 && (cfg.IndexHashBits < indexHashBitsMin || cfg.IndexHashBits > indexHashBitsMax) {
+		return nil, fmt.Errorf("config: index_hash_bits must be %d..%d, got %d", indexHashBitsMin, indexHashBitsMax, cfg.IndexHashBits)
 	}
 	// max_age is off unless asked for -- the cache is an LRU, not a TTL.
 	if cfg.Eviction.AgeLimit() < 0 {

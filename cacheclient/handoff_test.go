@@ -74,7 +74,9 @@ func (ss *storeServer) keys() []string {
 // useStoreConfig points ConfigEnv at url, as the uploader process reads it.
 func useStoreConfig(t *testing.T, url string) {
 	t.Helper()
-	t.Setenv(ConfigEnv, encodeConfig(t, fmt.Sprintf(`{"endpoint":%q,"bucket":"testbucket","username":"k","password":"s"}`, url)))
+	raw, err := json.Marshal(envConfig{Endpoint: url, Bucket: "testbucket", Username: "k", Password: "s"})
+	require.NoError(t, err)
+	t.Setenv(ConfigEnv, encodeConfig(t, string(raw)))
 }
 
 // testAction is a well-formed action ID made from name.

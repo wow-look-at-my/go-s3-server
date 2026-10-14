@@ -17,6 +17,20 @@ type Tiered interface {
 	GetTiered(id ActionID) (entry Entry, tier string, err error)
 }
 
+// Layered is implemented by a Cache that puts a shared tier over a directory.
+// Local answers the directory alone.
+type Layered interface {
+	Local() Cache
+}
+
+// Local answers the part of c that stays on this machine.
+func Local(c Cache) Cache {
+	if layered, ok := c.(Layered); ok {
+		return layered.Local()
+	}
+	return c
+}
+
 // GetTiered answers for the disk cache, which is the only tier it has.
 func (c *DiskCache) GetTiered(id ActionID) (Entry, string, error) {
 	entry, err := c.Get(id)

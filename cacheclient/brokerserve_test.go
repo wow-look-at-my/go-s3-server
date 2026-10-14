@@ -7,6 +7,7 @@ package cacheclient
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"os"
 	"runtime"
 	"sync"
@@ -159,6 +160,10 @@ func TestBrokerQueueWithNoOwnerTimesOut(t *testing.T) {
 	t.Serial()
 	name := endpointName("gobuildcache-orphan")
 	queue, err := ipc.CreateQueue(name)
+	if !spawns {
+		require.ErrorIs(t, err, errors.ErrUnsupported, "no queue exists where no process starts")
+		return
+	}
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		queue.Close()

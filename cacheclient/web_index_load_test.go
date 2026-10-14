@@ -276,20 +276,7 @@ func TestDeadLockHolderIsTakenOver(t *testing.T) {
 	defer b.Close()
 	b.shortenIndexWait(5 * time.Second)
 
-	child := exec.Command(os.Args[0], "-test.run=^$")
-	child.Env = append(os.Environ(), indexLockHolderEnv+"="+b.indexCachePath()+".lock")
-	child.Stderr = os.Stderr
-	stdin, err := child.StdinPipe()
-	require.NoError(t, err)
-	defer stdin.Close()
-	stdout, err := child.StdoutPipe()
-	require.NoError(t, err)
-	require.NoError(t, child.Start())
-	defer child.Wait()
-	defer child.Process.Kill()
-	line, err := bufio.NewReader(stdout).ReadString('\n')
-	require.NoError(t, err)
-	require.Equal(t, "locked\n", line)
+	die := holdIndexLock(t, b.indexCachePath()+".lock")
 
 	loaded := make(chan struct{})
 	go func() {
@@ -303,11 +290,40 @@ func TestDeadLockHolderIsTakenOver(t *testing.T) {
 	}
 	require.Equal(t, int32(0), f.hits200.Load(), "nothing is fetched while the holder lives")
 
-	require.NoError(t, child.Process.Kill())
+	die()
 	<-loaded
 	require.Equal(t, int32(1), f.hits200.Load(), "the dead holder's download is taken over")
 	require.True(t, b.SummarySnapshot().IndexAuthoritative)
 	requireIndexLockFree(t, b)
+}
+
+// holdIndexLock holds the lock at path in a child process and answers the
+// function that kills it. js and wasip1 start no process, so there the holder
+// is this process and its end is the release.
+func holdIndexLock(t *testing.T, path string) (die func()) {
+	t.Helper()
+	if !spawns {
+		unlock, err := ipc.LockFile(context.Background(), path)
+		require.NoError(t, err)
+		return unlock
+	}
+	child := exec.Command(os.Args[0], "-test.run=^$")
+	child.Env = append(os.Environ(), indexLockHolderEnv+"="+path)
+	child.Stderr = os.Stderr
+	stdin, err := child.StdinPipe()
+	require.NoError(t, err)
+	t.Cleanup(func() { stdin.Close() })
+	stdout, err := child.StdoutPipe()
+	require.NoError(t, err)
+	require.NoError(t, child.Start())
+	t.Cleanup(func() {
+		child.Process.Kill()
+		child.Wait()
+	})
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	require.NoError(t, err)
+	require.Equal(t, "locked\n", line)
+	return func() { require.NoError(t, child.Process.Kill()) }
 }
 
 // TestFailedHolderLeavesCopyNonAuthoritative pins the waiter's side of a

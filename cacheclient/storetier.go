@@ -41,6 +41,8 @@ func layerStore(disk *DiskCache, store *WebBackend) *storeTier {
 		_, err := disk.Get(ActionID(h))
 		return err == nil
 	}
+	// A module named before the tier exists starts its manifest here. SetModule cannot start it without the tier.
+	store.startManifest(store.moduleName())
 	return tier
 }
 

@@ -358,6 +358,40 @@ func TestManifestNeedsAModule(t *testing.T) {
 	b.reportManifest()
 }
 
+// The manifest starts when both the module and the local tier are known, in either order.
+func TestManifestStartsInEitherOpenOrder(t *testing.T) {
+	t.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "0")
+	one := strings.Repeat("e5", 32)
+	for _, moduleFirst := range []bool{true, false} {
+		store := map[string][]byte{}
+		meta := map[string]map[string]string{}
+		seedObject(t, store, meta, one, []byte("object one"))
+		seedObject(t, store, meta, manifestID(manifestScope("example.com/m", "build"), "", ""), []byte(one))
+		srv := fakeBatchServer(t, store, meta)
+		t.Cleanup(srv.Close)
+
+		b, err := NewWebBackend(WebConfig{Bucket: "testbucket", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", Command: "build", IndexDir: t.TempDir()})
+		require.NoError(t, err)
+		b.shortenIndexWait(10 * time.Millisecond)
+		disk, err := Open(t.TempDir())
+		require.NoError(t, err)
+		if moduleFirst {
+			b.SetModule("example.com/m")
+			require.Nil(t, b.manifest.id.Load(), "no manifest starts before the tier exists")
+			layerStore(disk, b)
+		} else {
+			layerStore(disk, b)
+			b.SetModule("example.com/m")
+		}
+		b.manifestWG.Wait()
+		require.Equal(t, "example.com/m", b.Module())
+		require.Equal(t, uint32(1), b.manifest.Named.Load(), "module first: %v", moduleFirst)
+		require.Equal(t, uint32(1), b.manifest.Fetched.Load(), "module first: %v", moduleFirst)
+		require.NoError(t, b.Close())
+		require.NoError(t, disk.Close())
+	}
+}
+
 // The walk reads generations in order and uses the newest one, and a missing generation ends it.
 func TestManifestWalkPicksTheNewestGeneration(t *testing.T) {
 	t.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "0")

@@ -690,6 +690,11 @@ func (b *WebBackend) SetModule(path string) {
 	}
 }
 
+// Module is the module this backend names in its requests, or "" before one is known.
+func (b *WebBackend) Module() string {
+	return b.moduleName()
+}
+
 // moduleName is the configured module path, or a single set later.
 func (b *WebBackend) moduleName() string {
 	if p := b.moduleLate.Load(); p != nil {

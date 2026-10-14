@@ -26,10 +26,6 @@ import (
 // owner. Nothing spins: a send into a ring with room makes no system call, and
 // a side with nothing to do parks on a kernel wait rather than looking again.
 
-// brokerOffEnv makes every process open the cache for itself, which is what a
-// bisect of a broker-shaped problem wants.
-const brokerOffEnv = "GO_BUILDCACHE_BROKER_OFF"
-
 // brokerServer serves the owner's cache to the processes below it.
 type brokerServer struct {
 	owner Cache

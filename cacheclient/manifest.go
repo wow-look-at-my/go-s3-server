@@ -175,7 +175,7 @@ func (b *WebBackend) awaitManifest() {
 		return
 	case <-timer.C:
 	}
-	logging.Warnf("cacheprog: manifest: the fetch ran past %v at exit, so it is cancelled", manifestCloseWait)
+	logging.Warnf("cacheprog: manifest: fetch cancelled at exit after %v", manifestCloseWait)
 	b.stopManifest()
 	<-done
 }

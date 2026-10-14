@@ -113,11 +113,11 @@ func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex
 			// A failed refresh over a disk copy is routine: the build keeps a
 			// key set, and every go command reports it on a busy host.
 			logging.Infof("cacheprog: web index refresh: %v", err)
-			logging.Infof("cacheprog: web index: refresh failed; using %d cached keys (batch probing enabled)", disk.count)
+			logging.Infof("cacheprog: web index: refresh failed; using %d cached keys", disk.count)
 			return diskKeys, false
 		}
 		logging.Warnf("cacheprog: web index fetch: %v", err)
-		logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
+		logging.Warnf("cacheprog: web index is unavailable")
 		return newHashSet(0), false
 	}
 	if status == http.StatusNotModified {
@@ -138,7 +138,7 @@ func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex
 				return nil, false
 			}
 			logging.Warnf("cacheprog: web index refetch: %v", err)
-			logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
+			logging.Warnf("cacheprog: web index is unavailable")
 			return newHashSet(0), false
 		}
 	}
@@ -146,10 +146,10 @@ func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex
 	if err != nil {
 		logging.Warnf("cacheprog: web index parse: %v", err)
 		if diskBlob != nil {
-			logging.Infof("cacheprog: web index: refresh failed; using %d cached keys (batch probing enabled)", disk.count)
+			logging.Infof("cacheprog: web index: refresh failed; using %d cached keys", disk.count)
 			return diskKeys, false
 		}
-		logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
+		logging.Warnf("cacheprog: web index is unavailable")
 		return newHashSet(0), false
 	}
 	b.writeIndexBlob(path, blob)

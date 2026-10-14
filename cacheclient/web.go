@@ -473,6 +473,7 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 		b.startManifest(b.moduleName())
 	}
 	b.manifest.note(actionID, "get")
+	b.lookAhead.noteLookup()
 	return b.get(actionID)
 }
 

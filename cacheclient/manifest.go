@@ -2,6 +2,7 @@ package cacheclient
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -35,6 +36,7 @@ type buildManifest struct {
 	used    set.Set[string]          // action IDs this process looked up
 	order   []string                 // used, in the order of the first lookup
 	pending map[string]chan struct{} // action IDs a fetch has on the wire, closed when they land
+	cancel  context.CancelFunc       // stops the fetch; Close calls it, because a build that ended needs nothing more
 
 	newest     int
 	newestKeys int // the keys that generation names
@@ -153,16 +155,60 @@ func (b *WebBackend) startManifest(module string) {
 	}
 	id := manifestID(module, b.version, b.target)
 	m.id.Store(&id)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.mu.Lock()
+	m.cancel = cancel
+	m.mu.Unlock()
 	b.manifestWG.Add(1)
 	go func() {
 		defer b.manifestWG.Done()
-		b.fetchManifest(id)
+		defer cancel()
+		b.fetchManifest(ctx, id)
 	}()
+}
+
+// manifestCloseWait is how long Close lets a manifest fetch finish. The fetch
+// fills the local tier for the next command of the build, so Close does not
+// cancel it at once.
+var manifestCloseWait = 30 * time.Second
+
+// awaitManifest waits for the manifest fetch. After manifestCloseWait it
+// cancels the fetch, so a stalled request cannot keep the process alive.
+func (b *WebBackend) awaitManifest() {
+	done := make(chan struct{})
+	go func() {
+		b.manifestWG.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(manifestCloseWait)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return
+	case <-timer.C:
+	}
+	logging.Warnf("cacheprog: manifest: the fetch ran past %v at exit, so it is cancelled", manifestCloseWait)
+	b.stopManifest()
+	<-done
+}
+
+// stopManifest cancels a manifest fetch that is still running.
+func (b *WebBackend) stopManifest() {
+	m := b.manifest
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	cancel := m.cancel
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // readManifest reads the manifest over its own request. On the build's batch
 // path a slow answer would hold up the lookups that share its batch.
-func (b *WebBackend) readManifest(id string) ([]byte, bool) {
+func (b *WebBackend) readManifest(ctx context.Context, id string) ([]byte, bool) {
 	h, ok := parseActionHash(id)
 	if !ok {
 		return nil, false
@@ -176,7 +222,7 @@ func (b *WebBackend) readManifest(id string) ([]byte, bool) {
 	}
 	var data []byte
 	found := false
-	_, err := b.postNamed([]string{b.key(id)}, func(e BatchEntry) {
+	_, err := b.postNamed(ctx, []string{b.key(id)}, func(e BatchEntry) {
 		if body, ok := b.verify("manifest", id, e.OutputID, e.Data, e.RawSize); ok {
 			data, found = body, true
 		}
@@ -187,12 +233,13 @@ func (b *WebBackend) readManifest(id string) ([]byte, bool) {
 	return data, found
 }
 
-// It records that generation and its key count for storeManifest.
-func (b *WebBackend) walkManifest(base string) (int, []string) {
+// walkManifest reads the manifest generations in order and records the newest
+// one and its key count for storeManifest.
+func (b *WebBackend) walkManifest(ctx context.Context, base string) (int, []string) {
 	newest := -1
 	var named []string
 	for gen := range manifestGenerations {
-		data, found := b.readManifest(manifestGenID(base, gen))
+		data, found := b.readManifest(ctx, manifestGenID(base, gen))
 		if !found {
 			break
 		}
@@ -206,8 +253,8 @@ func (b *WebBackend) walkManifest(base string) (int, []string) {
 }
 
 // fetchManifest reads the newest manifest generation and pulls what it names.
-func (b *WebBackend) fetchManifest(base string) {
-	newest, named := b.walkManifest(base)
+func (b *WebBackend) fetchManifest(ctx context.Context, base string) {
+	newest, named := b.walkManifest(ctx, base)
 	if newest < 0 {
 		return
 	}
@@ -251,7 +298,9 @@ func (b *WebBackend) fetchManifest(base string) {
 		go func() {
 			defer wg.Done()
 			for next := range work {
-				b.fetchNamed(next.keys)
+				if ctx.Err() == nil {
+					b.fetchNamed(ctx, next.keys)
+				}
 				next.clear()
 			}
 		}()
@@ -275,12 +324,12 @@ func (b *WebBackend) isHeld(h actionHash) bool {
 
 // postNamed asks for keys by name on a request of its own and hands each entry
 // to each. Nobody waits on it, so it rides the look-ahead kind.
-func (b *WebBackend) postNamed(keys []string, each func(BatchEntry)) (int, error) {
+func (b *WebBackend) postNamed(ctx context.Context, keys []string, each func(BatchEntry)) (int, error) {
 	body, err := json.Marshal(batchGetRequest{Keys: keys})
 	if err != nil {
 		return 0, err
 	}
-	req, err := http.NewRequest("POST", b.endpoint+"/"+b.bucket+"/_batch/get", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", b.endpoint+"/"+b.bucket+"/_batch/get", bytes.NewReader(body))
 	if err != nil {
 		return 0, err
 	}
@@ -309,7 +358,7 @@ func (b *WebBackend) postNamed(keys []string, each func(BatchEntry)) (int, error
 }
 
 // fetchNamed asks for keys by name and hands the entries to the local tier.
-func (b *WebBackend) fetchNamed(keys []string) {
+func (b *WebBackend) fetchNamed(ctx context.Context, keys []string) {
 	var chunk []BatchEntry
 	flush := func() {
 		if len(chunk) > 0 {
@@ -317,7 +366,7 @@ func (b *WebBackend) fetchNamed(keys []string) {
 			chunk = nil
 		}
 	}
-	count, err := b.postNamed(keys, func(e BatchEntry) {
+	count, err := b.postNamed(ctx, keys, func(e BatchEntry) {
 		if actionID, ok := b.ActionIDFromKey(e.Key); ok {
 			if h, ok := parseActionHash(actionID); ok {
 				b.noteHeld(h)

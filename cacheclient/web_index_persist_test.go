@@ -3,6 +3,7 @@ package cacheclient
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
 
@@ -13,6 +14,29 @@ import (
 // TestDeltaIsSavedForTheNextProcess pins that a delta merges into the disk
 // copy. Without it every go command asked for the same growing delta.
 func TestDeltaIsSavedForTheNextProcess(t *testing.T) {
+	t.Serial() // persistDeltaMin is package state
+	saved := persistDeltaMin
+	persistDeltaMin = 1
+	defer func() { persistDeltaMin = saved }()
+	seqs, disk := runDeltaProcesses(t)
+	require.Equal(t, sevenKeys().Len()+1, disk.count, "the disk copy carries the delta")
+	require.Equal(t, indexGen{epoch: 9, seq: 2}, disk.gen)
+	require.Equal(t, []string{"", "1", "2"}, seqs, "each process asks from where the last one stopped")
+}
+
+// TestSmallDeltaLeavesTheCopy pins that a delta too small to pay for a
+// rewrite leaves the copy and its position as they were.
+func TestSmallDeltaLeavesTheCopy(t *testing.T) {
+	seqs, disk := runDeltaProcesses(t)
+	require.Equal(t, sevenKeys().Len(), disk.count, "the copy is not rewritten")
+	require.Equal(t, indexGen{epoch: 9, seq: 1}, disk.gen)
+	require.Equal(t, []string{"", "1", "1"}, seqs, "the next process asks for the same delta again")
+}
+
+// runDeltaProcesses runs backends in turn over a single index directory. The
+// server adds a key after its first full answer. It returns the positions the
+// backends asked from and the disk copy they leave.
+func runDeltaProcesses(t *testing.T) ([]string, diskIndex) {
 	dir := t.TempDir()
 	keys := sevenKeys()
 	full := marshalIndex(keySetToHashes(keys))
@@ -62,11 +86,7 @@ func TestDeltaIsSavedForTheNextProcess(t *testing.T) {
 		b.Close()
 	}
 
-	disk := (&WebBackend{}).readDiskIndex(path)
-	require.Equal(t, keys.Len()+1, disk.count, "the disk copy carries the delta")
-	require.Equal(t, indexGen{epoch: 9, seq: 2}, disk.gen)
-
 	mu.Lock()
 	defer mu.Unlock()
-	require.Equal(t, []string{"", "1", "2"}, seqs, "each process asks from where the last one stopped")
+	return slices.Clone(seqs), (&WebBackend{}).readDiskIndex(path)
 }

@@ -62,6 +62,36 @@ func TestHashSetMatchesAMapThroughEveryCompaction(t *testing.T) {
 	}
 }
 
+// addAll merges a whole delta at a single time, over a set with keys still
+// pending and removed. It must answer as a key-by-key Add does.
+func TestHashSetAddAllMatchesAddByKey(t *testing.T) {
+	rng := rand.New(rand.NewSource(3))
+	bulk, byKey := newHashSet(0), newHashSet(0)
+	for range 4000 {
+		h := hashN(rng.Intn(6000))
+		bulk.Add(h)
+		byKey.Add(h)
+	}
+	for range 300 {
+		h := hashN(rng.Intn(6000))
+		bulk.Remove(h)
+		byKey.Remove(h)
+	}
+	src := newHashSet(0)
+	for range 3000 {
+		h := hashN(rng.Intn(9000))
+		src.Add(h)
+		byKey.Add(h)
+	}
+	bulk.addAll(src)
+
+	require.Equal(t, byKey.Len(), bulk.Len())
+	require.True(t, slices.IsSorted(bulk.sorted))
+	for idx := range 9000 {
+		require.Equal(t, byKey.Contains(hashN(idx)), bulk.Contains(hashN(idx)), "key %d", idx)
+	}
+}
+
 // The sorted slice must stay sorted, because every lookup binary-searches it. A
 // merge that left a single element out of place would answer "absent" for a key
 // the set holds, and nothing else in the type would notice.

@@ -134,9 +134,15 @@ func (b *WebBackend) refreshLiveDelta() bool {
 	return true
 }
 
+// persistDeltaMin is the least delta worth a rewrite of the copy.
+var persistDeltaMin = 16384
+
 // persistDelta writes the copy merged with added, at position gen, over the
 // copy at path.
 func (b *WebBackend) persistDelta(path string, disk diskIndex, added *hashSet, gen indexGen) {
+	if added.Len() > 0 && added.Len() < persistDeltaMin {
+		return
+	}
 	if added.Len() == 0 {
 		now := time.Now()
 		_ = os.Chtimes(path, now, now)

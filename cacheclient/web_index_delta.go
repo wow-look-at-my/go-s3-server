@@ -112,7 +112,7 @@ func (b *WebBackend) refreshLiveDelta() bool {
 	reply, err := b.doIndexGET(context.Background(), deltaQuery(gen), "")
 	if reply.status == http.StatusGone {
 		// The epoch ended. The set stays as it is, and no later miss asks again.
-		logging.Infof("cacheprog: web index: the server's add log moved past this process's position; misses stop refreshing")
+		logging.Infof("cacheprog: web index: live updates stopped (HTTP 410)")
 		b.setLiveGen(indexGen{})
 		return false
 	}
@@ -219,7 +219,7 @@ func (b *WebBackend) startDeltaLoad(path string, disk diskIndex) {
 		defer cancel()
 		b.applyDelta(ctx, path, disk)
 	}()
-	logging.Infof("cacheprog: web index: %d keys from a copy %v old; fetching the keys added since", disk.count, disk.age().Round(time.Second))
+	logging.Infof("cacheprog: web index: loaded %d keys from a copy %v old", disk.count, disk.age().Round(time.Second))
 }
 
 // applyDelta adds the keys stored since the copy to the live set and makes it

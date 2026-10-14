@@ -89,9 +89,8 @@ func (b *WebBackend) noteBatchEntries(n int) {
 		// The notice goes out before the flag is set. A probe can finish on its
 		// own goroutine, so a reader that sees the flag must also see the notice.
 		b.batchBackoffLogOnce.Do(func() {
-			logging.Infof("cacheprog: remote returned %d empty batches; "+
-				"disabling further batch probes for this run (endpoint=%s)",
-				b.emptyBatchBackoffThreshold, b.endpoint)
+			logging.Infof("cacheprog: %s returned %d empty batches; batch probes are now off",
+				b.endpoint, b.emptyBatchBackoffThreshold)
 			b.batchProbingDisabled.Store(true)
 		})
 	}
@@ -350,7 +349,7 @@ func (b *WebBackend) noteNoAnswer(err error) {
 	now := time.Now().UnixNano()
 	b.probeAt.Store(now + int64(downProbeEvery))
 	if b.downSince.CompareAndSwap(0, now) {
-		logging.Warnf("cacheprog: the cache server does not answer in time (%v); every lookup is a miss and the build compiles, with a single request every %s to find it again", err, downProbeEvery)
+		logging.Warnf("cacheprog: cache server is not responding: %v", err)
 	}
 }
 
@@ -358,7 +357,7 @@ func (b *WebBackend) noteNoAnswer(err error) {
 func (b *WebBackend) noteAnswered() {
 	since := b.downSince.Swap(0)
 	if since != 0 {
-		logging.Warnf("cacheprog: the cache server answers again after %s; %d requests were not sent meanwhile",
+		logging.Warnf("cacheprog: cache server is responding again after %s of downtime; %d requests were skipped",
 			time.Since(time.Unix(0, since)).Round(time.Millisecond), b.SkippedDown.Load())
 	}
 }

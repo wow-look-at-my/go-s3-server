@@ -116,7 +116,7 @@ func (b *WebBackend) startIndexLoad() {
 	}()
 
 	if disk.blob != nil {
-		logging.Infof("cacheprog: web index: %d keys from a copy %v old; refreshing in the background", disk.count, disk.age().Round(time.Second))
+		logging.Infof("cacheprog: web index: loaded %d keys from a copy %v old", disk.count, disk.age().Round(time.Second))
 		return
 	}
 	// Only this wait holds up the build, so it is what reports at warning level.
@@ -125,10 +125,10 @@ func (b *WebBackend) startIndexLoad() {
 	select {
 	case <-load.done:
 		if waited := time.Since(start); waited >= indexSlowLoad {
-			logging.Warnf("cacheprog: web index: the first lookup waited for it: %s", b.indexLoadReport(waited, "no disk copy"))
+			logging.Warnf("cacheprog: web index: slow load: %s", b.indexLoadReport(waited, "no disk copy"))
 		}
 	case <-timer.C:
-		logging.Warnf("cacheprog: web index: not loaded after %v; going on without it while it loads (lookups probe the server)", b.indexTiming.wait)
+		logging.Warnf("cacheprog: web index: not loaded after %v", b.indexTiming.wait)
 	}
 }
 
@@ -184,7 +184,7 @@ func (b *WebBackend) refreshIndex(ctx context.Context, path string, disk diskInd
 		return nil, false, "cancelled"
 	}
 	if err != nil {
-		logging.Infof("cacheprog: web index: %v; fetching without the lock", err)
+		logging.Infof("cacheprog: web index lock: %v", err)
 		keys, authoritative := b.fetchIndex(ctx, path, disk)
 		return keys, authoritative, "fetched without the lock"
 	}

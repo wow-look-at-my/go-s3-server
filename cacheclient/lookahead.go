@@ -366,7 +366,7 @@ func (la *lookAhead) expand(seed []string) {
 	}
 	if resp.Header.Get(HeaderPrefetch) == "off" {
 		if !la.serverOff.Swap(true) {
-			logging.Warnf("cacheprog: look-ahead: the server sends no look-ahead window; GO_TOOLCHAIN_CACHE_LOOKAHEAD has no effect against it, so this process stops asking")
+			logging.Warnf("cacheprog: look-ahead: the server does not support look-ahead; GO_TOOLCHAIN_CACHE_LOOKAHEAD is ignored")
 		}
 		closeBody(resp.Body)
 		b.Pool.Release()

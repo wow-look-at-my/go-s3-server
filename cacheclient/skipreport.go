@@ -139,7 +139,7 @@ func (b *WebBackend) FlushSkips() bool {
 	case resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == http.StatusNotFound:
 		// The server is older than the skip endpoint. Its hit rate stays too high.
 		b.skips.disabled.Store(true)
-		logging.Warnf("cacheprog: server has no skip endpoint (HTTP %d); its hit rate omits %d skipped gets", resp.StatusCode, delta.GetNotInIndex+delta.GetEmptyIndex+delta.GetBatchBackoff+delta.GetKnownMiss)
+		logging.Warnf("cacheprog: skip report: the server has no skip endpoint (HTTP %d)", resp.StatusCode)
 		return false
 	default:
 		logging.Warnf("cacheprog: skip report: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))

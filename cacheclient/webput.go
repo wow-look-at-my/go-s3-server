@@ -117,7 +117,7 @@ func (b *WebBackend) prepare(j putJob) {
 	// and nothing about which one, so whoever reads it starts from nothing.
 	if act, ok := BuildIDMatchesAction(j.actionID, j.data); !ok {
 		b.PutRefusedBuildID.Increment()
-		logging.Warnf("cacheprog: web put %s (%s): refusing upload, build-id action mismatch (want action=%s, got action=%s); object does not belong under this key",
+		logging.Warnf("cacheprog: web put %s (%s): refusing upload, build-id action mismatch (want action=%s, got action=%s)",
 			ShortID(j.actionID), describeObject(j.data), ExpectedBuildIDAction(j.actionID), act)
 		b.dropUpload(j.hash)
 		return

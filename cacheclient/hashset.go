@@ -25,9 +25,7 @@ type hashSet struct {
 	// pending holds keys added since the last compaction and absent.
 	pending set.Set[hashKey]
 	removed set.Set[hashKey]
-	// shift is 64 minus the width in bits of the prefix the keys hold. The
-	// low shift bits of every key are zero. A set built from a v2 blob holds
-	// the blob's width; any other set holds all 64.
+	// The low shift bits of every key are zero.
 	shift uint8
 }
 

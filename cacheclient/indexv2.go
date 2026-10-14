@@ -11,12 +11,10 @@ import (
 
 // GBCI v2 carries the index as the gaps between its sorted hash prefixes.
 //
-// A sha256 prefix is incompressible on its own. A SORTED list of n of them
-// is not: the gap between neighbours is about 2^width/n, so each entry
-// costs about width-log2(n)+2 bits instead of width. The gaps are Rice
-// coded: the high part of each gap in unary, the low k bits as they are.
+// A sha256 prefix is incompressible on its own. The gaps are Rice coded:
+// the high part of each gap in unary, the low k bits as they are.
 //
-// Header, 24 bytes: magic, version 2, prefix width in bits, k, a reserved
+// Header, many bytes: magic, version 2, prefix width in bits, k, a reserved
 // zero, the content digest at [8:16], the count at [16:24]. The body is the
 // coded gaps, padded to a byte. The trailer is the sha256 of header and body.
 
@@ -29,8 +27,6 @@ const (
 	IndexV2MaxBits = 64
 )
 
-// riceParam is the Rice parameter for n values spread over widthBits bits: the
-// floor of log2 of the mean gap, held under 64 so a shift by it is defined.
 func riceParam(widthBits, n int) uint {
 	k := widthBits
 	if n > 1 {
@@ -39,10 +35,8 @@ func riceParam(widthBits, n int) uint {
 	return uint(max(0, min(k, 63)))
 }
 
-// MarshalIndexV2 encodes values, ascending and distinct, each below
-// 2^widthBits, as a GBCI v2 blob. An input that breaks those rules is a
-// caller's bug and panics: a blob written from it would carry a valid trailer
-// over wrong keys.
+// An input that breaks those rules is a caller's bug and panics: a blob
+// written from it would carry a valid trailer over wrong keys.
 func MarshalIndexV2(widthBits int, values []uint64) []byte {
 	if widthBits < IndexV2MinBits || widthBits > IndexV2MaxBits {
 		panic(fmt.Sprintf("gbci v2: width %d bits is outside %d..%d", widthBits, IndexV2MinBits, IndexV2MaxBits))
@@ -234,7 +228,7 @@ func (r *bitReader) refill() {
 	}
 }
 
-// readBits reads nbits bits, up to 64. ok is false past the end of the data.
+// ok is false past the end of the data.
 func (r *bitReader) readBits(nbits uint) (uint64, bool) {
 	if nbits == 0 {
 		return 0, true

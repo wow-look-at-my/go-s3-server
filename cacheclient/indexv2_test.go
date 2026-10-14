@@ -11,8 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// prefixesOf answers the first bits bits of the sha256 of 0..n-1, ascending
-// and distinct: the shape of a real index at that width.
 func prefixesOf(n, bits int) []uint64 {
 	values := make([]uint64, n)
 	for i := range values {
@@ -137,8 +135,8 @@ func TestIndexV2RiceParameterIsNearOptimal(t *testing.T) {
 	}
 }
 
-// The sizes the docs quote, for a million keys. A change here is a change to
-// the wire format and must be measured again.
+// The sizes the docs quote, for a keys. A change here is a change to the
+// wire format and must be measured again.
 func TestIndexV2SizeAtAMillionKeys(t *testing.T) {
 	const n = 1_000_000
 	for _, c := range []struct {
@@ -219,7 +217,7 @@ func TestMarshalIndexKeepsTheWidth(t *testing.T) {
 	}
 }
 
-// hashOfKey64 is a full hash whose first 8 bytes are k.
+// hashOfKey64 is a full hash whose first several bytes are k.
 func hashOfKey64(k uint64) actionHash {
 	var h actionHash
 	binary.BigEndian.PutUint64(h[:8], k)
@@ -227,7 +225,7 @@ func hashOfKey64(k uint64) actionHash {
 }
 
 // BenchmarkParseV2Index is the parse of a disk copy in the v2 form, which every
-// go command pays before its first lookup, for a million keys at 40 bits.
+// go command pays before its first lookup, for a keys at many bits.
 func BenchmarkParseV2Index(b *testing.B) {
 	blob := MarshalIndexV2(40, prefixesOf(1_000_000, 40))
 	b.ReportAllocs()

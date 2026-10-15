@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -269,13 +270,15 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 	resp, err := b.doRetryGET(httpReq)
 	if err != nil {
 		b.Pool.Release()
-		logging.Warnf("cacheprog: web batch get: %v", err)
+		if !errors.Is(err, errServerDown) {
+			logging.Warnf("cacheprog: web batch get: %v", err)
+		}
 		respondAllMiss(&b.MissNetwork)
 		return
 	}
 
 	if resp.StatusCode != 200 {
-		resp.Body.Close()
+		closeBody(resp.Body)
 		b.Pool.Release()
 		// Not-found or method-not-allowed → server has no batch endpoint; fall back to individual
 		// GETs for every caller in this batch.
@@ -323,17 +326,14 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 		hit = append(hit, r.key)
 		r.resp <- batchResp{outputID: e.OutputID, data: data, t: time.Now()}
 	})
-	resp.Body.Close()
+	closeBody(resp.Body)
 	b.Pool.Release()
 	if err != nil {
-		logging.Warnf("cacheprog: web batch get: parse: %v", err)
-		// Only the callers still waiting: a single already answered must not be
-		// sent another reply.
+		logging.Warnf("cacheprog: web batch get: parse: %v; retrying %d keys one by one", err, len(reqByKey))
+		// A cut stream says nothing about the keys it never reached, so each is
+		// asked for on its own.
 		for _, r := range reqByKey {
-			if b.keyKnown(r.hash) {
-				b.MissReadBody.Increment()
-			}
-			r.resp <- batchResp{miss: true}
+			r.resp <- b.getIndividual(r.actionID, r.key, r.hash)
 		}
 		return
 	}

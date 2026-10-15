@@ -8,8 +8,7 @@ import (
 	"strings"
 )
 
-// anonymousUser is the username recorded in audit logs when authentication
-// has been explicitly disabled via disable_auth: true.
+// anonymousUser is the username recorded in audit logs when authentication has been explicitly disabled via disable_auth.
 const anonymousUser = "<ANON>"
 
 // authenticate verifies the request's credentials against the configured
@@ -43,10 +42,8 @@ func authenticate(r *http.Request, cfg *Config) (string, error) {
 	}
 
 	for i := range cfg.Credentials {
-		// Defense in depth: never match a credential with an empty
-		// username or password. LoadConfig already rejects these, but
-		// an empty entry constructed via the Go API must not allow
-		// authentication with an all-empty Basic Auth header.
+		// Defense in depth: never match a credential with an empty username or
+		// password.
 		if cfg.Credentials[i].Username.Value == "" || cfg.Credentials[i].Password.Value == "" {
 			continue
 		}

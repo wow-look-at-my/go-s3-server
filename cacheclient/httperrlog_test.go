@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -200,6 +201,27 @@ func TestHTTPErrLogger_TickerFlush(t *testing.T) {
 	require.NoError(t, l.Close())
 }
 
+// The flush comes a whole interval after the record that woke the loop. A
+// loop that ticked on its own clock would flush at the earlier tick.
+func TestHTTPErrLogger_FlushFollowsTheRecord(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var buf syncBuffer
+		l := newHTTPErrLogger(&buf, 30*time.Second)
+
+		time.Sleep(20 * time.Second)
+		l.Record("web put", 502, "aabbccdd", "boom")
+
+		time.Sleep(15 * time.Second)
+		synctest.Wait()
+		require.Empty(t, buf.String(), "the flush waits a whole interval after the record")
+
+		time.Sleep(15 * time.Second)
+		synctest.Wait()
+		require.Contains(t, buf.String(), "HTTP 502")
+		require.NoError(t, l.Close())
+	})
+}
+
 func TestHTTPErrLogger_ConcurrentRecord(t *testing.T) {
 	var buf bytes.Buffer
 	l := newTestLogger(&buf)
@@ -318,7 +340,7 @@ func TestHTTPErrLogger_BatchHTTPSingleMiss(t *testing.T) {
 	require.NoError(t, l.Close())
 
 	require.Equal(t,
-		"cacheprog: batch GET: 100 keys → 0 entries (server has no entries for any of them) in 47ms\n",
+		"cacheprog: batch GET: 100 keys → 0 entries in 47ms\n",
 		cap.String())
 }
 
@@ -334,7 +356,7 @@ func TestHTTPErrLogger_BatchHTTPCoalescedMisses(t *testing.T) {
 	require.NoError(t, l.Close())
 
 	require.Equal(t,
-		"cacheprog: batch GET ×3: 300 keys → 0 entries (server has no entries), 120ms total\n",
+		"cacheprog: batch GET ×3: 300 keys → 0 entries, 120ms total\n",
 		cap.String())
 }
 
@@ -350,6 +372,20 @@ func TestHTTPErrLogger_BatchHTTPCoalescedHits(t *testing.T) {
 
 	require.Equal(t,
 		"cacheprog: batch GET ×2: 200 keys → 55 entries, 97ms total\n",
+		cap.String())
+}
+
+func TestHTTPErrLogger_BatchHTTPLongTotalInSeconds(t *testing.T) {
+	var buf bytes.Buffer
+	l := newTestLogger(&buf)
+	cap := newCaptureLogger(t)
+
+	l.RecordBatchHTTP(30, 30, 100*time.Second)
+	l.RecordBatchHTTP(19, 19, 43424*time.Millisecond)
+	require.NoError(t, l.Close())
+
+	require.Equal(t,
+		"cacheprog: batch GET ×2: 49 keys → 49 entries, 143.4s total\n",
 		cap.String())
 }
 
@@ -390,7 +426,7 @@ func TestHTTPErrLogger_MixedHTTPErrAndBatchHTTP(t *testing.T) {
 
 	require.Contains(t, buf.String(), "HTTP 502")
 	require.NotContains(t, buf.String(), "0 entries")
-	require.Contains(t, cap.String(), "0 entries (server has no entries for any of them)")
+	require.Contains(t, cap.String(), "100 keys → 0 entries")
 	require.NotContains(t, cap.String(), "HTTP 502")
 }
 

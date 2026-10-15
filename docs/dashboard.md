@@ -37,8 +37,18 @@ A counter with no labels becomes `{"value": N}`. A labeled one becomes `{"series
 
 The page reports these carefully:
 
-- **Cache size** comes from `s3_cache_bytes`. The server writes that gauge at an eviction sweep and every 15 minutes, not on every PUT. Before the first measurement the page says "not measured". It never says `0 B`.
+- **Cache size** comes from `s3_cache_bytes`. The server writes that gauge at an eviction sweep and every few minutes, not on every PUT. Before the first measurement the page says "not measured". It never says `0 B`.
 - **Rates** are computed in the browser, from one poll against the poll before it. A reload starts them over. A counter that goes backwards means the server restarted, so the page clears the history instead of drawing a negative rate.
+
+## Reads the server never sees
+
+The client keeps a copy of `/_index`. When that copy is fresh, the client misses a key the copy lacks with no request. It also skips the upload of a key the copy holds. The server cannot count either operation by itself, so its hit rate counts only the keys that reached it.
+
+The client therefore reports those skips. It sends `POST /{bucket}/_skips` from a skip that comes at least `skipReportInterval` after the last send, and again at `Close`. That `POST /{bucket}/_skips` is with the counts since the last report the server accepted. A failed report leaves the counts in place for the next one. The code is `cacheclient/skipreport.go` and `skips.go`.
+
+The server counts each report in `s3_client_skips_total{op,reason}`. Each skipped get is also a miss in `s3_project_objects_total` for the project that asked. The hit rate tile divides `found` plus the single-GET hits by `requested` plus the skipped gets plus the single GETs. The hit chart takes the same ratio over the keys asked since the previous poll. A drop shows at once and does not fade into the lifetime average.
+
+A server older than the endpoint answers 405. The client then stops reporting for that run and logs one warning, because that server's hit rate stays too high.
 
 ## The BY PROJECT panel
 
@@ -46,15 +56,19 @@ A shared cache gets one question more than any other. The hit rate reads fine ov
 
 The panel answers it from `s3_project_objects_total{project,kind}`. The chart is a stacked area: one band per project, each column the total objects per second the cache moved for it. The total and the split that makes it up therefore read off one picture. The table beside it carries each project's hit rate, `hit / (hit + miss)`, worst first. The chart cannot show that. A project can be a thin band and still hit almost nothing it asks for.
 
+Every kind counts for the project that sent the request, the `X-Cache-Module` header. A miss has no object. The requester is the only name it can carry. A hit therefore uses the requester too, not the module stored on the object. That stored module names the build that first wrote the object. A shared std archive will credit every later build's hit to that writer.
+
+The row will divide one project's hits by another project's misses. A request with no header counts under `unknown` for every kind. `projectOf` in `logagg.go` holds the rule.
+
 A look-ahead request (`prefetch_only`) names keys the client has just hit, as anchors for the window around them. It asks for none of them. Those keys count as `s3_batch_keys_total{kind="anchors"}`,never as `requested` or as a project miss. Counted as misses, each hit will also read as a miss.
 
 The bands come from `<perf-graph>`'s stacked mode, which the page fetches from the js-snippets library site at run time. This page can therefore be newer than the component it loaded. When the loaded component has no `pushSeries`, the page says so under the chart. A stacked chart that silently stayed blank reads as "no traffic".
 
-Bands are ordered by name, never by traffic. A band that reorders itself on every poll cannot be followed. Each band's color comes from its own name, so one project is one color on every machine.
+Name orders bands, not by traffic. A band that reorders itself on every poll cannot be followed. Each band's color comes from its own name, so one project is one color on every machine.
 
-The project name arrives on a client header, so `projectLabeller` bounds how many names hold a series of their own. The bound is `maxProjectLabels` in `projectmetrics.go`. A name past it folds into `other` and increments `s3_project_names_folded_total`. Watch `s3_project_names` against that bound. A value near it means the next new project lands in `other`.
+The panel reads the snapshot's `projects` map, not the Prometheus series. That map keeps an exact row for every project name, with no bound. The Prometheus series are bounded, because the project name arrives on a client header and each label value is a series a scraper keeps. `projectLabeller` bounds them at `maxProjectLabels` in `projectmetrics.go`. A name past it folds into `other` and increments `s3_project_names_folded_total`. That fold changes only the scraped metrics, not the panel.
 
-The snapshot reports configuration, never credentials. `TestDashboardStatsCarryNoCredentials` holds that line.
+The snapshot reports configuration, not credentials. `TestDashboardStatsCarryNoCredentials` holds that line.
 
 ## Authentication: there is none, and that is the point
 
@@ -85,6 +99,6 @@ Then add a self-hosted Access application for `cache-dashboard.example.com` in Z
 
 Leave `cache.example.com` without an Access policy. Access in front of the cache port breaks every build, because the client cannot complete a browser login.
 
-`cloudflared` often runs in its own container. The dashboard must then bind an address that container reaches. `:9002` binds every interface and works. `127.0.0.1:9002` does not.
+`cloudflared` frequently runs in its own container. The dashboard must then bind an address that container reaches. `:9002` binds every interface and works. `127.0.0.1:9002` does not.
 
 `CF-Connecting-IP` is already the first header the cache port trusts for the client IP. A tunnelled deployment therefore logs real client addresses.

@@ -1,21 +1,6 @@
 package main
 
-// Nothing in this server compresses. Bodies arrive already lz4-compressed by
-// the go-toolchain client, are stored byte-for-byte by PutStream, and are
-// served back untouched -- no gzip middleware, no Content-Encoding, and the
-// batch tar is uncompressed. The only decompression is the read-path guards
-// peeking a single lz4 block, memoized per key (see cleanmemo.go).
-//
-// That leaves exactly a single place another compression pass can hide: the
-// filesystem. A ZFS dataset with compression enabled will run every stored
-// body through lz4 (or worse, gzip/zstd) another time, for data the client
-// already squeezed -- burning CPU on every write in exchange for approximately
-// nothing. ZFS's early-abort heuristic limits the damage on incompressible
-// data but does not remove the attempt, and a cache under CI load is close to
-// write-saturated.
-//
-// The server cannot fix the operator's dataset, so it says so a single
-// time, at startup, next to the other "this configuration will hurt you" warnings.
+// Nothing in this server compresses.
 
 import (
 	"fmt"
@@ -24,10 +9,7 @@ import (
 	"strings"
 )
 
-// compressionProbes are each questions the advisory needs answered, as seams:
-// whether the data dir lives on ZFS, which dataset it belongs to, and what
-// that dataset's compression property is. Swapped out in tests -- no test can
-// arrange for a real ZFS dataset.
+// compressionProbes are each questions the advisory needs answered, as seams.
 type compressionProbes struct {
 	onZFS      func(dir string) bool
 	datasetFor func(dir string) (string, bool)
@@ -44,9 +26,9 @@ var defaultCompressionProbes = compressionProbes{
 // compressionAdvisory returns the startup warning for a data dir that sits on
 // a compressing filesystem, or "" when there is nothing to say.
 //
-// Silence is the default on every uncertainty: a non-ZFS filesystem, a dataset
-// that cannot be identified, an unreadable property, or compression already
-// off. An advisory nobody can act on is just noise on every boot.
+// Silence is the default on every uncertainty: a non-ZFS filesystem, a
+// dataset that cannot be identified, an unreadable property, or compression
+// already off. An advisory nobody can act on is noise on every boot.
 func compressionAdvisory(dataDir string, p compressionProbes) string {
 	if !p.onZFS(dataDir) {
 		return ""

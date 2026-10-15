@@ -19,17 +19,11 @@ const (
 	indexMaxBytesPerKey = 130.0
 	// With it off, which is what a server with prefetch off runs.
 	indexNoEntriesMaxBytesPerKey = 72.0
-	// The blob is a copy of the hash list, so serializing costs a single
-	// hash per key and no more.
+	// The blob is a copy of the hash list, so serializing costs a single hash per key and no more.
 	blobMaxBytesPerKey = 40.0
 )
 
-// The index is the server's largest resident structure by an order of
-// magnitude, and it has no profile in production. These measure it instead:
-// build any of a known size, read the live heap, and divide.
-//
-// footprintKeys is small enough to run in a unit test and large enough that
-// the per-key figure is not dominated by fixed overhead.
+// The index is the server's largest resident structure by an order of magnitude, and it has no profile in production.
 const footprintKeys = 200_000
 
 // heapLive is the live heap after a full collection. GCs, because the
@@ -66,27 +60,43 @@ func fillIndexTracking(n int, entries bool) *Index {
 	return idx
 }
 
-// The bound is per key over the whole index: the mtime-sorted entry list, the
-// sorted hash list, and the serialized blob the /_index endpoint serves
-// between rebuilds.
+// addLogBytes is what the add log holds.
+func addLogBytes(idx *Index) uint64 {
+	return uint64(cap(idx.added)) * gbciHashSize
+}
+
+// The add log never holds more than its limit, however many keys arrive. A
+// key past the limit starts a new epoch with an empty log.
+func TestAddLogIsBounded(t *testing.T) {
+	idx := &Index{entriesOff: true, addLogLimit: 1000}
+	idx.blobMinInterval.Store(0)
+	for i := range 2500 {
+		idx.Put(footprintKey(i), 4096)
+		require.LessOrEqual(t, len(idx.added), 1000)
+	}
+	require.Equal(t, 500, len(idx.added), "two resets, then the last 500 keys")
+	require.LessOrEqual(t, cap(idx.added), 1024, "a reset releases the old backing array")
+}
+
+// The bound is per key over the whole index. This covers the mtime-sorted
+// entry list, the sorted hash list, and the serialized blob the /_index
+// endpoint serves between rebuilds.
 func TestIndexPerKeyFootprint(t *testing.T) {
 	before := heapLive()
 	idx := fillIndex(footprintKeys)
-	// Serializing is part of steady state: the blob is held until the next
-	// a single replaces it.
+	// Serializing is part of steady state: the blob is held until the next a single replaces it.
 	blob, _ := idx.Blob()
 	require.NotEmpty(t, blob)
-	// NearbyKeys drains the pending entry buffer into the sorted list, which
-	// is the shape the index spends its life in.
+	// NearbyKeys drains the pending entry buffer into the sorted list, which is the shape the index spends its life in.
 	idx.NearbyKeys(0, time.Now().Add(time.Hour).Unix(), 10, set.Set[string]{}, nil)
 
 	after := heapLive()
 	runtime.KeepAlive(idx)
 	runtime.KeepAlive(blob)
 
-	perKey := float64(after-before) / float64(footprintKeys)
-	t.Logf("index footprint: %d keys, %.1f MB live, %.1f bytes/key",
-		footprintKeys, float64(after-before)/(1<<20), perKey)
+	perKey := float64(after-before-addLogBytes(idx)) / float64(footprintKeys)
+	t.Logf("index footprint: %d keys, %.1f MB live, %.1f MB of it the add log, %.1f bytes/key without it",
+		footprintKeys, float64(after-before)/(1<<20), float64(addLogBytes(idx))/(1<<20), perKey)
 	t.Logf("  projected at 1.7M keys: %.0f MB", perKey*1_700_000/(1<<20))
 
 	require.Less(t, perKey, indexMaxBytesPerKey,
@@ -98,7 +108,7 @@ func TestIndexPerKeyFootprint(t *testing.T) {
 }
 
 // TestIndexWithoutEntriesCostsLess pins the saving a server with prefetch off
-// gets: the mtime list is the largest of each structures, and nothing reads
+// gets. The mtime list is the largest of each structures, and nothing reads
 // it when no window is ever selected.
 func TestIndexWithoutEntriesCostsLess(t *testing.T) {
 	before := heapLive()
@@ -109,9 +119,9 @@ func TestIndexWithoutEntriesCostsLess(t *testing.T) {
 	runtime.KeepAlive(idx)
 	runtime.KeepAlive(blob)
 
-	perKey := float64(after-before) / float64(footprintKeys)
-	t.Logf("index footprint without the mtime list: %.1f bytes/key (%.0f MB at 1.7M keys)",
-		perKey, perKey*1_700_000/(1<<20))
+	perKey := float64(after-before-addLogBytes(idx)) / float64(footprintKeys)
+	t.Logf("index footprint without the mtime list: %.1f bytes/key (%.0f MB at 1.7M keys), plus %.1f MB of add log",
+		perKey, perKey*1_700_000/(1<<20), float64(addLogBytes(idx))/(1<<20))
 	require.Less(t, perKey, indexNoEntriesMaxBytesPerKey,
 		"with the mtime list off, a key must cost no more than the hash plus the blob")
 

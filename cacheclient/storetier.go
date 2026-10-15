@@ -2,8 +2,9 @@ package cacheclient
 
 import (
 	"encoding/hex"
+	"fmt"
 	"io"
-	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -47,11 +48,23 @@ func (tier *storeTier) Get(id ActionID) (Entry, error) {
 func (tier *storeTier) GetTiered(id ActionID) (Entry, string, error) {
 	entry, err := tier.DiskCache.Get(id)
 	if err == nil {
+		tier.store.NoteUsed(id)
 		tier.localHits.Add(1)
 		tier.localHitBytes.Add(entry.Size)
 		return entry, TierDisk, nil
 	}
-	outputID, data, _, miss := tier.store.Get(hex.EncodeToString(id[:]))
+	actionID := hex.EncodeToString(id[:])
+	// A fetch already carrying this object lands it on disk. Asking again
+	// would download it twice.
+	if tier.store.AwaitPrefetch(actionID) {
+		if entry, err := tier.DiskCache.Get(id); err == nil {
+			tier.store.NoteUsed(id)
+			tier.localHits.Add(1)
+			tier.localHitBytes.Add(entry.Size)
+			return entry, TierDisk, nil
+		}
+	}
+	outputID, data, _, miss := tier.store.Get(actionID)
 	if miss || data == nil {
 		return Entry{}, TierShared, err
 	}
@@ -137,22 +150,43 @@ func (tier *storeTier) closeStore() error {
 // uploads so the totals here are final rather than in flight.
 func (tier *storeTier) report() {
 	web := tier.store.SummarySnapshot()
-	cacheNotice("cache: local %s, %s stored | server %s, %s pushed | index %s",
+	cacheNotice("cache: local %s, %s stored | server %s, %s pushed, %s | index %s",
 		countBytes(tier.localHits.Load(), tier.localHitBytes.Load()),
 		countBytes(tier.localPuts.Load(), tier.localPutBytes.Load()),
 		countBytes(int64(web.Hits), int64(web.HitBytes)),
 		countBytes(int64(web.Puts), int64(web.PutBytes)),
+		missReasons(web),
 		formatMB(int64(web.IndexBytes)))
 }
 
-// cacheNotice reports what the tiers did, under the variable that makes the
-// client report itself.
-func cacheNotice(format string, args ...any) {
-	if !cacheDebug() {
-		return
+// missReasons names every miss reason the web tier recorded, so the report says
+// what to fix rather than only how often. A total alone cannot be acted on. The
+// poison tripwires are the reasons a guard refused a served object.
+func missReasons(web WebSummary) string {
+	total := web.MissTotal()
+	if total == 0 {
+		return "0 missed"
 	}
-	logging.Infof(format, args...)
+	named := []string{}
+	add := func(name string, n uint32) {
+		if n > 0 {
+			named = append(named, fmt.Sprintf("%s=%d", name, n))
+		}
+	}
+	add("not_in_index", web.MissNotInIndex)
+	add("http_404", web.MissHTTP404)
+	add("http_error", web.MissHTTPError)
+	add("no_outputid", web.MissNoOutputID)
+	add("read_body", web.MissReadBody)
+	add("decompress", web.MissDecompress)
+	add("checksum", web.MissChecksum)
+	add("buildid", web.MissBuildID)
+	add("modindex", web.MissModuleIndex)
+	add("network", web.MissNetwork)
+	return fmt.Sprintf("%d missed (%s)", total, strings.Join(named, " "))
 }
 
-// cacheDebug reports whether the cache is asked to describe itself.
-func cacheDebug() bool { return os.Getenv("GOCACHEDEBUG") != "" }
+// cacheNotice reports what the tiers did.
+func cacheNotice(format string, args ...any) {
+	logging.Infof(format, args...)
+}

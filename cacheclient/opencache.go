@@ -43,6 +43,8 @@ func OpenCache(dir string, store *WebBackend) (Cache, error) {
 		tier := layerStore(disk, store)
 		liveTier.Store(tier)
 		owner = tier
+		// The load and its TLS handshake overlap the go command's package loading.
+		go store.ensureIndex()
 	}
 	serveBroker(owner, dir)
 	return owner, nil

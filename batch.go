@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -19,14 +20,9 @@ import (
 type batchGetRequest struct {
 	Keys     []string `json:"keys"`
 	Prefetch bool     `json:"prefetch"` // include temporally related entries
-	// PrefetchOnly answers with the window around Keys and none of the Keys
-	// themselves. A look-ahead client names keys it already holds purely to say
-	// where in the store's time order to look, so streaming those bodies back
-	// would spend the whole request re-sending what the caller has.
+	// PrefetchOnly answers with the window around Keys and none of the Keys themselves.
 	PrefetchOnly bool `json:"prefetch_only"`
-	// Have is what the client says it already holds. The window leaves those
-	// keys out. An absent filter is a client that states nothing, and it is
-	// sent the full window. See havefilter.go.
+	// Have is what the client says it already holds. The window leaves those keys out.
 	Have *haveFilter `json:"have"`
 }
 
@@ -44,10 +40,6 @@ type batchGetManifest struct {
 }
 
 // batchPutManifestEntry describes a single object in a /_batch/put upload.
-// metadata holds the same values a single PUT carries in X-Cache-Meta-<Name>
-// headers, keyed by the lowercased meta name WITHOUT the prefix (e.g.
-// "outputid", "compression", "size"); they are stored exactly as
-// handlePutObject stores native metadata (user.s3.* xattrs).
 type batchPutManifestEntry struct {
 	Key      string            `json:"key"`
 	Metadata map[string]string `json:"metadata,omitempty"`
@@ -58,8 +50,8 @@ type batchPutManifest struct {
 	Entries []batchPutManifestEntry `json:"entries"`
 }
 
-// batchPutResult is a single entry in the JSON response, a single per manifest
-// key, in manifest order. Status is any of storeStatus* (stored|dropped|conflict|error).
+// batchPutResult is a single entry in the JSON response, a single per
+// manifest key, in manifest order.
 type batchPutResult struct {
 	Key     string `json:"key"`
 	Status  string `json:"status"`
@@ -71,10 +63,7 @@ type batchPutResponse struct {
 	Results []batchPutResult `json:"results"`
 }
 
-// batchEntry identifies a cache entry to include in a batch response. It holds
-// only metadata (key, size, mtime, user metadata) — never the body. Bodies are
-// streamed straight from disk into the tar at write time, so a batch of hundreds
-// of large objects is never materialized in the heap at the same time.
+// batchEntry identifies a cache entry to include in a batch response.
 type batchEntry struct {
 	key      string
 	meta     *ObjectMeta
@@ -84,41 +73,27 @@ type batchEntry struct {
 // maxBatchKeys caps how many keys a single batch request may ask for.
 const maxBatchKeys = 4096
 
-// prefetchWindow is the time window around requested entries within which
-// other entries are considered related and included as prefetch.
+// prefetchWindow is the time window around requested entries.
 const prefetchWindow = 30 * time.Second
 
-// maxPrefetchEntries caps how many extra entries the server will include
-// beyond what was explicitly requested.
+// maxPrefetchEntries caps how many extra entries the server will include beyond what was explicitly requested.
 const maxPrefetchEntries = 200
 
 // handleBatchGet handles GET and POST /_batch/get requests. The client sends a
-// JSON list of keys it needs, and the server responds with a tar stream
-// containing the data and metadata for each found entry. POST is the
-// semantically sound method (the request carries a body; GET-with-a-body is
-// hostile to proxies and caches); GET remains accepted for existing clients.
-//
-// If the server's prefetch config (prefetchEnabled) and the request both ask
-// for it, the server also includes entries whose modification time falls
-// within 30s either side of the requested entries, capturing entries from the same build
-// that the client is likely to need next. The request's own Have filter says
-// which of those the client already holds, and those are left out, so the
-// window keeps moving instead of the same 200-entry pool arriving on every
-// request. The server keeps no record of any of this. With prefetchEnabled
-// false the client's prefetch and prefetch_only flags are ignored: a batch
-// carries only the requested keys, and a prefetch_only request gets an empty
-// manifest.
-//
-// The tar layout is.
-//
-//	manifest.json — index of all entries with metadata data/<key> — raw
-//	file content for each entry
+// JSON list of keys it needs. The server responds with a tar stream containing
+// the data and metadata for each found entry. POST is the semantically sound
+// method (the request carries a body; GET-with-a-body is hostile to proxies
+// and caches); GET remains accepted for existing clients.
 func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, agg *logAggregator, prefetchEnabled bool) {
 	if r.Method != "GET" && r.Method != "POST" {
 		writeError(w, 405, "method_not_allowed", "method not allowed")
 		return
 	}
 
+	if !prefetchEnabled {
+		// A look-ahead request to this server gets an empty answer, so the client stops sending them.
+		w.Header().Set(headerPrefetch, "off")
+	}
 	var req batchGetRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
 		writeError(w, 400, "invalid_request", fmt.Sprintf("invalid JSON: %v", err))
@@ -136,13 +111,9 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 
 	prov := provenanceOf(r)
 
-	// lookup is the keys whose bodies this response carries. With prefetch
-	// off, a prefetch_only request wants nothing but the window, so it carries
-	// none; every other request carries exactly what it asked for.
+	// lookup is the keys whose bodies this response carries.
 	lookup := req.Keys
-	// A prefetch_only request asks for no key. Its keys are look-ahead anchors,
-	// which the client has already hit, so they count as anchors and never
-	// as requested or missed.
+	// A prefetch_only request asks for no key.
 	anchorsOnly := req.PrefetchOnly
 	if !prefetchEnabled {
 		if req.PrefetchOnly {
@@ -151,56 +122,24 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 		req.Prefetch, req.PrefetchOnly = false, false
 	}
 
-	// Stat is cheap (os.Stat + xattrs); the bodies are streamed later, a single
-	// at a time, so the whole batch never sits in memory.
-	var entries []batchEntry
 	requestedSet := set.New[string](len(lookup))
-	var minMod, maxMod time.Time
-
 	for _, key := range lookup {
 		requestedSet.Add(key)
-		meta, err := storage.Stat(key)
-		if err != nil {
-			if !errors.Is(err, ErrNotFound) {
-				log.Printf("batch get: %s: %v", key, err)
-			}
-			continue
+	}
+	entries := parallelFilter(lookup, func(key string) (batchEntry, bool) {
+		return servableEntry(storage, key, false)
+	})
+	var minMod, maxMod time.Time
+	for _, e := range entries {
+		if minMod.IsZero() || e.meta.ModTime.Before(minMod) {
+			minMod = e.meta.ModTime
 		}
-		// Module-index guard: refuse + evict a stored Go module-index blob (same
-		// rationale as handleGetObject) before it ever enters the manifest. On
-		// detection the key is evicted and omitted entirely -- the client treats
-		// the missing entry as a miss and recomputes the index locally.
-		if evictModuleIndexOnReadByKey(storage, key, meta) {
-			continue
-		}
-		// Self-heal: repair an outputid-less object in place (same rationale as
-		// handleGetObject) so it can be served as a hit. If it cannot be repaired,
-		// omit it from the manifest -- the client then treats it as a miss -- but
-		// leave it on disk (no eviction). ensureOutputID fills meta.Metadata with
-		// the reconstructed outputid on success. (No open handle here; the repair
-		// opens, hashes, and stamps its own fd.)
-		if !ensureOutputID(storage, key, meta, nil) {
-			continue
-		}
-		entries = append(entries, batchEntry{key: key, meta: meta})
-
-		if minMod.IsZero() || meta.ModTime.Before(minMod) {
-			minMod = meta.ModTime
-		}
-		if maxMod.IsZero() || meta.ModTime.After(maxMod) {
-			maxMod = meta.ModTime
+		if maxMod.IsZero() || e.meta.ModTime.After(maxMod) {
+			maxMod = e.meta.ModTime
 		}
 	}
 
-	// Prefetch: find related keys by modification time proximity, and let the
-	// index skip what the request says the client holds AS IT SELECTS.
-	// Skipping during selection is what keeps the window moving: filtering the
-	// result afterwards handed back the same nearest maxPrefetchEntries
-	// candidates on every request, so a single time a client had received them
-	// it got prefetched=0 for the rest of its build. The skip is a few bit
-	// tests against the request's own filter, and it runs before the per-key
-	// stat, guard and heal work, so a rejected candidate never costs a file
-	// open or an lz4 block decode.
+	// Prefetch.
 	var nHeld int
 	if req.Prefetch && len(entries) > 0 && !minMod.IsZero() && storage.Index != nil {
 		windowStart := minMod.Add(-prefetchWindow)
@@ -218,33 +157,41 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 
 		prefetched := buildPrefetchEntries(storage, freshKeys)
 		if req.PrefetchOnly {
-			// The requested keys were the anchor, not the ask. They still had to
-			// be stat'ed to find the window, and they still set it, but only the
-			// window is sent.
+			// The requested keys were the anchor, not the ask.
 			entries = prefetched
 		} else {
 			entries = append(entries, prefetched...)
 		}
 	}
 
+	// Open every body and check it against its stored digest before anything is written. That is the request's work.
+	opened := openVerifiedEntries(storage, entries)
+	defer func() {
+		for _, o := range opened {
+			if o.f != nil {
+				o.f.Close()
+			}
+		}
+	}()
+
 	// Build manifest from metadata only — no body bytes are held here.
 	manifest := batchGetManifest{}
-	for _, e := range entries {
-		manifest.Entries = append(manifest.Entries, batchGetManifestEntry{
-			Key:      e.key,
-			Size:     e.meta.Size,
-			Metadata: e.meta.Metadata,
-			Prefetch: e.prefetch,
-		})
-	}
-
-	// Count stats for logging.
 	var nPrefetch int
-	for _, e := range entries {
-		if e.prefetch {
+	for _, o := range opened {
+		manifest.Entries = append(manifest.Entries, batchGetManifestEntry{
+			Key:      o.key,
+			Size:     o.size,
+			Metadata: o.meta.Metadata,
+			Prefetch: o.prefetch,
+		})
+		if o.prefetch {
 			nPrefetch++
 		}
 	}
+	manifestData, _ := json.Marshal(manifest)
+
+	// The rest is wire time, which a slow runner stretches to minutes.
+	releaseSlot(r)
 
 	// Write tar response.
 	w.Header().Set("Content-Type", "application/x-tar")
@@ -254,58 +201,34 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 	defer tw.Close()
 
 	// Manifest earliest.
-	manifestData, _ := json.Marshal(manifest)
 	if err := writeTarEntry(tw, "manifest.json", int64(len(manifestData)), bytes.NewReader(manifestData)); err != nil {
 		log.Printf("batch get: write manifest: %v", err)
 		return
 	}
 
-	// Only a single body is in flight at a time (an io.Copy-sized buffer), so a
-	// batch of hundreds of large objects no longer materializes hundreds of
-	// bodies in the heap — the change that keeps the server within its memory
-	// budget under the concurrent CI matrix load that previously OOM-killed it.
+	// Only a single body is in flight at a time (an io.Copy-sized buffer).
 	var streamed int
-	for _, e := range entries {
-		// The size still comes from the open fd.
-		f, size, err := storage.OpenBody(e.key)
+	for i := range opened {
+		o := &opened[i]
+		err := writeTarEntry(tw, "data/"+o.key, o.size, o.f)
+		o.f.Close()
+		o.f = nil
 		if err != nil {
-			// Vanished between stat and stream (e.g. operator eviction). Skip it:
-			// the client matches data entries by name and treats a missing a
-			// single as a cache miss, so omitting it is safe.
-			continue
-		}
-		// Same check the single-object GET makes: the digest recorded with the
-		// body decides whether these bytes are the ones that were stored.
-		if ok, verifyErr := verifyStoredDigest(f, e.meta.Metadata); verifyErr != nil || !ok {
-			f.Close()
-			if verifyErr == nil {
-				storedDigestMismatchTotal.WithLabelValues("batch_get").Inc()
-				log.Printf("stored digest: %q no longer hashes to the digest stored with it; evicting", e.key)
-				if delErr := storage.Delete(e.key); delErr != nil && !errors.Is(delErr, ErrNotFound) {
-					log.Printf("stored digest: evicting %q: %v", e.key, delErr)
-				}
-			}
-			continue
-		}
-		err = writeTarEntry(tw, "data/"+e.key, size, f)
-		f.Close()
-		if err != nil {
-			// A write error here is almost always the client going away mid-stream;
-			// stop rather than spin through the rest of the batch.
-			log.Printf("batch get: stream %s: %v", e.key, err)
+			// A write error here is almost always the client going away mid-stream.
+			log.Printf("batch get: stream %s: %v", o.key, err)
 			return
 		}
 		streamed++
 		// Counted where the bytes actually leave: an entry that vanished or
 		// failed above never reached the client and must not appear in the
 		// rate.
-		recordObject(agg, prov, e.meta.Metadata, size, false, true)
+		recordObject(agg, prov, o.meta.Metadata, o.size, false, true)
 		// The bandwidth chart is attributed one entry at a time, for the same
 		// reason: a batch carries entries from as many modules as the build
 		// touches, so the response as a whole has no single module to charge.
 		bandwidthFromContext(r.Context()).record(bandwidthSample{
-			module: projectOf(e.meta.Metadata, prov),
-			bytes:  size,
+			module: projectOf(o.meta.Metadata, prov),
+			bytes:  o.size,
 		})
 	}
 
@@ -313,7 +236,7 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 	if anchorsOnly {
 		requested, anchors = 0, len(req.Keys)
 	}
-	found := len(entries) - nPrefetch
+	found := len(opened) - nPrefetch
 	batchRequestsTotal.Inc()
 	batchKeysTotal.WithLabelValues("requested").Add(float64(requested))
 	batchKeysTotal.WithLabelValues("found").Add(float64(found))
@@ -321,9 +244,7 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 	batchKeysTotal.WithLabelValues("prefetched").Add(float64(nPrefetch))
 	batchKeysTotal.WithLabelValues("client_held").Add(float64(nHeld))
 	batchKeysTotal.WithLabelValues("streamed").Add(float64(streamed))
-	// A key this batch asked for that no entry answers is a miss for the
-	// project that asked. Prefetched entries answer nothing that was asked
-	// for, so they are excluded from the found count here as they are above.
+	// A key this batch asked for that no entry answers is a miss for the project that asked.
 	noteProjectMiss(prov, requested-found)
 	// Attached to this request's own log line rather than printed as another
 	// line about the same request.
@@ -332,10 +253,10 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 }
 
 // handleBatchPut handles PUT /_batch/put. This endpoint accepts a tar of many
-// objects in a SINGLE request holding a single admission slot (the whole point),
-// and stores each member through the same path as a single PUT (storeOneObject:
-// module-index refusal, write_once, audit xattrs, index append), returning a
-// per-object result manifest.
+// objects in a SINGLE request holding a single admission slot (the whole point).
+// This endpoint stores each member through the same path as a single PUT
+// (storeOneObject: module-index refusal, write_once, audit xattrs, index
+// append), returning a per-object result manifest.
 //
 // The request tar layout mirrors /_batch/get:
 //
@@ -352,9 +273,7 @@ func handleBatchPut(w http.ResponseWriter, r *http.Request, storage *Storage, ma
 
 	audit := auditMapFromContext(r)
 
-	// Bound the whole batch so a single request cannot exhaust memory/disk. Each
-	// member is additionally bounded to maxObjectBytes below via a per-member
-	// LimitReader.
+	// Bound the whole batch so a single request cannot exhaust memory/disk.
 	maxBatchBytes := int64(maxBatchKeys) * maxObjectBytes
 	body := http.MaxBytesReader(w, r.Body, maxBatchBytes)
 	tr := tar.NewReader(body)
@@ -388,8 +307,7 @@ func handleBatchPut(w http.ResponseWriter, r *http.Request, storage *Storage, ma
 	}
 
 	// Index the manifest by the data member name we expect for each entry, so we
-	// can pair the data members (read in stream order) with their metadata and
-	// detect a data member that has no manifest entry (or vice versa).
+	// can pair the data members (read in stream order) with their metadata.
 	type pending struct {
 		entry  batchPutManifestEntry
 		seen   bool
@@ -411,9 +329,7 @@ func handleBatchPut(w http.ResponseWriter, r *http.Request, storage *Storage, ma
 		byDataName[name] = &pending{entry: e, result: &results[i]}
 	}
 
-	// Stream the data members. storeOneObject reads each body through a bounded
-	// per-member reader (maxObjectBytes) so a single oversized member cannot
-	// blow the budget, and the tar reader bounds reads to the current member anyway.
+	// Stream the data members.
 	var nStored, nDropped, nConflict, nError int
 	for {
 		hdr, err := tr.Next()
@@ -439,10 +355,7 @@ func handleBatchPut(w http.ResponseWriter, r *http.Request, storage *Storage, ma
 		}
 		p.seen = true
 
-		// auditMapFromContext returns a fresh map each time it is called from the
-		// single-PUT path; here the request-level audit (uploader, IP, UA,
-		// timestamp) is shared across members, so clone it per member because
-		// PutStream mutates the map (it writes content_length).
+		// auditMapFromContext returns a fresh map each time it is called from the single-PUT path; here the request-level audit (uploader, IP, UA, timestamp) is shared across members.
 		memberAudit := cloneAudit(audit)
 		member := io.LimitReader(tr, maxObjectBytes)
 		status, storeErr := storeOneObject(storage, p.entry.Key, member, p.entry.Metadata, memberAudit)
@@ -480,9 +393,8 @@ func handleBatchPut(w http.ResponseWriter, r *http.Request, storage *Storage, ma
 	_ = json.NewEncoder(w).Encode(batchPutResponse{Results: results})
 }
 
-// cloneAudit returns a shallow copy of the per-request audit map so each batch
-// member gets its own map to carry the per-member content_length that PutStream
-// writes (PutStream mutates the map in place). A nil audit clones to nil.
+// cloneAudit returns a shallow copy of the per-request audit map so each
+// batch.
 func cloneAudit(audit map[string]string) map[string]string {
 	if audit == nil {
 		return nil
@@ -501,9 +413,7 @@ func isMaxBytesErr(err error) bool {
 	return errors.As(err, &maxErr)
 }
 
-// tarCopyBufs supplies the copy buffer each member is streamed through. The
-// tar writer implements neither ReaderFrom nor WriterTo, so an explicit
-// buffer is what gets used.
+// tarCopyBufs supplies the copy buffer each member is streamed through.
 var tarCopyBufs = sync.Pool{New: func() any {
 	b := make([]byte, 64<<10)
 	return &b
@@ -524,31 +434,65 @@ func writeTarEntry(tw *tar.Writer, name string, size int64, r io.Reader) error {
 	return err
 }
 
-// buildPrefetchEntries stats the given prefetch keys and applies the same
-// guard/heal gates the requested-key loop uses, returning servable entries
-// (metadata only). Bodies are not read here — they are streamed later
-// alongside the explicitly requested ones. The caller has already run tracker
-// suppression, so every key here is genuinely about to be offered.
-func buildPrefetchEntries(storage *Storage, keys []string) []batchEntry {
-	var out []batchEntry
-	for _, key := range keys {
-		meta, err := storage.Stat(key)
+// openedEntry is a batch member whose body is open and matches its stored digest.
+type openedEntry struct {
+	batchEntry
+	f    *os.File
+	size int64
+}
+
+// openVerifiedEntries opens each entry's body and checks it against the digest
+// recorded with it, the same check the single-object GET makes. A body that
+// vanished since its stat is left out. A body that no longer matches is left
+// out and evicted, so the client reads it as a miss and the next upload
+// replaces it. The caller owns the returned files.
+func openVerifiedEntries(storage *Storage, entries []batchEntry) []openedEntry {
+	return parallelFilter(entries, func(e batchEntry) (openedEntry, bool) {
+		f, size, err := storage.OpenBody(e.key)
 		if err != nil {
-			continue
+			return openedEntry{}, false
 		}
-		// Module-index guard here too: never prefetch a stored module-index blob.
-		// Detect it, evict it, and skip it -- offering it would just hand the
-		// client poison it would refuse anyway.
-		if evictModuleIndexOnReadByKey(storage, key, meta) {
-			continue
+		ok, verifyErr := storage.verifyStoredDigestFor(e.key, f, e.meta.Metadata)
+		if verifyErr == nil && ok {
+			return openedEntry{batchEntry: e, f: f, size: size}, true
 		}
-		// Self-heal here too: repair an outputid-less object in place so it is
-		// usable prefetch; if it cannot be repaired, skip it (leave it on disk)
-		// rather than offer the client bytes it would have to discard.
-		if !ensureOutputID(storage, key, meta, nil) {
-			continue
+		f.Close()
+		if verifyErr != nil {
+			return openedEntry{}, false
 		}
-		out = append(out, batchEntry{key: key, meta: meta, prefetch: true})
+		storedDigestMismatchTotal.WithLabelValues("batch_get").Inc()
+		log.Printf("stored digest: %q no longer hashes to the digest stored with it; evicting", e.key)
+		if delErr := storage.Delete(e.key); delErr != nil && !errors.Is(delErr, ErrNotFound) {
+			log.Printf("stored digest: evicting %q: %v", e.key, delErr)
+		}
+		return openedEntry{}, false
+	})
+}
+
+// servableEntry stats key and applies the read guards. It refuses and evicts
+// a stored module-index blob, and it repairs an object with no outputid in
+// place. Bodies are not read here.
+func servableEntry(storage *Storage, key string, prefetch bool) (batchEntry, bool) {
+	meta, err := storage.Stat(key)
+	if err != nil {
+		if !prefetch && !errors.Is(err, ErrNotFound) {
+			log.Printf("batch get: %s: %v", key, err)
+		}
+		return batchEntry{}, false
 	}
-	return out
+	if evictModuleIndexOnReadByKey(storage, key, meta) {
+		return batchEntry{}, false
+	}
+	if !ensureOutputID(storage, key, meta, nil) {
+		return batchEntry{}, false
+	}
+	return batchEntry{key: key, meta: meta, prefetch: prefetch}, true
+}
+
+// buildPrefetchEntries returns the servable entries for the prefetch keys. The
+// caller has already left out the keys the client holds.
+func buildPrefetchEntries(storage *Storage, keys []string) []batchEntry {
+	return parallelFilter(keys, func(key string) (batchEntry, bool) {
+		return servableEntry(storage, key, true)
+	})
 }

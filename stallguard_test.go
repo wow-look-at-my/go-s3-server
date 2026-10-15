@@ -38,9 +38,9 @@ func guarded(fn func(w http.ResponseWriter, r *http.Request)) http.HandlerFunc {
 // deadline this guard replaced. A whole-request write deadline threw away a
 // response for taking too long in total, however healthy it was. The cache's
 // biggest responses -- a batch tar, the key index -- are exactly the ones that
-// take longest, so the cap fell hardest on the transfers worth keeping. Here
-// the body is delivered in chunks spread well past the window, and it must
-// arrive whole.
+// take longest. The cap fell hardest on the transfers worth keeping. Here the
+// body is delivered in chunks spread well past the window, and it must arrive
+// whole.
 func TestStallGuard_SlowButSteadyResponseCompletes(t *testing.T) {
 	t.Serial() // the window is package state
 
@@ -139,14 +139,13 @@ func readSteadily(t *testing.T, url string) (int64, time.Duration, error) {
 	}
 }
 
-// steadyBodyBytes is far past loopback socket buffers, so the server is still
-// writing long after the stall window has elapsed several times over.
+// steadyBodyBytes is far past loopback socket buffers.
 const steadyBodyBytes = 32 << 20
 
 // TestStallGuard_LongServeContentCompletes is the regression for truncated
 // /_index downloads. handleGetIndex serves the blob through http.ServeContent,
 // whose copy lands in statusRecorder.ReadFrom as a single call for the whole
-// body. Progress was counted only when that call returned, so a download that
+// body. Progress was counted only when that call returned. A download that
 // kept flowing looked silent to the guard and was cut off after windows, and
 // the client read "unexpected EOF". Progress must count as the body moves.
 func TestStallGuard_LongServeContentCompletes(t *testing.T) {
@@ -198,7 +197,7 @@ func TestStallGuard_LongFileCopyCompletes(t *testing.T) {
 }
 
 // TestStatusRecorderReadFromHonorsLimit pins the chunked forward against the
-// io.CopyN that http.ServeContent performs: it must stop at the limit, report
+// io.CopyN that http.ServeContent performs. It must stop at the limit, report
 // exactly what it copied, and leave the caller's LimitedReader drained.
 func TestStatusRecorderReadFromHonorsLimit(t *testing.T) {
 	src := bytes.Repeat([]byte("L"), 3*readFromChunk+17)

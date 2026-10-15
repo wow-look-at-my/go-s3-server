@@ -1,21 +1,6 @@
 package main
 
 // Durable last-use tracking.
-//
-// Eviction drops the least recently USED entries, and the only record of a read
-// that outlives the process is the filesystem's access time. The kernel
-// advances it whenever a body is read; under the default relatime it moves at
-// most a single time a day, which is the resolution a multi-day eviction window
-// needs, and -- unlike the in-memory access map, which starts empty on every
-// restart -- it survives restarts. Without it a hot object written months ago
-// looks idle to the earliest sweep after a restart and is evicted while still in use.
-//
-// Not every filesystem records it (noatime mounts, platforms whose file info
-// carries no access time), so the server probes the actual data_dir at startup
-// rather than inferring from mount options, which overlayfs, bind mounts and
-// NFS all make unreliable: write a throwaway file, backdate it, read it, and
-// see whether the access time moved. When it did not, the server falls back to
-// tracking access in memory and says so.
 
 import (
 	"fmt"
@@ -27,7 +12,7 @@ import (
 const atimeProbeAge = 48 * time.Hour
 
 // atimeIsRecorded reports whether reading a file in dir advances its access
-// time. The probe file carries the temp-file prefix, so it is skipped by every
+// time. The probe file carries the temp-file prefix. It is skipped by every
 // walk of the data_dir and swept at the next startup even if this process dies
 // mid-probe.
 func atimeIsRecorded(dir string) (bool, error) {
@@ -59,15 +44,13 @@ func atimeIsRecorded(dir string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("stat probe file: %w", err)
 	}
-	// Anything past the backdate means the read was recorded; the read happened
-	// just now, so the margin only has to exclude clock jitter.
+	// Anything past the backdate means the read was recorded.
 	return fileAccessTime(info).After(backdated.Add(time.Hour)), nil
 }
 
-// lastUsedUnix is when an object was last used: the later of its write time,
-// the filesystem's access time, and any access this process recorded in memory.
-// Each source can be missing, and taking the maximum means a missing a single
-// only ever makes an entry look older, never younger.
+// lastUsedUnix is when an object was last used. This covers the later of its
+// write time, the filesystem's access time, and any access this process
+// recorded in memory.
 func lastUsedUnix(obj ListObject, memAccess int64) int64 {
 	used := obj.LastModified.Unix()
 	if !obj.LastAccess.IsZero() {

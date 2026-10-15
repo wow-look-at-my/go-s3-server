@@ -1,6 +1,4 @@
-// The dashboard polls a single JSON snapshot and redraws. It keeps no state
-// on the server: a rate is the difference between samples this page took, so
-// a reload starts the rate over and nothing else.
+// The dashboard polls a single JSON snapshot and redraws.
 
 const POLL_MS = 1000;
 
@@ -10,6 +8,7 @@ const state = {
 	timer: null,
 	projects: null, // the last per-project totals, for per-project rates
 	projectNames: null,
+	reads: null, // the last read totals, for the per-poll hit rate
 	raw: null, // the body of the snapshot on screen, verbatim, for "copy json"
 };
 
@@ -156,20 +155,42 @@ function setState(text, led) {
 	el.toggleAttribute("live", led !== "bad");
 }
 
-// hitRateTile reports the batch path, which is where every read of the current
-// client goes; a single-object GET is an older client, and it counts only when
-// there is no batch traffic to report.
-function hitRateTile(stats) {
+// batchReads is every key a build asked for on the batch path. A client misses
+// a key its index lacks without a request, and reports those skips later. The
+// server never saw them, so they are added here as misses.
+function batchReads(stats) {
 	const kinds = byLabel(stats, "s3_batch_keys_total", "kind");
-	const requested = kinds.requested || 0;
-	if (requested) {
-		const found = kinds.found || 0;
-		return tile("hit rate", percent(found, requested), `${count(found)} of ${count(requested)} keys asked for in batches`);
-	}
+	const skipped = byLabel(stats, "s3_client_skips_total", "op").get || 0;
+	const found = kinds.found || 0;
+	return { found, skipped, asked: (kinds.requested || 0) + skipped };
+}
+
+// allReads is every key a build asked for on either read path: the batch
+// reads plus the single-object GETs.
+function allReads(stats) {
+	const batch = batchReads(stats);
 	const outcomes = byLabel(stats, "s3_get_requests_total", "outcome");
-	const reads = sum(outcomes);
-	const hits = outcomes.hit || 0;
-	return tile("hit rate", reads ? percent(hits, reads) : "--", `${count(hits)} of ${count(reads)} single GETs`);
+	const single = sum(outcomes);
+	const singleHits = outcomes.hit || 0;
+	return {
+		found: batch.found + singleHits,
+		asked: batch.asked + single,
+		skipped: batch.skipped,
+		single,
+	};
+}
+
+function hitRateTile(stats) {
+	const { found, asked, skipped, single } = allReads(stats);
+	if (!asked) return tile("hit rate", "--", "no build has asked for a key yet");
+	return tile("hit rate", percent(found, asked), `${count(found)} of ${count(asked)} keys builds asked for; ${count(skipped)} missed in the client's index, ${count(single)} single GETs`);
+}
+
+// The size of the GET /_index body a client downloads right now, before compression.
+function indexSizeTile(index) {
+	const wire = index ? index.wire_bytes : 0;
+	if (!wire) return tile("index size", "--", "the server reports no index");
+	return tile("index size", `${(wire / 1e6).toFixed(2)} MB`, `${count(wire)} bytes uncompressed from /_index`);
 }
 
 function drawTiles(stats) {
@@ -186,11 +207,22 @@ function drawTiles(stats) {
 		hitRateTile(stats),
 		cacheSizeTile(cacheBytes, budget, indexed),
 		tile("keys advertised", count(indexed), "action hashes in /_index"),
+		indexSizeTile(stats.index),
 		tile("slots in use", `${count(admitted)} / ${count(limit)}`, `${count(inFlight)} in flight; ${shed}`, rejected ? "warn" : ""),
 		tile("batch requests", count(value(stats, "s3_batch_requests_total")), `${count(byLabel(stats, "s3_batch_keys_total", "kind").streamed || 0)} bodies streamed`),
 		tile("evicted", count(value(stats, "s3_evictions_total")), `${bytes(value(stats, "s3_evicted_bytes_total"))} reclaimed`),
 	]);
 }
+
+// The outcome label values a single GET can record.
+const GET_OUTCOMES = [
+	"hit",
+	"miss_not_found",
+	"miss_advertised_unservable",
+	"miss_module_index_evicted",
+	"miss_peek_error",
+	"miss_selfheal_failed",
+];
 
 function drawReads(stats) {
 	const outcomes = byLabel(stats, "s3_get_requests_total", "outcome");
@@ -198,9 +230,7 @@ function drawReads(stats) {
 	const tone = (k) => (k === "hit" ? "good" : k === "miss_not_found" ? "" : "bad");
 	fill(
 		$("get-outcomes"),
-		Object.entries(outcomes)
-			.sort((a, b) => b[1] - a[1])
-			.map(([k, v]) => bar(k, v, total, tone(k), `${count(v)}  ${percent(v, total)}`)),
+		GET_OUTCOMES.map((k) => bar(k, outcomes[k] || 0, total, tone(k), `${count(outcomes[k] || 0)}  ${percent(outcomes[k] || 0, total)}`)),
 	);
 	$("single-gets").hidden = !Object.keys(outcomes).length;
 
@@ -226,9 +256,7 @@ function drawTraffic(stats) {
 	drawRate(stats);
 }
 
-// push feeds a single sample to a <perf-graph>. The element is defined by a
-// module fetched at run time, so an early poll can land before it upgrades; a
-// plain element has no push and the sample is dropped rather than throwing.
+// push feeds a single sample to a <perf-graph>.
 function push(id, v) {
 	const el = $(id);
 	if (el && typeof el.push === "function") el.push(v);
@@ -254,21 +282,29 @@ function drawRate(stats) {
 	}
 	if (dt <= 0) return;
 
-	// perf-graph owns the history, the scale and the redraw. It is fed the
-	// newest sample and nothing else.
+	// perf-graph owns the history, the scale and the redraw. It is fed the newest sample and nothing else.
 	const now = dv / dt;
 	state.peak = Math.max(state.peak, now);
 	push("rate-chart", now);
 	$("rate-label").textContent = `${now.toFixed(1)} req/s now, peak ${state.peak.toFixed(1)} since this page loaded`;
 }
 
-// Both gauges beside the rate. Both read straight off the snapshot, so
-// neither needs a previous sample and both start drawing on the earliest
-// poll. The batch series is the same a single hitRateTile reads, for the same reason.
+// The hit chart plots the hit rate of the keys asked since the last poll. The
+// counters cover the whole server lifetime, so their plain ratio barely moves
+// after the first hour and hides a drop.
 function drawGauges(stats) {
-	const kinds = byLabel(stats, "s3_batch_keys_total", "kind");
-	const requested = kinds.requested || 0;
-	if (requested) $("hit-chart").push(((kinds.found || 0) / requested) * 100);
+	const { found, asked } = allReads(stats);
+	const prev = state.reads;
+	state.reads = { found, asked };
+	if (prev) {
+		const dAsked = asked - prev.asked;
+		const dFound = found - prev.found;
+		if (dAsked < 0 || dFound < 0) {
+			$("hit-chart").clear?.();
+		} else if (dAsked > 0) {
+			push("hit-chart", (dFound / dAsked) * 100);
+		}
+	}
 	$("inflight-chart").push(value(stats, "cache_http_in_flight_requests"));
 }
 
@@ -276,12 +312,10 @@ function drawGauges(stats) {
 
 // The chart is a rate. A counter that drops means the server restarted.
 function drawProjects(stats) {
+	// stats.projects is exact for every name. The Prometheus series fold names past their bound into "other".
 	const totals = {};
-	for (const { labels, value: v } of points(stats, "s3_project_objects_total")) {
-		const { project, kind } = labels;
-		if (!project) continue;
-		const row = (totals[project] ||= { hit: 0, lookahead: 0, put: 0, miss: 0 });
-		if (kind in row) row[kind] += v;
+	for (const [project, row] of Object.entries(stats.projects || {})) {
+		totals[project] = { hit: row.hit, lookahead: row.lookahead, put: row.put, miss: row.miss };
 	}
 
 	drawProjectHitRates(totals);
@@ -299,9 +333,7 @@ function drawProjects(stats) {
 		return;
 	}
 
-	// Names in a fixed order, so a band keeps its place and its color as
-	// projects come and go. Sorted by name, not by traffic: a band that
-	// reorders itself every poll is unreadable.
+	// Names in a fixed order, so a band keeps its place and its color as projects come and go.
 	const names = Object.keys(totals).sort();
 	if (!state.projectNames || state.projectNames.join("\u0000") !== names.join("\u0000")) {
 		state.projectNames = names;
@@ -318,8 +350,7 @@ function drawProjects(stats) {
 		const now = totals[name];
 		const moved = now.hit + now.lookahead + now.put + now.miss - (was ? was.hit + was.lookahead + was.put + was.miss : 0);
 		if (moved < 0) {
-			// The server restarted between samples. Start the history over
-			// rather than draw a negative band.
+			// The server restarted between samples. Start the history over rather than draw a negative band.
 			chart.clear();
 			return;
 		}
@@ -629,10 +660,8 @@ async function poll() {
 	await pollBandwidth();
 }
 
-// The toggle is a custom element whose module is deferred, and this script is
-// a classic a single at the end of the body, so it runs earliest. Until the
-// element upgrades it carries the attribute and no property, and reading the
-// property alone reports "off" and stops the page polling at all.
+// The toggle is a custom element whose module is deferred. This script is a
+// classic a single at the end of the body. It runs earliest.
 function live() {
 	const el = $("autorefresh");
 	return typeof el.checked === "boolean" ? el.checked : el.hasAttribute("checked");
@@ -683,13 +712,9 @@ $("autorefresh").addEventListener("change", () => {
 	if (live()) poll();
 });
 
-// `checked` is a property scratch-toggle only has a single time it is
-// upgraded. Read it before that and the answer is undefined, which reads as
-// "live is off": the page then draws a single snapshot and never polls again.
-// Waiting makes the poll loop independent of which script the browser ran earliest.
+// `checked` is a property scratch-toggle only has a single time it is upgraded.
 poll();
 await customElements.whenDefined("scratch-toggle");
 schedule();
-// A single time the element upgrades its property is authoritative; re-read
-// it in case it disagrees with the attribute this started on.
+// A single time the element upgrades its property is authoritative.
 customElements.whenDefined("scratch-toggle").then(schedule);

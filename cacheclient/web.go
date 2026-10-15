@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"os"
 	"strings"
 	"sync"
@@ -90,6 +92,7 @@ func (b *WebBackend) resolveIndexMaxAge(indexPath string) time.Duration {
 // support it.
 type WebBackend struct {
 	client    *http.Client
+	transport *http.Transport
 	bucket    string
 	prefix    string
 	endpoint  string
@@ -122,7 +125,7 @@ type WebBackend struct {
 	// hundreds of thousands of entries, and that set is built at startup
 	// before the build does anything at all.
 	keys       *hashSet // known keys, from the startup index fetch + Put claims
-	indexEmpty bool     // remote index was empty at startup: nothing to batch-probe for
+	indexEmpty bool     // remote index was empty at startup.
 	// indexAuthoritative marks a fresh, server-confirmed index: an absent key can then miss without a probe.
 	indexAuthoritative bool
 	// indexKeysAtStart is the key count from the startup index fetch, reported in WebSummary to flag a dead remote.
@@ -130,6 +133,11 @@ type WebBackend struct {
 	// keysJournal records the claims and drops made while a background index
 	// load runs, so the set it installs keeps them. Nil when no load runs.
 	keysJournal *keysJournal
+	// liveGen is the add-log position the live key set is complete up to, zero when the server named none. keysMu guards it.
+	liveGen indexGen
+	// deltaMu serializes the live delta refreshes; deltaAt is when the last one started.
+	deltaMu sync.Mutex
+	deltaAt time.Time
 	// indexBytes is what that fetch cost on the wire, which no hit or put total covers.
 	indexBytes AtomicBytes
 	missesMu   sync.RWMutex
@@ -205,6 +213,12 @@ type WebBackend struct {
 	// SkippedNotInIndex counts clean misses skipped because the authoritative index omits the key.
 	SkippedNotInIndex AtomicCounter
 
+	// SkippedKnownMiss counts clean misses skipped because the server already said this run that the key is absent.
+	SkippedKnownMiss AtomicCounter
+
+	// skips sends the skip counters to the server, so its hit rate counts the misses it never saw.
+	skips skipReporter
+
 	// Reclaimed404 counts stale index claims dropped after the server reported the key absent.
 	Reclaimed404 AtomicCounter
 
@@ -222,6 +236,12 @@ type WebBackend struct {
 	shedUntil atomic.Int64
 	// ShedWaits counts attempts held back, unsent, because the server had asked for quiet.
 	ShedWaits AtomicCounter
+	// downSince is the UnixNano time a request last timed out with no answer, or empty while the server answers.
+	downSince atomic.Int64
+	// probeAt is the UnixNano time the next request may go out while the server is down.
+	probeAt atomic.Int64
+	// SkippedDown counts requests answered as a miss, unsent, because the server had stopped answering.
+	SkippedDown AtomicCounter
 
 	errLog *httpErrLogger
 
@@ -242,6 +262,10 @@ type WebBackend struct {
 	// lookAhead fetches objects the build has not asked for yet, on its own
 	// goroutines. See lookahead.go.
 	lookAhead *lookAhead
+
+	// manifest lists what this build used, and fetches what the last one used.
+	manifest   *buildManifest
+	manifestWG sync.WaitGroup
 	// prep runs a Put's compression off the build's goroutine. See webput.go.
 	prep *prepPool
 }
@@ -270,6 +294,44 @@ const (
 	batchReqChBuf     = 1024
 )
 
+// drainLimit bounds what closeBody reads to save a connection.
+const drainLimit = 256 << 10
+
+// closeBody reads the rest of a response body, then closes it. An HTTP/1.1
+// connection goes back to the pool only when its body was read to EOF.
+func closeBody(body io.ReadCloser) {
+	io.Copy(io.Discard, io.LimitReader(body, drainLimit))
+	body.Close()
+}
+
+// firstDial makes the first request of a process dial alone, so the others
+// share its connection.
+type firstDial struct {
+	next    *http.Transport
+	started atomic.Bool
+	ready   chan struct{}
+	once    sync.Once
+}
+
+func (gate *firstDial) RoundTrip(req *http.Request) (*http.Response, error) {
+	if gate.started.CompareAndSwap(false, true) {
+		release := func() { gate.once.Do(func() { close(gate.ready) }) }
+		defer release()
+		trace := &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { release() }}
+		return gate.next.RoundTrip(req.WithContext(httptrace.WithClientTrace(req.Context(), trace)))
+	}
+	select {
+	case <-gate.ready:
+	case <-req.Context().Done():
+		return nil, req.Context().Err()
+	}
+	return gate.next.RoundTrip(req)
+}
+
+func (gate *firstDial) CloseIdleConnections() {
+	gate.next.CloseIdleConnections()
+}
+
 // NewWebBackend creates a web backend from the given config.
 // Returns nil if bucket is empty.
 func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
@@ -297,25 +359,18 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 		endpoint = "https://" + endpoint
 	}
 
-	// Tune the transport for high-throughput cache uploads. The default Go
-	// transport keeps very few idle connections per host, which forces a new
-	// TCP+TLS handshake for nearly every request. We allow many more
-	// concurrent connections and keep them all alive in the idle pool.
+	// A TLS endpoint gets HTTP/2: every request of this process shares one
+	// connection and one handshake. A server that cannot do HTTP/2 gets the
+	// HTTP/1.1 pool, and the session cache resumes each later handshake.
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		TLSClientConfig: &tls.Config{},
-		// This workload is many independent blobs and wants many independent
-		// windows, which is what the connection pool gives it a single time
-		// nothing collapses them.
-		//
-		// H2's advantages -- header compression, a single handshake -- are
-		// worth little here: the requests are few and large, and the bodies
-		// dwarf the headers.
-		ForceAttemptHTTP2:     false,
-		TLSNextProto:          map[string]func(string, *tls.Conn) http.RoundTripper{},
+		TLSClientConfig: &tls.Config{
+			ClientSessionCache: tls.NewLRUClientSessionCache(0),
+		},
+		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          MaxConnsPerHost,
 		MaxIdleConnsPerHost:   MaxConnsPerHost,
 		MaxConnsPerHost:       MaxConnsPerHost,
@@ -338,8 +393,9 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 		// Liveness is the transport's job instead: ResponseHeaderTimeout above
 		// bounds a server that never answers, which is what a deadline here was
 		// reaching for. The index fetch adds its own stall guard on top.
+		transport: transport,
 		client: &http.Client{
-			Transport: transport,
+			Transport: &firstDial{next: transport, ready: make(chan struct{})},
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
 					return fmt.Errorf("stopped after 10 redirects")
@@ -386,6 +442,7 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	go b.batchPutCoalescer()
 	b.prep = newPrepPool(b)
 	b.lookAhead = newLookAhead(b)
+	b.manifest = newBuildManifest()
 	// The same knob bounds both speculative paths, since both hold bodies the
 	// build never asked for.
 	b.prefetchHold.limit = lookAheadBudget()
@@ -427,12 +484,28 @@ func (b *WebBackend) url(key string) string {
 //   - Key absent but the index fetch FAILED: batch-probe the key (the recovery
 //     path), bounded by the consecutive-empty-batch backoff.
 func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.Time, miss bool) {
+	if b.manifest != nil && !b.manifest.started.Load() {
+		b.startManifest(b.moduleName())
+	}
+	b.manifest.note(actionID)
+	return b.get(actionID)
+}
+
+// NoteUsed records a lookup another tier answered, so the manifest names it too.
+func (b *WebBackend) NoteUsed(id [32]byte) {
+	if b.manifest != nil {
+		b.manifest.note(hex.EncodeToString(id[:]))
+	}
+}
+
+func (b *WebBackend) get(actionID string) (outputID string, data []byte, t time.Time, miss bool) {
 	h, ok := parseActionHash(actionID)
 	if !ok {
 		return "", nil, time.Time{}, true
 	}
 	b.ensureIndex()
-	if b.keyKnown(h) {
+	// Another build can store the key after this process loads its index, so an absence first fetches the keys added since.
+	if b.keyKnown(h) || (b.refreshLiveDelta() && b.keyKnown(h)) {
 		r := b.getBatch(actionID, b.key(actionID), h)
 		return r.outputID, r.data, r.t, r.miss
 	}
@@ -444,6 +517,8 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 	alreadyMissed := b.knownMiss.Contains(h)
 	b.missesMu.RUnlock()
 	if alreadyMissed {
+		b.SkippedKnownMiss.Increment()
+		b.noteSkip()
 		return "", nil, time.Time{}, true
 	}
 
@@ -457,15 +532,43 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 		} else {
 			b.SkippedNotInIndex.Increment()
 		}
+		b.noteSkip()
 		return "", nil, time.Time{}, true
 	}
 	if b.batchProbingOff() {
 		// Backoff tripped: the remote has proven empty for this run. Miss without probing.
 		b.SkippedBatchBackoff.Increment()
+		b.noteSkip()
 		return "", nil, time.Time{}, true
 	}
-	r := b.getBatch(actionID, b.key(actionID), h)
+	r := b.probeDuringLoad(actionID, h)
 	return r.outputID, r.data, r.t, r.miss
+}
+
+// probeDuringLoad asks the server for a key the unconfirmed index does not
+// hold. A running index load races the probe: once the load proves the key
+// absent, the miss returns at once and the probe finishes unread.
+func (b *WebBackend) probeDuringLoad(actionID string, h actionHash) batchResp {
+	load := b.indexLoad.Load()
+	if load == nil {
+		return b.getBatch(actionID, b.key(actionID), h)
+	}
+	probe := make(chan batchResp, 1)
+	go func() { probe <- b.getBatch(actionID, b.key(actionID), h) }()
+	select {
+	case r := <-probe:
+		return r
+	case <-load.done:
+	}
+	b.keysMu.RLock()
+	absent := b.indexAuthoritative && !b.keys.Contains(h)
+	b.keysMu.RUnlock()
+	if !absent {
+		return <-probe
+	}
+	b.SkippedNotInIndex.Increment()
+	b.noteSkip()
+	return batchResp{miss: true}
 }
 
 // Verify decompresses and checks a stored body from a look-ahead entry, under
@@ -534,6 +637,10 @@ func (b *WebBackend) Close() error {
 		l.cancel()
 		<-l.done
 	}
+	// The manifest fetch reads through the GET coalescer.
+	b.awaitManifest()
+	b.storeManifest()
+	b.reportManifest()
 	// The prep pool since it still owes the coalescer every object it holds.
 	b.prep.Close()
 	// Flush the PUT coalescer up front: an unflushed upload was claimed in the index but never stored.
@@ -548,6 +655,7 @@ func (b *WebBackend) Close() error {
 		close(b.batchStop)
 		<-b.batchDone
 	}
+	b.stopSkipReporter()
 	// The coalescer is done, so no further hand-off can start; the ones running
 	// still owe the consumer their callback.
 	b.prefetchWG.Wait()
@@ -588,6 +696,7 @@ func (b *WebBackend) signRequest(req *http.Request) {
 func (b *WebBackend) SetModule(path string) {
 	if path != "" {
 		b.moduleLate.Store(&path)
+		b.startManifest(path)
 	}
 }
 

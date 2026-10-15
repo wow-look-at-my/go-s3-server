@@ -33,8 +33,7 @@ func TestCompressionAdvisory(t *testing.T) {
 		{"zfs with lz4", fakeProbes(true, "tank/cache", "lz4"), true},
 		{"zfs with zstd", fakeProbes(true, "tank/cache", "zstd-3"), true},
 		{"zfs with gzip", fakeProbes(true, "tank/cache", "gzip-9"), true},
-		// Every uncertainty stays silent: an advisory nobody can act on is
-		// noise on every boot.
+		// Every uncertainty stays silent: an advisory nobody can act on is noise on every boot.
 		{"dataset unknown", fakeProbes(true, "", "lz4"), false},
 		{"property unreadable", fakeProbes(true, "tank/cache", ""), false},
 	}
@@ -48,8 +47,7 @@ func TestCompressionAdvisory(t *testing.T) {
 			}
 			assert.Contains(t, msg, "WARNING")
 			assert.Contains(t, msg, "tank/cache")
-			// The point is not "you have compression on" but "it is the
-			// next pass over the same bytes", plus the exact fix.
+			// The point is not "you have compression on" but "it is the next pass over the same bytes", plus the exact fix.
 			assert.Contains(t, msg, "SECOND time")
 			assert.Contains(t, msg, "zfs set compression=off tank/cache")
 		})
@@ -57,8 +55,7 @@ func TestCompressionAdvisory(t *testing.T) {
 }
 
 func TestCompressionAdvisoryNamesTheCompressor(t *testing.T) {
-	// The operator needs to know WHICH compressor is burning the CPU, since
-	// gzip-9 over already-lz4 data costs far more than lz4 does.
+	// The operator needs to know WHICH compressor is burning the CPU.
 	msg := compressionAdvisory("/data", fakeProbes(true, "tank/cache", "gzip-9"))
 	assert.Contains(t, msg, "compression=gzip-9")
 }
@@ -72,8 +69,7 @@ func TestLogCompressionAdvisorySilentForMissingDir(t *testing.T) {
 }
 
 func TestLogCompressionAdvisoryOnRealDataDir(t *testing.T) {
-	// Whatever this machine's filesystem is, the startup path must not blow
-	// up -- and on a non-ZFS dir it must stay quiet.
+	// Whatever this machine's filesystem is, the startup path must not blow up -- and on a non-ZFS dir it must stay quiet.
 	var lines []string
 	logCompressionAdvisory(t.TempDir(), func(f string, a ...any) {
 		lines = append(lines, strings.TrimSpace(f))

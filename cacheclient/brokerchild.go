@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/wow-look-at-my/go-s3-server/cacheclient/cachedisk"
 
@@ -69,7 +70,7 @@ type reply struct {
 // into. An owner of another directory is refused: this process was asked for
 // dir, and a command that sets its own GOCACHE must get that cache.
 func dialBroker(dir string) Cache {
-	name := os.Getenv(brokerEnv)
+	name := os.Getenv(BrokerEnv)
 	if name == "" || os.Getenv(brokerOffEnv) != "" {
 		return nil
 	}
@@ -87,17 +88,24 @@ func dialBroker(dir string) Cache {
 		return nil
 	}
 	ctx, stop := context.WithCancel(context.Background())
-	if err := hello.SendTyped(ctx, opHello, []byte(mine)); err != nil {
+	// A queue can outlive its owner. Then nobody answers the hello, so the handshake has a deadline.
+	shake, shakeDone := context.WithTimeout(ctx, brokerDialTimeout)
+	defer shakeDone()
+	if err := hello.SendTyped(shake, opHello, []byte(mine)); err != nil {
 		stop()
 		channel.Close()
 		channel.Unlink()
+		brokerDialFailed(name, err)
 		return nil
 	}
-	typ, rec, err := channel.Recv(ctx)
+	typ, rec, err := channel.Recv(shake)
 	if err != nil || typ != stDir || len(rec) == 0 || filepath.Clean(string(rec)) != filepath.Clean(dir) {
 		stop()
 		channel.Close()
 		channel.Unlink()
+		if err != nil {
+			brokerDialFailed(name, err)
+		}
 		return nil
 	}
 	link := &brokerLink{
@@ -108,8 +116,21 @@ func dialBroker(dir string) Cache {
 	}
 	go link.read(ctx)
 	brokerNotice("cache: served by the build cache owner at %s", name)
-	return &brokerCache{link: link, dir: dir}
+	child := &brokerCache{link: link, dir: dir}
+	liveChild.Store(child)
+	return child
 }
+
+// brokerDialTimeout bounds the wait for the owner's first answer.
+var brokerDialTimeout = 5 * time.Second
+
+// brokerDialFailed reports that this process opens the cache itself because the named owner did not answer.
+func brokerDialFailed(name string, err error) {
+	brokerNotice("cache: the build cache owner at %s did not answer (%v), so this process opens the cache itself", name, err)
+}
+
+// liveChild is this process's open link to an owner, which Exit closes.
+var liveChild atomic.Pointer[brokerCache]
 
 // read hands each reply to whoever is waiting for it. It parks in the ring
 // between replies, and the arrival of the next reply wakes it.
@@ -250,6 +271,7 @@ func (c *brokerCache) FuzzDir() string {
 // Close drops the channel. Nothing here owns a file, an upload or a trim, so
 // there is nothing to wait for.
 func (c *brokerCache) Close() error {
+	liveChild.CompareAndSwap(c, nil)
 	c.link.stop()
 	<-c.link.done
 	err := c.link.channel.Close()

@@ -10,6 +10,9 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
+
+	ipc "github.com/wow-look-at-my/go-ipc"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,13 +30,13 @@ func dummyID(num int) [HashSize]byte {
 // process below would hold.
 func serveOwner(t *testing.T, dir string) (owner Cache, child Cache) {
 	t.Helper()
-	t.Setenv(brokerEnv, "")
+	t.Setenv(BrokerEnv, "")
 	t.Setenv(brokerOffEnv, "")
 	disk, err := Open(dir)
 	require.NoError(t, err)
 	serveBroker(disk, dir)
 	t.Cleanup(StopBroker)
-	require.NotEmpty(t, os.Getenv(brokerEnv), "the owner must name its endpoint in the environment")
+	require.NotEmpty(t, os.Getenv(BrokerEnv), "the owner must name its endpoint in the environment")
 
 	child = dialBroker(dir)
 	require.NotNil(t, child, "a process that finds a live owner must become a child")
@@ -124,8 +127,30 @@ func TestBrokerSharesOneLookupAndOneStore(t *testing.T) {
 // the environment must not turn the next process into a child of nothing.
 func TestBrokerDeadNameMakesTheNextProcessTheOwner(t *testing.T) {
 	t.Setenv(brokerOffEnv, "")
-	t.Setenv(brokerEnv, "gobuildcache-nobody-holds-this")
+	t.Setenv(BrokerEnv, "gobuildcache-nobody-holds-this")
 	assert.Nil(t, dialBroker(t.TempDir()), "a name nobody answers must not be dialed")
+}
+
+// A queue that outlives its owner still opens, but nobody answers the hello.
+// The dial must give up at the deadline, not wait forever.
+func TestBrokerQueueWithNoOwnerTimesOut(t *testing.T) {
+	t.Serial()
+	name := endpointName("gobuildcache-orphan")
+	queue, err := ipc.CreateQueue(name)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		queue.Close()
+		queue.Unlink()
+	})
+	t.Setenv(brokerOffEnv, "")
+	t.Setenv(BrokerEnv, name)
+	saved := brokerDialTimeout
+	brokerDialTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { brokerDialTimeout = saved })
+
+	start := time.Now()
+	assert.Nil(t, dialBroker(t.TempDir()), "a queue nobody reads must not be dialed")
+	assert.Less(t, time.Since(start), 5*time.Second, "the dial did not stop at its deadline")
 }
 
 // A process that sets its own GOCACHE under a build must get that cache. The
@@ -145,13 +170,26 @@ func TestBrokerOwnerOfAnotherDirectoryIsRefused(t *testing.T) {
 // The off switch is what a bisect of a broker-shaped problem wants: every
 // process then opens the directory for itself.
 func TestBrokerOffSwitchServesNothing(t *testing.T) {
-	t.Setenv(brokerEnv, "")
+	t.Setenv(BrokerEnv, "")
 	t.Setenv(brokerOffEnv, "1")
 	dir := t.TempDir()
 	disk, err := Open(dir)
 	require.NoError(t, err)
 	serveBroker(disk, dir)
 	t.Cleanup(StopBroker)
-	assert.Empty(t, os.Getenv(brokerEnv), "the off switch must leave no endpoint to find")
+	assert.Empty(t, os.Getenv(BrokerEnv), "the off switch must leave no endpoint to find")
 	assert.Empty(t, BrokerEnviron())
+}
+
+// A broker notice goes to the installed Logger. The client never writes to
+// stderr itself, because a consumer's tests can require an empty stderr.
+func TestBrokerNoticeGoesToTheInstalledLogger(t *testing.T) {
+	t.Serial() // the logger is package state
+	var got []string
+	SetLogger(recordingLogger{&got})
+	t.Cleanup(func() { SetLogger(nil) })
+
+	brokerNotice("cache: serving the build cache as %s", "gobuildcache-test")
+
+	require.Equal(t, []string{"cache: serving the build cache as gobuildcache-test"}, got)
 }

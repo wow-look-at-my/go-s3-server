@@ -48,8 +48,8 @@ func parseBatchPutResponse(t testing.TB, resp *http.Response) batchPutResponse {
 	return out
 }
 
-// TestBatchPut_StoresMultipleObjects covers the happy path: a tar of normal
-// objects is accepted in a single request, each is reported "stored", and each
+// TestBatchPut_StoresMultipleObjects covers the happy path. A tar of normal
+// objects is accepted in a single request. Each is reported "stored", and each
 // round-trips via a single GET with the correct body + outputid metadata and is
 // advertised in /_index.
 func TestBatchPut_StoresMultipleObjects(t *testing.T) {
@@ -121,8 +121,9 @@ func TestBatchPut_StoresMultipleObjects(t *testing.T) {
 }
 
 // TestBatchPut_DropsModuleIndexMember covers the module-index refusal per
-// member: a member that decodes to a Go module index is reported "dropped" and
-// is NOT stored (a later GET 404s), while a normal sibling member still stores.
+// member: a member that decodes to a Go module index is reported "dropped". The
+// member is NOT stored (a later GET 404s), while a normal sibling member still
+// stores.
 func TestBatchPut_DropsModuleIndexMember(t *testing.T) {
 	ts := testSetup(t)
 
@@ -164,8 +165,8 @@ func TestBatchPut_DropsModuleIndexMember(t *testing.T) {
 	require.Equal(t, normalBody, got)
 }
 
-// TestBatchPut_WriteOnceConflict covers a write_once conflict member: under a
-// deny/content_differs write_once policy, a member re-uploading a key with
+// TestBatchPut_WriteOnceConflict covers a write_once conflict member. Under a
+// deny/content_differs write_once. Policy, a member re-uploading a key with
 // different content is reported "conflict" (accepted, not overwritten), while a
 // fresh sibling member still stores.
 func TestBatchPut_WriteOnceConflict(t *testing.T) {
@@ -176,7 +177,7 @@ func TestBatchPut_WriteOnceConflict(t *testing.T) {
 
 	original := lz4Compress(t, []byte("original content"))
 
-	// Seed the conflict key with the original content via a single PUT.
+	// Seed the conflict key with the content via a single PUT.
 	resp := doRequest(t, ts, "PUT", "/testbucket/"+conflictKey, original,
 		map[string]string{"X-Cache-Meta-Compression": "lz4", "X-Cache-Meta-Outputid": "orig"})
 	require.Equal(t, 200, resp.StatusCode)
@@ -201,7 +202,7 @@ func TestBatchPut_WriteOnceConflict(t *testing.T) {
 	require.Equal(t, storeStatusConflict, out.Results[0].Status, "a write_once conflict must be reported as conflict")
 	require.Equal(t, storeStatusStored, out.Results[1].Status, "a fresh key alongside a conflict must still store")
 
-	// The conflict key still serves the ORIGINAL content (not overwritten).
+	// The conflict key still serves the content (not overwritten).
 	resp = doRequest(t, ts, "GET", "/testbucket/"+conflictKey, nil, nil)
 	require.Equal(t, 200, resp.StatusCode)
 	got, _ := io.ReadAll(resp.Body)
@@ -291,8 +292,7 @@ func TestBatchPut_ManifestEntryWithoutDataMember(t *testing.T) {
 func TestBatchPut_TooManyEntries(t *testing.T) {
 	ts := testSetup(t)
 
-	// Only the manifest needs to be oversized; no data members are needed since
-	// the entry-count check runs right after decoding the manifest.
+	// Only the manifest needs to be oversized.
 	entries := make([]batchPutManifestEntry, maxBatchKeys+1)
 	for i := range entries {
 		entries[i] = batchPutManifestEntry{Key: "go-buildcache/v1" + strings.Repeat("a", 64)}

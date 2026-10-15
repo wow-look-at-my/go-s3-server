@@ -1,7 +1,7 @@
 package cacheclient
 
 import (
-	"bytes"
+	"encoding/binary"
 	"iter"
 	"slices"
 
@@ -21,11 +21,25 @@ import (
 // are merged in a batch. Depth: docs/memory-limits.md.
 type hashSet struct {
 	// sorted is ascending and deduped: every lookup is a binary search over it.
-	sorted []actionHash
-	// pending holds keys added since the last compaction and absent from
-	// sorted. removed holds keys deleted since then and present in sorted.
-	pending set.Set[actionHash]
-	removed set.Set[actionHash]
+	sorted []hashKey
+	// pending holds keys added since the last compaction and absent.
+	pending set.Set[hashKey]
+	removed set.Set[hashKey]
+}
+
+// hashKey is the first gbciPrefixSize bytes of an action hash, big-endian.
+type hashKey = uint64
+
+// gbciPrefixSize is the hash width of the short index form the client asks for.
+const gbciPrefixSize = 8
+
+func keyOf(h actionHash) hashKey { return binary.BigEndian.Uint64(h[:gbciPrefixSize]) }
+
+// addAll adds every key in src.
+func (s *hashSet) addAll(src *hashSet) {
+	for k := range src.All() {
+		s.addKey(k)
+	}
 }
 
 // compactAt is how many buffered mutations force a merge into the sorted slice.
@@ -34,9 +48,9 @@ type hashSet struct {
 const compactAt = 512
 
 func newHashSet(n int) *hashSet {
-	s := &hashSet{pending: set.New[actionHash](), removed: set.New[actionHash]()}
+	s := &hashSet{pending: set.New[hashKey](), removed: set.New[hashKey]()}
 	if n > 0 {
-		s.sorted = make([]actionHash, 0, n)
+		s.sorted = make([]hashKey, 0, n)
 	}
 	return s
 }
@@ -45,20 +59,18 @@ func newHashSet(n int) *hashSet {
 // which is what a GBCI blob's body is. It costs a single linear check rather
 // than a sort, and it falls back to sorting rather than trusting the claim: a
 // blob that arrives out of order would otherwise make every later lookup wrong.
-func newHashSetFromSorted(hashes []actionHash) *hashSet {
+func newHashSetFromSorted(keys []hashKey) *hashSet {
 	s := &hashSet{
-		sorted:  hashes,
-		pending: set.New[actionHash](),
-		removed: set.New[actionHash](),
+		sorted:  keys,
+		pending: set.New[hashKey](),
+		removed: set.New[hashKey](),
 	}
-	if !slices.IsSortedFunc(s.sorted, compareHash) {
-		slices.SortFunc(s.sorted, compareHash)
+	if !slices.IsSorted(s.sorted) {
+		slices.Sort(s.sorted)
 	}
-	s.sorted = slices.CompactFunc(s.sorted, func(a, b actionHash) bool { return a == b })
+	s.sorted = slices.Compact(s.sorted)
 	return s
 }
-
-func compareHash(a, b actionHash) int { return bytes.Compare(a[:], b[:]) }
 
 func (s *hashSet) Len() int {
 	if s == nil {
@@ -71,13 +83,14 @@ func (s *hashSet) Contains(h actionHash) bool {
 	if s == nil {
 		return false
 	}
-	if s.removed.Contains(h) {
+	k := keyOf(h)
+	if s.removed.Contains(k) {
 		return false
 	}
-	if s.pending.Contains(h) {
+	if s.pending.Contains(k) {
 		return true
 	}
-	_, found := slices.BinarySearchFunc(s.sorted, h, compareHash)
+	_, found := slices.BinarySearch(s.sorted, k)
 	return found
 }
 
@@ -85,19 +98,23 @@ func (s *hashSet) Add(h actionHash) {
 	if s == nil {
 		return
 	}
+	s.addKey(keyOf(h))
+}
+
+func (s *hashSet) addKey(k hashKey) {
 	// A key in removed is still in the sorted slice, so re-adding it is the
 	// deletion going away rather than a new entry.
-	if s.removed.Contains(h) {
-		s.removed.Remove(h)
+	if s.removed.Contains(k) {
+		s.removed.Remove(k)
 		return
 	}
-	if s.pending.Contains(h) {
+	if s.pending.Contains(k) {
 		return
 	}
-	if _, found := slices.BinarySearchFunc(s.sorted, h, compareHash); found {
+	if _, found := slices.BinarySearch(s.sorted, k); found {
 		return
 	}
-	s.pending.Add(h)
+	s.pending.Add(k)
 	if s.pending.Len() >= compactAt {
 		s.compact()
 	}
@@ -107,22 +124,23 @@ func (s *hashSet) Remove(h actionHash) {
 	if s == nil {
 		return
 	}
-	if s.pending.Contains(h) {
-		s.pending.Remove(h)
+	k := keyOf(h)
+	if s.pending.Contains(k) {
+		s.pending.Remove(k)
 		return
 	}
-	if _, found := slices.BinarySearchFunc(s.sorted, h, compareHash); !found {
+	if _, found := slices.BinarySearch(s.sorted, k); !found {
 		return
 	}
-	s.removed.Add(h)
+	s.removed.Add(k)
 	if s.removed.Len() >= compactAt {
 		s.compact()
 	}
 }
 
 // All yields every key a single time, in no particular order.
-func (s *hashSet) All() iter.Seq[actionHash] {
-	return func(yield func(actionHash) bool) {
+func (s *hashSet) All() iter.Seq[hashKey] {
+	return func(yield func(hashKey) bool) {
 		if s == nil {
 			return
 		}
@@ -157,13 +175,13 @@ func (s *hashSet) compact() {
 	}
 	add := s.pending.Values()
 	s.pending.Clear()
-	slices.SortFunc(add, compareHash)
+	slices.Sort(add)
 
 	n := len(s.sorted)
 	s.sorted = slices.Grow(s.sorted, len(add))[:n+len(add)]
 	i, j, w := n-1, len(add)-1, n+len(add)-1
 	for j >= 0 {
-		if i >= 0 && compareHash(s.sorted[i], add[j]) > 0 {
+		if i >= 0 && s.sorted[i] > add[j] {
 			s.sorted[w] = s.sorted[i]
 			i--
 		} else {

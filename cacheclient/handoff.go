@@ -251,7 +251,7 @@ func writeSpool(dir string, spool spoolFile) (string, error) {
 // the spool. It drains before it returns. A spool that another uploader has
 // locked is left to that uploader, and RunUploadSpool returns nil.
 func RunUploadSpool(path string) error {
-	unlock, err := cachedisk.TryLockFile(path)
+	unlock, err := cachedisk.TryLockFile(spoolLockPath(path))
 	if err != nil {
 		return nil
 	}
@@ -264,19 +264,25 @@ func RunUploadSpool(path string) error {
 	}
 	defer release()
 	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		// Another uploader finished this spool and deleted it.
+		release()
+		os.Remove(spoolLockPath(path))
+		return nil
+	}
 	if err != nil {
 		return err
 	}
 	if len(data) == 0 {
-		// A sweep that locked a spool after its uploader deleted it made this file.
+		// An older client locked the spool itself, which created an empty one once its uploader deleted it.
 		release()
-		os.Remove(path)
+		removeSpool(path)
 		return nil
 	}
 	var spool spoolFile
 	if err := json.Unmarshal(data, &spool); err != nil {
 		release()
-		os.Remove(path)
+		removeSpool(path)
 		return fmt.Errorf("upload spool %s: %w; it is deleted", path, err)
 	}
 	cfg := ConfigFromEnv()
@@ -322,13 +328,26 @@ func RunUploadSpool(path string) error {
 		filepath.Base(path), store.Stats.Puts.Load(), len(spool.Entries), gone, failed)
 	// The lock goes first: a file that is open cannot be removed on Windows.
 	release()
-	if err := os.Remove(path); err != nil {
+	if err := removeSpool(path); err != nil {
 		return err
 	}
 	if failed > 0 {
 		return fmt.Errorf("upload spool %s: %d uploads failed", path, failed)
 	}
 	return nil
+}
+
+// spoolLockPath is the file an uploader locks while it runs the spool at
+// path.
+func spoolLockPath(path string) string {
+	return path + ".lock"
+}
+
+// removeSpool deletes the spool at path and its lock file.
+func removeSpool(path string) error {
+	err := os.Remove(path)
+	os.Remove(spoolLockPath(path))
+	return err
 }
 
 // fetchIndexCopy downloads the key index into its disk copy for the next
@@ -381,12 +400,17 @@ func sweepSpools(dir string) {
 			if _, err := os.Stat(strings.TrimSuffix(path, ".log")); err != nil {
 				os.Remove(path)
 			}
+		case strings.HasSuffix(name, ".json.lock"):
+			// A lock goes once its spool is gone.
+			if _, err := os.Stat(strings.TrimSuffix(path, ".lock")); err != nil {
+				os.Remove(path)
+			}
 		case strings.HasSuffix(name, ".json"):
 			if info.Size() == 0 {
 				os.Remove(path)
 				continue
 			}
-			unlock, err := cachedisk.TryLockFile(path)
+			unlock, err := cachedisk.TryLockFile(spoolLockPath(path))
 			if err != nil {
 				continue
 			}

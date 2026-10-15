@@ -17,8 +17,8 @@ import (
 
 // testSetupWithStorage mirrors testSetup but also hands back the underlying
 // *Storage. The read-path module-index tests need to plant a poisoned
-// module-index blob DIRECTLY on disk (storage.PutStream) -- the HTTP PUT guard
-// refuses such a blob, so the only way to reproduce "already stored before the
+// module-index blob DIRECTLY on disk (storage.PutStream). The HTTP PUT guard
+// refuses such a blob. The only way to reproduce "already stored before the
 // guard existed" is to bypass the handler and write it straight to storage.
 func testSetupWithStorage(t *testing.T) (*httptest.Server, *Storage) {
 	t.Helper()
@@ -44,15 +44,12 @@ func testSetupWithStorage(t *testing.T) (*httptest.Server, *Storage) {
 	return ts, storage
 }
 
-// plantModuleIndexBlob writes a module-index blob straight to storage under an
-// indexed cacheprog key, bypassing the HTTP PUT guard. A real index carries an
-// outputid (so the outputid self-heal would happily pass it -- proving the
-// module-index guard, not the self-heal, is what catches it) and is lz4
-// compressed on the wire, so we store the lz4 frame and tag compression=lz4.
-//
-// The payload is REALISTICALLY incompressible (magic + crypto/rand entropy), so
-// its single lz4 block compresses to several KB -- far past the old 512-byte
-// peek that masked the bug.
+// plantModuleIndexBlob writes a module-index blob straight to storage under
+// an indexed cacheprog key, bypassing the HTTP PUT guard. A real index
+// carries an outputid (so the outputid self-heal would happily pass it --
+// proving the module-index guard, not the self-heal, is what catches it) and
+// is lz4 compressed on the wire, so we store the lz4 frame and tag
+// compression=lz4.
 func plantModuleIndexBlob(t *testing.T, storage *Storage, key string) {
 	t.Helper()
 	raw := incompressibleIndexBody(t, 16384)
@@ -82,7 +79,7 @@ func TestGetObject_EvictsModuleIndexOnRead(t *testing.T) {
 
 	plantModuleIndexBlob(t, storage, key)
 
-	// Sanity: the planted key really is on disk and advertised in /_index.
+	// Sanity: the planted key is on disk and advertised in /_index.
 	_, err = storage.Stat(key)
 	require.NoError(t, err, "the poison must be on disk before the read")
 	resp := doRequest(t, ts, "GET", "/testbucket/_index", nil, nil)
@@ -120,18 +117,13 @@ func TestGetObject_EvictsModuleIndexOnRead(t *testing.T) {
 }
 
 // TestGetObject_NonIndexBodyServedUnchanged is the regression guard that the
-// read-path peek does not corrupt or partially consume the served stream: a
+// read-path peek does not corrupt or partially consume the served stream. A
 // normal (non-index) cacheprog object is served byte-for-byte, exactly as before
 // the guard.
 func TestGetObject_NonIndexBodyServedUnchanged(t *testing.T) {
 	ts := testSetup(t)
 
-	// The served body must be LONGER than any peek the guard does so a botched
-	// peek (a single that read but failed to rewind) would visibly truncate it.
-	// The server serves the stored bytes verbatim, so we store a large, random
-	// (hence definitely-not-index, and not lz4-shrinkable) body uncompressed --
-	// with no compression hint the guard checks the raw leading bytes, and a
-	// multi-KB body dwarfs the read-path probe.
+	// The served body must be LONGER than any peek the guard does so a botched peek.
 	const actionHex = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 	key := "go-buildcache/v1" + actionHex
 	payload := make([]byte, 4096)
@@ -152,13 +144,13 @@ func TestGetObject_NonIndexBodyServedUnchanged(t *testing.T) {
 	require.Equal(t, "abc123", resp.Header.Get("X-Cache-Meta-Outputid"))
 }
 
-// TestGetObject_NonCacheprogKeyNotInspected proves the read guard is scoped: an
+// TestGetObject_NonCacheprogKeyNotInspected proves the read guard is scoped. An
 // object whose key is NOT an indexed cacheprog key (go-buildcache/v1<64-hex>) is
-// served exactly as stored even when its body begins with the module-index magic
-// -- such keys carry no cache-protocol contract, so the guard never inspects or
-// evicts them. The index-magic body is planted directly (the unscoped HTTP PUT
-// guard would refuse such a body on any key), which is exactly what makes this a
-// real test of the read guard's scope rather than the PUT guard's.
+// served exactly. As stored even when its body begins with the module-index
+// magic -- such keys carry no cache-protocol contract. The guard never inspects
+// or evicts them. The index-magic body is planted directly (the unscoped HTTP
+// PUT guard would refuse such a body on any key). Which is exactly what makes
+// this a real test of the read guard's scope rather than the PUT guard's.
 func TestGetObject_NonCacheprogKeyNotInspected(t *testing.T) {
 	if !inOwnProcess(t) {
 		return
@@ -185,10 +177,11 @@ func TestGetObject_NonCacheprogKeyNotInspected(t *testing.T) {
 	require.NoError(t, err, "a non-cacheprog object must not be evicted")
 }
 
-// TestBatchGet_EvictsModuleIndex covers the batch path: a poisoned module-index
+// TestBatchGet_EvictsModuleIndex covers the batch path. A poisoned module-index
 // blob requested in a batch is detected, evicted (disk + /_index), and OMITTED
-// from the manifest and tar (the client treats the missing entry as a miss),
-// while a normal sibling key in the same batch is still served untouched.
+// from the manifest and tar (the client treats the missing entry as a miss).
+// This happens while a normal sibling key in the same batch is still served
+// untouched.
 func TestBatchGet_EvictsModuleIndex(t *testing.T) {
 	if !inOwnProcess(t) {
 		return

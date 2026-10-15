@@ -18,8 +18,7 @@ func newTestLRU(budget int64) *lruCache[string, string] {
 // exercise eviction inside a single shard deterministically.
 func oneShardKeys(t *testing.T, n int) []string {
 	t.Helper()
-	// Fixed-width keys so every entry costs the same, which lets a test reason
-	// about the budget in whole entries.
+	// Fixed-width keys so every entry costs the same, which lets a test reason about the budget in whole entries.
 	want := fnv1a("seed") % lruShardCount
 	var out []string
 	for i := 0; len(out) < n; i++ {
@@ -32,8 +31,8 @@ func oneShardKeys(t *testing.T, n int) []string {
 	return out
 }
 
-// TestLRU_StaysWithinBudget is the property the whole memory story rests on:
-// the cache holds what it is allowed to hold and not more, no matter how much
+// TestLRU_StaysWithinBudget is the property the whole memory story rests on.
+// The cache holds what it is allowed to hold and not more, no matter how much
 // is put into it.
 func TestLRU_StaysWithinBudget(t *testing.T) {
 	const budget = 64 * lruShardCount
@@ -42,9 +41,8 @@ func TestLRU_StaysWithinBudget(t *testing.T) {
 	for i := 0; i < 10000; i++ {
 		c.Put(fmt.Sprintf("key-%06d", i), "0123456789012345678901234567890123456789012345678")
 	}
-	// Each shard may exceed its slice by at most the single entry it just made
-	// (evictLocked never drops the newest), so the bound is per-shard budget
-	// plus a single entry, times shards.
+	// Each shard may exceed its slice by at most the entry it made (evictLocked
+	// never drops the newest).
 	require.LessOrEqual(t, c.Bytes(), int64(budget)+int64(lruShardCount)*128,
 		"a cache that can exceed its budget is not a bound")
 	require.Positive(t, c.Evictions(), "the load must actually have evicted")
@@ -88,8 +86,7 @@ func TestLRU_SetBudgetEvictsImmediately(t *testing.T) {
 		"lowering the budget must evict down to it")
 	require.Positive(t, c.Len(), "shrinking is not clearing")
 
-	// And raising it back does not resurrect anything, but does let the cache
-	// fill again.
+	// And raising it back does not resurrect anything, but does let the cache fill again.
 	c.SetBudget(1 << 20)
 	for i := 2000; i < 3000; i++ {
 		c.Put(fmt.Sprintf("key-%06d", i), "value-value-value-value")
@@ -97,10 +94,8 @@ func TestLRU_SetBudgetEvictsImmediately(t *testing.T) {
 	require.Greater(t, c.Bytes(), before/8)
 }
 
-// TestLRU_OversizedEntryIsStillHeld: an entry larger than its shard's whole
-// budget is kept rather than dropped on arrival. A cache that refuses to hold
-// anything has a permanent miss rate, and the overshoot is bounded by the a
-// single entry.
+// TestLRU_OversizedEntryIsStillHeld: an entry larger than its shard's whole budget is kept rather than dropped on arrival. A cache that refuses to hold anything has a permanent miss rate, and the
+// overshoot is bounded by the a single entry.
 func TestLRU_OversizedEntryIsStillHeld(t *testing.T) {
 	c := newTestLRU(lruShardCount)
 	c.Put("k", "a value far larger than the budget")
@@ -144,9 +139,10 @@ func TestLRU_UpdateReplacesRatherThanAccumulates(t *testing.T) {
 	require.Equal(t, 1, c.Len())
 }
 
-// TestLRU_ConcurrentUse exercises the shards under the race detector: readers,
-// writers, invalidations and a budget change together, which is exactly what a
-// batch handler plus the memory controller do.
+// TestLRU_ConcurrentUse exercises the shards under the race detector.
+// TestLRU_ConcurrentUse readers, writers, invalidations and a budget change
+// together, which is exactly what a batch handler plus the memory controller
+// do.
 func TestLRU_ConcurrentUse(t *testing.T) {
 	c := newTestLRU(64 << 10)
 	var wg sync.WaitGroup

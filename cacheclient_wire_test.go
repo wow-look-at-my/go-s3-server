@@ -12,10 +12,7 @@ import (
 	"github.com/wow-look-at-my/go-s3-server/cacheclient"
 )
 
-// wireObject is a single cache object as the client stores it: the action ID it
-// is keyed by, the body, and the output ID, which the GOCACHEPROG contract
-// defines as the sha256 of that body. A client discards a download whose body
-// does not hash to the output ID, so both cannot be made up independently.
+// wireObject is a single cache object as the client stores it.
 type wireObject struct {
 	actionID string
 	outputID string
@@ -39,7 +36,7 @@ func makeWireObjects(n int) []wireObject {
 
 // TestCacheClientColdGetIsServedOverTheWire is the round-trip check on the
 // protocol this repository defines on both sides: cacheclient is the real
-// client, and the server under test is the real server.
+// client. The server under test is the real server.
 //
 // It replaces a dats suite that drove a real `go build` through
 // GOCACHEPROG='go-toolchain cacheprog'. That subcommand no longer exists —
@@ -53,8 +50,7 @@ func TestCacheClientColdGetIsServedOverTheWire(t *testing.T) {
 		return
 	}
 
-	// The client caches the key index under TMPDIR. A private a single keeps
-	// this test off any index another run left behind.
+	// The client caches the key index under TMPDIR.
 	t.Setenv("TMPDIR", t.TempDir())
 	// A single batch, shipped by Close, rather than a window that expires mid-test.
 	t.Setenv("GO_TOOLCHAIN_CACHE_PUT_WINDOW_MS", "30000")
@@ -67,8 +63,7 @@ func TestCacheClientColdGetIsServedOverTheWire(t *testing.T) {
 		Endpoint:  ts.URL,
 		AccessKey: "anyone",
 		SecretKey: "unchecked",
-		// The reader starts inside the writer's minute. This test is about the
-		// wire, so the reader revalidates rather than trusting the writer's copy.
+		// The reader starts inside the writer's minute.
 		IndexMaxAge: -1,
 	}
 	objs := makeWireObjects(8)
@@ -78,8 +73,7 @@ func TestCacheClientColdGetIsServedOverTheWire(t *testing.T) {
 	for _, o := range objs {
 		require.NoError(t, writer.Put(o.actionID, o.outputID, o.body))
 	}
-	// Close flushes the PUT coalescer: until it returns, an upload is claimed
-	// in the client's index but not yet stored on the server.
+	// Close flushes the PUT coalescer: until it returns.
 	require.NoError(t, writer.Close())
 
 	for _, o := range objs {

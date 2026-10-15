@@ -14,59 +14,27 @@ import (
 
 // How this server stays inside its memory limit: it holds less, never serves
 // less.
-//
-// Bodies are already streamed, so a request's own cost is small and bounded.
-// What grows is what the server CACHES in memory -- object metadata, the
-// known-clean verdicts, the prefetch suppression records, the serialized
-// /_index blob. each of those is reconstructible from disk, which makes them
-// the correct thing to give up under pressure: dropping a single costs a
-// re-read, and the client never learns it happened.
-//
-// So each cache is bounded in BYTES (lrucache.go), sized from the process's
-// memory ceiling, and evicts its least-recently-used entries to stay inside
-// that bound. This file adds the feedback loop on top: sample memory in use,
-// and when it climbs, SHRINK the caches' budgets -- which evicts -- then let
-// them grow back as memory recovers.
-//
-// Nothing here touches request handling. A cache server that answers "no"
-// because of its own bookkeeping is useless: every client it refuses rebuilds
-// anyway, having earliest paid for the round trip. Refusing service is not a
-// memory strategy, it is a failure.
-//
-// When no ceiling can be discovered, the caches keep fixed default budgets and
-// the controller does not run.
 
 const (
-	// Fractions of the process budget each cache may claim when it is fully
-	// grown. They are deliberately modest: the cache's real value is on disk,
-	// and these only save syscalls and re-probes.
+	// Fractions of the process budget each cache may claim when it is fully grown.
 	metaCacheBudgetFraction = 0.10
 	cleanMemoBudgetFraction = 0.03
-	// Defaults when there is no discoverable ceiling: what the previous
-	// entry-count bounds worked out to in bytes.
+	// Defaults when there is no discoverable ceiling: what the entry-count bounds worked out to in bytes.
 	defaultMetaCacheBytes = 32 << 20
 	defaultCleanMemoBytes = 16 << 20
 
 	// memShrinkFraction: above this share of the budget, shrink the caches.
 	memShrinkFraction = 0.85
-	// memGrowFraction: below this share, let them grow back. The gap between
-	// both is hysteresis -- without it the controller would oscillate every
-	// sample.
+	// memGrowFraction: below this share, let them grow back.
 	memGrowFraction = 0.65
-	// Multipliers applied to the cache scale on each shrink/grow step. Shrink
-	// fast (memory pressure is urgent), grow slowly (do not re-create the
-	// pressure you just relieved).
+	// Multipliers applied to the cache scale on each shrink/grow step.
 	memShrinkStep = 0.5
 	memGrowStep   = 1.25
-	// memMinScale floors the shrinking: below this the caches are effectively
-	// off and shrinking further only costs re-reads without freeing anything
-	// meaningful.
+	// memMinScale floors the shrinking.
 	memMinScale = 1.0 / 32
 	// memSampleInterval is how often memory in use is sampled.
 	memSampleInterval = 250 * time.Millisecond
-	// memShrinkCooldown / memGrowCooldown bound how often the scale moves, so a
-	// single burst does not walk the caches to their floor and a recovery does
-	// not snap them straight back.
+	// memShrinkCooldown / memGrowCooldown bound how often the scale moves.
 	memShrinkCooldown = 2 * time.Second
 	memGrowCooldown   = 30 * time.Second
 )
@@ -75,27 +43,14 @@ const (
 var memoryBudget int64
 var memoryBudgetSource string
 
-// resolveMemoryBudget discovers the ceiling. Call it a single time at startup.
-//
-// It is deliberately NOT a package-level initializer. go-toolchain injects an
-// init() into this package that installs GOMEMLIMIT from the cgroup limit, and
-// Go runs every package-level variable initializer BEFORE any init(), so
-// detecting at variable-init time read the raw cgroup limit and never saw the
-// smaller ceiling the GC was actually enforcing. The caches were then sized
-// against a number nothing enforced, and s3_memory_limit_bytes reported it --
-// which reads exactly like "no GOMEMLIMIT is set" to anyone diagnosing an OOM.
+// resolveMemoryBudget discovers the ceiling. Call it a single time at
+// startup.
 func resolveMemoryBudget() {
 	memoryBudget, memoryBudgetSource = detectMemoryBudget()
 }
 
 // detectMemoryBudget returns the process's memory ceiling and where it came
 // from.
-//
-// The authoritative answer is the runtime's own limit: GOMEMLIMIT if the
-// operator set it, or the value go-toolchain's injected cgroup guard installed
-// at startup (it reads the cgroup v2/v1 limit and applies a ratio).
-//
-// The cgroup files are a fallback for a binary built without that guard.
 func detectMemoryBudget() (int64, string) {
 	if limit := debug.SetMemoryLimit(-1); limit > 0 && limit != math.MaxInt64 {
 		return limit, "GOMEMLIMIT"
@@ -107,8 +62,7 @@ func detectMemoryBudget() (int64, string) {
 }
 
 // cgroupMemoryLimitPaths are read in order: cgroup v2's unified file then
-// v1's. Both are the container's own limit when the process runs in its own
-// cgroup namespace, which is the normal container case.
+// v1's.
 var cgroupMemoryLimitPaths = []string{
 	"/sys/fs/cgroup/memory.max",
 	"/sys/fs/cgroup/memory/memory.limit_in_bytes",
@@ -137,22 +91,14 @@ func readCgroupMemoryLimit() (int64, bool) {
 	return 0, false
 }
 
-// defaultGCPercent is the heap growth target this server installs when the
-// operator has not set GOGC.
-//
-// It costs CPU: more frequent cycles over the same live data. That is the
-// right trade here, because the alternative is an OOM kill, and because the
-// live set is mostly a few big slices the collector scans cheaply.
+// defaultGCPercent is the heap growth target this server installs when the operator has not set GOGC.
 const defaultGCPercent = 50
 
 // tuneGC installs defaultGCPercent unless the operator set GOGC, and reports
-// what it did. An explicit GOGC always wins: it is the documented knob, and a
-// server that ignores it is lying to whoever set it.
+// what it did.
 func tuneGC() (applied bool, previous int) {
 	if os.Getenv("GOGC") != "" {
-		// Read nothing and set nothing: SetGCPercent has no read-only form,
-		// and every value it accepts changes the target -- a negative a
-		// single turns the collector off entirely.
+		// Read nothing and set nothing: SetGCPercent has no read-only form.
 		return false, 0
 	}
 	return true, debug.SetGCPercent(defaultGCPercent)
@@ -170,12 +116,11 @@ func cacheBudget(fraction float64, fallback int64) int64 {
 	return 1
 }
 
-// shrinkable is a cache the controller can resize. Everything registered must
-// be reconstructible from disk -- the controller's only lever is "hold less".
+// shrinkable is a cache the controller can resize.
 type shrinkable interface {
 	// SetBudget sets the cache's byte budget, evicting down to it.
 	SetBudget(int64)
-	// Bytes reports what it currently holds.
+	// Bytes reports what it holds.
 	Bytes() int64
 }
 
@@ -186,10 +131,8 @@ type namedCache struct {
 	c    shrinkable
 }
 
-// memSampler reads the memory the runtime counts against its limit: everything
-// mapped and not released back to the OS. This is the quantity GOMEMLIMIT
-// governs, so comparing it to the budget compares like with like -- unlike
-// heap-only figures, which miss stacks and runtime metadata.
+// memSampler reads the memory the runtime counts against its limit:
+// everything mapped and not released back to the OS.
 type memSampler struct {
 	samples []metrics.Sample
 }
@@ -260,7 +203,7 @@ func scaled(full int64, scale float64) int64 {
 }
 
 // Run samples until stop is closed. A controller with no budget never runs:
-// the caches keep their default budgets, which is exactly the behavior the
+// the caches keep their default budgets. This is exactly the behavior the
 // server had before it knew its ceiling.
 func (m *memController) Run(stop <-chan struct{}) {
 	if m.budget <= 0 {
@@ -304,9 +247,7 @@ func (m *memController) shrink(inUse int64) {
 		m.warnedAtFloor = true
 		m.mu.Unlock()
 		if atFloor {
-			// Nothing left to give: what remains is the index and in-flight work,
-			// neither of which may be dropped. Say so plainly -- this is the a
-			// single case where the operator, not the server, has to act.
+			// Nothing left to give: what remains is the index and in-flight work, neither of which may be dropped. Say so plainly -- this is the a single case where the operator, not the server, has to act.
 			log.Printf("memory: %d MiB in use of a %d MiB budget with the in-memory caches already at their floor (holding %d MiB). The rest is the key index and in-flight requests, which cannot be dropped without breaking the cache -- this container needs more memory.",
 				inUse>>20, m.budget>>20, held>>20)
 		}

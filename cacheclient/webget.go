@@ -1,6 +1,7 @@
 package cacheclient
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -22,12 +23,14 @@ func (b *WebBackend) getIndividual(actionID, key string, h actionHash) batchResp
 	if err != nil {
 		b.Pool.Release()
 		b.MissNetwork.Increment()
-		logging.Warnf("cacheprog: web get %s: %v", ShortID(actionID), err)
+		if !errors.Is(err, errServerDown) {
+			logging.Warnf("cacheprog: web get %s: %v", ShortID(actionID), err)
+		}
 		return batchResp{miss: true}
 	}
 
 	if resp.StatusCode == 404 {
-		resp.Body.Close()
+		closeBody(resp.Body)
 		b.Pool.Release()
 		b.MissHTTP404.Increment()
 		// Drop the stale index claim so the PUT path re-uploads; otherwise the key 404s forever.
@@ -36,7 +39,7 @@ func (b *WebBackend) getIndividual(actionID, key string, h actionHash) batchResp
 	}
 	if resp.StatusCode != 200 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		resp.Body.Close()
+		closeBody(resp.Body)
 		b.Pool.Release()
 		b.MissHTTPError.Increment()
 		b.errLog.Record("web get", resp.StatusCode, actionID, string(respBody))
@@ -59,7 +62,7 @@ func (b *WebBackend) getIndividual(actionID, key string, h actionHash) batchResp
 	} else {
 		compressed, err = io.ReadAll(resp.Body)
 	}
-	resp.Body.Close()
+	closeBody(resp.Body)
 	b.Pool.Release()
 	if b.Latency != nil {
 		b.Latency.HTTPGet.Record(time.Since(httpStart))

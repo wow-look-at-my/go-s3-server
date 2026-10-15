@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/go-s3-server/cacheclient"
@@ -135,24 +136,35 @@ func TestProvenanceHeadersMatchTheClient(t *testing.T) {
 	assert.Equal(t, cacheclient.KindLookAhead, kindLookAhead)
 }
 
-func TestProjectOfPrefersTheModuleThenTrimsTheImportPath(t *testing.T) {
-	none := requestProvenance{}
-	assert.Equal(t, "example.com/mod", projectOf(map[string]string{"module": "example.com/mod", "pkg": "example.com/mod/deep/pkg"}, none))
-	assert.Equal(t, "example.com/owner/repo", projectOf(map[string]string{"pkg": "example.com/owner/repo/internal/thing"}, none))
-	assert.Equal(t, "std/fmt", projectOf(map[string]string{"pkg": "std/fmt"}, none))
-	assert.Empty(t, projectOf(map[string]string{"outputid": "x"}, none))
-	assert.Empty(t, projectOf(nil, none))
+func TestProjectOfIsTheRequestingBuild(t *testing.T) {
+	assert.Equal(t, "example.com/asker", projectOf(requestProvenance{module: "example.com/asker"}))
+	assert.Empty(t, projectOf(requestProvenance{}))
 }
 
-// An object can carry no metadata at all -- a served body whose xattrs were
-// never stamped. The request that moved it still names a project, and that is
-// the whole reason the client sends the header.
-func TestProjectOfFallsBackToTheRequestingBuild(t *testing.T) {
-	asking := requestProvenance{module: "example.com/asker"}
-	assert.Equal(t, "example.com/asker", projectOf(nil, asking))
-	assert.Equal(t, "example.com/asker", projectOf(map[string]string{"outputid": "x"}, asking))
-	// The object's own module still wins: it says what the bytes ARE.
-	assert.Equal(t, "example.com/mod", projectOf(map[string]string{"module": "example.com/mod"}, asking))
+// A hit on an object another project stored counts for the build that asked,
+// the same project its misses count against. Otherwise the per-project hit
+// rate divides one project's hits by another project's misses.
+func TestHitAndMissCountForTheSameProject(t *testing.T) {
+	const asker = "example.com/hitmiss-asker"
+	const writer = "example.com/hitmiss-writer"
+	prov := requestProvenance{module: asker}
+	stored := map[string]string{"module": writer, "pkg": "internal/abi", "body-size": "10"}
+
+	hitsBefore := testutil.ToFloat64(projectObjectsTotal.WithLabelValues(asker, objKindHit))
+	missesBefore := testutil.ToFloat64(projectObjectsTotal.WithLabelValues(asker, objKindMiss))
+	writerBefore := testutil.ToFloat64(projectObjectsTotal.WithLabelValues(writer, objKindHit))
+
+	recordObject(nil, prov, stored, 10, false, true)
+	noteProjectMiss(prov, 1)
+
+	assert.Equal(t, hitsBefore+1, testutil.ToFloat64(projectObjectsTotal.WithLabelValues(asker, objKindHit)), "the hit must count for the requester")
+	assert.Equal(t, missesBefore+1, testutil.ToFloat64(projectObjectsTotal.WithLabelValues(asker, objKindMiss)))
+	assert.Equal(t, writerBefore, testutil.ToFloat64(projectObjectsTotal.WithLabelValues(writer, objKindHit)), "the module that stored the object must not get the hit")
+
+	row := projectTotals.snapshot()[asker]
+	assert.Equal(t, uint64(1), row.Hit, "the dashboard row has the hit")
+	assert.Equal(t, uint64(1), row.Miss, "the dashboard row has the miss")
+	assert.Zero(t, projectTotals.snapshot()[writer].Hit)
 }
 
 func TestRawSizeOfRejectsWhatItCannotTrust(t *testing.T) {

@@ -1,16 +1,4 @@
 // Browser check for the dashboard's BY PROJECT panel.
-//
-// The Go tests cover the counters and the snapshot. What they cannot reach is
-// This starts the real server, moves real objects through it under different
-// project headers, and reads the painted pixels back.
-//
-// go-toolchain # builds build/go-s3-server
-//
-// The page imports <perf-graph> from the js-snippets library site at run
-// time. That site carries the MERGED library, so an unmerged branch has no
-// stacked mode there yet. This check therefore takes the module from a local
-// js-snippets build, and it fails when there is none rather than testing a
-// component nobody changed. JS_SNIPPETS_DIST moves where it looks.
 
 import { createRequire } from 'node:module';
 const { chromium } = createRequire(import.meta.url)('playwright');
@@ -21,9 +9,7 @@ import { join, resolve } from 'node:path';
 
 const BINARY = process.env.GO_S3_SERVER ?? 'build/go-s3-server';
 const DIST = process.env.JS_SNIPPETS_DIST ?? '/home/user/js-snippets/dist';
-// The HTML names the library site through its `@library` alias. The module
-// names it through the `branch/library` path. Both spellings have to land on
-// the local build, or the component quietly comes from the network.
+// The HTML names the library site through its `@library` alias. The module names it through the `branch/library` path.
 const LIBRARY = 'https://sites.pazer.build/js-snippets/';
 const ALIASES = ['@library/', 'branch/library/'];
 const BUCKET = 'dashboard-check';
@@ -78,8 +64,7 @@ const until = async (fn, what) => {
 
 await until(async () => (await fetch(`http://127.0.0.1:${API}/_health`)).ok, 'the cache API');
 
-// Traffic under project names: a single that hits, a single that only misses,
-// and a single that only stores. The panel has to tell them apart.
+// Traffic under project names: a single that hits, a single that only misses, and a single that only stores.
 const url = (n) => `http://127.0.0.1:${API}/${BUCKET}/${'0'.repeat(56)}${String(n).padStart(8, '0')}`;
 const put = (project, n) =>
 	fetch(url(n), {
@@ -94,9 +79,7 @@ for (let n = 100; n < 106; n++) await put('github.com/wow-look-at-my/js-snippets
 
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1400, height: 1000 }, deviceScaleFactor: 2 });
-// An uncaught exception fails the run. A console error only gets reported:
-// the page chrome logs a single when the Google webfonts its tokens name
-// are blocked, which says nothing about whether the panel drew.
+// An uncaught exception fails the run.
 const errors = [];
 const notes = [];
 page.on('console', (m) => {
@@ -104,8 +87,7 @@ page.on('console', (m) => {
 });
 page.on('pageerror', (e) => errors.push(String(e)));
 
-// Serve the library modules from a local build when a single is there, so a
-// branch is verifiable before its library publish lands.
+// Serve the library modules from a local build when a single is there.
 const local = existsSync(join(DIST, 'ui/perf-graph.js'));
 check(local, `no local js-snippets build at ${DIST}: run pnpm build there first`);
 console.log(`serving <perf-graph> from ${DIST}`);
@@ -122,11 +104,6 @@ if (local) {
 // switch is a scratch-ui element, and the poll loop reads `checked` off it.
 // A stub leaves that undefined. The page then polls a single time and
 // stops, and every rate on it sits on its waiting-for-a-sample text forever.
-//
-// Node fetches it and hands the bytes to the page, rather than the browser
-// fetching it: this sandbox reaches the internet through a proxy whose CA the
-// bundled chromium does not carry, and turning the browser's certificate
-// checking off to work around that is not a trade this check makes.
 await page.route('https://sites.pazer.build/scratch_ui/**', async (route) => {
 	const url = route.request().url();
 	const res = await fetch(url);
@@ -160,9 +137,7 @@ const report = await page.evaluate(() => {
 		colors: 0,
 	};
 	if (canvas) {
-		// The newest column, not the middle: the page starts with no history, so
-		// after a few polls the bands hug the right edge and the middle is still
-		// background.
+		// The newest column, not the middle: the page starts with no history.
 		const data = canvas.getContext('2d').getImageData(canvas.width - 4, 26, 1, canvas.height - 56).data;
 		const seen = new Set();
 		for (let i = 0; i < data.length; i += 4) if (data[i + 3] !== 0) seen.add(`${data[i]},${data[i + 1]},${data[i + 2]}`);

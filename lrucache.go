@@ -6,22 +6,7 @@ import (
 	"sync/atomic"
 )
 
-// A cache server answers requests. That is the whole job, and memory pressure
-// is never a reason to stop doing it: a build cache that refuses reads under
-// load is worse than no cache at all, because every client that would have hit
-// it now rebuilds AND waits on a timeout earliest.
-//
-// So the in-memory caches here are bounded in BYTES and evict their
-// least-recently-used entries to stay inside that bound. Memory pressure
-// shrinks the bound, which evicts more; it never reaches the request path.
-// Every entry in each of these caches is reconstructible from disk, so
-// eviction costs a re-read and nothing else.
-//
-// Sharded so concurrent readers and writers do not convoy on a single lock,
-// with each shard holding an equal slice of the budget. Storage keys are
-// uniformly distributed (they are hashes), so per-shard accounting stays even
-// and no shard needs to know about any other -- an insert evicts only within
-// its own shard, which keeps the hot path lock-local.
+// A cache server answers requests.
 
 // lruShardCount is the number of independent shards.
 const lruShardCount = 64
@@ -54,7 +39,7 @@ type lruEntry[K comparable, V any] struct {
 }
 
 // newLRUCache builds a cache holding at most budget bytes. sizeOf reports an
-// entry's cost -- an estimate is fine and expected; what matters is that it
+// entry's cost -- an estimate is fine and expected. What matters is that it
 // scales with the entry, so a cache of large entries holds fewer of them.
 func newLRUCache[K comparable, V any](budget int64, shardOf func(K) uint32, sizeOf func(K, V) int64) *lruCache[K, V] {
 	c := &lruCache[K, V]{shardOf: shardOf, sizeOf: sizeOf}
@@ -70,9 +55,7 @@ func (c *lruCache[K, V]) shard(k K) *lruShard[K, V] {
 	return &c.shards[c.shardOf(k)%lruShardCount]
 }
 
-// shardBudget is each shard's slice of the total. At least a single byte, so a
-// pathologically small budget degenerates to "hold almost nothing" rather than
-// "divide by empty".
+// shardBudget is each shard's slice of the total.
 func (c *lruCache[K, V]) shardBudget() int64 {
 	b := c.budget.Load() / lruShardCount
 	if b < 1 {
@@ -121,10 +104,8 @@ func (c *lruCache[K, V]) Put(k K, v V) {
 	sh.mu.Unlock()
 }
 
-// evictLocked drops least-recently-used entries until the shard fits. The
-// newest entry is never evicted even if it alone exceeds the budget: a cache
-// that refuses to hold anything is a cache with a permanent miss rate, and the
-// single-entry overshoot is bounded by the entry's own size.
+// evictLocked drops least-recently-used entries until the shard fits. The newest entry is never evicted even if it alone exceeds the budget. A cache that refuses to hold anything is a cache with a permanent miss rate. The single-entry
+// overshoot is bounded by the entry's own size.
 func (c *lruCache[K, V]) evictLocked(sh *lruShard[K, V], budget int64) {
 	for sh.bytes > budget && sh.ll.Len() > 1 {
 		back := sh.ll.Back()
@@ -196,9 +177,7 @@ func (c *lruCache[K, V]) Len() int {
 	return n
 }
 
-// fnv1a is the shard hash for string keys. Storage keys share a long constant
-// prefix (go-buildcache/v1...), so the whole key is hashed rather than a byte
-// of it sampled, which is what keeps the shards even.
+// fnv1a is the shard hash for string keys.
 func fnv1a(s string) uint32 {
 	var h uint32 = 2166136261
 	for i := 0; i < len(s); i++ {

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -63,6 +64,12 @@ type Index struct {
 	addEpoch  uint64
 	added     [][gbciHashSize]byte
 	cachedGen indexGen
+	// The short form (gbciPrefixSize-byte hashes) has its own cache, built only when a client asks for it.
+	cachedPrefix     []byte
+	cachedPrefixETag string
+	cachedPrefixGen  indexGen
+	prefixBuiltAt    time.Time
+	prefixDirty      atomic.Bool
 	// addLogLimit overrides maxAddLog when nonzero, for a test.
 	addLogLimit int
 }
@@ -169,6 +176,7 @@ func (idx *Index) Put(key string, size int64) {
 		idx.pending = append(idx.pending, hash)
 		idx.appendAddLocked(hash)
 		idx.dirty.Store(true)
+		idx.prefixDirty.Store(true)
 	}
 	idx.updateGaugesLocked()
 }
@@ -510,28 +518,37 @@ func (idx *Index) BlobGen() ([]byte, string, indexGen) {
 	}
 
 	lockedAt := time.Now()
-	pendingCount := len(idx.pending)
-	log.Printf("index: serialize locked (hashes=%d pending=%d)", len(idx.hashes), pendingCount)
+	log.Printf("index: serialize locked (hashes=%d pending=%d)", len(idx.hashes), len(idx.pending))
 	defer func() {
 		log.Printf("index: serialize unlocked after %v (hashes=%d)", time.Since(lockedAt), len(idx.hashes))
 	}()
 
-	// hashes is sorted and deduplicated already. The pending buffer is small
-	// next to it, so a merge costs O(n) where a re-sort cost O(n log n).
-	if pendingCount > 0 {
-		idx.hashes = mergeSortedHashes(idx.hashes, sortDedupeHashes(idx.pending))
-		idx.pending = resetPending(idx.pending)
-	}
-
+	gen = idx.mergePendingLocked()
 	blob := marshalGBCI(idx.hashes)
 	idx.cachedBlob = blob
-	idx.cachedETag = `"` + hex.EncodeToString(blob[len(blob)-sha256.Size:]) + `"`
-	// Every hash in the add log is in pending or hashes, so the blob holds them all.
-	idx.cachedGen = indexGen{epoch: idx.addEpoch, seq: uint64(len(idx.added))}
+	idx.cachedETag = blobETag(blob)
+	idx.cachedGen = gen
 	idx.builtAt = time.Now()
 	idx.dirty.Store(false)
 	idx.updateGaugesLocked()
 	return idx.cachedBlob, idx.cachedETag, idx.cachedGen
+}
+
+// mergePendingLocked folds the pending hashes into the sorted list and answers
+// the add-log position the list is now complete up to. The caller holds idx.mu.
+func (idx *Index) mergePendingLocked() indexGen {
+	// hashes is sorted and deduplicated already. The pending buffer is small
+	// next to it, so a merge costs O(n) where a re-sort cost O(n log n).
+	if len(idx.pending) > 0 {
+		idx.hashes = mergeSortedHashes(idx.hashes, sortDedupeHashes(idx.pending))
+		idx.pending = resetPending(idx.pending)
+	}
+	// Every hash in the add log is in pending or hashes, so the list holds them all.
+	return indexGen{epoch: idx.addEpoch, seq: uint64(len(idx.added))}
+}
+
+func blobETag(blob []byte) string {
+	return `"` + hex.EncodeToString(blob[len(blob)-sha256.Size:]) + `"`
 }
 
 // Merge adds hashes from a client-uploaded index blob into the pending queue.
@@ -543,6 +560,8 @@ func (idx *Index) Merge(hashes [][gbciHashSize]byte) {
 	idx.mu.Lock()
 	idx.pending = append(idx.pending, hashes...)
 	idx.dirty.Store(true)
+	// The short form (BlobGenWidth) has its own cache, so it must be invalidated too.
+	idx.prefixDirty.Store(true)
 	idx.mu.Unlock()
 	log.Printf("index: merged %d hashes from client upload", len(hashes))
 }
@@ -657,6 +676,8 @@ func (idx *Index) applyRebuild(b *indexBuild) (int, int) {
 	// pending and pendingEntries intentionally survive (see doc comment above).
 	idx.cachedBlob = nil
 	idx.cachedETag = ""
+	idx.cachedPrefix = nil
+	idx.cachedPrefixETag = ""
 	idx.resetAddLogLocked()
 	hashCount := len(idx.hashes) + len(idx.pending)
 	idx.updateGaugesLocked()

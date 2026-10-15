@@ -64,7 +64,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	// Every object is checked against the digest recorded with it before it is
 	// served.
 	{
-		ok, verifyErr := verifyStoredDigest(f, meta.Metadata)
+		ok, verifyErr := storage.verifyStoredDigestFor(key, f, meta.Metadata)
 		switch {
 		case verifyErr != nil:
 			log.Printf("stored digest: cannot verify %q, so not serving it: %v", key, verifyErr)
@@ -268,8 +268,12 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 		writeError(w, 500, "internal_error", "index unavailable")
 		return
 	}
+	width := gbciHashSize
+	if r.URL.Query().Get("hash") == strconv.Itoa(gbciPrefixSize) {
+		width = gbciPrefixSize
+	}
 	if from, asked := indexGenFromQuery(r); asked {
-		delta, to, ok := idx.Delta(from)
+		delta, to, ok := idx.DeltaWidth(from, width)
 		if !ok {
 			writeError(w, http.StatusGone, "index_epoch_gone", "the index changed beyond a delta; fetch it whole")
 			return
@@ -281,7 +285,7 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 		_, _ = w.Write(delta)
 		return
 	}
-	blob, etag, gen := idx.BlobGen()
+	blob, etag, gen := idx.BlobGenWidth(width)
 	// The blob is shared by every request and already built, so the transfer holds no memory of its own.
 	releaseSlot(r)
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -317,6 +321,8 @@ func handlePutIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 // The add-log position travels as decimal headers on the response and as
 // query parameters on a delta request. cacheclient carries the same names.
 const (
+	// headerPrefetch is "off" on a batch answer from a server that never sends a look-ahead window.
+	headerPrefetch   = "X-Cache-Prefetch"
 	headerIndexEpoch = "X-Index-Epoch"
 	headerIndexSeq   = "X-Index-Seq"
 	headerIndexDelta = "X-Index-Delta"

@@ -11,7 +11,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -112,11 +113,11 @@ func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex
 			// A failed refresh over a disk copy is routine: the build keeps a
 			// key set, and every go command reports it on a busy host.
 			logging.Infof("cacheprog: web index refresh: %v", err)
-			logging.Infof("cacheprog: web index: refresh failed; using %d cached keys (batch probing enabled)", disk.count)
+			logging.Infof("cacheprog: web index: refresh failed; using %d cached keys", disk.count)
 			return diskKeys, false
 		}
 		logging.Warnf("cacheprog: web index fetch: %v", err)
-		logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
+		logging.Warnf("cacheprog: web index is unavailable")
 		return newHashSet(0), false
 	}
 	if status == http.StatusNotModified {
@@ -125,6 +126,7 @@ func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex
 			now := time.Now()
 			_ = os.Chtimes(path, now, now)
 			writeIndexGen(path, diskETag, reply.gen)
+			b.setLiveGen(reply.gen)
 			logging.Infof("cacheprog: web index: %d keys", disk.count)
 			return diskKeys, true
 		}
@@ -136,7 +138,7 @@ func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex
 				return nil, false
 			}
 			logging.Warnf("cacheprog: web index refetch: %v", err)
-			logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
+			logging.Warnf("cacheprog: web index is unavailable")
 			return newHashSet(0), false
 		}
 	}
@@ -144,14 +146,15 @@ func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex
 	if err != nil {
 		logging.Warnf("cacheprog: web index parse: %v", err)
 		if diskBlob != nil {
-			logging.Infof("cacheprog: web index: refresh failed; using %d cached keys (batch probing enabled)", disk.count)
+			logging.Infof("cacheprog: web index: refresh failed; using %d cached keys", disk.count)
 			return diskKeys, false
 		}
-		logging.Warnf("cacheprog: web index: unavailable; every lookup probes the server")
+		logging.Warnf("cacheprog: web index is unavailable")
 		return newHashSet(0), false
 	}
 	b.writeIndexBlob(path, blob)
 	writeIndexGen(path, etag, reply.gen)
+	b.setLiveGen(reply.gen)
 	logging.Infof("cacheprog: web index: %d keys", keys.Len())
 	return keys, true
 }
@@ -232,9 +235,10 @@ func (b *WebBackend) doIndexGET(ctx context.Context, rawQuery, ifNoneMatch strin
 		return err
 	}
 
-	target := b.endpoint + "/" + b.bucket + "/_index"
+	// Every request asks for the short form. A server that predates it ignores the parameter and sends full hashes, which parse too.
+	target := b.endpoint + "/" + b.bucket + "/_index?hash=" + strconv.Itoa(gbciPrefixSize)
 	if rawQuery != "" {
-		target += "?" + rawQuery
+		target += "&" + rawQuery
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", target, nil)
 	if err != nil {
@@ -329,52 +333,42 @@ func parseIndexBlob(blob []byte) (*hashSet, string, error) {
 	if blob[4] != gbciVersion {
 		return nil, "", fmt.Errorf("unsupported version %d", blob[4])
 	}
-	if blob[5] != gbciHashSize {
+	width := int(blob[5])
+	if width != gbciHashSize && width != gbciPrefixSize {
 		return nil, "", fmt.Errorf("unsupported hash size %d", blob[5])
 	}
 	count := binary.LittleEndian.Uint64(blob[16:24])
-	bodyEnd := gbciHeaderSize + int(count)*gbciHashSize
+	bodyEnd := gbciHeaderSize + int(count)*width
 	if bodyEnd+sha256.Size != len(blob) {
-		return nil, "", fmt.Errorf("length %d != header+%d*%d+trailer", len(blob), count, gbciHashSize)
+		return nil, "", fmt.Errorf("length %d != header+%d*%d+trailer", len(blob), count, width)
 	}
 	expected := sha256.Sum256(blob[:bodyEnd])
 	if !bytes.Equal(expected[:], blob[bodyEnd:]) {
 		return nil, "", fmt.Errorf("trailer hash mismatch")
 	}
-	// The body IS the hashes, ascending, which is the order the set holds them
-	// in. Each entry is copied as it stands, with no hex encode, no per-key
-	// allocation and no sort: on a cache of hundreds of thousands of entries
-	// that work all lands before the build starts.
-	hashes := make([]actionHash, count)
-	for i := uint64(0); i < count; i++ {
-		off := gbciHeaderSize + int(i)*gbciHashSize
-		copy(hashes[i][:], blob[off:off+gbciHashSize])
+	// The body IS the hashes, ascending, which is the order the set holds them in.
+	keys := make([]hashKey, count)
+	for idx := range keys {
+		off := gbciHeaderSize + idx*width
+		keys[idx] = binary.BigEndian.Uint64(blob[off : off+gbciPrefixSize])
 	}
-	keys := newHashSetFromSorted(hashes)
+	set := newHashSetFromSorted(keys)
 	etag := `"` + hex.EncodeToString(blob[bodyEnd:]) + `"`
-	return keys, etag, nil
+	return set, etag, nil
 }
 
 // marshalIndex encodes the given hash set as a GBCI v1 blob. Used by tests.
 func marshalIndex(keys *hashSet) []byte {
-	hashes := make([]actionHash, 0, keys.Len())
-	for h := range keys.All() {
-		hashes = append(hashes, h)
-	}
-	sort.Slice(hashes, func(i, j int) bool {
-		return bytes.Compare(hashes[i][:], hashes[j][:]) < 0
-	})
-	blob := make([]byte, gbciHeaderSize+len(hashes)*gbciHashSize+sha256.Size)
+	sorted := slices.Sorted(keys.All())
+	blob := make([]byte, gbciHeaderSize+len(sorted)*gbciPrefixSize+sha256.Size)
 	copy(blob[0:4], gbciMagic[:])
 	blob[4] = gbciVersion
-	blob[5] = gbciHashSize
-	binary.LittleEndian.PutUint16(blob[6:8], 0)
-	binary.LittleEndian.PutUint64(blob[8:16], 0)
-	binary.LittleEndian.PutUint64(blob[16:24], uint64(len(hashes)))
+	blob[5] = gbciPrefixSize
+	binary.LittleEndian.PutUint64(blob[16:24], uint64(len(sorted)))
 	off := gbciHeaderSize
-	for i := range hashes {
-		copy(blob[off:off+gbciHashSize], hashes[i][:])
-		off += gbciHashSize
+	for _, key := range sorted {
+		binary.BigEndian.PutUint64(blob[off:], key)
+		off += gbciPrefixSize
 	}
 	digest := sha256.Sum256(blob[:off])
 	copy(blob[off:], digest[:])

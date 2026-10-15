@@ -51,6 +51,10 @@ tests:
 				set -euo pipefail
 				base=http://127.0.0.1:19050/test-cache
 				auth=testuser:testpass
+				# The log buckets wall-clock seconds. Start just after a second
+				# begins, so the requests share a bucket.
+				ns=$(date +%N)
+				sleep "0.$(printf %09d $((1000000000 - 10#$ns)))"
 				# Stores and reads of a plain key, carrying what a real client
 				# sends: the requesting build's module header, the stored module
 				# and the uncompressed size. The project is the requester.

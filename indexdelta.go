@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -41,6 +42,8 @@ func (idx *Index) resetAddLogLocked() {
 	idx.added = nil
 	idx.builtAt = time.Time{}
 	idx.dirty.Store(true)
+	idx.prefixBuiltAt = time.Time{}
+	idx.prefixDirty.Store(true)
 }
 
 // indexGen is a position in the add log.
@@ -49,10 +52,51 @@ type indexGen struct {
 	seq   uint64
 }
 
-// Delta answers a GBCI blob of the hashes added after from, and the position
-// it brings the client to. ok is false when from is not in the current epoch
-// or is ahead of the log: the client must make a full fetch.
+// BlobGenWidth is BlobGen in the form a client asked for: gbciPrefixSize-byte
+// hashes, or the full gbciHashSize.
+func (idx *Index) BlobGenWidth(width int) ([]byte, string, indexGen) {
+	if width != gbciPrefixSize {
+		return idx.BlobGen()
+	}
+	idx.mu.RLock()
+	blob, etag, gen, fresh := idx.cachedPrefix, idx.cachedPrefixETag, idx.cachedPrefixGen, idx.prefixServableLocked()
+	idx.mu.RUnlock()
+	if fresh {
+		return blob, etag, gen
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	if idx.prefixServableLocked() {
+		return idx.cachedPrefix, idx.cachedPrefixETag, idx.cachedPrefixGen
+	}
+	gen = idx.mergePendingLocked()
+	idx.cachedPrefix = marshalGBCIWidth(idx.hashes, gbciPrefixSize)
+	idx.cachedPrefixETag = blobETag(idx.cachedPrefix)
+	idx.cachedPrefixGen = gen
+	idx.prefixBuiltAt = time.Now()
+	idx.prefixDirty.Store(false)
+	idx.updateGaugesLocked()
+	return idx.cachedPrefix, idx.cachedPrefixETag, idx.cachedPrefixGen
+}
+
+// prefixServableLocked is blobServableLocked for the short form. The caller holds idx.mu.
+func (idx *Index) prefixServableLocked() bool {
+	if idx.cachedPrefix == nil {
+		return false
+	}
+	return !idx.prefixDirty.Load() || time.Since(idx.prefixBuiltAt) < idx.BlobInterval()
+}
+
+// Delta is DeltaWidth at the full hash width.
 func (idx *Index) Delta(from indexGen) (blob []byte, to indexGen, ok bool) {
+	return idx.DeltaWidth(from, gbciHashSize)
+}
+
+// DeltaWidth answers a GBCI blob of the first width bytes of each hash added
+// after from, and the position it brings the client to. ok is false when from
+// is not in the current epoch or is ahead of the log: the client must make a
+// full fetch.
+func (idx *Index) DeltaWidth(from indexGen, width int) (blob []byte, to indexGen, ok bool) {
 	idx.mu.RLock()
 	if from.epoch != idx.addEpoch || from.seq > uint64(len(idx.added)) {
 		idx.mu.RUnlock()
@@ -61,25 +105,79 @@ func (idx *Index) Delta(from indexGen) (blob []byte, to indexGen, ok bool) {
 	tail := append([][gbciHashSize]byte(nil), idx.added[from.seq:]...)
 	to = indexGen{epoch: idx.addEpoch, seq: uint64(len(idx.added))}
 	idx.mu.RUnlock()
-	return marshalGBCI(sortDedupeHashes(tail)), to, true
+	return marshalGBCIWidth(sortDedupeHashes(tail), width), to, true
 }
+
+// gbciPrefixSize is the hash width of the short index form.
+const gbciPrefixSize = 8
 
 // marshalGBCI encodes sorted hashes as a GBCI v1 blob.
 func marshalGBCI(hashes [][gbciHashSize]byte) []byte {
-	count := uint64(len(hashes))
-	blob := make([]byte, gbciHeaderSize+int(count)*gbciHashSize+sha256.Size)
+	return marshalGBCIWidth(hashes, gbciHashSize)
+}
+
+// marshalGBCIWidth encodes the first width bytes of each sorted hash. Hashes
+// that share those bytes are written a single time, so the body stays sorted
+// and deduped.
+func marshalGBCIWidth(hashes [][gbciHashSize]byte, width int) []byte {
+	blob := make([]byte, gbciHeaderSize+len(hashes)*width+sha256.Size)
+	off := gbciHeaderSize
+	var prev []byte
+	for i := range hashes {
+		cur := hashes[i][:width]
+		if prev != nil && string(prev) == string(cur) {
+			continue
+		}
+		off += copy(blob[off:], cur)
+		prev = cur
+	}
+	blob = blob[:off+sha256.Size]
 	copy(blob[0:4], gbciMagic[:])
 	blob[4] = gbciVersion
-	blob[5] = gbciHashSize
-	binary.LittleEndian.PutUint64(blob[16:24], count)
-	off := gbciHeaderSize
-	for i := range hashes {
-		copy(blob[off:off+gbciHashSize], hashes[i][:])
-		off += gbciHashSize
-	}
+	blob[5] = byte(width)
+	binary.LittleEndian.PutUint64(blob[16:24], uint64((off-gbciHeaderSize)/width))
 	bodyDigest := sha256.Sum256(blob[gbciHeaderSize:off])
 	binary.LittleEndian.PutUint64(blob[8:16], binary.LittleEndian.Uint64(bodyDigest[:8]))
 	digest := sha256.Sum256(blob[:off])
 	copy(blob[off:], digest[:])
 	return blob
+}
+
+// WireSize is the length in bytes of the body a cacheclient gets from a full GET /_index right now, before any compression.
+// The client asks for the gbciPrefixSize form, so this sizes that form and not the full-width one.
+// It answers from the cached blob when the handler would serve it, and counts the merged list otherwise.
+// It never serializes and never changes the index.
+func (idx *Index) WireSize() int64 {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	if idx.prefixServableLocked() {
+		return int64(len(idx.cachedPrefix))
+	}
+	fresh := sortDedupeHashes(append([][gbciHashSize]byte(nil), idx.pending...))
+	n := countDistinctPrefixes(idx.hashes, fresh, gbciPrefixSize)
+	return int64(gbciHeaderSize + n*gbciPrefixSize + sha256.Size)
+}
+
+// countDistinctPrefixes counts the distinct first width bytes over the union of sorted lists a and b.
+// This is the hash count marshalGBCIWidth writes for the merged list. It does not allocate.
+func countDistinctPrefixes(a, b [][gbciHashSize]byte, width int) int {
+	n := 0
+	var prev []byte
+	i, j := 0, 0
+	for i < len(a) || j < len(b) {
+		var cur []byte
+		switch {
+		case j == len(b) || (i < len(a) && bytes.Compare(a[i][:], b[j][:]) <= 0):
+			cur = a[i][:width]
+			i++
+		default:
+			cur = b[j][:width]
+			j++
+		}
+		if prev == nil || !bytes.Equal(prev, cur) {
+			n++
+			prev = cur
+		}
+	}
+	return n
 }

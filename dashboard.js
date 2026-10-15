@@ -186,6 +186,13 @@ function hitRateTile(stats) {
 	return tile("hit rate", percent(found, asked), `${count(found)} of ${count(asked)} keys builds asked for; ${count(skipped)} missed in the client's index, ${count(single)} single GETs`);
 }
 
+// The size of the GET /_index body a client downloads right now, before compression.
+function indexSizeTile(index) {
+	const wire = index ? index.wire_bytes : 0;
+	if (!wire) return tile("index size", "--", "the server reports no index");
+	return tile("index size", `${(wire / 1e6).toFixed(2)} MB`, `${count(wire)} bytes uncompressed from /_index`);
+}
+
 function drawTiles(stats) {
 	const cacheBytes = value(stats, "s3_cache_bytes");
 	const budget = stats.eviction.max_bytes;
@@ -200,6 +207,7 @@ function drawTiles(stats) {
 		hitRateTile(stats),
 		cacheSizeTile(cacheBytes, budget, indexed),
 		tile("keys advertised", count(indexed), "action hashes in /_index"),
+		indexSizeTile(stats.index),
 		tile("slots in use", `${count(admitted)} / ${count(limit)}`, `${count(inFlight)} in flight; ${shed}`, rejected ? "warn" : ""),
 		tile("batch requests", count(value(stats, "s3_batch_requests_total")), `${count(byLabel(stats, "s3_batch_keys_total", "kind").streamed || 0)} bodies streamed`),
 		tile("evicted", count(value(stats, "s3_evictions_total")), `${bytes(value(stats, "s3_evicted_bytes_total"))} reclaimed`),
@@ -304,12 +312,10 @@ function drawGauges(stats) {
 
 // The chart is a rate. A counter that drops means the server restarted.
 function drawProjects(stats) {
+	// stats.projects is exact for every name. The Prometheus series fold names past their bound into "other".
 	const totals = {};
-	for (const { labels, value: v } of points(stats, "s3_project_objects_total")) {
-		const { project, kind } = labels;
-		if (!project) continue;
-		const row = (totals[project] ||= { hit: 0, lookahead: 0, put: 0, miss: 0 });
-		if (kind in row) row[kind] += v;
+	for (const [project, row] of Object.entries(stats.projects || {})) {
+		totals[project] = { hit: row.hit, lookahead: row.lookahead, put: row.put, miss: row.miss };
 	}
 
 	drawProjectHitRates(totals);

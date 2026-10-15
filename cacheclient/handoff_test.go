@@ -186,6 +186,8 @@ func TestRunUploadSpoolStoresEveryEntry(t *testing.T) {
 	}, ss.keys(), "every entry with a body is stored, and no other")
 	_, err = os.Stat(path)
 	require.True(t, os.IsNotExist(err), "the spool is deleted")
+	_, err = os.Stat(spoolLockPath(path))
+	require.True(t, os.IsNotExist(err), "the spool's lock file goes with it")
 }
 
 // A spool another uploader holds is left to it.
@@ -197,7 +199,7 @@ func TestRunUploadSpoolLeavesALockedSpool(t *testing.T) {
 		{ActionID: testAction("held"), OutputID: testOutputID("held"), Data: []byte("held")},
 	}})
 	require.NoError(t, err)
-	unlock, err := cachedisk.TryLockFile(path)
+	unlock, err := cachedisk.TryLockFile(spoolLockPath(path))
 	require.NoError(t, err)
 	defer unlock()
 

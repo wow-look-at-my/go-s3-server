@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -54,6 +55,14 @@ func TestRetrievable(t *testing.T) {
 	_, _, err := tier.DiskCache.Put(local, bytes.NewReader([]byte("body")))
 	require.NoError(t, err)
 	require.True(t, tier.Retrievable(local), "disk holds it")
+
+	// An action entry whose output file is gone, as a trim or a lazy hit leaves it, holds nothing.
+	var orphan ActionID
+	orphan[0] = 0xcc
+	out, _, err := tier.DiskCache.Put(orphan, bytes.NewReader([]byte("gone")))
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(tier.DiskCache.OutputFile(out)))
+	require.False(t, tier.Retrievable(orphan), "an entry without its output is not on disk")
 
 	serveIndex = false
 	unconfirmed := open()

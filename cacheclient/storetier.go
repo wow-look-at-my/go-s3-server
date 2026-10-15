@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -86,10 +87,14 @@ func (tier *storeTier) GetTiered(id ActionID) (Entry, string, error) {
 }
 
 // Retrievable reports whether Get can supply id with no build: disk holds it,
-// or the store holds it by a confirmed index.
+// or the store holds it by a confirmed index. An action entry on disk names an
+// output that a trim or a lazy hit can leave absent. Disk holds an action only
+// when its output file is there too.
 func (tier *storeTier) Retrievable(id ActionID) bool {
-	if _, err := tier.DiskCache.Get(id); err == nil {
-		return true
+	if entry, err := tier.DiskCache.Get(id); err == nil {
+		if info, err := os.Stat(tier.DiskCache.OutputFile(entry.OutputID)); err == nil && info.Size() == entry.Size {
+			return true
+		}
 	}
 	return tier.store.Holds(hex.EncodeToString(id[:]))
 }

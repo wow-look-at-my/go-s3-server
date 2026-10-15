@@ -207,7 +207,18 @@ func TestFallbackStopsOnLowUse(t *testing.T) {
 // A build that uses the sample lets the fetch go on to the end.
 func TestFallbackGoesOnWithHighUse(t *testing.T) {
 	b, got := sampleFallback(t, 3*batchMaxKeys, batchMaxKeys)
-	require.Eventually(t, func() bool { return got().Len() >= batchMaxKeys }, 5*time.Second, time.Millisecond)
+	// The server answers before the fetch records what landed. A use before
+	// that record does not count, and the paused fetch then waits for a
+	// lookup that never comes. So wait for the pause, not for the server.
+	require.Eventually(t, func() bool {
+		f := b.manifest.fallback.Load()
+		if f == nil {
+			return false
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.paused
+	}, 5*time.Second, time.Millisecond, "the fetch pauses at the sample")
 	for _, key := range fallbackKeys(batchMaxKeys / 2) {
 		var id ActionID
 		copy(id[:], mustHex(t, key))

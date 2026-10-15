@@ -43,15 +43,10 @@ func (b *WebBackend) awaitIndex() {
 	}
 }
 
-// shortenIndexWaits sets the earliest use's wait and the lock pacing, for a
-// test that cannot spend the defaults. Call it before the earliest use.
-func (b *WebBackend) shortenIndexWaits(wait, lockStale time.Duration) {
-	b.indexTiming = indexTiming{
-		wait:          wait,
-		lockHeartbeat: lockStale / 4,
-		lockStale:     lockStale,
-		lockPoll:      5 * time.Millisecond,
-	}
+// shortenIndexWait sets the earliest use's wait, for a test that cannot spend
+// the default. Call it before the earliest use.
+func (b *WebBackend) shortenIndexWait(wait time.Duration) {
+	b.indexTiming = indexTiming{wait: wait}
 }
 
 // getTest is Get in the shape the tests were written against.

@@ -12,14 +12,14 @@ import (
 )
 
 // TestSelfHealStampsHashedInodeNotPath reproduces the stale-stamp race the
-// fd-based repair closes: the healer opens and hashes an outputid-less relic,
-// a concurrent overwrite PUT renames a FRESH body (with its own correct
+// fd-based repair closes. The healer opens and hashes an outputid-less relic.
+// A concurrent overwrite PUT renames a FRESH body (with its own correct
 // outputid) onto the same path, and then the healer persists its result. The
-// old path-based setxattr stamped the STALE hash onto the NEW body — leaving
-// outputid != sha256(body) forever, a permanent forced miss no self-heal could
-// ever fix (an outputid is present) and no client would accept. The fd-based
-// stamp lands on the hashed (now-unlinked) inode instead, so the fresh PUT's
-// outputid survives untouched.
+// path-based setxattr stamped the STALE hash onto the NEW body. Leaving
+// outputid != sha256(body) forever, a permanent forced miss no self-heal
+// could ever fix (an outputid is present). No client would accept. The
+// fd-based stamp lands on the hashed (now-unlinked) inode instead, so the
+// fresh PUT's outputid survives untouched.
 func TestSelfHealStampsHashedInodeNotPath(t *testing.T) {
 	_, storage := testSetupWithStorage(t)
 
@@ -42,15 +42,14 @@ func TestSelfHealStampsHashedInodeNotPath(t *testing.T) {
 	require.NoError(t, storage.PutStream(key, bytes.NewReader(lz4Compress(t, newRaw)),
 		map[string]string{"compression": "lz4", "outputid": newOutputID}, nil))
 
-	// The stale repair completes against the old fd.
+	// The stale repair completes against the fd.
 	oldSum := sha256.Sum256(oldRaw)
 	got, err := reconstructOutputID(storage, key, f)
 	require.NoError(t, err)
 	require.Equal(t, hex.EncodeToString(oldSum[:]), got,
 		"the repair must return the hash of the body it actually read")
 
-	// THE regression assertion: the fresh body's outputid was NOT clobbered by
-	// the stale stamp. Under the old path-based SetMeta this reads the OLD hash.
+	// THE regression assertion: the fresh body's outputid was NOT clobbered by the stale stamp.
 	meta, err := storage.Stat(key)
 	require.NoError(t, err)
 	require.Equal(t, newOutputID, meta.Metadata["outputid"],

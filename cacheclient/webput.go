@@ -56,6 +56,7 @@ func (b *WebBackend) PutFile(actionID, outputID, path string) error {
 // the thing thing that happens on the caller's goroutine, because it is what
 // stops callers uploading the same object.
 func (b *WebBackend) enqueuePut(actionID, outputID string, data []byte, path string) error {
+	b.manifest.note(actionID)
 	h, ok := parseActionHash(actionID)
 	if !ok {
 		return fmt.Errorf("web put: %q is not an action ID", actionID)
@@ -67,6 +68,7 @@ func (b *WebBackend) enqueuePut(actionID, outputID string, data []byte, path str
 	if b.keys.Contains(h) {
 		b.keysMu.Unlock()
 		b.PutSkippedKnown.Increment()
+		b.noteSkip()
 		return nil
 	}
 	b.addKeyLocked(h)
@@ -96,7 +98,7 @@ func (b *WebBackend) prepare(j putJob) {
 	if j.data == nil && j.path != "" {
 		data, err := os.ReadFile(j.path)
 		if err != nil {
-			logging.Warnf("cacheprog: web put %s: read body: %v; not uploading this object", ShortID(j.actionID), err)
+			logging.Warnf("cacheprog: web put %s: read body: %v", ShortID(j.actionID), err)
 			b.removeClaimed(j.hash)
 			return
 		}
@@ -111,7 +113,7 @@ func (b *WebBackend) prepare(j putJob) {
 	// and nothing about which one, so whoever reads it starts from nothing.
 	if act, ok := BuildIDMatchesAction(j.actionID, j.data); !ok {
 		b.PutRefusedBuildID.Increment()
-		logging.Warnf("cacheprog: web put %s (%s): refusing upload, build-id action mismatch (want action=%s, got action=%s); object does not belong under this key",
+		logging.Warnf("cacheprog: web put %s (%s): refusing upload, build-id action mismatch (want action=%s, got action=%s)",
 			ShortID(j.actionID), describeObject(j.data), ExpectedBuildIDAction(j.actionID), act)
 		b.removeClaimed(j.hash)
 		return

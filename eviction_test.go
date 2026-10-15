@@ -75,7 +75,7 @@ func TestEvictAgeRespectsAccessTime(t *testing.T) {
 	setMtime(t, s, hot, now.Add(-48*time.Hour))
 	setMtime(t, s, cold, now.Add(-48*time.Hour))
 
-	// But "hot" was just read.
+	// But "hot" was read.
 	f, _, err := s.Open(hot)
 	require.NoError(t, err)
 	f.Close()
@@ -219,8 +219,8 @@ func TestDurationUnmarshal(t *testing.T) {
 	require.Error(t, json.Unmarshal([]byte(`"not-a-duration"`), &d))
 }
 
-// TestEvictionConfigDefaults: the cache is an LRU by default -- an absent
-// eviction block gets the default SIZE budget and no age limit, so nothing is
+// TestEvictionConfigDefaults: the cache is an LRU by default. An absent
+// eviction block gets the default SIZE budget and no age limit. Nothing is
 // dropped for being old, only for being least-recently-used past the budget.
 func TestEvictionConfigDefaults(t *testing.T) {
 	dir := t.TempDir()
@@ -271,7 +271,7 @@ func TestEvictionConfigDefaults(t *testing.T) {
 }
 
 // TestMaxBytesEnvVar: the size budget can be set without touching the config
-// file, an explicit config value still wins, and a malformed env value fails
+// file. An explicit config value still wins, and a malformed env value fails
 // the load instead of silently reverting to the default.
 func TestMaxBytesEnvVar(t *testing.T) {
 	dir := t.TempDir()
@@ -342,8 +342,7 @@ func TestEvictOneSkipsFreshlyOverwritten(t *testing.T) {
 	require.NoError(t, err)
 	current := info.ModTime().Unix()
 
-	// A stale snapshot mtime (as if the object was overwritten after the scan):
-	// the eviction must back off and keep the file.
+	// A stale snapshot mtime (as if the object was overwritten after the scan).
 	require.False(t, s.evictOne(key, current-3600), "a freshly-overwritten object must not be evicted")
 	_, err = s.Stat(key)
 	require.NoError(t, err, "the object must still exist after the skipped eviction")
@@ -365,9 +364,9 @@ func TestEvictionStartupDelay(t *testing.T) {
 	}
 }
 
-// TestSweepScheduleSurvivesRestart: the sweep schedule lives in the data_dir,
-// so a deployment that restarts more often than the interval still sweeps, and
-// a single that restarts constantly does not re-walk the whole disk every boot.
+// TestSweepScheduleSurvivesRestart. The sweep schedule lives in the data_dir. A
+// deployment that restarts more often than the interval still sweeps, and a
+// single that restarts constantly does not re-walk the whole disk. Every boot.
 func TestSweepScheduleSurvivesRestart(t *testing.T) {
 	s := newEvictStorage(t)
 	const interval = 24 * time.Hour

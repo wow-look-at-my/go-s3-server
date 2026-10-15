@@ -47,12 +47,7 @@ func TestCleanMemo_SkipsReprobeUntilInvalidated(t *testing.T) {
 	resp.Body.Close()
 	require.True(t, storage.keyKnownClean(hash), "the first read must memoize the clean verdict")
 
-	// Swap the on-disk body for a module index WITHOUT going through storage
-	// (os.WriteFile keeps the inode, hence the outputid and compression xattrs),
-	// re-stamping the stored digest over the new bytes so the object stays
-	// self-consistent and the module-index probe is the only thing a GET could
-	// trip on. Because the memo was not invalidated, the next GET must skip that
-	// probe and serve the bytes -- the observable proof that no lz4 decode ran.
+	// Swap the on-disk body for a module index WITHOUT going through storage (os.WriteFile keeps the inode, hence the outputid and compression xattrs), re-stamping the stored digest over the new bytes.
 	poison := lz4Compress(t, incompressibleIndexBody(t, 4096))
 	poisonSum := sha256.Sum256(poison)
 	require.NoError(t, os.WriteFile(storage.keyToPath(key), poison, 0644))
@@ -68,8 +63,7 @@ func TestCleanMemo_SkipsReprobeUntilInvalidated(t *testing.T) {
 	require.Equal(t, evictBefore, testutil.ToFloat64(moduleIndexEvictionsTotal),
 		"the probe must not have run for a memoized key")
 
-	// Overwrite through PutStream: the memo entry is invalidated, so the next
-	// GET re-probes, detects the index, evicts it, and reports a miss.
+	// Overwrite through PutStream: the memo entry is invalidated, so the next.
 	require.NoError(t, storage.PutStream(key, bytes.NewReader(poison), meta, nil))
 	require.False(t, storage.keyKnownClean(hash), "an overwrite PUT must invalidate the memo")
 
@@ -120,10 +114,11 @@ func TestCleanMemo_ForgetOnEviction(t *testing.T) {
 }
 
 // BenchmarkGetObjectWarmLz4 measures a repeated GET of a single warm lz4
-// cacheprog key, with and without the known-clean memo. Without the memo every
-// GET pays the module-index guard's earliest-block lz4 decode; with it, only
-// the earliest GET does. The nomemo variant simulates the old behavior by
-// nil-ing the memo (nil-safe accessors make that the exact pre-memo code path).
+// cacheprog key, with and without the known-clean memo. Without the memo
+// every GET pays the module-index guard's earliest-block lz4 decode; with it,
+// only the earliest GET does. The nomemo variant simulates the behavior by
+// nil-ing the memo (nil-safe accessors make that the exact pre-memo code
+// path).
 func BenchmarkGetObjectWarmLz4(b *testing.B) {
 	for _, variant := range []string{"memo", "nomemo"} {
 		b.Run(variant, func(b *testing.B) {
@@ -170,15 +165,12 @@ func TestCleanMemo_Bound(t *testing.T) {
 	for i := range hashes {
 		memo.Put(hashes[i], struct{}{})
 	}
-	// Every entry here lands in a different shard, so all of them fit; what the
-	// bound guarantees is that the memo never exceeds its budget.
+	// Every entry here lands in a different shard, so all of them fit.
 	require.LessOrEqual(t, memo.Bytes(), memo.Budget()+cleanEntryBytes)
 	_, ok := memo.Get(hashes[5])
 	require.True(t, ok)
 
-	// Shrinking the budget evicts rather than clearing: the most recently used
-	// entries survive, which is the whole point of holding less instead of
-	// holding nothing.
+	// Shrinking the budget evicts rather than clearing: the most recently used entries survive.
 	memo.SetBudget(cleanEntryBytes) // a single entry per shard, still a single
 	require.LessOrEqual(t, memo.Bytes(), int64(len(hashes))*cleanEntryBytes)
 

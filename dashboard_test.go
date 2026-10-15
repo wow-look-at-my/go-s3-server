@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -64,11 +66,9 @@ func TestDashboardServesPageAndAssets(t *testing.T) {
 }
 
 // dashboard.js reads `checked` off a scratch-toggle, which is a property the
-// element only has a single time the browser has upgraded it. A classic script
-// runs before the deferred module that defines the components, so it read
-// undefined, took "live" for off, and polled exactly a single time. The page
-// then sat on a single snapshot forever. A module script runs after that
-// definition, in document order, which is what keeps the poll loop alive.
+// element only has a single time the browser has upgraded it. A classic
+// script runs before the deferred module that defines the components. It
+// read undefined, took "live" for off, and polled exactly a single time.
 func TestDashboardLoadsItsScriptAsAModule(t *testing.T) {
 	page, err := dashboardAssets.ReadFile("dashboard.html")
 	require.NoError(t, err)
@@ -235,4 +235,61 @@ func TestGatherFlattensHistogramsAndMultiLabelSeries(t *testing.T) {
 	assert.InDelta(t, 2, *got["cache_op_seconds_count"].Value, 0)
 	assert.InDelta(t, 1.0, *got["cache_op_seconds_sum"].Value, 0.001)
 	assert.InDelta(t, 1, seriesValue(t, got["cache_http_requests_total"].Series, map[string]string{"method": "GET", "route": "GetObject", "status": "200"}), 0)
+}
+
+func TestDashboardReportsTheIndexWireSize(t *testing.T) {
+	d := testDashboard(t, prometheus.NewRegistry())
+	stats, err := d.snapshot()
+	require.NoError(t, err)
+	assert.Zero(t, stats.Index.WireBytes, "a server with no storage has no index to size")
+
+	d.srv.storage = newTestStorage(t)
+	idx := d.srv.storage.Index
+	for i := 0; i < 5; i++ {
+		idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", i, 0), 1)
+	}
+
+	// Pending hashes count before anything serializes. A client fetches the short form, so each hash costs gbciPrefixSize bytes.
+	stats, err = d.snapshot()
+	require.NoError(t, err)
+	assert.EqualValues(t, gbciHeaderSize+5*gbciPrefixSize+sha256.Size, stats.Index.WireBytes)
+
+	// The figure is the body a client gets, whether the blob is cached yet or not.
+	blob, _, _ := idx.BlobGenWidth(gbciPrefixSize)
+	stats, err = d.snapshot()
+	require.NoError(t, err)
+	assert.EqualValues(t, len(blob), stats.Index.WireBytes)
+
+	// The full-width blob is not what a client downloads, so a cached copy of it does not change the figure.
+	full, _ := idx.Blob()
+	stats, err = d.snapshot()
+	require.NoError(t, err)
+	assert.EqualValues(t, len(blob), stats.Index.WireBytes)
+	assert.Greater(t, len(full), len(blob))
+
+	// An unserialized add shows at once when the cached blob is too old to serve.
+	idx.SetBlobInterval(0)
+	idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", 5, 0), 1)
+	idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", 5, 0), 1)
+	stats, err = d.snapshot()
+	require.NoError(t, err)
+	fresh, _, _ := idx.BlobGenWidth(gbciPrefixSize)
+	assert.EqualValues(t, len(fresh), stats.Index.WireBytes, "a duplicate pending hash is one entry")
+	assert.EqualValues(t, gbciHeaderSize+6*gbciPrefixSize+sha256.Size, len(fresh))
+
+	// Hashes that share their first gbciPrefixSize bytes are a single entry in the short form.
+	idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", 5, 1), 1)
+	idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", 7, 1), 1)
+	stats, err = d.snapshot()
+	require.NoError(t, err)
+	fresh, _, _ = idx.BlobGenWidth(gbciPrefixSize)
+	assert.EqualValues(t, len(fresh), stats.Index.WireBytes)
+	assert.EqualValues(t, gbciHeaderSize+7*gbciPrefixSize+sha256.Size, len(fresh))
+}
+
+func TestDashboardShowsTheIndexSizeInMB(t *testing.T) {
+	script, err := dashboardAssets.ReadFile("dashboard.js")
+	require.NoError(t, err)
+	assert.Contains(t, string(script), `stats.index`)
+	assert.Contains(t, string(script), `MB`)
 }

@@ -215,9 +215,7 @@ func TestWebBackend_NoAbsoluteRequestDeadline(t *testing.T) {
 	require.Zero(t, b.client.Timeout,
 		"an absolute deadline truncates a healthy bulk transfer; bound the headers, never the body")
 
-	tr, ok := b.client.Transport.(*http.Transport)
-	require.True(t, ok, "the transport is what carries the liveness bounds")
-	require.NotZero(t, tr.ResponseHeaderTimeout,
+	require.NotZero(t, b.transport.ResponseHeaderTimeout,
 		"a server that never answers must still be bounded")
 }
 

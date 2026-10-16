@@ -77,7 +77,6 @@ func (s *hashSet[K]) Contains(h K) bool {
 	if s == nil {
 		return false
 	}
-	h = s.norm(h)
 	if s.removed.Contains(h) {
 		return false
 	}
@@ -92,7 +91,6 @@ func (s *hashSet[K]) Add(h K) {
 	if s == nil {
 		return
 	}
-	h = s.norm(h)
 	// A key in removed is still in the sorted slice, so re-adding it is the
 	// deletion going away rather than a new entry.
 	if s.removed.Contains(h) {
@@ -115,7 +113,6 @@ func (s *hashSet[K]) Remove(h K) {
 	if s == nil {
 		return
 	}
-	h = s.norm(h)
 	if s.pending.Contains(h) {
 		s.pending.Remove(h)
 		return
@@ -181,4 +178,93 @@ func (s *hashSet[K]) compact() {
 		}
 		w--
 	}
+}
+
+// hashKey is the first gbciPrefixSize bytes of an action hash, big-endian.
+type hashKey = uint64
+
+// gbciPrefixSize is the hash width of the short index form the client asks for.
+const gbciPrefixSize = 8
+
+// keyOf64 is h's leading gbciPrefixSize bytes as a hashKey. indexkey.go's
+// keyOf is the same bytes as an indexKey; this is the form the width-aware
+// set and the have-filter's bit arithmetic want.
+func keyOf64(h actionHash) hashKey { return binary.BigEndian.Uint64(h[:gbciPrefixSize]) }
+
+// widthSet is a set of hashKeys holding widthBits of each, so a lookup with a
+// whole hash decides on those bits alone. It is the shape a GBCI v2 blob
+// arrives in: the blob carries a width, and a delta of a narrower width than
+// the set already holds narrows the set rather than answering wrongly about
+// the keys it parsed from a wider one.
+type widthSet struct {
+	*hashSet[hashKey]
+	// The low shift bits of every key are zero.
+	shift uint8
+}
+
+func newWidthSet(n int) *widthSet {
+	return &widthSet{hashSet: newSortedSet(n, compareKey64)}
+}
+
+// newWidthSetFromSorted adopts keys that are ALREADY ascending and deduped,
+// holding widthBits of each. See adoptSorted for the sort it usually skips.
+func newWidthSetFromSorted(keys []hashKey, widthBits int) *widthSet {
+	return &widthSet{
+		hashSet: adoptSorted(keys, compareKey64),
+		shift:   uint8(64 - widthBits),
+	}
+}
+
+func compareKey64(a, b hashKey) int { return cmpUint64(a, b) }
+
+func cmpUint64(a, b hashKey) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	}
+	return 0
+}
+
+// mask keeps the bits of a key this set holds.
+func (s *widthSet) mask() hashKey { return ^hashKey(0) << s.shift }
+
+// key is h as this set holds it.
+func (s *widthSet) key(h actionHash) hashKey { return keyOf64(h) & s.mask() }
+
+// width is the prefix width in bits.
+func (s *widthSet) width() int { return 64 - int(s.shift) }
+
+// Contains reports whether a key of this set's width is a member.
+func (s *widthSet) Contains(h actionHash) bool { return s.hashSet.Contains(s.key(h)) }
+
+// Add claims h at this set's width.
+func (s *widthSet) Add(h actionHash) { s.hashSet.Add(s.key(h)) }
+
+// Remove drops h's key at this set's width.
+func (s *widthSet) Remove(h actionHash) { s.hashSet.Remove(s.key(h)) }
+
+// addAll adds every key in src. A src of a narrower width narrows this set
+// first, so every key keeps the same bits.
+func (s *widthSet) addAll(src *widthSet) {
+	if src.shift > s.shift {
+		s.narrowTo(src.shift)
+	}
+	mask := s.mask()
+	for k := range src.All() {
+		s.hashSet.Add(k & mask)
+	}
+}
+
+// narrowTo drops the low bits of every key down to shift. Keys that agree on
+// what is left become one.
+func (s *widthSet) narrowTo(shift uint8) {
+	s.compact()
+	s.shift = shift
+	mask := s.mask()
+	for i := range s.sorted {
+		s.sorted[i] &= mask
+	}
+	s.sorted = slices.Compact(s.sorted)
 }

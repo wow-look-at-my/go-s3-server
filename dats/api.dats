@@ -194,7 +194,7 @@ tests:
 			- "after-new-key 184"
 			- "etag moved"
 
-	- desc: the index answers version 2 to a client that asks with v=2, with eight bytes per key, and version 1 to one that does not
+	- desc: the index answers the short form to a client that asks with hash=8, with eight bytes per key, and the full form to one that does not
 	  exit: 0
 	  inputs:
 		files:
@@ -215,40 +215,89 @@ tests:
 
 				v2="$(mktemp)"
 				v2headers="$(mktemp)"
-				curl -sf -u "$auth" -o "$v2" -D "$v2headers" "$base/_index?v=2"
-				echo "v2 size $(stat -c %s "$v2")"
-				echo "v2 header $(od -An -tu1 -j4 -N2 "$v2" | xargs)"
-				echo "v2 first $(od -An -tx1 -j24 -N8 "$v2" | tr -d ' ')"
+				curl -sf -u "$auth" -o "$v2" -D "$v2headers" "$base/_index?hash=8"
+				echo "short size $(stat -c %s "$v2")"
+				echo "short header $(od -An -tu1 -j4 -N2 "$v2" | xargs)"
+				echo "short first $(od -An -tx1 -j24 -N8 "$v2" | tr -d ' ')"
 
 				etag1=$(header "$v1headers" etag:)
 				etag2=$(header "$v2headers" etag:)
 				test -n "$etag2" && test "$etag2" != "$etag1" && echo "etags differ"
-				echo "v2 revalidate $(curl -s -o /dev/null -w '%{http_code}' -u "$auth" -H "If-None-Match: $etag2" "$base/_index?v=2")"
-				echo "v1 etag on v2 $(curl -s -o /dev/null -w '%{http_code}' -u "$auth" -H "If-None-Match: $etag1" "$base/_index?v=2")"
+				echo "short revalidate $(curl -s -o /dev/null -w '%{http_code}' -u "$auth" -H "If-None-Match: $etag2" "$base/_index?hash=8")"
+				echo "v1 etag on short $(curl -s -o /dev/null -w '%{http_code}' -u "$auth" -H "If-None-Match: $etag1" "$base/_index?hash=8")"
 
 				epoch=$(header "$v2headers" x-index-epoch:)
 				pos=$(header "$v2headers" x-index-seq:)
 				put "$(printf 'd%.0s' $(seq 64))"
 				delta="$(mktemp)"
 				deltaheaders="$(mktemp)"
-				curl -sf -u "$auth" -o "$delta" -D "$deltaheaders" "$base/_index?v=2&epoch=$epoch&seq=$pos"
-				echo "v2 delta $(header "$deltaheaders" x-index-delta:) size $(stat -c %s "$delta")"
-				echo "v2 delta header $(od -An -tu1 -j4 -N2 "$delta" | xargs)"
-				echo "v2 delta first $(od -An -tx1 -j24 -N8 "$delta" | tr -d ' ')"
+				curl -sf -u "$auth" -o "$delta" -D "$deltaheaders" "$base/_index?hash=8&epoch=$epoch&seq=$pos"
+				echo "short delta $(header "$deltaheaders" x-index-delta:) size $(stat -c %s "$delta")"
+				echo "short delta header $(od -An -tu1 -j4 -N2 "$delta" | xargs)"
+				echo "short delta first $(od -An -tx1 -j24 -N8 "$delta" | tr -d ' ')"
 	  cmd: bash {shared.serve.sh} {inputs.config.json} 19020 {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "v1 size 152"
 			- "v1 header 1 32"
-			- "v2 size 80"
-			- "v2 header 2 8"
-			- "v2 first aaaaaaaaaaaaaaaa"
+			- "short size 80"
+			- "short header 1 8"
+			- "short first aaaaaaaaaaaaaaaa"
 			- "etags differ"
-			- "v2 revalidate 304"
-			- "v1 etag on v2 200"
-			- "v2 delta 1 size 64"
-			- "v2 delta header 2 8"
-			- "v2 delta first dddddddddddddddd"
+			- "short revalidate 304"
+			- "v1 etag on short 200"
+			- "short delta 1 size 64"
+			- "short delta header 1 8"
+			- "short delta first dddddddddddddddd"
+	- desc: v=2 names the Rice-coded index form, with its own ETag
+	  exit: 0
+	  inputs:
+		files:
+			config.json: '{"listen":"127.0.0.1:19017","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","index_blob_interval":"0s","credentials":[{"username":"testuser","password":"testpass"}]}'
+			check.sh: |
+				set -euo pipefail
+				base=http://127.0.0.1:19017/test-cache
+				auth=testuser:testpass
+				put() { curl -sf -u "$auth" -X PUT --data-binary 'data' "$base/go-buildcache/v1$1" > /dev/null; }
+				for c in a b c; do put "$(printf "$c%.0s" $(seq 64))"; done
+
+				body="$(mktemp)"
+				headers="$(mktemp)"
+				code=$(curl -s -o "$body" -D "$headers" -w '%{http_code}' -u "$auth" "$base/_index?v=2&hash=8")
+				echo "status $code"
+				echo "size $(stat -c %s "$body")"
+				echo "magic $(dd if="$body" bs=1 count=4 2>/dev/null)"
+				echo "version $(od -An -tu1 -j4 -N1 "$body" | tr -d ' ')"
+				echo "bits $(od -An -tu1 -j5 -N1 "$body" | tr -d ' ')"
+				etag=$(tr -d '\r' < "$headers" | awk 'tolower($1) == "etag:" {print $2}')
+				test -n "$etag" && echo "etag present"
+
+				code=$(curl -s -o /dev/null -w '%{http_code}' -u "$auth" -H "If-None-Match: $etag" "$base/_index?v=2")
+				echo "revalidate $code"
+
+				v1=$(curl -s -o /dev/null -D - -u "$auth" "$base/_index?hash=8" | tr -d '\r' | awk 'tolower($1) == "etag:" {print $2}')
+				test "$v1" != "$etag" && echo "v1 etag differs"
+				echo "v1-short-size $(curl -sf -u "$auth" -o /dev/null -w '%{size_download}' "$base/_index?hash=8")"
+
+				put "$(printf 'd%.0s' $(seq 64))"
+				headers2="$(mktemp)"
+				echo "after-new-key $(curl -sf -u "$auth" -o /dev/null -D "$headers2" -w '%{size_download}' "$base/_index?v=2")"
+				etag2=$(tr -d '\r' < "$headers2" | awk 'tolower($1) == "etag:" {print $2}')
+				test "$etag2" != "$etag" && echo "etag moved"
+	  cmd: bash {shared.serve.sh} {inputs.config.json} 19017 {inputs.check.sh}
+	  outputs:
+		stdout:
+			- "status 200"
+			- "size 71"
+			- "magic GBCI"
+			- "version 2"
+			- "bits 40"
+			- "etag present"
+			- "revalidate 304"
+			- "v1 etag differs"
+			- "v1-short-size 80"
+			- "after-new-key 76"
+			- "etag moved"
 
 	- desc: the health probe answers before the auth gate
 	  exit: 0

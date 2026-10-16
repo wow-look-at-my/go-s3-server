@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
@@ -246,6 +248,135 @@ func TestEachFormatIsCachedOnItsOwn(t *testing.T) {
 	prefix4, _, _ := idx.BlobGenFormat(gbciPrefix)
 	assert.Len(t, gbciHashes(t, full4), 2)
 	assert.Len(t, prefixEntries(t, prefix4), 2, "serializing version 1 must not mark version 2 current")
+}
+
+// v=2 names the Rice-coded form. It carries each distinct prefix once at the
+// server's width, parses with the client's decoder, has its own ETag, and
+// answers a delta. That delta is in the same form.
+func TestIndexV2Form(t *testing.T) {
+	idx := newDeltaIndex(t)
+	for n := byte(1); n <= 4; n++ {
+		key, _ := deltaKey(n)
+		idx.Put(key, 1)
+	}
+	var twin [gbciHashSize]byte
+	twin[0], twin[31] = 1, 0xee
+	idx.Put(gbciKeyPrefix+hex.EncodeToString(twin[:]), 1)
+	counted := idx.WireSize()
+
+	v2 := httptest.NewRecorder()
+	handleGetIndex(v2, httptest.NewRequest("GET", "/b/_index?v=2&hash=8", nil), idx)
+	require.Equal(t, http.StatusOK, v2.Code)
+	body := v2.Body.Bytes()
+	values, width, err := cacheclient.ParseIndexV2(body)
+	require.NoError(t, err)
+	assert.Equal(t, defaultIndexHashBits, width)
+	assert.Equal(t, []uint64{1 << 32, 2 << 32, 3 << 32, 4 << 32}, values, "five keys, four distinct prefixes")
+	assert.Equal(t, `"`+hex.EncodeToString(body[len(body)-32:])+`"`, v2.Header().Get("ETag"))
+	assert.EqualValues(t, len(body), counted, "the size counted before any serialization is the body's")
+	assert.EqualValues(t, len(body), idx.WireSize(), "and so is the cached blob's")
+
+	short := httptest.NewRecorder()
+	handleGetIndex(short, httptest.NewRequest("GET", "/b/_index?hash=8", nil), idx)
+	assert.Less(t, len(body), short.Body.Len())
+	assert.NotEqual(t, short.Header().Get("ETag"), v2.Header().Get("ETag"), "each form has its own ETag")
+	assert.Equal(t, short.Header().Get(headerIndexSeq), v2.Header().Get(headerIndexSeq), "both forms name the same position")
+
+	cond := httptest.NewRequest("GET", "/b/_index?v=2", nil)
+	cond.Header.Set("If-None-Match", v2.Header().Get("ETag"))
+	notModified := httptest.NewRecorder()
+	handleGetIndex(notModified, cond, idx)
+	assert.Equal(t, http.StatusNotModified, notModified.Code)
+
+	k5, _ := deltaKey(5)
+	idx.Put(k5, 1)
+	delta := httptest.NewRecorder()
+	handleGetIndex(delta, httptest.NewRequest("GET", "/b/_index?v=2&epoch="+v2.Header().Get(headerIndexEpoch)+"&seq="+v2.Header().Get(headerIndexSeq), nil), idx)
+	require.Equal(t, http.StatusOK, delta.Code)
+	assert.Equal(t, "1", delta.Header().Get(headerIndexDelta))
+	values, _, err = cacheclient.ParseIndexV2(delta.Body.Bytes())
+	require.NoError(t, err)
+	assert.Equal(t, []uint64{5 << 32}, values, "the delta is v2 too")
+
+	later := httptest.NewRecorder()
+	handleGetIndex(later, httptest.NewRequest("GET", "/b/_index?v=9", nil), idx)
+	assert.Equal(t, byte(cacheclient.IndexV2Version), later.Body.Bytes()[4], "a version this server lacks gets the newest it has")
+
+	idx.SetHashBits(48)
+	wide := httptest.NewRecorder()
+	handleGetIndex(wide, httptest.NewRequest("GET", "/b/_index?v=2", nil), idx)
+	values, width, err = cacheclient.ParseIndexV2(wide.Body.Bytes())
+	require.NoError(t, err)
+	assert.Equal(t, 48, width)
+	assert.Equal(t, []uint64{1 << 40, 2 << 40, 3 << 40, 4 << 40, 5 << 40}, values)
+}
+
+// Prefixes that agree at the served width collapse into one entry, whichever
+// list they arrive from.
+func TestV2FormFoldsSharedPrefixesAcrossPendingAndMaster(t *testing.T) {
+	idx := newDeltaIndex(t)
+	k1, _ := deltaKey(1)
+	idx.Put(k1, 1)
+	idx.BlobGenForm(idx.FormV2())
+	var twin [gbciHashSize]byte
+	twin[0], twin[31] = 1, 0xee
+	idx.Put(gbciKeyPrefix+hex.EncodeToString(twin[:]), 1)
+	k2, _ := deltaKey(2)
+	idx.Put(k2, 1)
+	idx.SetBlobInterval(0)
+
+	counted := idx.WireSize()
+	blob, _, _ := idx.BlobGenForm(idx.FormV2())
+	assert.EqualValues(t, len(blob), counted)
+	values, _, err := cacheclient.ParseIndexV2(blob)
+	require.NoError(t, err)
+	assert.Equal(t, []uint64{1 << 32, 2 << 32}, values)
+}
+
+// The server's encoder and the client's write the same bytes for the same
+// prefixes, at every width and count the server can be asked for. The client
+// holds the format, so a drift here is a server bug.
+func TestServerV2EncoderMatchesTheClient(t *testing.T) {
+	for _, bits := range []int{indexHashBitsMin, 40, 48, indexHashBitsMax} {
+		for _, n := range []int{0, 1, 2, 7, 1000, 50_000} {
+			hashes := make([][gbciHashSize]byte, n)
+			for i := range hashes {
+				hashes[i] = sha256.Sum256(binary.BigEndian.AppendUint64(nil, uint64(i)))
+			}
+			hashes = sortDedupeHashes(hashes)
+			values := []uint64{}
+			for v := range prefixValues(hashes, nil, bits) {
+				values = append(values, v)
+			}
+			server := marshalGBCI2(bits, prefixValues(hashes, nil, bits))
+			require.Equal(t, cacheclient.MarshalIndexV2(bits, values), server, "bits=%d n=%d", bits, n)
+			assert.Equal(t, len(server), gbci2Size(bits, prefixValues(hashes, nil, bits)))
+			got, width, err := cacheclient.ParseIndexV2(server)
+			require.NoError(t, err)
+			assert.Equal(t, bits, width)
+			assert.Equal(t, values, got)
+		}
+	}
+	assert.EqualValues(t, cacheclient.IndexV2Version, gbciVersion2)
+	assert.EqualValues(t, cacheclient.IndexV2MinBits, indexHashBitsMin)
+	assert.EqualValues(t, cacheclient.IndexV2MaxBits, indexHashBitsMax)
+}
+
+func TestLoadConfigBoundsIndexHashBits(t *testing.T) {
+	dir := t.TempDir()
+	for _, bits := range []int{8, 31, 65} {
+		path := writeConfigFile(t, dir, "cfg.json", map[string]any{
+			"bucket": "b", "data_dir": dir, "disable_auth": true, "index_hash_bits": bits,
+		})
+		_, err := LoadConfig(path)
+		require.ErrorContains(t, err, "index_hash_bits", "%d bits", bits)
+	}
+	path := writeConfigFile(t, dir, "cfg.json", map[string]any{
+		"bucket": "b", "data_dir": dir, "disable_auth": true, "index_hash_bits": 48,
+	})
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+	assert.Equal(t, 48, cfg.IndexHashBits)
 }
 
 func TestIndexHeadersMatchTheClient(t *testing.T) {

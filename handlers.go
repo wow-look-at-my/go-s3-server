@@ -260,20 +260,24 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request, storage *Storage
 	w.WriteHeader(204)
 }
 
-// handleGetIndex serves the precomputed GBCI binary cache-key index. The
-// body is a fixed 24-byte header + sorted entries + 32-byte SHA-256
-// trailer. The query parameter v=2 selects version 2, whose entries are the
-// leading gbciPrefixSize bytes of each action hash. Without it the body is
-// version 1, a whole hash per entry. The version is part of the URL, so a
-// caching proxy keeps both apart.
+// handleGetIndex serves the precomputed GBCI binary cache-key index, in the
+// form the request names. v=2 is the Rice-coded form of cacheclient/indexv2.go,
+// at the server's prefix width. Without it, hash=8 is the v1 short form and
+// nothing is v1 with whole hashes.
 func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 	if idx == nil {
 		writeError(w, 500, "internal_error", "index unavailable")
 		return
 	}
-	format := indexFormatFromQuery(r)
+	q := r.URL.Query()
+	form := indexFormV1(gbciHashSize)
+	if v, _ := strconv.Atoi(q.Get("v")); v >= gbciVersion2 {
+		form = idx.FormV2()
+	} else if q.Get("hash") == strconv.Itoa(gbciPrefixSize) {
+		form = indexFormV1(gbciPrefixSize)
+	}
 	if from, asked := indexGenFromQuery(r); asked {
-		delta, to, ok := idx.DeltaFormat(from, format)
+		delta, to, ok := idx.DeltaForm(from, form)
 		if !ok {
 			writeError(w, http.StatusGone, "index_epoch_gone", "the index changed beyond a delta; fetch it whole")
 			return
@@ -285,7 +289,7 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 		_, _ = w.Write(delta)
 		return
 	}
-	blob, etag, gen := idx.BlobGenFormat(format)
+	blob, etag, gen := idx.BlobGenForm(form)
 	// The blob is shared by every request and already built, so the transfer holds no memory of its own.
 	releaseSlot(r)
 	w.Header().Set("Content-Type", "application/octet-stream")

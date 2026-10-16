@@ -135,17 +135,19 @@ func TestIndexWithoutEntriesCostsLess(t *testing.T) {
 	require.Len(t, blob, gbciHeaderSize+footprintKeys*gbciHashSize+sha256.Size)
 }
 
-// Version 2 carries each key's leading gbciPrefixSize bytes, which is a
-// quarter of the version 1 body, and still names every key.
+// The short form carries each key's leading gbciPrefixSize bytes, which is a
+// quarter of the full v1 body, and still names every key. It is a version 1
+// blob of width 8: version byte 2 belongs to the Rice-coded form of
+// indexv2.go, whose width is in bits.
 func TestPrefixBlobCostsEightBytesPerKey(t *testing.T) {
 	idx := fillIndexTracking(footprintKeys, false)
 	full, fullETag := idx.Blob()
 	prefix, prefixETag, _ := idx.BlobGenFormat(gbciPrefix)
 
 	require.Len(t, prefix, gbciHeaderSize+footprintKeys*gbciPrefixSize+sha256.Size)
-	require.Equal(t, byte(gbciPrefixVersion), prefix[4])
+	require.Equal(t, byte(gbciVersion), prefix[4])
 	require.Equal(t, byte(gbciPrefixSize), prefix[5])
-	require.NotEqual(t, fullETag, prefixETag, "each version has its own ETag")
+	require.NotEqual(t, fullETag, prefixETag, "each form has its own ETag")
 	for i := range footprintKeys {
 		fullEntry := full[gbciHeaderSize+i*gbciHashSize:]
 		prefixEntry := prefix[gbciHeaderSize+i*gbciPrefixSize:]
@@ -182,8 +184,9 @@ func BenchmarkIndexBlob(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {
-				idx.served[gbciFull] = servedBlob{}
-				idx.Blob()
+				idx.mu.Lock()
+				idx.forms = nil
+				idx.mu.Unlock()				idx.Blob()
 			}
 		})
 	}

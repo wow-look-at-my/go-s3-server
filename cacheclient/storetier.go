@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // storeTier puts the shared store under the disk cache. Disk stays
@@ -97,6 +98,23 @@ func (tier *storeTier) Retrievable(id ActionID) bool {
 		}
 	}
 	return tier.store.Holds(hex.EncodeToString(id[:]))
+}
+
+// fetchRetryEvery is how long Fetch waits before it asks a down server again.
+var fetchRetryEvery = 2 * time.Second
+
+// Fetch is Get for an object the build already depends on, such as an archive
+// a hit named without its bytes. While the server is down, a miss is an
+// outage, not an answer, so Fetch asks again until the server answers.
+func (tier *storeTier) Fetch(id ActionID) (Entry, error) {
+	for {
+		entry, err := tier.Get(id)
+		if err == nil || !tier.store.Down() {
+			return entry, err
+		}
+		logging.Warnf("cacheprog: the cache server is down and holds %s, which this build needs; asking again in %s", ShortID(hex.EncodeToString(id[:])), fetchRetryEvery)
+		time.Sleep(fetchRetryEvery)
+	}
 }
 
 // Put stores locally, then offers the body to the store. The local store is

@@ -344,6 +344,11 @@ func (b *WebBackend) mayAsk() bool {
 	return false
 }
 
+// Down reports whether the server has stopped answering. A miss while it is down says nothing about what the server holds.
+func (b *WebBackend) Down() bool {
+	return b.downSince.Load() != 0
+}
+
 // noteNoAnswer marks the server down. Only the first request to find it so says so.
 func (b *WebBackend) noteNoAnswer(err error) {
 	now := time.Now().UnixNano()

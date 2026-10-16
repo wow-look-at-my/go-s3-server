@@ -278,8 +278,9 @@ func TestDashboardReportsTheIndexWireSize(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, values, 6)
 
-	// Hashes that share their first defaultIndexHashBits/8 bytes are a single
-	// entry, and the counted size says so before anything serializes.
+	// Hashes that share their first defaultIndexHashBits bits are a single
+	// entry, and the counted size says so before anything serializes: the count
+	// moves only for a new prefix.
 	idx.Put(gbciKeyPrefix+"06"+strings.Repeat("0", 8)+"ee"+strings.Repeat("0", 52), 1)
 	stats, err = d.snapshot()
 	require.NoError(t, err)
@@ -288,6 +289,15 @@ func TestDashboardReportsTheIndexWireSize(t *testing.T) {
 	values, _, err = cacheclient.ParseIndexV2(fresh)
 	require.NoError(t, err)
 	assert.Len(t, values, 6, "a hash under an advertised prefix adds no entry")
+	idx.Put(gbciKeyPrefix+fmt.Sprintf("%02x", 6)+strings.Repeat("0", 60)+"ee", 1)
+	idx.Put(key(7), 1)
+	stats, err = d.snapshot()
+	require.NoError(t, err)
+	fresh, _, _ = idx.BlobGenForm(idx.FormV2())
+	assert.EqualValues(t, len(fresh), stats.Index.WireBytes)
+	values, _, err = cacheclient.ParseIndexV2(fresh)
+	require.NoError(t, err)
+	assert.Len(t, values, 7, "a hash whose prefix is already counted is that one entry")
 }
 
 func TestDashboardShowsTheIndexSizeInMB(t *testing.T) {

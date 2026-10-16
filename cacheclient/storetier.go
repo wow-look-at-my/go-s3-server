@@ -99,6 +99,28 @@ func (tier *storeTier) Retrievable(id ActionID) bool {
 	return tier.store.Holds(hex.EncodeToString(id[:]))
 }
 
+// Fetch is Get for an object the build already depends on, such as an archive
+// a hit named without its bytes. While the server is down, a miss is an
+// outage, not an answer, so Fetch waits for the server and asks again.
+func (tier *storeTier) Fetch(id ActionID) (Entry, error) {
+	for {
+		// A miss is final only from a server that was up for the whole lookup.
+		wasDown := tier.store.Down()
+		entry, err := tier.Get(id)
+		if err == nil {
+			return entry, nil
+		}
+		if !tier.store.Down() {
+			if !wasDown {
+				return entry, err
+			}
+			continue // it came back during the lookup, so the next one is its answer
+		}
+		logging.Warnf("cacheprog: the cache server is down and holds %s, which this build needs; it is asked again when it answers or at the next probe", ShortID(hex.EncodeToString(id[:])))
+		tier.store.awaitAnswer()
+	}
+}
+
 // Put stores locally, then offers the body to the store. The local store is
 // what the build depends on, so its result is what Put reports.
 func (tier *storeTier) Put(id ActionID, file io.ReadSeeker) (OutputID, int64, error) {

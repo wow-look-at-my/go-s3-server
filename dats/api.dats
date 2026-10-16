@@ -206,10 +206,10 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19017","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","index_blob_interval":"0s","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","index_blob_interval":"0s","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19017/test-cache
+				base=http://127.0.0.1:$PORT/test-cache
 				auth=testuser:testpass
 				put() { curl -sf -u "$auth" -X PUT --data-binary 'data' "$base/go-buildcache/v1$1" > /dev/null; }
 				for c in a b c; do put "$(printf "$c%.0s" $(seq 64))"; done
@@ -237,7 +237,7 @@ tests:
 				echo "after-new-key $(curl -sf -u "$auth" -o /dev/null -D "$headers2" -w '%{size_download}' "$base/_index?v=2")"
 				etag2=$(tr -d '\r' < "$headers2" | awk 'tolower($1) == "etag:" {print $2}')
 				test "$etag2" != "$etag" && echo "etag moved"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19017 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "status 200"

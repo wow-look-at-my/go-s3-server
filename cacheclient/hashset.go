@@ -146,8 +146,9 @@ func (s *hashSet) Add(h actionHash) {
 	s.addKey(s.key(h))
 }
 
-// addKey adds k, which the caller has already cut to the width of the set.
+// addKey adds k at the width of the set.
 func (s *hashSet) addKey(k hashKey) {
+	k &= s.mask()
 	// A key in removed is still in the sorted slice, so re-adding it is the
 	// deletion going away rather than a new entry.
 	if s.removed.Contains(k) {

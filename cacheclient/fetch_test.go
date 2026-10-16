@@ -39,15 +39,14 @@ func TestFetchWaitsOutADownServer(t *testing.T) {
 	// No probe goes out while the test waits, so the server stays down until the object arrives.
 	tier.store.downSince.Store(time.Now().UnixNano())
 	tier.store.probeAt.Store(time.Now().Add(time.Hour).UnixNano())
-	arrived := make(chan struct{})
+	arrived := make(chan error, 1)
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		_, _, putErr := tier.DiskCache.Put(needed, bytes.NewReader([]byte("archive")))
-		require.NoError(t, putErr)
-		close(arrived)
+		arrived <- putErr
 	}()
 	entry, err := tier.Fetch(needed)
+	require.NoError(t, <-arrived)
 	require.NoError(t, err, "a down server is waited out")
-	<-arrived
 	require.Equal(t, int64(len("archive")), entry.Size)
 }

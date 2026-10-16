@@ -1,5 +1,7 @@
 package main
 
+import "encoding/binary"
+
 // The client's statement of what it already holds.
 
 // haveFilterMaxHashes bounds k.
@@ -34,9 +36,11 @@ func (f *haveFilter) contains(h [gbciHashSize]byte) bool {
 	return true
 }
 
-// haveFilterBit is position i of hash h in a filter of m bits.
+// haveFilterBit is position i of hash h in a filter of m bits, by double
+// hashing over both halves of the hash's first several bytes. The client
+// holds only those bytes.
 func haveFilterBit(h [gbciHashSize]byte, i int, m uint32) uint32 {
-	off := i * 3
-	v := uint32(h[off])<<16 | uint32(h[off+1])<<8 | uint32(h[off+2])
-	return v % m
+	key := binary.BigEndian.Uint64(h[:8])
+	h1, h2 := uint32(key>>32), uint32(key)|1
+	return (h1 + uint32(i)*h2) % m
 }

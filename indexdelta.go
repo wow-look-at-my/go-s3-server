@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
-	"sort"
 	"time"
 )
 
@@ -98,24 +97,41 @@ func marshalGBCI(hashes [][gbciHashSize]byte, f gbciFormat) []byte {
 	return blob[:off+sha256.Size]
 }
 
-// WireSize is the length in bytes of the body GET /_index sends right now, which is before any compression.
+// WireSize is the length in bytes of the body a cacheclient gets from a full GET /_index right now, before any compression.
+// The client asks for the gbciPrefixSize form, so this sizes that form and not the full-width one.
 // It answers from the cached blob when the handler would serve it, and counts the merged list otherwise.
 // It never serializes and never changes the index.
 func (idx *Index) WireSize() int64 {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	if idx.blobServableLocked() {
-		return int64(len(idx.cachedBlob))
+	if idx.prefixServableLocked() {
+		return int64(len(idx.cachedPrefix))
 	}
-	n := len(idx.hashes)
-	if len(idx.pending) > 0 {
-		fresh := sortDedupeHashes(append([][gbciHashSize]byte(nil), idx.pending...))
-		for _, h := range fresh {
-			i := sort.Search(len(idx.hashes), func(i int) bool { return bytes.Compare(idx.hashes[i][:], h[:]) >= 0 })
-			if i == len(idx.hashes) || idx.hashes[i] != h {
-				n++
-			}
+	fresh := sortDedupeHashes(append([][gbciHashSize]byte(nil), idx.pending...))
+	n := countDistinctPrefixes(idx.hashes, fresh, gbciPrefixSize)
+	return int64(gbciHeaderSize + n*gbciPrefixSize + sha256.Size)
+}
+
+// countDistinctPrefixes counts the distinct first width bytes over the union of sorted lists a and b.
+// This is the hash count marshalGBCIWidth writes for the merged list. It does not allocate.
+func countDistinctPrefixes(a, b [][gbciHashSize]byte, width int) int {
+	n := 0
+	var prev []byte
+	i, j := 0, 0
+	for i < len(a) || j < len(b) {
+		var cur []byte
+		switch {
+		case j == len(b) || (i < len(a) && bytes.Compare(a[i][:], b[j][:]) <= 0):
+			cur = a[i][:width]
+			i++
+		default:
+			cur = b[j][:width]
+			j++
+		}
+		if prev == nil || !bytes.Equal(prev, cur) {
+			n++
+			prev = cur
 		}
 	}
-	return int64(gbciHeaderSize + n*gbciHashSize + sha256.Size)
+	return n
 }

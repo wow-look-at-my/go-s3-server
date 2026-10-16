@@ -1,12 +1,11 @@
-// All rights reserved. Use of this source code is
-// governed by a BSD-style license that can be found
-// in the LICENSE file.
+// All rights reserved. Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 // Package cachedisk is the build cache's directory on disk: the entry files,
 // the output files, and the trim that drops what nothing has read.
 //
-// It is the half of the cache that speaks to no network, so a program that
-// must not depend on net can hold a cache anyway. The go command's bootstrap
+// It is the half of the cache that speaks to no network. A program that must
+// not depend on net can hold a cache anyway. The go command's bootstrap
 // build is that program.
 package cachedisk
 
@@ -32,10 +31,6 @@ type ActionID [HashSize]byte
 type OutputID [HashSize]byte
 
 // Cache stores an action's output under that action's key.
-//
-// After a Get or a Put answers, OutputFile names a file that exists until
-// Close. That holds ACROSS processes: a trim here must not delete an output
-// another process just read, which is why nothing used in the last day goes.
 type Cache interface {
 	// Get answers the entry for an action, or a *MissError.
 	Get(ActionID) (Entry, error)
@@ -46,7 +41,7 @@ type Cache interface {
 	// Close ends this process's use: the trim and any waiting run here.
 	Close() error
 
-	// OutputFile names a stored output, which a get or a put just answered for.
+	// OutputFile names a stored output, which a get or a put answered for.
 	OutputFile(OutputID) string
 
 	// FuzzDir names where fuzz files are stored.
@@ -127,9 +122,7 @@ const (
 )
 
 var (
-	// Under GODEBUG=gocacheverify=1 every Get misses, and Put then checks what
-	// it is handed against what is stored. An action that is not reproducible
-	// shows up as a mismatch rather than as a hit nobody re-derived.
+	// Under GODEBUG=gocacheverify=1 every Get misses, and Put then checks what it is handed against what is stored.
 	verify        = false
 	errVerifyMode = errors.New("gocacheverify=1")
 )
@@ -149,9 +142,7 @@ func initEnv() {
 }
 
 // SetSwitches takes the switch values from a host that reads GODEBUG through
-// a registry of its own. The go command has one, and a setting it reads there
-// feeds a counter this module cannot reach. So the host decides, and this
-// module's own read of the environment is what a plain consumer gets.
+// a registry of its own.
 func SetSwitches(verifyOn, hashOn, testOn bool) {
 	verify, debugHash, DebugTest = verifyOn, hashOn, testOn
 }
@@ -278,8 +269,7 @@ func GetBytes(c Cache, id ActionID) ([]byte, Entry, error) {
 	return data, entry, nil
 }
 
-// OutputFile names the file holding an output. A consumer that wants it
-// MAPPED maps this path itself: how to map a file is a platform's business.
+// OutputFile names the file holding an output.
 func (c *DiskCache) OutputFile(out OutputID) string {
 	file := c.fileName(out, "d")
 	c.markUsed(file)
@@ -287,8 +277,7 @@ func (c *DiskCache) OutputFile(out OutputID) string {
 }
 
 const (
-	// A file's mtime is its time of last use, stamped no more often than this,
-	// so that a build does not rewrite every inode it reads.
+	// A file's mtime is its time of last use, stamped no more.
 	mtimeInterval = 1 * time.Hour
 	trimInterval  = 24 * time.Hour
 	trimLimit     = 5 * 24 * time.Hour
@@ -313,7 +302,7 @@ func (c *DiskCache) Trim() error {
 	now := c.now()
 
 	// dir/trim.txt holds when the last trim finished. A stamp that cannot be
-	// parsed, or a single from the future, trims anyway: a trim over an empty
+	// parsed, or a single from the future, trims anyway. A trim over an empty
 	// cache costs nothing, and a full a single may be what corrupted the stamp.
 	skipTrim := func(data []byte) bool {
 		if t, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64); err == nil {
@@ -388,7 +377,7 @@ func (c *DiskCache) trimSubdir(subdir string, cutoff time.Time) {
 
 // putIndexEntry records that an action produced an output of a size.
 //
-// An action file stays writable: a repeat that embeds a timestamp or a
+// An action file stays writable. A repeat that embeds a timestamp or a
 // temporary directory name produces a different output, which is ordinary
 // rather than wrong. Verify mode is where it becomes a finding.
 func (c *DiskCache) putIndexEntry(id ActionID, out OutputID, size int64, allowVerify bool) error {
@@ -492,7 +481,6 @@ func (c *DiskCache) copyFile(file io.ReadSeeker, out OutputID, size int64) error
 				return nil
 			}
 		}
-		// Hash did not match. Fall through and rewrite file.
 	}
 
 	// Copy file to cache directory.

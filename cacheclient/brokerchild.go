@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/wow-look-at-my/go-s3-server/cacheclient/cachedisk"
 
@@ -87,17 +88,24 @@ func dialBroker(dir string) Cache {
 		return nil
 	}
 	ctx, stop := context.WithCancel(context.Background())
-	if err := hello.SendTyped(ctx, opHello, []byte(mine)); err != nil {
+	// A queue can outlive its owner. Then nobody answers the hello, so the handshake has a deadline.
+	shake, shakeDone := context.WithTimeout(ctx, brokerDialTimeout)
+	defer shakeDone()
+	if err := hello.SendTyped(shake, opHello, []byte(mine)); err != nil {
 		stop()
 		channel.Close()
 		channel.Unlink()
+		brokerDialFailed(name, err)
 		return nil
 	}
-	typ, rec, err := channel.Recv(ctx)
+	typ, rec, err := channel.Recv(shake)
 	if err != nil || typ != stDir || len(rec) == 0 || filepath.Clean(string(rec)) != filepath.Clean(dir) {
 		stop()
 		channel.Close()
 		channel.Unlink()
+		if err != nil {
+			brokerDialFailed(name, err)
+		}
 		return nil
 	}
 	link := &brokerLink{
@@ -111,6 +119,14 @@ func dialBroker(dir string) Cache {
 	child := &brokerCache{link: link, dir: dir}
 	liveChild.Store(child)
 	return child
+}
+
+// brokerDialTimeout bounds the wait for the owner's first answer.
+var brokerDialTimeout = 5 * time.Second
+
+// brokerDialFailed reports that this process opens the cache itself because the named owner did not answer.
+func brokerDialFailed(name string, err error) {
+	brokerNotice("cache: the build cache owner at %s did not answer (%v), so this process opens the cache itself", name, err)
 }
 
 // liveChild is this process's open link to an owner, which Exit closes.

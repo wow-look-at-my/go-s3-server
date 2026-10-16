@@ -195,7 +195,9 @@ func (b *WebBackend) sendBatchPut(reqs []putReq) {
 	resp, err := b.doRetryPUT(httpReq, tarBytes)
 	if err != nil {
 		b.Pool.Release()
-		logging.Warnf("cacheprog: web batch put: %v", err)
+		if !errors.Is(err, errServerDown) {
+			logging.Warnf("cacheprog: web batch put: %v", err)
+		}
 		for _, r := range reqs {
 			b.removeClaimed(r.hash)
 		}

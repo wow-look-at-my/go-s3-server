@@ -43,6 +43,10 @@ func TestHashSetMatchesAMapThroughEveryCompaction(t *testing.T) {
 	for h := range want.All() {
 		require.True(t, s.Contains(h), "missing a key the set was told to hold")
 	}
+	wantKeys := set.New[indexKey]()
+	for h := range want.All() {
+		wantKeys.Add(keyOf(h))
+	}
 	seen := map[actionHash]int{}
 	for h := range s.All() {
 		seen[h]++
@@ -50,7 +54,7 @@ func TestHashSetMatchesAMapThroughEveryCompaction(t *testing.T) {
 	require.Len(t, seen, want.Len())
 	for h, n := range seen {
 		assert.Equal(t, 1, n, "yielded a key twice")
-		assert.True(t, want.Contains(h), "yielded a key that was removed")
+		assert.True(t, wantKeys.Contains(keyOf(h)), "yielded a key that was removed")
 	}
 	for i := range 3000 {
 		h := hashN(i)

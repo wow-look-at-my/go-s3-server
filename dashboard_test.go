@@ -1,19 +1,20 @@
 package main
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/go-s3-server/cacheclient"
 )
 
 func testDashboard(t *testing.T, g prometheus.Gatherer) *dashboard {
@@ -328,46 +329,37 @@ func TestDashboardReportsTheIndexWireSize(t *testing.T) {
 
 	d.srv.storage = newTestStorage(t)
 	idx := d.srv.storage.Index
-	for i := 0; i < 5; i++ {
-		idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", i, 0), 1)
+	// The first byte differs, so each key is its own prefix at any width.
+	key := func(i int) string { return gbciKeyPrefix + fmt.Sprintf("%02x", i) + strings.Repeat("0", 62) }
+	for i := 1; i <= 5; i++ {
+		idx.Put(key(i), 1)
 	}
 
-	// Pending hashes count before anything serializes. A client fetches the short form, so each hash costs gbciPrefixSize bytes.
+	// Pending hashes count before anything serializes, at the v2 form a client fetches.
 	stats, err = d.snapshot()
 	require.NoError(t, err)
-	assert.EqualValues(t, gbciHeaderSize+5*gbciPrefixSize+sha256.Size, stats.Index.WireBytes)
+	counted := stats.Index.WireBytes
+	assert.EqualValues(t, 5, stats.Index.Keys)
+	assert.Equal(t, defaultIndexHashBits, stats.Index.HashBits)
 
 	// The figure is the body a client gets, whether the blob is cached yet or not.
-	blob, _, _ := idx.BlobGenWidth(gbciPrefixSize)
+	blob, _, _ := idx.BlobGenForm(idx.FormV2())
+	assert.EqualValues(t, len(blob), counted)
 	stats, err = d.snapshot()
 	require.NoError(t, err)
 	assert.EqualValues(t, len(blob), stats.Index.WireBytes)
-
-	// The full-width blob is not what a client downloads, so a cached copy of it does not change the figure.
-	full, _ := idx.Blob()
-	stats, err = d.snapshot()
-	require.NoError(t, err)
-	assert.EqualValues(t, len(blob), stats.Index.WireBytes)
-	assert.Greater(t, len(full), len(blob))
 
 	// An unserialized add shows at once when the cached blob is too old to serve.
 	idx.SetBlobInterval(0)
-	idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", 5, 0), 1)
-	idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", 5, 0), 1)
+	idx.Put(key(6), 1)
+	idx.Put(key(6), 1)
 	stats, err = d.snapshot()
 	require.NoError(t, err)
-	fresh, _, _ := idx.BlobGenWidth(gbciPrefixSize)
+	fresh, _, _ := idx.BlobGenForm(idx.FormV2())
 	assert.EqualValues(t, len(fresh), stats.Index.WireBytes, "a duplicate pending hash is one entry")
-	assert.EqualValues(t, gbciHeaderSize+6*gbciPrefixSize+sha256.Size, len(fresh))
-
-	// Hashes that share their first gbciPrefixSize bytes are a single entry in the short form.
-	idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", 5, 1), 1)
-	idx.Put(gbciKeyPrefix+fmt.Sprintf("%016x%048x", 7, 1), 1)
-	stats, err = d.snapshot()
+	values, _, err := cacheclient.ParseIndexV2(fresh)
 	require.NoError(t, err)
-	fresh, _, _ = idx.BlobGenWidth(gbciPrefixSize)
-	assert.EqualValues(t, len(fresh), stats.Index.WireBytes)
-	assert.EqualValues(t, gbciHeaderSize+7*gbciPrefixSize+sha256.Size, len(fresh))
+	assert.Len(t, values, 6)
 }
 
 func TestDashboardShowsTheIndexSizeInMB(t *testing.T) {

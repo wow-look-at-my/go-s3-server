@@ -25,21 +25,48 @@ type hashSet struct {
 	// pending holds keys added since the last compaction and absent.
 	pending set.Set[hashKey]
 	removed set.Set[hashKey]
+	// The low shift bits of every key are zero.
+	shift uint8
 }
 
 // hashKey is the first gbciPrefixSize bytes of an action hash, big-endian.
 type hashKey = uint64
 
-// gbciPrefixSize is the hash width of the short index form the client asks for.
+// gbciPrefixSize is the hash width of the short v1 index form the client asks for.
 const gbciPrefixSize = 8
 
 func keyOf(h actionHash) hashKey { return binary.BigEndian.Uint64(h[:gbciPrefixSize]) }
 
-// addAll adds every key in src.
+// mask keeps the bits of a key this set holds.
+func (s *hashSet) mask() hashKey { return ^hashKey(0) << s.shift }
+
+// key is h as this set holds it.
+func (s *hashSet) key(h actionHash) hashKey { return keyOf(h) & s.mask() }
+
+// width is the prefix width in bits.
+func (s *hashSet) width() int { return 64 - int(s.shift) }
+
+// addAll adds every key in src. A src of a narrower width narrows this set
+// first, so every key keeps the same bits.
 func (s *hashSet) addAll(src *hashSet) {
-	for k := range src.All() {
-		s.addKey(k)
+	if src.shift > s.shift {
+		s.narrowTo(src.shift)
 	}
+	for k := range src.All() {
+		s.addKey(k & s.mask())
+	}
+}
+
+// narrowTo drops the low bits of every key down to shift. Keys that agree on
+// what is left become one.
+func (s *hashSet) narrowTo(shift uint8) {
+	s.compact()
+	s.shift = shift
+	mask := s.mask()
+	for i := range s.sorted {
+		s.sorted[i] &= mask
+	}
+	s.sorted = slices.Compact(s.sorted)
 }
 
 // compactAt is how many buffered mutations force a merge into the sorted slice.
@@ -56,14 +83,16 @@ func newHashSet(n int) *hashSet {
 }
 
 // newHashSetFromSorted adopts hashes that are ALREADY ascending and deduped,
-// which is what a GBCI blob's body is. It costs a single linear check rather
-// than a sort, and it falls back to sorting rather than trusting the claim: a
-// blob that arrives out of order would otherwise make every later lookup wrong.
-func newHashSetFromSorted(keys []hashKey) *hashSet {
+// which is what a GBCI blob's body is, holding widthBits of each. It costs a
+// single linear check rather than a sort, and it falls back to sorting rather
+// than trusting the claim: a blob that arrives out of order would otherwise
+// make every later lookup wrong.
+func newHashSetFromSorted(keys []hashKey, widthBits int) *hashSet {
 	s := &hashSet{
 		sorted:  keys,
 		pending: set.New[hashKey](),
 		removed: set.New[hashKey](),
+		shift:   uint8(64 - widthBits),
 	}
 	if !slices.IsSorted(s.sorted) {
 		slices.Sort(s.sorted)
@@ -83,7 +112,7 @@ func (s *hashSet) Contains(h actionHash) bool {
 	if s == nil {
 		return false
 	}
-	k := keyOf(h)
+	k := s.key(h)
 	if s.removed.Contains(k) {
 		return false
 	}
@@ -98,7 +127,7 @@ func (s *hashSet) Add(h actionHash) {
 	if s == nil {
 		return
 	}
-	s.addKey(keyOf(h))
+	s.addKey(s.key(h))
 }
 
 func (s *hashSet) addKey(k hashKey) {
@@ -124,7 +153,7 @@ func (s *hashSet) Remove(h actionHash) {
 	if s == nil {
 		return
 	}
-	k := keyOf(h)
+	k := s.key(h)
 	if s.pending.Contains(k) {
 		s.pending.Remove(k)
 		return

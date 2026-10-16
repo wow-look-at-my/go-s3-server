@@ -10,14 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Fetch answers a miss at once while the server answers, and asks again while
-// it is down, until the object arrives.
+// Fetch answers a miss at once while the server answers. While it is down,
+// Fetch waits for the server to answer again, then asks again.
 func TestFetchWaitsOutADownServer(t *testing.T) {
-	t.Serial() // fetchRetryEvery is package state
-	old := fetchRetryEvery
-	fetchRetryEvery = 10 * time.Millisecond
-	defer func() { fetchRetryEvery = old }()
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -36,13 +31,13 @@ func TestFetchWaitsOutADownServer(t *testing.T) {
 
 	var needed ActionID
 	needed[0] = 0xbb
-	// No probe goes out while the test waits, so the server stays down until the object arrives.
+	// No probe is due while the test waits, so only the server's return wakes Fetch.
 	tier.store.downSince.Store(time.Now().UnixNano())
 	tier.store.probeAt.Store(time.Now().Add(time.Hour).UnixNano())
 	arrived := make(chan error, 1)
 	go func() {
-		time.Sleep(50 * time.Millisecond)
 		_, _, putErr := tier.DiskCache.Put(needed, bytes.NewReader([]byte("archive")))
+		tier.store.noteAnswered()
 		arrived <- putErr
 	}()
 	entry, err := tier.Fetch(needed)

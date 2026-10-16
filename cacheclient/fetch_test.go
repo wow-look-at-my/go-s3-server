@@ -36,7 +36,9 @@ func TestFetchWaitsOutADownServer(t *testing.T) {
 
 	var needed ActionID
 	needed[0] = 0xbb
+	// No probe goes out while the test waits, so the server stays down until the object arrives.
 	tier.store.downSince.Store(time.Now().UnixNano())
+	tier.store.probeAt.Store(time.Now().Add(time.Hour).UnixNano())
 	arrived := make(chan struct{})
 	go func() {
 		time.Sleep(50 * time.Millisecond)

@@ -5,23 +5,31 @@ shared:
 		serve.sh: |
 			# Runs a single check script against a server this starts, then
 			# prints the server's own log so the test can assert on what it
-			# wrote. usage: serve.sh <config.json> <port> <check.sh>
+			# wrote. usage: serve.sh <config.json> <check.sh>
+			# The config listens on port 0, so the kernel picks a free port and
+			# the server log names it. Concurrent runs never share a server.
+			# The check reads the port from $PORT.
 			set -euo pipefail
 			config="$1"
-			port="$2"
-			check="$3"
+			check="$2"
 			log="$(mktemp)"
 			"${SERVER:-./build/go-s3-server}" --config "$config" > "$log" 2>&1 &
 			server=$!
 			trap 'kill "$server" 2>/dev/null || true; wait "$server" 2>/dev/null || true' EXIT
+			port_re='listening on [^ ]*:([0-9]+) bucket='
+			PORT=""
 			ready=""
 			for _ in $(seq 1 100); do
-				if curl -so /dev/null "http://127.0.0.1:$port/_health"; then ready=yes; break; fi
+				while [ -z "$PORT" ] && IFS= read -r line; do
+					if [[ "$line" =~ $port_re ]]; then PORT="${BASH_REMATCH[1]}"; fi
+				done < "$log"
+				if [ -n "$PORT" ] && curl -so /dev/null "http://127.0.0.1:$PORT/_health"; then ready=yes; break; fi
 				if ! kill -0 "$server" 2>/dev/null; then break; fi
 				sleep 0.1
 			done
+			export PORT
 			if [ -z "$ready" ]; then
-				echo "the server never answered on port $port" >&2
+				echo "the server never answered on port ${PORT:-(none in its log)}" >&2
 				sed 's/^/server: /' "$log" >&2
 				exit 1
 			fi
@@ -46,10 +54,10 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19050","dashboard_listen":"","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","dashboard_listen":"","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19050/test-cache
+				base=http://127.0.0.1:$PORT/test-cache
 				auth=testuser:testpass
 				# The log buckets wall-clock seconds. Start just after a second
 				# begins, so the requests share a bucket.
@@ -70,7 +78,7 @@ tests:
 					"$base/log/v1test000000000002" > /dev/null
 				curl -sf -u "$auth" -H 'X-Cache-Module: example.com/alpha' "$base/log/v1test000000000001" > /dev/null
 				curl -sf -u "$auth" -H 'X-Cache-Module: example.com/beta' "$base/log/v1test000000000002" > /dev/null
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19050 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "access log: normal mode"
@@ -86,16 +94,16 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19051","dashboard_listen":"","log_mode":"verbose","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","dashboard_listen":"","log_mode":"verbose","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19051/test-cache
+				base=http://127.0.0.1:$PORT/test-cache
 				auth=testuser:testpass
 				curl -sf -u "$auth" -X PUT --data-binary 'verbose body' "$base/log/v1verbose00000001" > /dev/null
 				curl -sf -u "$auth" -X POST -H 'Content-Type: application/json' \
 					--data '{"keys":["log/v1verbose00000001"],"prefetch":true}' \
 					"$base/_batch/get" > /dev/null
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19051 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "access log: verbose mode"
@@ -111,13 +119,13 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19052","dashboard_listen":"","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","dashboard_listen":"","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
 				# No cache traffic at all: only the health probe serve.sh already
 				# made, which is not an object move.
 				sleep 2
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19052 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		"!stdout":
 			- "cache 1s:"

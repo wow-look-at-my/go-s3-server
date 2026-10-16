@@ -5,10 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
-	"syscall"
 	"time"
-
-	"github.com/wow-look-at-my/go-ipc/filelock"
 )
 
 // lockWait bounds how long transformFile waits for another process's lock.
@@ -22,7 +19,7 @@ const lockWait = 20 * time.Second
 func transformFile(path string, change func([]byte) ([]byte, error)) error {
 	ctx, cancel := context.WithTimeout(context.Background(), lockWait)
 	defer cancel()
-	unlock, err := filelock.Lock(ctx, path+".lock")
+	unlock, err := LockFile(ctx, path+".lock")
 	if errors.Is(err, context.DeadlineExceeded) {
 		return errors.New("cache: " + path + ".lock is held by another process")
 	}
@@ -68,10 +65,4 @@ func dirOf(path string) string {
 		}
 	}
 	return "."
-}
-
-// isETXTBSY reports whether a running program holds the file, which unix
-// refuses to replace. That is a miss rather than a failure.
-func isETXTBSY(err error) bool {
-	return errors.Is(err, syscall.ETXTBSY)
 }

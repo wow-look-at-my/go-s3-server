@@ -202,6 +202,56 @@ tests:
 			- "after-new-key 184"
 			- "etag moved"
 
+	- desc: v=2 names the Rice-coded index form, with its own ETag
+	  exit: 0
+	  inputs:
+		files:
+			config.json: '{"listen":"127.0.0.1:19017","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","index_blob_interval":"0s","credentials":[{"username":"testuser","password":"testpass"}]}'
+			check.sh: |
+				set -euo pipefail
+				base=http://127.0.0.1:19017/test-cache
+				auth=testuser:testpass
+				put() { curl -sf -u "$auth" -X PUT --data-binary 'data' "$base/go-buildcache/v1$1" > /dev/null; }
+				for c in a b c; do put "$(printf "$c%.0s" $(seq 64))"; done
+
+				body="$(mktemp)"
+				headers="$(mktemp)"
+				code=$(curl -s -o "$body" -D "$headers" -w '%{http_code}' -u "$auth" "$base/_index?v=2&hash=8")
+				echo "status $code"
+				echo "size $(stat -c %s "$body")"
+				echo "magic $(dd if="$body" bs=1 count=4 2>/dev/null)"
+				echo "version $(od -An -tu1 -j4 -N1 "$body" | tr -d ' ')"
+				echo "bits $(od -An -tu1 -j5 -N1 "$body" | tr -d ' ')"
+				etag=$(tr -d '\r' < "$headers" | awk 'tolower($1) == "etag:" {print $2}')
+				test -n "$etag" && echo "etag present"
+
+				code=$(curl -s -o /dev/null -w '%{http_code}' -u "$auth" -H "If-None-Match: $etag" "$base/_index?v=2")
+				echo "revalidate $code"
+
+				v1=$(curl -s -o /dev/null -D - -u "$auth" "$base/_index?hash=8" | tr -d '\r' | awk 'tolower($1) == "etag:" {print $2}')
+				test "$v1" != "$etag" && echo "v1 etag differs"
+				echo "v1-short-size $(curl -sf -u "$auth" -o /dev/null -w '%{size_download}' "$base/_index?hash=8")"
+
+				put "$(printf 'd%.0s' $(seq 64))"
+				headers2="$(mktemp)"
+				echo "after-new-key $(curl -sf -u "$auth" -o /dev/null -D "$headers2" -w '%{size_download}' "$base/_index?v=2")"
+				etag2=$(tr -d '\r' < "$headers2" | awk 'tolower($1) == "etag:" {print $2}')
+				test "$etag2" != "$etag" && echo "etag moved"
+	  cmd: bash {shared.serve.sh} {inputs.config.json} 19017 {inputs.check.sh}
+	  outputs:
+		stdout:
+			- "status 200"
+			- "size 71"
+			- "magic GBCI"
+			- "version 2"
+			- "bits 40"
+			- "etag present"
+			- "revalidate 304"
+			- "v1 etag differs"
+			- "v1-short-size 80"
+			- "after-new-key 76"
+			- "etag moved"
+
 	- desc: the health probe answers before the auth gate
 	  exit: 0
 	  inputs:

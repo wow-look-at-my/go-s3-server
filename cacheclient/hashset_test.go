@@ -128,7 +128,7 @@ func TestHashSetReAddCancelsARemoval(t *testing.T) {
 // order answers wrongly for most of its keys.
 func TestHashSetFromSortedFixesAnUnsortedBody(t *testing.T) {
 	in := []hashKey{keyOf(hashN(9)), keyOf(hashN(3)), keyOf(hashN(3)), keyOf(hashN(5))}
-	s := newHashSetFromSorted(in)
+	s := newHashSetFromSorted(in, 64)
 	require.True(t, slices.IsSorted(s.sorted))
 	require.Equal(t, 3, s.Len())
 	for _, n := range []int{3, 5, 9} {
@@ -146,7 +146,7 @@ func TestHashSetHoldsOnlyTheKeyMaterial(t *testing.T) {
 	for i := range keys {
 		keys[i] = keyOf(hashN(i))
 	}
-	s := newHashSetFromSorted(keys)
+	s := newHashSetFromSorted(keys, 64)
 	require.Equal(t, n, s.Len())
 	assert.LessOrEqual(t, cap(s.sorted), n+compactAt, "the sorted slice carries growth slack it never earned")
 	assert.Equal(t, 0, s.pending.Len())

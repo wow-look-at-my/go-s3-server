@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,7 +20,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/go-containers/set"
-	ipc "github.com/wow-look-at-my/go-ipc"
+	"github.com/wow-look-at-my/go-s3-server/cacheclient/cachedisk"
 )
 
 // idOf is the action ID a test key string names.
@@ -191,6 +192,48 @@ func TestNoCopyGetIsBoundedWhileIndexLoads(t *testing.T) {
 	requireIndexLockFree(t, b)
 }
 
+// TestNoCopyGetDoesNotWaitByDefault pins the default: with no disk copy a Get
+// asks the server at once and never blocks on the index download.
+func TestNoCopyGetDoesNotWaitByDefault(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bk/_index" {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+
+	b, err := NewWebBackend(WebConfig{Bucket: "bk", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: t.TempDir()})
+	require.NoError(t, err)
+	b.shortenIndexWait(IndexWaitDefault)
+
+	var absent [gbciHashSize]byte
+	absent[0] = 0x98
+	got := make(chan bool)
+	go func() {
+		_, _, _, miss := b.Get(hex.EncodeToString(absent[:]))
+		got <- miss
+	}()
+	select {
+	case miss := <-got:
+		require.True(t, miss)
+	case <-time.After(5 * time.Second):
+		releaseOnce.Do(func() { close(release) })
+		<-got
+		t.Fatal("a Get waited on an index download that never finishes")
+	}
+	require.False(t, b.SummarySnapshot().IndexAuthoritative, "the index is still loading")
+	require.Equal(t, uint32(1), b.MissHTTP404.Load(), "the Get asked the server")
+	releaseOnce.Do(func() { close(release) })
+	require.NoError(t, b.Close())
+}
+
 // TestConcurrentClientsDownloadIndexOnce pins single-flight across processes
 // that share an IndexDir. backends stand in for go commands: they share no
 // memory, only the directory. the thing that takes the lock downloads; the
@@ -246,7 +289,7 @@ const indexLockHolderEnv = "CACHECLIENT_TEST_INDEX_LOCK_HOLDER"
 // holdIndexLockUntilKilled takes the lock at path, says so on stdout, and
 // blocks on stdin, which the parent never writes or closes.
 func holdIndexLockUntilKilled(path string) {
-	if _, err := ipc.LockFile(context.Background(), path); err != nil {
+	if _, err := cachedisk.LockFile(context.Background(), path); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -260,7 +303,7 @@ func requireIndexLockFree(t *testing.T, b *WebBackend) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	unlock, err := ipc.LockFile(ctx, b.indexCachePath()+".lock")
+	unlock, err := cachedisk.LockFile(ctx, b.indexCachePath()+".lock")
 	require.NoError(t, err, "the download lock is released")
 	unlock()
 }
@@ -276,20 +319,7 @@ func TestDeadLockHolderIsTakenOver(t *testing.T) {
 	defer b.Close()
 	b.shortenIndexWait(5 * time.Second)
 
-	child := exec.Command(os.Args[0], "-test.run=^$")
-	child.Env = append(os.Environ(), indexLockHolderEnv+"="+b.indexCachePath()+".lock")
-	child.Stderr = os.Stderr
-	stdin, err := child.StdinPipe()
-	require.NoError(t, err)
-	defer stdin.Close()
-	stdout, err := child.StdoutPipe()
-	require.NoError(t, err)
-	require.NoError(t, child.Start())
-	defer child.Wait()
-	defer child.Process.Kill()
-	line, err := bufio.NewReader(stdout).ReadString('\n')
-	require.NoError(t, err)
-	require.Equal(t, "locked\n", line)
+	die := holdIndexLock(t, b.indexCachePath()+".lock")
 
 	loaded := make(chan struct{})
 	go func() {
@@ -303,11 +333,40 @@ func TestDeadLockHolderIsTakenOver(t *testing.T) {
 	}
 	require.Equal(t, int32(0), f.hits200.Load(), "nothing is fetched while the holder lives")
 
-	require.NoError(t, child.Process.Kill())
+	die()
 	<-loaded
 	require.Equal(t, int32(1), f.hits200.Load(), "the dead holder's download is taken over")
 	require.True(t, b.SummarySnapshot().IndexAuthoritative)
 	requireIndexLockFree(t, b)
+}
+
+// holdIndexLock holds the lock at path in a child process and answers the
+// function that kills it. js and wasip1 start no process, so there the holder
+// is this process and its end is the release.
+func holdIndexLock(t *testing.T, path string) (die func()) {
+	t.Helper()
+	if runtime.GOOS == "js" || runtime.GOOS == "wasip1" {
+		unlock, err := cachedisk.LockFile(context.Background(), path)
+		require.NoError(t, err)
+		return unlock
+	}
+	child := exec.Command(os.Args[0], "-test.run=^$")
+	child.Env = append(os.Environ(), indexLockHolderEnv+"="+path)
+	child.Stderr = os.Stderr
+	stdin, err := child.StdinPipe()
+	require.NoError(t, err)
+	t.Cleanup(func() { stdin.Close() })
+	stdout, err := child.StdoutPipe()
+	require.NoError(t, err)
+	require.NoError(t, child.Start())
+	t.Cleanup(func() {
+		child.Process.Kill()
+		child.Wait()
+	})
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	require.NoError(t, err)
+	require.Equal(t, "locked\n", line)
+	return func() { require.NoError(t, child.Process.Kill()) }
 }
 
 // TestFailedHolderLeavesCopyNonAuthoritative pins the waiter's side of a
@@ -330,7 +389,7 @@ func TestFailedHolderLeavesCopyNonAuthoritative(t *testing.T) {
 	// Another holder takes the lock and gives up without writing a copy.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	release, err := ipc.LockFile(ctx, b.indexCachePath()+".lock")
+	release, err := cachedisk.LockFile(ctx, b.indexCachePath()+".lock")
 	require.NoError(t, err)
 	time.AfterFunc(100*time.Millisecond, release)
 

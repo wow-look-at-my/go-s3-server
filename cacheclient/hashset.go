@@ -46,15 +46,28 @@ func (s *hashSet) key(h actionHash) hashKey { return keyOf(h) & s.mask() }
 // width is the prefix width in bits.
 func (s *hashSet) width() int { return 64 - int(s.shift) }
 
-// addAll adds every key in src. A src of a narrower width narrows this set
-// first, so every key keeps the same bits.
+// addAll adds every key in src with a single merge into the sorted slice: a
+// merge per compactAt keys moves the whole slice each time. A src of a
+// narrower width narrows this set first, so every key keeps the same bits.
 func (s *hashSet) addAll(src *hashSet) {
 	if src.shift > s.shift {
 		s.narrowTo(src.shift)
 	}
+	mask := s.mask()
 	for k := range src.All() {
-		s.addKey(k & s.mask())
+		k &= mask
+		// A key in removed is still in the sorted slice, so re-adding it is the
+		// deletion going away rather than a new entry.
+		if s.removed.Contains(k) {
+			s.removed.Remove(k)
+			continue
+		}
+		if _, found := slices.BinarySearch(s.sorted, k); found {
+			continue
+		}
+		s.pending.Add(k)
 	}
+	s.compact()
 }
 
 // narrowTo drops the low bits of every key down to shift. Keys that agree on
@@ -130,7 +143,9 @@ func (s *hashSet) Add(h actionHash) {
 	s.addKey(s.key(h))
 }
 
+// addKey adds k at the width of the set.
 func (s *hashSet) addKey(k hashKey) {
+	k &= s.mask()
 	// A key in removed is still in the sorted slice, so re-adding it is the
 	// deletion going away rather than a new entry.
 	if s.removed.Contains(k) {

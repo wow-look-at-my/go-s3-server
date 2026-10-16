@@ -46,10 +46,11 @@ func TestCacheClientReportsIndexSkips(t *testing.T) {
 	notInIndexBefore, putKnownBefore := testutil.ToFloat64(notInIndex), testutil.ToFloat64(putKnown)
 	projectMissBefore, requestedBefore := testutil.ToFloat64(projectMiss), testutil.ToFloat64(requested)
 
-	// An empty index directory makes the earliest Get wait for a fresh, authoritative index.
+	// The index loads in the background. Waiting for it gives every Get below a fresh, authoritative index.
 	cfg.IndexDir = t.TempDir()
 	reader, err := cacheclient.NewWebBackend(cfg)
 	require.NoError(t, err)
+	reader.WaitIndex()
 	for i := range 3 {
 		absent := sha256.Sum256([]byte{byte(i)})
 		_, _, _, miss := reader.Get(hex.EncodeToString(absent[:]))

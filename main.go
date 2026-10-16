@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -112,19 +113,22 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	if cfg.MetricsListen != "" {
-		go startMetricsServer(cfg.MetricsListen)
-		log.Printf("metrics server listening on %s", cfg.MetricsListen)
+		startMetricsServer(cfg.MetricsListen)
 	}
 
 	if addr := cfg.DashboardListenAddr(); addr != "" {
-		go startDashboardServer(addr, newDashboard(srv, cfg, time.Now()))
-		log.Printf("dashboard listening on %s; it answers without credentials, so publish that port through an access proxy (e.g. Cloudflare Zero Trust) rather than directly", addr)
+		startDashboardServer(addr, newDashboard(srv, cfg, time.Now()))
 	} else {
 		log.Printf("dashboard disabled (dashboard_listen is empty)")
 	}
 
+	// The log names the bound address, so a listen of port 0 reports the port the kernel picked.
+	ln, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		return fmt.Errorf("http server: %w", err)
+	}
 	log.Printf("listening on %s bucket=%s data_dir=%s write_once.action=%s write_once.notification=%s",
-		cfg.Listen, cfg.Bucket, cfg.DataDir, cfg.WriteOnce.Action, cfg.WriteOnce.Notification)
+		ln.Addr(), cfg.Bucket, cfg.DataDir, cfg.WriteOnce.Action, cfg.WriteOnce.Notification)
 
 	if cfg.DisableAuth {
 		log.Printf("WARNING: authentication is DISABLED (disable_auth=true). All requests will be accepted without credentials. Only use this behind a trusted reverse proxy.")
@@ -166,16 +170,14 @@ func run(cmd *cobra.Command, args []string) error {
 	logCompressionAdvisory(cfg.DataDir, log.Printf)
 
 	httpSrv := &http.Server{
-		Addr:              cfg.Listen,
 		Handler:           srv,
 		ReadHeaderTimeout: httpReadHeaderTimeout,
 		IdleTimeout:       httpIdleTimeout,
 	}
 
-	// Serve in a goroutine.
 	serveErr := make(chan error, 1)
 	go func() {
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			serveErr <- err
 		}
 	}()

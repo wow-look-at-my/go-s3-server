@@ -116,7 +116,7 @@ func (b *WebBackend) FlushSkips() bool {
 		logging.Warnf("cacheprog: skip report: %v", err)
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), skipReportTimeout)
+	ctx, cancel := context.WithTimeout(b.requestCtx(), skipReportTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", b.url(SkipReportPath), bytes.NewReader(body))
 	if err != nil {

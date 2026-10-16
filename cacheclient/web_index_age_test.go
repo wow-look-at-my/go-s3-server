@@ -17,10 +17,9 @@ func TestMain(m *testing.M) {
 	if path := os.Getenv(indexLockHolderEnv); path != "" {
 		holdIndexLockUntilKilled(path)
 	}
-	if dir := os.Getenv(exitRoleEnv); dir != "" {
-		exitThenWait(dir)
-	}
 	defaultIndexMaxAge = func(string) time.Duration { return -1 }
+	// Most tests read the index state right after the first lookup. TestNoCopyGetDoesNotWaitByDefault sets the shipped default back.
+	defaultIndexWait = 15 * time.Second
 	// Look-ahead is on by default. A test of it sets GO_TOOLCHAIN_CACHE_LOOKAHEAD itself; every other test counts requests without its traffic.
 	if _, set := os.LookupEnv("GO_TOOLCHAIN_CACHE_LOOKAHEAD"); !set {
 		os.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "0")
@@ -42,7 +41,7 @@ func sevenKeys() set.Set[string] {
 // TestIndexLoadsOnFirstUse pins that NewWebBackend makes no request. A go
 // command that never asks the cache for a key never downloads the index.
 func TestIndexLoadsOnFirstUse(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	useTempDir(t)
 	f := newIndexFixture(t, "bk", sevenKeys())
 
 	b, err := NewWebBackend(WebConfig{Bucket: "bk", Endpoint: f.srv.URL, AccessKey: "k", SecretKey: "s"})

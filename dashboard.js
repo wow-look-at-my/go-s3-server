@@ -186,11 +186,11 @@ function hitRateTile(stats) {
 	return tile("hit rate", percent(found, asked), `${count(found)} of ${count(asked)} keys builds asked for; ${count(skipped)} missed in the client's index, ${count(single)} single GETs`);
 }
 
-// The size of the GET /_index body a client downloads right now, before compression.
+// The size of the GET /_index?v=2 body a client downloads right now, before compression.
 function indexSizeTile(index) {
 	const wire = index ? index.wire_bytes : 0;
 	if (!wire) return tile("index size", "--", "the server reports no index");
-	return tile("index size", `${(wire / 1e6).toFixed(2)} MB`, `${count(wire)} bytes uncompressed from /_index`);
+	return tile("index size", `${(wire / 1e6).toFixed(2)} MB`, `${count(index.keys)} keys at ${index.hash_bits} bits, ${count(wire)} bytes uncompressed from /_index`);
 }
 
 function drawTiles(stats) {

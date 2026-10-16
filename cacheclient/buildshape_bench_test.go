@@ -22,7 +22,7 @@ import (
 
 const (
 	benchLevels   = 12 // dependency depth: a single round trip's worth of latency
-	benchPerLevel = 4  // the build's -p: how many keys can be outstanding at the
+	benchPerLevel = 4  // the build's -p: how many keys can be outstanding.
 )
 
 // benchKey names the object a build asks for at a single position in the
@@ -237,7 +237,7 @@ func BenchmarkBuildShape(bench *testing.B) {
 	} {
 		bench.Run(tc.name, func(bench *testing.B) {
 			if tc.lookAhead {
-				bench.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "32") // the pool is off unless asked for
+				bench.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "32") // the pool is off unless asked.
 			}
 			srv := buildShapeServer(bench, body, tc.carried, tc.onBlocking, tc.latency)
 			var hits int

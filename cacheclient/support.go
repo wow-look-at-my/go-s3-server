@@ -36,6 +36,14 @@ func (b *WebBackend) MarkPresent(actionID string) {
 	b.keysMu.Unlock()
 }
 
+// WaitIndex blocks until the index load this backend started has ended.
+func (b *WebBackend) WaitIndex() {
+	b.ensureIndex()
+	if load := b.indexLoad.Load(); load != nil {
+		<-load.done
+	}
+}
+
 // Present reports whether actionID is claimed, by the startup index or a Put.
 func (b *WebBackend) Present(actionID string) bool {
 	h, ok := parseActionHash(actionID)

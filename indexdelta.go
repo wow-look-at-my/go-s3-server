@@ -196,10 +196,10 @@ func marshalGBCIWidth(hashes [][gbciHashSize]byte, width int) []byte {
 	return blob
 }
 
-// WireSize is the length in bytes of the body a cacheclient gets from a full GET /_index right now, before any compression.
-// GET /_index right now, before any compression. The client asks for the
-// It answers from the cached blob when the handler would serve it, and counts the merged list otherwise.
-// It never serializes and never changes the index.
+// WireSize is the length in bytes of the body a cacheclient gets from a full
+// GET /_index right now, before any compression. GET /_index right now,
+// before any compression. The client asks for the It answers from the cached
+// blob when the handler would serve it, and counts the merged list otherwise.
 func (idx *Index) WireSize() int64 {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()

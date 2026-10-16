@@ -2,6 +2,7 @@ package cacheclient
 
 import (
 	"bytes"
+	"encoding/binary"
 	"iter"
 	"slices"
 
@@ -240,21 +241,51 @@ func (s *widthSet) width() int { return 64 - int(s.shift) }
 func (s *widthSet) Contains(h actionHash) bool { return s.hashSet.Contains(s.key(h)) }
 
 // Add claims h at this set's width.
-func (s *widthSet) Add(h actionHash) { s.hashSet.Add(s.key(h)) }
+func (s *widthSet) Add(h actionHash) { s.addKey(s.key(h)) }
+
+// addKey adds k at the width of the set, merging once the pending buffer has
+// grown past compactAt.
+func (s *widthSet) addKey(k hashKey) {
+	s.bufferKey(k)
+	if s.pending.Len() >= compactAt {
+		s.compact()
+	}
+}
+
+// bufferKey adds k, masked to this set's width, to the pending buffer only.
+// A bulk addAll runs it per key so that the merge into the sorted slice
+// happens a single time at the end rather than per compactAt keys.
+func (s *widthSet) bufferKey(k hashKey) {
+	k &= s.mask()
+	// A key in removed is still in the sorted slice, so re-adding it is the
+	// deletion going away rather than a new entry.
+	if s.removed.Contains(k) {
+		s.removed.Remove(k)
+		return
+	}
+	if s.pending.Contains(k) {
+		return
+	}
+	if _, found := slices.BinarySearchFunc(s.sorted, k, s.cmp); found {
+		return
+	}
+	s.pending.Add(k)
+}
 
 // Remove drops h's key at this set's width.
 func (s *widthSet) Remove(h actionHash) { s.hashSet.Remove(s.key(h)) }
 
-// addAll adds every key in src. A src of a narrower width narrows this set
-// first, so every key keeps the same bits.
+// addAll adds every key in src with a single merge into the sorted slice: a
+// merge per compactAt keys moves the whole slice each time. A src of a
+// narrower width narrows this set first, so every key keeps the same bits.
 func (s *widthSet) addAll(src *widthSet) {
 	if src.shift > s.shift {
 		s.narrowTo(src.shift)
 	}
-	mask := s.mask()
 	for k := range src.All() {
-		s.hashSet.Add(k & mask)
+		s.bufferKey(k)
 	}
+	s.compact()
 }
 
 // narrowTo drops the low bits of every key down to shift. Keys that agree on

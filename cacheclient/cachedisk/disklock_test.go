@@ -8,11 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/wow-look-at-my/go-ipc/filelock"
 )
 
 // holderEnv names the lock file a child copy of this test binary takes and holds until it is killed.
@@ -29,7 +29,7 @@ func TestMain(m *testing.M) {
 // holdUntilKilled takes the lock at path, says so on stdout, and blocks on
 // stdin, which the parent never writes or closes.
 func holdUntilKilled(path string) {
-	if _, err := filelock.Lock(context.Background(), path); err != nil {
+	if _, err := LockFile(context.Background(), path); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -38,10 +38,16 @@ func holdUntilKilled(path string) {
 	os.Exit(0)
 }
 
-// startHolder starts a child process holding the lock at path and returns
-// once the child reports the lock is held.
-func startHolder(t *testing.T, path string) *exec.Cmd {
+// startHolder holds the lock at path and returns the function that lets go.
+// The holder is a child process; js and wasip1 start none, so there it is
+// this process.
+func startHolder(t *testing.T, path string) (release func()) {
 	t.Helper()
+	if runtime.GOOS == "js" || runtime.GOOS == "wasip1" {
+		unlock, err := LockFile(context.Background(), path)
+		require.NoError(t, err)
+		return unlock
+	}
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	cmd.Env = append(os.Environ(), holderEnv+"="+path)
 	cmd.Stderr = os.Stderr
@@ -58,14 +64,14 @@ func startHolder(t *testing.T, path string) *exec.Cmd {
 	line, err := bufio.NewReader(stdout).ReadString('\n')
 	require.NoError(t, err)
 	require.Equal(t, "locked\n", line)
-	return cmd
+	return func() { require.NoError(t, cmd.Process.Kill()) }
 }
 
 // transformFile serializes against a lock held by another process.
 func TestTransformFileWaitsForHolder(t *testing.T) {
 	dir := t.TempDir()
 	stamp := filepath.Join(dir, "trim.txt")
-	child := startHolder(t, stamp+".lock")
+	release := startHolder(t, stamp+".lock")
 
 	done := make(chan error)
 	go func() {
@@ -77,7 +83,7 @@ func TestTransformFileWaitsForHolder(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 
-	require.NoError(t, child.Process.Kill())
+	release()
 	require.NoError(t, <-done)
 	data, err := os.ReadFile(stamp)
 	require.NoError(t, err)

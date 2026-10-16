@@ -209,6 +209,7 @@ func TestCacheClientFetchesTheCompactForm(t *testing.T) {
 	b, err := cacheclient.NewWebBackend(cfg)
 	require.NoError(t, err)
 	defer b.Close()
+	b.WaitIndex()
 	for _, o := range objs {
 		require.True(t, b.Present(o.actionID), "the compact index holds %s", o.actionID)
 	}

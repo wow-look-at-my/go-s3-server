@@ -337,6 +337,51 @@ func RunUploadSpool(path string) error {
 	return nil
 }
 
+// UploadSpoolAll as the value of UploadSpoolEnv drains every spool of the local cache.
+const UploadSpoolAll = "all"
+
+// DrainSpools runs every spool under cacheDir and waits for each uploader that
+// runs one already. A CI runner ends every process of a job when the job
+// ends, a detached uploader too, so a job's last step drains.
+func DrainSpools(cacheDir string) error {
+	dir := filepath.Join(cacheDir, spoolDirName)
+	list, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, item := range list {
+		if !strings.HasSuffix(item.Name(), ".json") {
+			continue
+		}
+		if err := drainSpool(filepath.Join(dir, item.Name())); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// drainSpool waits until the spool at path is gone. An uploader that holds
+// its lock finishes it. Otherwise this process runs it.
+func drainSpool(path string) error {
+	for {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return nil
+		}
+		unlock, err := cachedisk.LockFile(context.Background(), spoolLockPath(path))
+		if err != nil {
+			return fmt.Errorf("upload spool %s: wait for its uploader: %w", path, err)
+		}
+		unlock()
+		if err := RunUploadSpool(path); err != nil {
+			return err
+		}
+	}
+}
+
 // spoolLockPath is the file an uploader locks while it runs the spool at
 // path.
 func spoolLockPath(path string) string {

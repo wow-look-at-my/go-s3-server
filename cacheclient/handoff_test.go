@@ -209,6 +209,38 @@ func TestRunUploadSpoolLeavesALockedSpool(t *testing.T) {
 	require.NoError(t, err, "a locked spool stays")
 }
 
+// DrainSpools runs a spool no uploader holds, and waits out one that an
+// uploader runs until that uploader deletes it.
+func TestDrainSpoolsRunsAndWaits(t *testing.T) {
+	ss := newStoreServer(t)
+	useStoreConfig(t, ss.srv.URL)
+	cacheDir := t.TempDir()
+	dir := filepath.Join(cacheDir, spoolDirName)
+	free, err := writeSpool(dir, spoolFile{Prefix: "go-buildcache/", Entries: []spoolEntry{
+		{ActionID: testAction("free"), OutputID: testOutputID("free"), Data: []byte("free")},
+	}})
+	require.NoError(t, err)
+	held, err := writeSpool(dir, spoolFile{Prefix: "go-buildcache/", Entries: []spoolEntry{
+		{ActionID: testAction("held"), OutputID: testOutputID("held"), Data: []byte("held")},
+	}})
+	require.NoError(t, err)
+	unlock, err := cachedisk.TryLockFile(spoolLockPath(held))
+	require.NoError(t, err)
+
+	drained := make(chan error, 1)
+	go func() { drained <- DrainSpools(cacheDir) }()
+	// The uploader that holds the spool stores it and deletes it.
+	require.NoError(t, os.Remove(held))
+	unlock()
+	require.NoError(t, <-drained)
+
+	require.Equal(t, []string{"go-buildcache/v1" + testAction("free")}, ss.keys(), "the free spool is stored, and the held one is left to its uploader")
+	for _, path := range []string{free, held} {
+		_, err := os.Stat(path)
+		require.True(t, os.IsNotExist(err), "%s is gone", path)
+	}
+}
+
 // The sweep restarts a spool whose uploader died, and leaves a fresh one alone.
 func TestSweepRunsAnAbandonedSpool(t *testing.T) {
 	handOffTest(t, RunUploadSpool)

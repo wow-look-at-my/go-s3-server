@@ -43,7 +43,7 @@ type buildManifest struct {
 	newestNamed []string // the keys that generation names
 
 	fallback  atomic.Pointer[manifestFallback] // the module fallback, when this command has no manifest
-	closing   chan struct{}                     // closed when Close starts; the fallback fetch stops
+	closing   chan struct{}                    // closed when Close starts; the fallback fetch stops
 	closeOnce sync.Once
 
 	Waited AtomicCounter // lookups that waited for a fetch already on the wire

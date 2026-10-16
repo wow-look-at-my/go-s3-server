@@ -57,10 +57,14 @@ type dashboardEvictionInfo struct {
 	Interval string `json:"interval"`
 }
 
-// dashboardIndexInfo is what a client downloads from GET /_index right now.
+// dashboardIndexInfo is what a client downloads from GET /_index?v=2 right now.
 type dashboardIndexInfo struct {
 	// WireBytes is the body length before compression. Zero when the server has no index.
 	WireBytes int64 `json:"wire_bytes"`
+	// Keys is how many hashes the index advertises.
+	Keys int64 `json:"keys"`
+	// HashBits is the prefix width each key is sent as.
+	HashBits int `json:"hash_bits"`
 }
 
 type dashboardStats struct {
@@ -148,7 +152,8 @@ func (d *dashboard) indexInfo() dashboardIndexInfo {
 	if d.srv == nil || d.srv.storage == nil || d.srv.storage.Index == nil {
 		return dashboardIndexInfo{}
 	}
-	return dashboardIndexInfo{WireBytes: d.srv.storage.Index.WireSize()}
+	idx := d.srv.storage.Index
+	return dashboardIndexInfo{WireBytes: idx.WireSize(), Keys: int64(idx.hashCount()), HashBits: idx.HashBits()}
 }
 
 func (d *dashboard) snapshot() (*dashboardStats, error) {

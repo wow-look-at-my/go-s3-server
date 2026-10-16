@@ -34,7 +34,7 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       # Builds, tests, runs dats/*.dats, and autoreleases the binary buildhost serves as an image.
-      - uses: wow-look-at-my/go-toolchain@master
+      - uses: wow-look-at-my/go-toolchain@lkgb
 
   # cacheclient is its own module, so go-toolchain must run in it too; beside the server's job, not after it.
   cacheclient:
@@ -48,7 +48,7 @@ jobs:
       artifact-metadata: write
     steps:
       - uses: actions/checkout@v4
-      - uses: wow-look-at-my/go-toolchain@master
+      - uses: wow-look-at-my/go-toolchain@lkgb
         with:
           working-directory: cacheclient
           timeout: 20

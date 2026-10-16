@@ -164,8 +164,9 @@ func BenchmarkIndexBlob(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {
-				idx.dirty.Store(true)
-				idx.builtAt = time.Time{}
+				idx.mu.Lock()
+				idx.forms = nil
+				idx.mu.Unlock()
 				idx.Blob()
 			}
 		})

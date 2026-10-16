@@ -4,11 +4,14 @@ shared:
 	files:
 		serve.sh: |
 			# Runs a single check script against a server this starts and
-			# stops. usage: serve.sh <config.json> <port> <check.sh>
+			# stops. usage: serve.sh <config.json> <check.sh>
+			# The config listens on port 0, so the kernel picks a free port and
+			# the server log names it. Concurrent runs never share a server.
+			# The check reads the ports from $PORT and $DASHBOARD_PORT, and the
+			# server log from $SERVER_LOG.
 			set -euo pipefail
 			config="$1"
-			port="$2"
-			check="$3"
+			check="$2"
 			log="$(mktemp)"
 			"${SERVER:-./build/go-s3-server}" --config "$config" > "$log" 2>&1 &
 			server=$!
@@ -26,11 +29,31 @@ shared:
 					return 1
 				fi
 			}
-			wait_port "$port" /_health
+			# The server binds the dashboard before the cache port, so the
+			# dashboard line is in the log when the cache line is.
+			port_re='listening on [^ ]*:([0-9]+) bucket='
+			dash_re='dashboard listening on [^ ]*:([0-9]+);'
+			PORT=""
+			DASHBOARD_PORT=""
+			for _ in $(seq 1 100); do
+				while IFS= read -r line; do
+					if [[ "$line" =~ $port_re ]]; then PORT="${BASH_REMATCH[1]}"; fi
+					if [[ "$line" =~ $dash_re ]]; then DASHBOARD_PORT="${BASH_REMATCH[1]}"; fi
+				done < "$log"
+				if [ -n "$PORT" ] || ! kill -0 "$server" 2>/dev/null; then break; fi
+				sleep 0.1
+			done
+			if [ -z "$PORT" ]; then
+				echo "the server log never named its port"
+				while IFS= read -r line; do echo "server: $line"; done < "$log"
+				exit 1
+			fi
+			export PORT DASHBOARD_PORT
+			export SERVER_LOG="$log"
+			wait_port "$PORT" /_health
 			# The dashboard is another listener, so the cache port answering says nothing about it.
-			dash="$(sed -n 's/.*"dashboard_listen"[[:space:]]*:[[:space:]]*"[^"]*:\([0-9]\{1,\}\)".*/\1/p' "$config")"
-			if [ -n "$dash" ]; then
-				wait_port "$dash" /
+			if [ -n "$DASHBOARD_PORT" ]; then
+				wait_port "$DASHBOARD_PORT" /
 			fi
 			# A failing check gets the server's log too. Without this a check
 			# that cannot reach a server which HAD answered reports only its own
@@ -57,10 +80,10 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19030","dashboard_listen":"127.0.0.1:19130","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","dashboard_listen":"127.0.0.1:0","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				dash=http://127.0.0.1:19130
+				dash=http://127.0.0.1:$DASHBOARD_PORT
 				# The dashboard binds in its own goroutine, so the cache port
 				# answering does not mean this port is up yet. Say so when it
 				# never opens, rather than ending the script with no output.
@@ -70,16 +93,16 @@ tests:
 					sleep 0.1
 				done
 				if [ -z "$up" ]; then
-					echo "the dashboard never opened 19130"
+					echo "the dashboard never opened $DASHBOARD_PORT"
 					exit 1
 				fi
-				echo "cache-anonymous $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:19030/test-cache/anon/v1test000000000001)"
+				echo "cache-anonymous $(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/test-cache/anon/v1test000000000001")"
 				echo "page $(curl -s -o /dev/null -w '%{http_code}' "$dash/")"
 				echo "css $(curl -s -o /dev/null -w '%{http_code}' "$dash/dashboard.css")"
 				echo "js $(curl -s -o /dev/null -w '%{http_code}' "$dash/dashboard.js")"
 				echo "stats $(curl -s -o /dev/null -w '%{http_code}' "$dash/api/stats")"
 				curl -sf "$dash/" | grep -o '<title>[^<]*</title>'
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19030 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "cache-anonymous 403"
@@ -93,10 +116,10 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19031","dashboard_listen":"127.0.0.1:19131","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","dashboard_listen":"127.0.0.1:0","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19031/test-cache
+				base=http://127.0.0.1:$PORT/test-cache
 				auth=testuser:testpass
 				# A cacheprog-keyed body goes through the read guards, which
 				# reject this plain text. Store a single to fill the index, and
@@ -105,7 +128,7 @@ tests:
 				curl -sf -u "$auth" -X PUT --data-binary 'dashboard body' "$base/plain/v1test000000000001" > /dev/null
 				curl -sf -u "$auth" "$base/plain/v1test000000000001" > /dev/null
 				stats="$(mktemp)"
-				code=$(curl -s -o "$stats" -w '%{http_code}' http://127.0.0.1:19131/api/stats)
+				code=$(curl -s -o "$stats" -w '%{http_code}' "http://127.0.0.1:$DASHBOARD_PORT/api/stats")
 				if [ "$code" != "200" ]; then
 					echo "the stats endpoint answered $code"
 					exit 1
@@ -114,7 +137,7 @@ tests:
 				grep -A2 '"outcome": "hit"' "$stats" | grep -o '"value": 1'
 				grep -o '"s3_index_hashes"' "$stats"
 				echo "no-password $(grep -c testpass "$stats" || true)"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19031 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			- '"bucket": "test-cache"'
@@ -122,28 +145,33 @@ tests:
 			- '"s3_index_hashes"'
 			- "no-password 0"
 
-	- desc: an empty dashboard_listen leaves no dashboard port open
+	- desc: an empty dashboard_listen opens no dashboard listener
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19032","dashboard_listen":"","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","dashboard_listen":"","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:19132/ || true)
-				echo "dashboard-port ${code:-000}"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19032 {inputs.check.sh}
+				# The server logs each listener it binds, so its log is the list
+				# of open ports.
+				echo "dashboard-port ${DASHBOARD_PORT:-none}"
+				grep -o 'dashboard disabled' "$SERVER_LOG"
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
-			- "dashboard-port 000"
+			- "dashboard-port none"
+			- "dashboard disabled"
+		"!stdout":
+			- "dashboard listening on"
 
 	- desc: the bandwidth endpoint reports the served bytes as module bands, a remainder, and a separate index series
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19033","dashboard_listen":"127.0.0.1:19133","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","dashboard_listen":"127.0.0.1:0","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19033/test-cache
+				base=http://127.0.0.1:$PORT/test-cache
 				auth=testuser:testpass
 				# Two modules' bodies. The objects carry no module metadata, so
 				# the attribution is the header the client sends about itself,
@@ -157,7 +185,7 @@ tests:
 				curl -sf -u "$auth" -X PUT --data-binary 'x' "$base/go-buildcache/v1$(printf 'a%.0s' $(seq 64))" > /dev/null
 				curl -sf -u "$auth" "$base/_index" -o /dev/null
 				series="$(mktemp)"
-				curl -sf http://127.0.0.1:19133/api/bandwidth -o "$series"
+				curl -sf "http://127.0.0.1:$DASHBOARD_PORT/api/bandwidth" -o "$series"
 				# The window is fixed, so the chart's axis does not move.
 				grep -q '"bucket_seconds": 1' "$series" && echo "bucket-seconds 1" || echo "bucket-seconds other"
 				grep -q '"retention_seconds": 300' "$series" && echo "retention-seconds 300" || echo "retention-seconds other"
@@ -172,7 +200,7 @@ tests:
 				echo "module-two ${two:-0} bytes"
 				index="$(sed -n 's/.*"index": \([0-9][0-9]*\).*/\1/p' "$series" | sort -n | tail -1 || true)"
 				test "${index:-0}" -gt 0 && echo "index-series bytes" || echo "index-series empty"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19033 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "bucket-seconds 1"

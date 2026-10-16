@@ -285,13 +285,7 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 		writeError(w, 500, "internal_error", "index unavailable")
 		return
 	}
-	q := r.URL.Query()
-	form := indexFormV1(gbciHashSize)
-	if v, _ := strconv.Atoi(q.Get("v")); v >= gbciVersion2 {
-		form = idx.FormV2()
-	} else if q.Get("hash") == strconv.Itoa(gbciPrefixSize) {
-		form = indexFormV1(gbciPrefixSize)
-	}
+	form := indexFormFromQuery(r, idx)
 	if from, asked := indexGenFromQuery(r); asked {
 		delta, to, ok := idx.DeltaForm(from, form)
 		if !ok {
@@ -333,6 +327,21 @@ func servedBodyBytes(w http.ResponseWriter, body int64) int64 {
 		return rec.bytesWritten.Load()
 	}
 	return body
+}
+
+// indexFormFromQuery reads the form a request asks for. v=2 — or any version
+// this server lacks, which falls back to the newest it has. It is the Rice-coded
+// v2 form at the server's configured prefix width. hash=8 alone is the v1 short
+// form, and nothing at all is v1 with whole hashes.
+func indexFormFromQuery(r *http.Request, idx *Index) indexForm {
+	q := r.URL.Query()
+	if v, _ := strconv.Atoi(q.Get("v")); v >= gbciVersion2 {
+		return idx.FormV2()
+	}
+	if q.Get("hash") == strconv.Itoa(gbciPrefixSize) {
+		return indexFormV1(gbciPrefixSize)
+	}
+	return indexFormV1(gbciHashSize)
 }
 
 // The add-log position travels as decimal headers on the response and as

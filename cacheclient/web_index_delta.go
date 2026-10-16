@@ -132,6 +132,54 @@ func (b *WebBackend) refreshLiveDelta() bool {
 	return true
 }
 
+// persistDeltaMin is the least delta worth a rewrite of the copy.
+var persistDeltaMin = 16384
+
+// persistDelta writes the copy merged with added, at position gen, over the
+// copy at path.
+func (b *WebBackend) persistDelta(path string, disk diskIndex, added *hashSet, gen indexGen) {
+	if added.Len() > 0 && added.Len() < persistDeltaMin {
+		return
+	}
+	if added.Len() == 0 {
+		now := time.Now()
+		_ = os.Chtimes(path, now, now)
+		writeIndexGen(path, disk.etag, gen)
+		return
+	}
+	blob, err := mergeIndexBlob(disk.blob, added)
+	if err != nil {
+		logging.Warnf("cacheprog: web index: disk copy does not parse: %v", err)
+		return
+	}
+	_, etag, err := parseIndexBlob(blob)
+	if err != nil {
+		logging.Warnf("cacheprog: web index: merged copy does not parse: %v", err)
+		return
+	}
+	b.writeIndexBlob(path, blob)
+	writeIndexGen(path, etag, gen)
+}
+
+// mergeIndexBlob is a blob of the keys in base and added, at the narrower of
+// their widths.
+func mergeIndexBlob(base []byte, added *hashSet) ([]byte, error) {
+	keys, _, err := parseIndexBlob(base)
+	if err != nil {
+		return nil, err
+	}
+	keys.addAll(added)
+	return marshalIndex(keys), nil
+}
+
+// probingNote says whether a key the copy lacks is probed.
+func probingNote(trusted bool) string {
+	if trusted {
+		return "a young copy, so an absent key misses with no probe"
+	}
+	return "batch probing enabled"
+}
+
 func deltaQuery(gen indexGen) string {
 	q := url.Values{}
 	q.Set("epoch", strconv.FormatUint(gen.epoch, 10))
@@ -165,19 +213,21 @@ func (b *WebBackend) startDeltaLoad(path string, disk diskIndex) {
 // authoritative. A server that cannot answer from the copy's position gets a
 // full refresh. A failed request leaves the copy non-authoritative.
 func (b *WebBackend) applyDelta(ctx context.Context, path string, disk diskIndex) {
+	// A failed delta leaves the copy as a copy with no position will be.
+	young := disk.age() < b.resolveIndexMaxAge(path)
 	reply, err := b.doIndexGET(ctx, deltaQuery(disk.gen), "")
 	if err != nil && reply.status != http.StatusGone {
 		if ctx.Err() == nil {
-			logging.Infof("cacheprog: web index delta: %v; using %d cached keys", err, disk.count)
+			logging.Infof("cacheprog: web index delta: %v; using %d cached keys (%s)", err, disk.count, probingNote(young))
 		}
-		b.adoptIndex(nil, false)
+		b.adoptIndex(disk.keys, young)
 		return
 	}
 	if reply.status == http.StatusOK && reply.delta {
 		added, _, perr := parseIndexBlob(reply.body)
 		if perr != nil {
-			logging.Warnf("cacheprog: web index delta parse: %v; using %d cached keys", perr, disk.count)
-			b.adoptIndex(nil, false)
+			logging.Warnf("cacheprog: web index delta parse: %v; using %d cached keys (%s)", perr, disk.count, probingNote(young))
+			b.adoptIndex(disk.keys, young)
 			return
 		}
 		// The live set already carries every claim and drop, so the journal has nothing to replay.
@@ -189,6 +239,8 @@ func (b *WebBackend) applyDelta(ctx context.Context, path string, disk diskIndex
 		b.indexEmpty = b.keys.Len() == 0
 		b.keysMu.Unlock()
 		logging.Infof("cacheprog: web index: %d keys added since the copy", added.Len())
+		// The next go command then asks only for what this did not see.
+		b.persistDelta(path, disk, added, reply.gen)
 		return
 	}
 	keys, authoritative, _ := b.refreshIndex(ctx, path, disk)

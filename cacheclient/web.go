@@ -1,16 +1,14 @@
 package cacheclient
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
-	"math"
 	"net"
 	"net/http"
-	"net/http/httptrace"
 	"os"
 	"strings"
 	"sync"
@@ -23,39 +21,6 @@ var ErrLogged = errors.New("web: already logged")
 
 // MaxConnsPerHost is the HTTP connection pool size for the remote cache.
 const MaxConnsPerHost = 64
-
-// WebConfig holds the configuration for a web cache backend.
-type WebConfig struct {
-	Bucket    string // Required. Empty bucket disables the backend.
-	Endpoint  string // Endpoint URL (e.g. "https://cache.example.com"). Required.
-	Prefix    string // Key prefix (defaults to "go-buildcache/").
-	AccessKey string // Basic Auth username
-	SecretKey string // Basic Auth password
-	Version   string // go-toolchain version, stored as object metadata
-	Module    string // main module path, stored as object metadata (provenance)
-	Target    string // GOOS/GOARCH this build is producing, sent as provenance
-	// IndexDir is where the key index's disk copy lives. Empty means the
-	// process temporary directory. A consumer whose builds share a cache
-	// directory but not a temporary directory points it at the cache.
-	IndexDir string
-	// IndexMaxAge is how long a disk copy of the index is served as
-	// authoritative with no request to the server. An older copy is still
-	// served at the same time, as non-authoritative, while a refresh runs in
-	// the background. empty takes IndexMaxAgeDefault. A negative value
-	// revalidates on every load.
-	IndexMaxAge time.Duration
-}
-
-// IndexMaxAgeDefault is the floor a empty WebConfig.IndexMaxAge takes
-// outside CI. The run window in indexRunWindow raises it to cover a longer run.
-const IndexMaxAgeDefault = 10 * time.Minute
-
-// IndexMaxAgeCI is what a empty WebConfig.IndexMaxAge takes in CI: a disk
-// copy is served however old it is, for the whole run. A CI run builds a
-// single time from a fresh checkout, so a copy taken at its start describes
-// the store as well at the end as it did at the start, and re-fetching tens
-// of megabytes in the middle of it buys nothing.
-const IndexMaxAgeCI = time.Duration(math.MaxInt64)
 
 // defaultIndexMaxAge resolves a empty IndexMaxAge for the index copy at
 // indexPath. The package's tests replace it with a single returning a
@@ -101,6 +66,7 @@ type WebBackend struct {
 	version   string // go-toolchain version for object metadata
 	module    string // main module path for object metadata (provenance)
 	target    string // GOOS/GOARCH this build produces, for request provenance
+	command   string // what this process builds; part of the manifest key
 	indexDir  string // where the key index's disk copy lives; empty is os.TempDir
 	// indexMaxAge is how long the disk copy is served with no request. The
 	// index loads on the earliest Get or Put, under indexOnce, so a go
@@ -160,6 +126,8 @@ type WebBackend struct {
 	// and carry COMPRESSED bodies: a consumer that already holds an object
 	// locally drops it without paying to decompress it. Verify anything kept with Verify.
 	OnBatchEntries func(entries []BatchEntry)
+	// HasLocal reports whether the local tier holds an action. A fetch ahead skips such a key.
+	HasLocal func(h actionHash) bool
 
 	// Miss reason counters for diagnostics.
 	MissNotInIndex  AtomicCounter
@@ -240,6 +208,8 @@ type WebBackend struct {
 	downSince atomic.Int64
 	// probeAt is the UnixNano time the next request may go out while the server is down.
 	probeAt atomic.Int64
+	// back fires when a down server answers again.
+	back upSignal
 	// SkippedDown counts requests answered as a miss, unsent, because the server had stopped answering.
 	SkippedDown AtomicCounter
 
@@ -268,6 +238,19 @@ type WebBackend struct {
 	manifestWG sync.WaitGroup
 	// prep runs a Put's compression off the build's goroutine. See webput.go.
 	prep *prepPool
+
+	// abortCtx ends every upload and look-ahead request when Close hands the uploads off. See handoff.go.
+	abortCtx context.Context
+	abort    context.CancelFunc
+	// pending is every upload this backend has claimed and not settled.
+	pendingMu sync.Mutex
+	pending   map[actionHash]pendingPut
+	// spoolDir is where Close writes the spool. Empty makes Close drain.
+	spoolDir string
+	// drainOnClose makes Close drain even with a spoolDir: the uploader itself.
+	drainOnClose bool
+	// handedOff counts the uploads Close wrote to the spool.
+	handedOff atomic.Int64
 }
 
 type batchReq struct {
@@ -293,44 +276,6 @@ const (
 	batchCoalesceWait = 10 * time.Millisecond
 	batchReqChBuf     = 1024
 )
-
-// drainLimit bounds what closeBody reads to save a connection.
-const drainLimit = 256 << 10
-
-// closeBody reads the rest of a response body, then closes it. An HTTP/1.1
-// connection goes back to the pool only when its body was read to EOF.
-func closeBody(body io.ReadCloser) {
-	io.Copy(io.Discard, io.LimitReader(body, drainLimit))
-	body.Close()
-}
-
-// firstDial makes the first request of a process dial alone, so the others
-// share its connection.
-type firstDial struct {
-	next    *http.Transport
-	started atomic.Bool
-	ready   chan struct{}
-	once    sync.Once
-}
-
-func (gate *firstDial) RoundTrip(req *http.Request) (*http.Response, error) {
-	if gate.started.CompareAndSwap(false, true) {
-		release := func() { gate.once.Do(func() { close(gate.ready) }) }
-		defer release()
-		trace := &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { release() }}
-		return gate.next.RoundTrip(req.WithContext(httptrace.WithClientTrace(req.Context(), trace)))
-	}
-	select {
-	case <-gate.ready:
-	case <-req.Context().Done():
-		return nil, req.Context().Err()
-	}
-	return gate.next.RoundTrip(req)
-}
-
-func (gate *firstDial) CloseIdleConnections() {
-	gate.next.CloseIdleConnections()
-}
 
 // NewWebBackend creates a web backend from the given config.
 // Returns nil if bucket is empty.
@@ -428,9 +373,11 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 		version:   cfg.Version,
 		module:    cfg.Module,
 		target:    cfg.Target,
+		command:   cfg.Command,
 		indexDir:  cfg.IndexDir,
 	}
 
+	b.abortCtx, b.abort = context.WithCancel(context.Background())
 	b.errLog = newHTTPErrLogger(loggerWriter{}, httpErrFlushInterval)
 	b.batchReqCh = make(chan batchReq, batchReqChBuf)
 	b.batchStop = make(chan struct{})
@@ -487,15 +434,22 @@ func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.
 	if b.manifest != nil && !b.manifest.started.Load() {
 		b.startManifest(b.moduleName())
 	}
-	b.manifest.note(actionID)
+	b.manifest.note(actionID, "get")
+	if b.manifest != nil {
+		b.manifest.fallback.Load().noteLookup(actionID, false)
+	}
+	b.lookAhead.noteLookup()
 	return b.get(actionID)
 }
 
 // NoteUsed records a lookup another tier answered, so the manifest names it too.
 func (b *WebBackend) NoteUsed(id [32]byte) {
 	if b.manifest != nil {
-		b.manifest.note(hex.EncodeToString(id[:]))
+		actionID := hex.EncodeToString(id[:])
+		b.manifest.note(actionID, "disk")
+		b.manifest.fallback.Load().noteLookup(actionID, true)
 	}
+	b.lookAhead.noteUsed(id)
 }
 
 func (b *WebBackend) get(actionID string) (outputID string, data []byte, t time.Time, miss bool) {
@@ -628,9 +582,13 @@ func (b *WebBackend) ForgetStale(actionID string) {
 	}
 }
 
-// Close drains the batch coalescer and flushes the HTTP error logger.
-
+// Close drains the batch coalescer and flushes the HTTP error logger. A
+// backend under a local cache that hands uploads off returns at once instead:
+// see closeHandOff.
 func (b *WebBackend) Close() error {
+	if b.handsOff() {
+		return b.closeHandOff()
+	}
 	// An index load still running is abandoned, and its lock on the disk copy
 	// released for the next process.
 	if l := b.indexLoad.Load(); l != nil {
@@ -698,6 +656,11 @@ func (b *WebBackend) SetModule(path string) {
 		b.moduleLate.Store(&path)
 		b.startManifest(path)
 	}
+}
+
+// Module is the module this backend names in its requests, or "" before one is known.
+func (b *WebBackend) Module() string {
+	return b.moduleName()
 }
 
 // moduleName is the configured module path, or a single set later.

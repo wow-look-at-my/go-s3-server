@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -349,6 +350,46 @@ func (b *WebBackend) Down() bool {
 	return b.downSince.Load() != 0
 }
 
+// upSignal is a wakeup for the goroutines that wait for a down server.
+type upSignal struct {
+	mu sync.Mutex
+	ch chan struct{}
+}
+
+// wait answers a channel that closes on the next fire.
+func (sig *upSignal) wait() <-chan struct{} {
+	sig.mu.Lock()
+	defer sig.mu.Unlock()
+	if sig.ch == nil {
+		sig.ch = make(chan struct{})
+	}
+	return sig.ch
+}
+
+func (sig *upSignal) fire() {
+	sig.mu.Lock()
+	defer sig.mu.Unlock()
+	if sig.ch != nil {
+		close(sig.ch)
+		sig.ch = nil
+	}
+}
+
+// awaitAnswer parks while the server is down, until it answers again or the
+// next probe is due. The caller's next request is then that probe.
+func (b *WebBackend) awaitAnswer() {
+	back := b.back.wait()
+	if !b.Down() {
+		return
+	}
+	timer := time.NewTimer(max(0, time.Until(time.Unix(0, b.probeAt.Load()))))
+	defer timer.Stop()
+	select {
+	case <-back:
+	case <-timer.C:
+	}
+}
+
 // noteNoAnswer marks the server down. Only the first request to find it so says so.
 func (b *WebBackend) noteNoAnswer(err error) {
 	now := time.Now().UnixNano()
@@ -364,6 +405,7 @@ func (b *WebBackend) noteAnswered() {
 	if since != 0 {
 		logging.Warnf("cacheprog: cache server is responding again after %s of downtime; %d requests were skipped",
 			time.Since(time.Unix(0, since)).Round(time.Millisecond), b.SkippedDown.Load())
+		b.back.fire()
 	}
 }
 

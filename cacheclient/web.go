@@ -210,6 +210,8 @@ type WebBackend struct {
 	downSince atomic.Int64
 	// probeAt is the UnixNano time the next request may go out while the server is down.
 	probeAt atomic.Int64
+	// back fires when a down server answers again.
+	back upSignal
 	// SkippedDown counts requests answered as a miss, unsent, because the server had stopped answering.
 	SkippedDown AtomicCounter
 

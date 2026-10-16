@@ -104,9 +104,17 @@ func (tier *storeTier) Retrievable(id ActionID) bool {
 // outage, not an answer, so Fetch waits for the server and asks again.
 func (tier *storeTier) Fetch(id ActionID) (Entry, error) {
 	for {
+		// A miss is final only from a server that was up for the whole lookup.
+		wasDown := tier.store.Down()
 		entry, err := tier.Get(id)
-		if err == nil || !tier.store.Down() {
-			return entry, err
+		if err == nil {
+			return entry, nil
+		}
+		if !tier.store.Down() {
+			if !wasDown {
+				return entry, err
+			}
+			continue // it came back during the lookup, so the next one is its answer
 		}
 		logging.Warnf("cacheprog: the cache server is down and holds %s, which this build needs; it is asked again when it answers or at the next probe", ShortID(hex.EncodeToString(id[:])))
 		tier.store.awaitAnswer()

@@ -146,6 +146,8 @@ type Config struct {
 	MaxConcurrentRequests int `json:"max_concurrent_requests"`
 	// IndexBlobInterval is the least time between serializations of the /_index blob. Absent means the 15s default.
 	IndexBlobInterval *Duration `json:"index_blob_interval"`
+	// IndexHashBits is the hash prefix width of the v2 /_index form, in bits. Zero means defaultIndexHashBits.
+	IndexHashBits int `json:"index_hash_bits"`
 	// MaxObjectBytes caps a single PUT body. The body is streamed to disk, so this guards disk, not memory.
 	MaxObjectBytes int64 `json:"max_object_bytes"`
 
@@ -229,6 +231,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.MaxObjectBytes <= 0 {
 		cfg.MaxObjectBytes = defaultMaxObjectBytes
+	}
+	if cfg.IndexHashBits != 0 && (cfg.IndexHashBits < indexHashBitsMin || cfg.IndexHashBits > indexHashBitsMax) {
+		return nil, fmt.Errorf("config: index_hash_bits must be %d..%d, got %d", indexHashBitsMin, indexHashBitsMax, cfg.IndexHashBits)
 	}
 	// max_age is off unless asked for -- the cache is an LRU, not a TTL.
 	if cfg.Eviction.AgeLimit() < 0 {

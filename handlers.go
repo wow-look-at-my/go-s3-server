@@ -260,15 +260,22 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request, storage *Storage
 	w.WriteHeader(204)
 }
 
-// handleGetIndex serves the precomputed GBCI v1 binary cache-key index.
-// The body is a fixed 24-byte header + sorted action-ID hashes + 32-byte
-// SHA-256 trailer.
+// handleGetIndex serves the precomputed GBCI binary cache-key index, in the
+// form the request names. v=2 is the Rice-coded form of cacheclient/indexv2.go,
+// at the server's prefix width. Without it, hash=8 is the v1 short form and
+// nothing is v1 with whole hashes.
 func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 	if idx == nil {
 		writeError(w, 500, "internal_error", "index unavailable")
 		return
 	}
-	form := indexFormFromQuery(r)
+	q := r.URL.Query()
+	form := indexFormV1(gbciHashSize)
+	if v, _ := strconv.Atoi(q.Get("v")); v >= gbciVersion2 {
+		form = idx.FormV2()
+	} else if q.Get("hash") == strconv.Itoa(gbciPrefixSize) {
+		form = indexFormV1(gbciPrefixSize)
+	}
 	if from, asked := indexGenFromQuery(r); asked {
 		delta, to, ok := idx.DeltaForm(from, form)
 		if !ok {
@@ -289,21 +296,6 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 	w.Header().Set("ETag", etag)
 	setIndexGenHeaders(w, gen)
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(blob))
-}
-
-// indexFormFromQuery reads the form a request asks for. enc=rice asks for the
-// compact form. A client sends hash=8 with it, so a server that does not know
-// enc answers the gbciPrefixSize form.
-func indexFormFromQuery(r *http.Request) indexForm {
-	q := r.URL.Query()
-	switch {
-	case q.Get("enc") == riceEncoding:
-		return formRice
-	case q.Get("hash") == strconv.Itoa(gbciPrefixSize):
-		return formPrefix
-	default:
-		return formFull
-	}
 }
 
 // The add-log position travels as decimal headers on the response and as

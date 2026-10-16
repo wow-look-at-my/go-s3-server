@@ -1,20 +1,20 @@
 package main
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
-	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wow-look-at-my/go-s3-server/cacheclient"
 )
 
 func testDashboard(t *testing.T, g prometheus.Gatherer) *dashboard {
@@ -246,59 +246,48 @@ func TestDashboardReportsTheIndexWireSize(t *testing.T) {
 
 	d.srv.storage = newTestStorage(t)
 	idx := d.srv.storage.Index
-	var put [][gbciHashSize]byte
-	add := func(lead, tail int) {
-		key := gbciKeyPrefix + fmt.Sprintf("%02x%060x%02x", lead, 0, tail)
-		hash, ok := extractActionHash(key)
-		require.True(t, ok)
-		put = append(put, hash)
-		idx.Put(key, 1)
-	}
-	compactSize := func() int {
-		return len(marshalGBCIRice(sortDedupeHashes(slices.Clone(put)), gbciCompactWidth))
-	}
-	for i := 0; i < 5; i++ {
-		add(i, 0)
+	// The first byte differs, so each key is its own prefix at any width.
+	key := func(i int) string { return gbciKeyPrefix + fmt.Sprintf("%02x", i) + strings.Repeat("0", 62) }
+	for i := 1; i <= 5; i++ {
+		idx.Put(key(i), 1)
 	}
 
-	// Pending hashes count before anything serializes. A client fetches the compact form, so that is the size.
+	// Pending hashes count before anything serializes, at the v2 form a client fetches.
 	stats, err = d.snapshot()
 	require.NoError(t, err)
-	assert.EqualValues(t, compactSize(), stats.Index.WireBytes)
+	counted := stats.Index.WireBytes
+	assert.EqualValues(t, 5, stats.Index.Keys)
+	assert.Equal(t, defaultIndexHashBits, stats.Index.HashBits)
 
 	// The figure is the body a client gets, whether the blob is cached yet or not.
-	blob, _, _ := idx.BlobGenForm(formRice)
+	blob, _, _ := idx.BlobGenForm(idx.FormV2())
+	assert.EqualValues(t, len(blob), counted)
 	stats, err = d.snapshot()
 	require.NoError(t, err)
 	assert.EqualValues(t, len(blob), stats.Index.WireBytes)
-
-	// The full-width blob is not what a client downloads, so a cached copy of it does not change the figure.
-	full, _ := idx.Blob()
-	stats, err = d.snapshot()
-	require.NoError(t, err)
-	assert.EqualValues(t, len(blob), stats.Index.WireBytes)
-	assert.Greater(t, len(full), len(blob))
 
 	// An unserialized add shows at once when the cached blob is too old to serve.
 	idx.SetBlobInterval(0)
-	add(5, 0)
-	add(5, 0)
+	idx.Put(key(6), 1)
+	idx.Put(key(6), 1)
 	stats, err = d.snapshot()
 	require.NoError(t, err)
-	fresh, _, _ := idx.BlobGenForm(formRice)
+	fresh, _, _ := idx.BlobGenForm(idx.FormV2())
 	assert.EqualValues(t, len(fresh), stats.Index.WireBytes, "a duplicate pending hash is one entry")
-	assert.EqualValues(t, compactSize(), len(fresh))
-	assert.Equal(t, uint64(6), binary.LittleEndian.Uint64(fresh[16:24]))
+	values, _, err := cacheclient.ParseIndexV2(fresh)
+	require.NoError(t, err)
+	assert.Len(t, values, 6)
 
-	// Hashes that share their first gbciCompactWidth bytes are a single entry in the compact form.
-	add(5, 1)
-	add(7, 1)
+	// Hashes that share their first defaultIndexHashBits/8 bytes are a single
+	// entry, and the counted size says so before anything serializes.
+	idx.Put(gbciKeyPrefix+"06"+strings.Repeat("0", 8)+"ee"+strings.Repeat("0", 52), 1)
 	stats, err = d.snapshot()
 	require.NoError(t, err)
-	fresh, _, _ = idx.BlobGenForm(formRice)
+	fresh, _, _ = idx.BlobGenForm(idx.FormV2())
 	assert.EqualValues(t, len(fresh), stats.Index.WireBytes)
-	assert.EqualValues(t, compactSize(), len(fresh))
-	assert.Equal(t, uint64(7), binary.LittleEndian.Uint64(fresh[16:24]))
+	values, _, err = cacheclient.ParseIndexV2(fresh)
+	require.NoError(t, err)
+	assert.Len(t, values, 6, "a hash under an advertised prefix adds no entry")
 }
 
 func TestDashboardShowsTheIndexSizeInMB(t *testing.T) {

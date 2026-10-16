@@ -4,6 +4,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,10 +33,17 @@ type storeTier struct {
 // layerStore answers the disk cache with the store under it.
 func layerStore(disk *DiskCache, store *WebBackend) *storeTier {
 	tier := &storeTier{DiskCache: disk, store: store}
+	store.spoolDir = filepath.Join(disk.Dir(), spoolDirName)
 	// The look-ahead pool has somewhere to put what it fetches, which is what
 	// turns it on: an object lands on disk before the build asks for it, so
 	// the ask is a local read.
 	store.OnBatchEntries = tier.populate
+	store.HasLocal = func(h actionHash) bool {
+		_, err := disk.Get(ActionID(h))
+		return err == nil
+	}
+	// A module named before the tier exists starts its manifest here. SetModule cannot start it without the tier.
+	store.startManifest(store.moduleName())
 	return tier
 }
 
@@ -77,6 +86,41 @@ func (tier *storeTier) GetTiered(id ActionID) (Entry, string, error) {
 	return entry, TierShared, err
 }
 
+// Retrievable reports whether Get can supply id with no build: disk holds it,
+// or the store holds it by a confirmed index. An action entry on disk names an
+// output that a trim or a lazy hit can leave absent. Disk holds an action only
+// when its output file is there too.
+func (tier *storeTier) Retrievable(id ActionID) bool {
+	if entry, err := tier.DiskCache.Get(id); err == nil {
+		if info, err := os.Stat(tier.DiskCache.OutputFile(entry.OutputID)); err == nil && info.Size() == entry.Size {
+			return true
+		}
+	}
+	return tier.store.Holds(hex.EncodeToString(id[:]))
+}
+
+// Fetch is Get for an object the build already depends on, such as an archive
+// a hit named without its bytes. While the server is down, a miss is an
+// outage, not an answer, so Fetch waits for the server and asks again.
+func (tier *storeTier) Fetch(id ActionID) (Entry, error) {
+	for {
+		// A miss is final only from a server that was up for the whole lookup.
+		wasDown := tier.store.Down()
+		entry, err := tier.Get(id)
+		if err == nil {
+			return entry, nil
+		}
+		if !tier.store.Down() {
+			if !wasDown {
+				return entry, err
+			}
+			continue // it came back during the lookup, so the next one is its answer
+		}
+		logging.Warnf("cacheprog: the cache server is down and holds %s, which this build needs; it is asked again when it answers or at the next probe", ShortID(hex.EncodeToString(id[:])))
+		tier.store.awaitAnswer()
+	}
+}
+
 // Put stores locally, then offers the body to the store. The local store is
 // what the build depends on, so its result is what Put reports.
 func (tier *storeTier) Put(id ActionID, file io.ReadSeeker) (OutputID, int64, error) {
@@ -89,6 +133,34 @@ func (tier *storeTier) Put(id ActionID, file io.ReadSeeker) (OutputID, int64, er
 	tier.store.PutFile(hex.EncodeToString(id[:]), hex.EncodeToString(out[:]), tier.DiskCache.OutputFile(out))
 	return out, size, nil
 }
+
+// Local answers the disk tier alone, for an output the store must never see.
+func (tier *storeTier) Local() Cache { return diskOnly{tier} }
+
+// diskOnly is the disk half of a storeTier. It counts in the tier's report.
+type diskOnly struct{ tier *storeTier }
+
+func (l diskOnly) Get(id ActionID) (Entry, error) {
+	entry, err := l.tier.DiskCache.Get(id)
+	if err == nil {
+		l.tier.localHits.Add(1)
+		l.tier.localHitBytes.Add(entry.Size)
+	}
+	return entry, err
+}
+
+func (l diskOnly) Put(id ActionID, file io.ReadSeeker) (OutputID, int64, error) {
+	out, size, err := l.tier.DiskCache.Put(id, file)
+	if err == nil {
+		l.tier.localPuts.Add(1)
+		l.tier.localPutBytes.Add(size)
+	}
+	return out, size, err
+}
+
+func (l diskOnly) Close() error                   { return nil }
+func (l diskOnly) OutputFile(out OutputID) string { return l.tier.DiskCache.OutputFile(out) }
+func (l diskOnly) FuzzDir() string                { return l.tier.DiskCache.FuzzDir() }
 
 // populate stores what the look-ahead pool fetched before the build asked for
 // it. It runs on that pool's goroutines, several at a time.
@@ -129,8 +201,8 @@ func (tier *storeTier) keep(id ActionID, out OutputID, data []byte) {
 	tier.localPutBytes.Add(int64(len(data)))
 }
 
-// Close drains the store's uploads before the disk cache trims, so an upload
-// never loses the file it is reading.
+// Close settles the store's uploads before the disk cache trims: it drains
+// them, or hands them to the detached uploader.
 func (tier *storeTier) Close() error {
 	tier.closeOnce.Do(func() {
 		tier.closeErr = joinErrors(tier.closeStore(), tier.DiskCache.Close())
@@ -139,22 +211,23 @@ func (tier *storeTier) Close() error {
 	return tier.closeErr
 }
 
-// closeStore closes the store tier a single time: it drains the uploads and
-// gives up the index's lock. The disk cache stays open.
+// closeStore closes the store tier a single time: it drains or hands off the
+// uploads and gives up the index's lock. The disk cache stays open.
 func (tier *storeTier) closeStore() error {
 	tier.storeOnce.Do(func() { tier.storeErr = tier.store.Close() })
 	return tier.storeErr
 }
 
-// report names what each tier answered and what it moved. Close drains the
-// uploads so the totals here are final rather than in flight.
+// report names what each tier answered and what it moved. An upload that is
+// not in the pushed total is in the handed-off count.
 func (tier *storeTier) report() {
 	web := tier.store.SummarySnapshot()
-	cacheNotice("cache: local %s, %s stored | server %s, %s pushed, %s | index %s",
+	cacheNotice("cache: local %s, %s stored | server %s, %s pushed, %d handed off, %s | index %s",
 		countBytes(tier.localHits.Load(), tier.localHitBytes.Load()),
 		countBytes(tier.localPuts.Load(), tier.localPutBytes.Load()),
 		countBytes(int64(web.Hits), int64(web.HitBytes)),
 		countBytes(int64(web.Puts), int64(web.PutBytes)),
+		tier.store.HandedOff(),
 		missReasons(web),
 		formatMB(int64(web.IndexBytes)))
 }

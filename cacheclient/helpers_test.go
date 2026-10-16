@@ -3,10 +3,25 @@ package cacheclient
 import (
 	"bytes"
 	"io"
+	"os"
+	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/go-containers/set"
 )
+
+// useTempDir points os.TempDir at a fresh directory and returns it. Unix reads
+// TMPDIR. Windows reads TMP, then TEMP, and never TMPDIR.
+func useTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, dir)
+	}
+	require.Equal(t, dir, os.TempDir(), "os.TempDir must name the test's directory")
+	return dir
+}
 
 // Shims that keep a test's own vocabulary -- a reader, a key string,
 // return values -- from having to change everywhere the client's internals

@@ -4,23 +4,31 @@ shared:
 	files:
 		serve.sh: |
 			# Runs a single check script against a server this starts and
-			# stops. usage: serve.sh <config.json> <port> <check.sh>
+			# stops. usage: serve.sh <config.json> <check.sh>
+			# The config listens on port 0, so the kernel picks a free port and
+			# the server log names it. Concurrent runs never share a server.
+			# The check reads the port from $PORT.
 			set -euo pipefail
 			config="$1"
-			port="$2"
-			check="$3"
+			check="$2"
 			log="$(mktemp)"
 			"${SERVER:-./build/go-s3-server}" --config "$config" > "$log" 2>&1 &
 			server=$!
 			trap 'kill "$server" 2>/dev/null || true; wait "$server" 2>/dev/null || true' EXIT
+			port_re='listening on [^ ]*:([0-9]+) bucket='
+			PORT=""
 			ready=""
 			for _ in $(seq 1 100); do
-				if curl -so /dev/null "http://127.0.0.1:$port/_health"; then ready=yes; break; fi
+				while [ -z "$PORT" ] && IFS= read -r line; do
+					if [[ "$line" =~ $port_re ]]; then PORT="${BASH_REMATCH[1]}"; fi
+				done < "$log"
+				if [ -n "$PORT" ] && curl -so /dev/null "http://127.0.0.1:$PORT/_health"; then ready=yes; break; fi
 				if ! kill -0 "$server" 2>/dev/null; then break; fi
 				sleep 0.1
 			done
+			export PORT
 			if [ -z "$ready" ]; then
-				echo "the server never answered on port $port" >&2
+				echo "the server never answered on port ${PORT:-(none in its log)}" >&2
 				sed 's/^/server: /' "$log" >&2
 				exit 1
 			fi
@@ -41,13 +49,13 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19060","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","write_once":{"action":"deny","notification":"content_differs"},"credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","write_once":{"action":"deny","notification":"content_differs"},"credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19060/test-cache
+				base=http://127.0.0.1:$PORT/test-cache
 				curl -sf -u testuser:testpass -X PUT --data-binary 'first write' "$base/wo/v1first000000000001" > /dev/null
 				curl -sf -u testuser:testpass "$base/wo/v1first000000000001"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19060 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			0: "^first write$"
@@ -56,13 +64,13 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19061","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","write_once":{"action":"deny","notification":"content_differs"},"credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","write_once":{"action":"deny","notification":"content_differs"},"credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19061/test-cache
+				base=http://127.0.0.1:$PORT/test-cache
 				curl -sf -u testuser:testpass -X PUT --data-binary 'idempotent content' "$base/wo/v1idempotent0000001" > /dev/null
 				echo "resend $(curl -s -o /dev/null -w '%{http_code}' -u testuser:testpass -X PUT --data-binary 'idempotent content' "$base/wo/v1idempotent0000001")"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19061 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "resend 200"
@@ -71,14 +79,14 @@ tests:
 	  exit: 0
 	  inputs:
 		files:
-			config.json: '{"listen":"127.0.0.1:19062","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","write_once":{"action":"deny","notification":"content_differs"},"credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","write_once":{"action":"deny","notification":"content_differs"},"credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19062/test-cache
+				base=http://127.0.0.1:$PORT/test-cache
 				curl -sf -u testuser:testpass -X PUT --data-binary 'original' "$base/wo/v1conflict000000001" > /dev/null
 				echo "conflict $(curl -s -o /dev/null -w '%{http_code}' -u testuser:testpass -X PUT --data-binary 'different' "$base/wo/v1conflict000000001")"
 				echo "stored $(curl -sf -u testuser:testpass "$base/wo/v1conflict000000001")"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19062 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "conflict 409"
@@ -90,13 +98,13 @@ tests:
 		env:
 			DATA_DIR: "{outputs.data}"
 		files:
-			config.json: '{"listen":"127.0.0.1:19063","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","write_once":{"action":"deny","notification":"content_differs"},"credentials":[{"username":"testuser","password":"testpass"}]}'
+			config.json: '{"listen":"127.0.0.1:0","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","write_once":{"action":"deny","notification":"content_differs"},"credentials":[{"username":"testuser","password":"testpass"}]}'
 			check.sh: |
 				set -euo pipefail
-				base=http://127.0.0.1:19063/test-cache
+				base=http://127.0.0.1:$PORT/test-cache
 				curl -sf -u testuser:testpass -X PUT --data-binary 'wosharddata' "$base/woshard/v1aabbccdd99887766" > /dev/null
 				sed 's/^/shard /' "$DATA_DIR/woshard/v1/aa/bbccdd99887766"
-	  cmd: bash {shared.serve.sh} {inputs.config.json} 19063 {inputs.check.sh}
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
 			- "shard wosharddata"

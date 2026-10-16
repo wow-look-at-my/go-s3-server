@@ -42,9 +42,8 @@ func (b *WebBackend) Put(actionID, outputID string, data []byte) error {
 // waits for it nor allocates the body, and the queue holds a path instead of
 // megabytes while the job waits its turn.
 //
-// The file must outlive the upload. Close drains the prep pool and the
-// coalescer, so a caller that closes this backend before deleting the file is
-// safe; a single that deletes earlier is not.
+// The file must outlive the upload. A Close that hands uploads off leaves the
+// read to a detached uploader, which skips a file that is gone.
 func (b *WebBackend) PutFile(actionID, outputID, path string) error {
 	if path == "" {
 		return fmt.Errorf("web put %s: no path to read the body from", ShortID(actionID))
@@ -56,7 +55,7 @@ func (b *WebBackend) PutFile(actionID, outputID, path string) error {
 // the thing thing that happens on the caller's goroutine, because it is what
 // stops callers uploading the same object.
 func (b *WebBackend) enqueuePut(actionID, outputID string, data []byte, path string) error {
-	b.manifest.note(actionID)
+	b.manifest.note(actionID, "put")
 	h, ok := parseActionHash(actionID)
 	if !ok {
 		return fmt.Errorf("web put: %q is not an action ID", actionID)
@@ -76,6 +75,7 @@ func (b *WebBackend) enqueuePut(actionID, outputID string, data []byte, path str
 	// The body came from this machine, so this process has it whatever the
 	// upload goes on to do.
 	b.noteHeld(h)
+	b.track(h, pendingPut{actionID: actionID, outputID: outputID, path: path, data: data})
 
 	j := putJob{actionID: actionID, key: b.key(actionID), hash: h, outputID: outputID, data: data, path: path}
 	if !b.prep.submit(j) {
@@ -91,6 +91,10 @@ func (b *WebBackend) enqueuePut(actionID, outputID string, data []byte, path str
 // build's own goroutine right after a compile finished -- the thing moment
 // that goroutine could have started the next compile instead.
 func (b *WebBackend) prepare(j putJob) {
+	// After a hand-off the spool carries this upload. Work here is waste.
+	if b.aborted() {
+		return
+	}
 	// A file-backed job carries a path, and the body is read here rather than by
 	// the caller. A file that has gone is a dropped upload, not a broken build,
 	// but it is never silent: the claim must go too, or the key stays claimed
@@ -98,8 +102,8 @@ func (b *WebBackend) prepare(j putJob) {
 	if j.data == nil && j.path != "" {
 		data, err := os.ReadFile(j.path)
 		if err != nil {
-			logging.Warnf("cacheprog: web put %s: read body: %v", ShortID(j.actionID), err)
-			b.removeClaimed(j.hash)
+			logging.Warnf("cacheprog: web put %s: read body: %v; not uploading this object", ShortID(j.actionID), err)
+			b.dropUpload(j.hash)
 			return
 		}
 		j.data = data
@@ -115,7 +119,7 @@ func (b *WebBackend) prepare(j putJob) {
 		b.PutRefusedBuildID.Increment()
 		logging.Warnf("cacheprog: web put %s (%s): refusing upload, build-id action mismatch (want action=%s, got action=%s)",
 			ShortID(j.actionID), describeObject(j.data), ExpectedBuildIDAction(j.actionID), act)
-		b.removeClaimed(j.hash)
+		b.dropUpload(j.hash)
 		return
 	}
 
@@ -123,7 +127,7 @@ func (b *WebBackend) prepare(j putJob) {
 	// upload; recomputing locally is free.
 	if IsGoModuleIndex(j.data) {
 		b.PutRefusedModIndex.Increment()
-		b.removeClaimed(j.hash)
+		b.dropUpload(j.hash)
 		return
 	}
 
@@ -134,7 +138,7 @@ func (b *WebBackend) prepare(j putJob) {
 	}
 	if err != nil {
 		logging.Warnf("cacheprog: web put %s: compress: %v", ShortID(j.actionID), err)
-		b.removeClaimed(j.hash)
+		b.dropUpload(j.hash)
 		return
 	}
 	b.CompressedBytes.Add(uint32(len(compressed)))

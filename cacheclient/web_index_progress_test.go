@@ -52,7 +52,7 @@ func testIndexBlob(n int) []byte {
 // the body is delivered in chunks spread over several stall windows and well
 // past the total the old budget would have allowed.
 func TestLoadOrFetchIndex_SlowButSteadyBodySucceeds(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	useTempDir(t)
 
 	const (
 		chunks   = 16
@@ -102,7 +102,7 @@ func TestLoadOrFetchIndex_SlowButSteadyBodySucceeds(t *testing.T) {
 // window, and the backend proceeds non-authoritative so batch probing stays
 // enabled.
 func TestLoadOrFetchIndex_StalledBodyAbandoned(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	useTempDir(t)
 
 	blob := testIndexBlob(64)
 	release := make(chan struct{})
@@ -183,7 +183,7 @@ func (l *levelLogger) Warn() string {
 // routine rather than a warning on the build's stderr.
 func TestLoadOrFetchIndex_StalledRefreshOverDiskCopyIsRoutine(t *testing.T) {
 	t.Serial() // the logger is package state
-	t.Setenv("TMPDIR", t.TempDir())
+	useTempDir(t)
 
 	blob := testIndexBlob(64)
 	release := make(chan struct{})
@@ -257,7 +257,7 @@ func (d *deadlineSpy) RoundTrip(req *http.Request) (*http.Response, error) {
 // deadline on the request is a single this test cannot wait out, so it checks
 // for the deadline rather than for the timeout it would cause.
 func TestLoadOrFetchIndex_RequestCarriesNoDeadline(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	useTempDir(t)
 
 	blob := testIndexBlob(8)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -291,7 +291,7 @@ func TestLoadOrFetchIndex_RequestCarriesNoDeadline(t *testing.T) {
 // TestIndexDirHoldsTheDiskCopy pins where the index lands when a consumer
 // names a directory: there, and not in the temporary directory.
 func TestIndexDirHoldsTheDiskCopy(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	useTempDir(t)
 	blob := testIndexBlob(8)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/_index") {

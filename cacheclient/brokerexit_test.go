@@ -1,6 +1,8 @@
 // All rights reserved. Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build !js && !wasip1
+
 package cacheclient
 
 import (
@@ -19,6 +21,12 @@ import (
 
 // exitRoleEnv makes the test binary the process that calls Exit, over the cache directory it names.
 const exitRoleEnv = "CACHECLIENT_TEST_EXIT_DIR"
+
+func init() {
+	if dir := os.Getenv(exitRoleEnv); dir != "" {
+		exitThenWait(dir)
+	}
+}
 
 // exitThenWait opens the cache as the owner, creates a queue, calls Exit, and
 // prints the queue's name. It then lives until its stdin closes, so the

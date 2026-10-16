@@ -6,12 +6,11 @@ import (
 	"time"
 
 	"github.com/wow-look-at-my/go-containers/set"
-	ipc "github.com/wow-look-at-my/go-ipc"
+	"github.com/wow-look-at-my/go-s3-server/cacheclient/cachedisk"
 )
 
-// IndexWaitDefault is how long the earliest Get or Put waits for the key
-// index when no disk copy exists.
-const IndexWaitDefault = 15 * time.Second
+// IndexWaitDefault is how long the earliest Get or Put waits for the key index when no disk copy exists.
+const IndexWaitDefault = 0
 
 // indexSlowLoad is the load time past which the load is reported at warning
 // level, so a slow index shows in a CI log without debug output.
@@ -24,8 +23,11 @@ type indexTiming struct {
 	wait time.Duration
 }
 
+// defaultIndexWait is the wait each new backend starts with.
+var defaultIndexWait time.Duration = IndexWaitDefault
+
 func defaultIndexTiming() indexTiming {
-	return indexTiming{wait: IndexWaitDefault}
+	return indexTiming{wait: defaultIndexWait}
 }
 
 // indexLoad is a load running in the background.
@@ -67,7 +69,7 @@ func (b *WebBackend) dropKeyLocked(h actionHash) {
 // than the max age is authoritative and final. An older a single is
 // installed at the same time as non-authoritative, and the refresh runs in
 // the background. With no copy at all the earliest use waits up to
-// indexTiming.wait for the load, then goes on non-authoritative while the load continues.
+// indexTiming.wait, zero by default, then goes on non-authoritative while the load continues.
 func (b *WebBackend) ensureIndex() {
 	b.indexOnce.Do(b.startIndexLoad)
 }
@@ -117,6 +119,9 @@ func (b *WebBackend) startIndexLoad() {
 
 	if disk.blob != nil {
 		logging.Infof("cacheprog: web index: loaded %d keys from a copy %v old", disk.count, disk.age().Round(time.Second))
+		return
+	}
+	if b.indexTiming.wait <= 0 {
 		return
 	}
 	// Only this wait holds up the build, so it is what reports at warning level.
@@ -173,13 +178,13 @@ func (b *WebBackend) adoptIndex(keys *hashSet, authoritative bool) {
 // refreshIndex brings the disk copy up to date and returns the keys to
 // install, whether they are authoritative, and where they came from.
 //
-// A single process at a time downloads into a directory, under an OS lock on
-// a file next to the copy. A process that finds the lock held blocks in the
+// A single process at a time downloads into a directory, under
+// cachedisk.LockFile on a file next to the copy. A process that finds the lock held blocks in the
 // kernel until the holder lets go, which it also does by exiting, and then
 // reads what the holder wrote. A holder whose fetch failed leaves the copy as
 // it was, and the next process to take the lock fetches itself.
 func (b *WebBackend) refreshIndex(ctx context.Context, path string, disk diskIndex) (*hashSet, bool, string) {
-	unlock, err := ipc.LockFile(ctx, path+".lock")
+	unlock, err := cachedisk.LockFile(ctx, path+".lock")
 	if err != nil && ctx.Err() != nil {
 		return nil, false, "cancelled"
 	}

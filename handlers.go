@@ -293,9 +293,9 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 }
 
 // indexFormFromQuery reads the form a request asks for. v=2 — or any version
-// this server lacks, which falls back to the newest it has — is the Rice-coded
-// v2 form at the server's configured prefix width. hash=8 alone is the v1
-// short form, and nothing at all is v1 with whole hashes.
+// this server lacks, which falls back to the newest it has. It is the Rice-coded
+// v2 form at the server's configured prefix width. hash=8 alone is the v1 short
+// form, and nothing at all is v1 with whole hashes.
 func indexFormFromQuery(r *http.Request, idx *Index) indexForm {
 	q := r.URL.Query()
 	if v, _ := strconv.Atoi(q.Get("v")); v >= gbciVersion2 {

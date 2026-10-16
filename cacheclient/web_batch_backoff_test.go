@@ -65,7 +65,7 @@ func emptyIndexServer(t *testing.T, batchGets, puts *atomic.Int64, indexBlob []b
 // threshold and stop probing, bounding the wasted round-trips instead of
 // paying a batch per cold key.
 func TestWebBackend_EmptyBatchBackoffStopsProbing(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	useTempDir(t)
 	// Low threshold so the test trips quickly and deterministically.
 	t.Setenv("GO_TOOLCHAIN_CACHE_EMPTY_BATCH_BACKOFF", "4")
 	var batchGets, puts atomic.Int64
@@ -111,7 +111,7 @@ func TestWebBackend_EmptyBatchBackoffStopsProbing(t *testing.T) {
 // when the remote IS serving: a non-empty batch resets the consecutive-empty
 // streak, so an interleaving of hits keeps batch probing enabled.
 func TestWebBackend_BackoffResetsOnNonEmptyBatch(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	useTempDir(t)
 	t.Setenv("GO_TOOLCHAIN_CACHE_EMPTY_BATCH_BACKOFF", "4")
 
 	store := make(map[string][]byte)
@@ -169,7 +169,7 @@ func TestWebBackend_BackoffResetsOnNonEmptyBatch(t *testing.T) {
 // that compares stderr must not see a warning for that.
 func TestEmptyBatchBackoffNoticeIsRoutine(t *testing.T) {
 	t.Serial() // the logger is package state
-	t.Setenv("TMPDIR", t.TempDir())
+	useTempDir(t)
 	t.Setenv("GO_TOOLCHAIN_CACHE_EMPTY_BATCH_BACKOFF", "2")
 	var batchGets, puts atomic.Int64
 	srv := emptyIndexServer(t, &batchGets, &puts, nil)

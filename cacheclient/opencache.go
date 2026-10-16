@@ -45,6 +45,10 @@ func OpenCache(dir string, store *WebBackend) (Cache, error) {
 		owner = tier
 		// The load and its TLS handshake overlap the go command's package loading.
 		go store.ensureIndex()
+		// An uploader that died left its spool. The sweep never delays the build.
+		if canSpawn && handOffOn.Load() {
+			go sweepSpools(store.spoolDir)
+		}
 	}
 	serveBroker(owner, dir)
 	return owner, nil

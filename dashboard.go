@@ -4,6 +4,7 @@ import (
 	"embed"
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"time"
 
@@ -241,17 +242,24 @@ func addFamily(out map[string]metricValue, name string, metrics []*dto.Metric, v
 	}
 }
 
-// startDashboardServer serves the dashboard on addr. A bind failure is logged
-// and the cache keeps running WITHOUT the dashboard, for the same reason the
-// metrics listener does. A busy dashboard port must not take down the data
-// path.
+// startDashboardServer binds addr, logs the bound address and serves the
+// dashboard in the background. A bind failure is logged and the cache keeps
+// running WITHOUT the dashboard. A busy dashboard port must not take down the
+// data path.
 func startDashboardServer(addr string, d *dashboard) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Printf("dashboard unavailable on %s (continuing WITHOUT the dashboard): %v", addr, err)
+		return
+	}
+	log.Printf("dashboard listening on %s; it answers without credentials, so publish that port through an access proxy (e.g. Cloudflare Zero Trust) rather than directly", ln.Addr())
 	srv := &http.Server{
-		Addr:              addr,
 		Handler:           d.handler(),
 		ReadHeaderTimeout: httpReadHeaderTimeout,
 	}
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Printf("dashboard unavailable on %s (continuing WITHOUT the dashboard): %v", addr, err)
-	}
+	go func() {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Printf("dashboard stopped on %s (continuing WITHOUT the dashboard): %v", ln.Addr(), err)
+		}
+	}()
 }

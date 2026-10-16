@@ -28,7 +28,7 @@ import (
 // since a served-but-empty batch is a healthy response the per-op retry path never
 // backs off from.
 func TestWebBackend_EmptyIndexSkipsBatch(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	useTempDir(t)
 	var batchGets, puts atomic.Int64
 	// A real empty blob: no keys, reported authoritatively. A missing index is a fetch failure instead (see the sibling test).
 	srv := emptyIndexServer(t, &batchGets, &puts, marshalIndex(newHashSet(0)))
@@ -65,7 +65,7 @@ func TestWebBackend_EmptyIndexSkipsBatch(t *testing.T) {
 // back empty, and the empty-batch backoff then disabled batching (and
 // prefetch) for the whole run on every cold CI build.
 func TestWebBackend_AuthoritativeIndexSkipsAbsentKeys(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	useTempDir(t)
 	var batchGets, puts atomic.Int64
 
 	indexed := set.New[string]()
@@ -101,7 +101,7 @@ func TestWebBackend_AuthoritativeIndexSkipsAbsentKeys(t *testing.T) {
 // does not know what the server holds, so cold keys must still be batch-probed
 // — bounded by the empty-batch backoff — instead of being fast-missed forever.
 func TestWebBackend_IndexFetchFailureStillProbes(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	useTempDir(t)
 	var batchGets, puts atomic.Int64
 	srv := emptyIndexServer(t, &batchGets, &puts, nil) // nil => missing index => fetch failure
 	defer srv.Close()
@@ -128,7 +128,7 @@ func TestWebBackend_IndexFetchFailureStillProbes(t *testing.T) {
 // cold/empty-index run must still upload, so the remote gets populated for the
 // next build (which then sees a non-empty index and uses the normal path).
 func TestWebBackend_EmptyIndexStillPuts(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	useTempDir(t)
 	var batchGets, puts atomic.Int64
 	srv := emptyIndexServer(t, &batchGets, &puts, nil)
 	defer srv.Close()
@@ -187,7 +187,7 @@ func TestGet_IndexedKeyUsesBatch(t *testing.T) {
 // keys set so the PUT path re-uploads it — previously the standing claim made
 // Put skip as already-present, so the key stayed missing on every future build.
 func TestWebBackend_Reclaims404IndexedKey(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	useTempDir(t)
 	// A single deterministic /_batch/put flushed by Close, not the timer.
 	t.Setenv("GO_TOOLCHAIN_CACHE_PUT_WINDOW_MS", "5000")
 	const actionID = "aabbccdd11223344"
@@ -241,7 +241,7 @@ func TestWebBackend_Reclaims404IndexedKey(t *testing.T) {
 // in-flight key to knownMiss, so they were never re-probed for the rest of
 // the run even after the backend recovered.
 func TestSendBatch_TransientFailureDoesNotMarkKnownMiss(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	useTempDir(t)
 	t.Setenv("GO_TOOLCHAIN_CACHE_MAX_RETRIES", "0") // deterministic: a single request per op
 
 	const actionID = "aabbccdd11223344"
@@ -252,7 +252,7 @@ func TestSendBatch_TransientFailureDoesNotMarkKnownMiss(t *testing.T) {
 	failing.Store(true)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/testbucket/_batch/get" {
-			w.WriteHeader(404) // index fetch => not authoritative => probing on
+			w.WriteHeader(404)
 			return
 		}
 		if failing.Load() {

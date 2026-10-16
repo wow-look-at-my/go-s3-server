@@ -133,10 +133,13 @@ func run(cmd *cobra.Command, args []string) error {
 	if cfg.IndexBlobInterval != nil {
 		storage.Index.SetBlobInterval(time.Duration(*cfg.IndexBlobInterval))
 	}
+	if cfg.IndexHashBits != 0 {
+		storage.Index.SetHashBits(cfg.IndexHashBits)
+	}
 	if !storage.Index.EntryTrackingEnabled() {
 		log.Printf("index: prefetch is off, so the mtime entry list is not maintained (it costs %d bytes per key and only /_batch/get's prefetch window reads it); s3_index_entries therefore reads 0. Set prefetch=true to turn both back on.", indexEntryBytes)
 	}
-	log.Printf("limits: max_concurrent_requests=%d max_object_bytes=%d index_blob_interval=%v", cfg.MaxConcurrentRequests, cfg.MaxObjectBytes, storage.Index.BlobInterval())
+	log.Printf("limits: max_concurrent_requests=%d max_object_bytes=%d index_blob_interval=%v index_hash_bits=%d", cfg.MaxConcurrentRequests, cfg.MaxObjectBytes, storage.Index.BlobInterval(), storage.Index.HashBits())
 
 	// Memory: the in-memory caches are already sized from this budget. Starting
 	// the controller adds the feedback half, shrinking them when memory gets

@@ -57,36 +57,78 @@ type Index struct {
 	// lets the server absorb bursts of ~1000 PUTs/sec without contention.
 	pending [][gbciHashSize]byte
 
-	// dirty is set true whenever pending grows or the master is rebuilt.
-	dirty atomic.Bool
+	// mutations counts every change to the advertised hash set. A cached blob built at the current count is current.
+	mutations uint64
 
-	// cachedBlob and cachedETag hold the most recently built output.
-	cachedBlob []byte
-	cachedETag string
-	// builtAt is when cachedBlob was serialized. Blob serves the cached blob for blobMinInterval after it, dirty or not.
-	builtAt time.Time
+	// forms holds each serialization.
+	forms map[indexForm]*indexBlobCache
 	// blobMinInterval is the least time between two serializations, in
 	// nanoseconds. It is per index, not a package variable, so a test sets
 	// its own without a race against the tests beside it.
 	blobMinInterval atomic.Int64
+	// hashBits is the prefix width of the v2 form. Zero means defaultIndexHashBits.
+	hashBits int
 
-	// addEpoch and added are the add log (indexdelta.go). cachedGen is the log position cachedBlob is complete up to.
-	addEpoch  uint64
-	added     [][gbciHashSize]byte
-	cachedGen indexGen
-	// The short form (gbciPrefixSize-byte hashes) has its own cache, built only when a client asks for it.
-	cachedPrefix     []byte
-	cachedPrefixETag string
-	cachedPrefixGen  indexGen
-	prefixBuiltAt    time.Time
-	prefixDirty      atomic.Bool
+	// addEpoch and added are the add log (indexdelta.go).
+	addEpoch uint64
+	added    [][gbciHashSize]byte
 	// addLogLimit overrides maxAddLog when nonzero, for a test.
 	addLogLimit int
 }
 
+// indexForm names one serialization of the index: the wire version and the
+// hash width, in bytes for v1 and in bits for v2.
+type indexForm struct {
+	version uint8
+	width   int
+}
+
+func indexFormV1(widthBytes int) indexForm { return indexForm{version: gbciVersion, width: widthBytes} }
+
+// indexBlobCache is one form's most recent serialization.
+type indexBlobCache struct {
+	blob    []byte
+	etag    string
+	gen     indexGen
+	builtAt time.Time
+	// mutation is Index.mutations when blob was built.
+	mutation uint64
+}
+
+// defaultIndexHashBits is the prefix width of the v2 form unless the config says otherwise.
+const defaultIndexHashBits = 40
+
+// SetHashBits sets the prefix width of the v2 form, in bits. Call it before serving.
+func (idx *Index) SetHashBits(n int) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.hashBits = n
+	idx.forms = nil
+}
+
+// HashBits is the prefix width of the v2 form, in bits.
+func (idx *Index) HashBits() int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.hashBitsLocked()
+}
+
+func (idx *Index) hashBitsLocked() int {
+	if idx.hashBits == 0 {
+		return defaultIndexHashBits
+	}
+	return idx.hashBits
+}
+
+// FormV2 is the v2 form at the configured width.
+func (idx *Index) FormV2() indexForm {
+	return indexForm{version: gbciVersion2, width: idx.HashBits()}
+}
+
 // defaultIndexBlobInterval is the least time between two serializations of
-// the index unless the config says otherwise. A serialization sorts every hash under the lock and produces a new
-// ETag, so a client downloads the whole blob again. During a CI run PUTs
+// the index unless the config says otherwise. A serialization merges the
+// pending hashes and serializes the whole list under the lock and produces a
+// new ETag, so a client downloads the whole blob again. During a CI run PUTs
 // never stop, and without this bound every /_index GET rebuilt and every
 // conditional GET downloaded 40 MB. Inside the interval a GET answers 304
 // and the writers do not wait on the sort. A key stored inside the interval
@@ -205,8 +247,7 @@ func (idx *Index) Put(key string, size int64) {
 	if hashOK {
 		idx.pending = append(idx.pending, hash)
 		idx.appendAddLocked(hash)
-		idx.dirty.Store(true)
-		idx.prefixDirty.Store(true)
+		idx.mutations++
 	}
 	idx.updateGaugesLocked()
 }
@@ -523,63 +564,70 @@ func (idx *Index) nearbyKeysLocked(startUnix, endUnix int64, limit int, excluded
 	return keys
 }
 
-// blobServableLocked reports whether the cached blob may be handed out: it is
+// blobServableLocked reports whether a cached blob may be handed out: it is
 // current, or it is younger than the blob interval. The caller holds idx.mu.
-func (idx *Index) blobServableLocked() bool {
-	if idx.cachedBlob == nil {
+func (idx *Index) blobServableLocked(c *indexBlobCache) bool {
+	if c == nil || c.blob == nil {
 		return false
 	}
-	return !idx.dirty.Load() || time.Since(idx.builtAt) < idx.BlobInterval()
+	return c.mutation == idx.mutations || time.Since(c.builtAt) < idx.BlobInterval()
 }
 
 // Blob returns the precomputed GBCI v1 binary index and its strong ETag
-// (hex-encoded SHA-256 of the blob, surrounded by quotes per RFC 7232).
+// (hex-encoded SHA-256 of the blob, surrounded by quotes per RFC 7232), in the
+// full v1 form.
 func (idx *Index) Blob() ([]byte, string) {
 	blob, etag, _ := idx.BlobGen()
 	return blob, etag
 }
 
-// BlobGen answers the serialized index, its ETag, and the add-log position the
-// blob is complete up to.
-//
-// Fast path: if the cached blob is servable (current, or younger than
-// the blob interval), return it under a read lock. Slow path: merge
-// pending into hashes, serialize header + body + trailer, cache the result,
-// clear dirty. Callers arriving during a serialization wait on the read lock
-// and all receive the blob it produces, so a burst of GETs costs one
-// serialization.
+// BlobGen is BlobGenForm in the full v1 form: the serialized index, its ETag,
+// and the add-log position the blob is complete up to.
 func (idx *Index) BlobGen() ([]byte, string, indexGen) {
+	return idx.BlobGenForm(indexFormV1(gbciHashSize))
+}
+
+// BlobGenForm answers the index serialized in form, its ETag, and the add-log
+// position the blob is complete up to.
+//
+// Fast path: a servable cached blob is returned under a read lock. Slow path:
+// merge pending into hashes, serialize, and cache the result. Callers arriving
+// during a serialization wait on the read lock and all receive the blob it
+// produces. A burst of GETs costs a single serialization.
+func (idx *Index) BlobGenForm(form indexForm) ([]byte, string, indexGen) {
 	idx.mu.RLock()
-	cached, etag, gen, fresh := idx.cachedBlob, idx.cachedETag, idx.cachedGen, idx.blobServableLocked()
-	idx.mu.RUnlock()
-	if fresh {
-		return cached, etag, gen
+	c := idx.forms[form]
+	if idx.blobServableLocked(c) {
+		blob, etag, gen := c.blob, c.etag, c.gen
+		idx.mu.RUnlock()
+		return blob, etag, gen
 	}
+	idx.mu.RUnlock()
 
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
 	// Re-check: another caller may have rebuilt the blob while we were
 	// waiting on the lock.
-	if idx.blobServableLocked() {
-		return idx.cachedBlob, idx.cachedETag, idx.cachedGen
+	if c = idx.forms[form]; idx.blobServableLocked(c) {
+		return c.blob, c.etag, c.gen
 	}
 
 	lockedAt := time.Now()
-	log.Printf("index: serialize locked (hashes=%d pending=%d)", len(idx.hashes), len(idx.pending))
+	log.Printf("index: serialize locked (form=v%d/%d hashes=%d pending=%d)", form.version, form.width, len(idx.hashes), len(idx.pending))
 	defer func() {
 		log.Printf("index: serialize unlocked after %v (hashes=%d)", time.Since(lockedAt), len(idx.hashes))
 	}()
 
-	gen = idx.mergePendingLocked()
-	blob := marshalGBCI(idx.hashes)
-	idx.cachedBlob = blob
-	idx.cachedETag = blobETag(blob)
-	idx.cachedGen = gen
-	idx.builtAt = time.Now()
-	idx.dirty.Store(false)
+	gen := idx.mergePendingLocked()
+	blob := marshalForm(idx.hashes, form)
+	c = &indexBlobCache{blob: blob, etag: blobETag(blob), gen: gen, builtAt: time.Now(), mutation: idx.mutations}
+	if idx.forms == nil {
+		idx.forms = make(map[indexForm]*indexBlobCache)
+	}
+	idx.forms[form] = c
 	idx.updateGaugesLocked()
-	return idx.cachedBlob, idx.cachedETag, idx.cachedGen
+	return c.blob, c.etag, c.gen
 }
 
 // mergePendingLocked folds the pending hashes into the sorted list and answers
@@ -696,10 +744,7 @@ func (idx *Index) applyRebuild(b *indexBuild) (int, int) {
 	idx.entries = b.entries
 	idx.hashes = b.hashes
 	// pending and pendingEntries intentionally survive (see doc comment above).
-	idx.cachedBlob = nil
-	idx.cachedETag = ""
-	idx.cachedPrefix = nil
-	idx.cachedPrefixETag = ""
+	idx.forms = nil
 	idx.resetAddLogLocked()
 	hashCount := len(idx.hashes) + len(idx.pending)
 	idx.updateGaugesLocked()

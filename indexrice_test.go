@@ -35,9 +35,8 @@ func riceValues(t testing.TB, blob []byte) (int, []uint64) {
 	body := blob[gbciHeaderSize:end]
 	bit := 0
 	read := func() uint64 {
-		if bit >= len(body)*8 {
-			t.Fatalf("the body ends inside a value")
-		}
+		require.Less(t, bit, len(body)*8)
+
 		v := uint64(body[bit/8]>>(7-bit%8)) & 1
 		bit++
 		return v

@@ -35,7 +35,7 @@ type buildManifest struct {
 	mu      sync.Mutex
 	used    set.Set[string]          // action IDs this process looked up
 	order   []string                 // used, in the order of the first lookup
-	pending map[string]chan struct{} // action IDs a fetch has on the wire, closed when they land
+	pending map[string]*pendingFetch // action IDs a manifest chunk names, each released when it lands
 	ctx     context.Context          // the fetch runs under it
 	cancel  context.CancelFunc       // stops the fetch when Close has waited long enough
 
@@ -57,19 +57,37 @@ type buildManifest struct {
 }
 
 func newBuildManifest() *buildManifest {
-	return &buildManifest{used: set.New[string](), pending: map[string]chan struct{}{}, newest: -1, closing: make(chan struct{}), trace: newManifestTrace()}
+	return &buildManifest{used: set.New[string](), pending: map[string]*pendingFetch{}, newest: -1, closing: make(chan struct{}), trace: newManifestTrace()}
+}
+
+// A pendingFetch is a single action ID a manifest chunk names. Its done
+// channel closes when its entry is in the local tier, or when the chunk ends
+// without it.
+type pendingFetch struct {
+	done    chan struct{}
+	onWire  bool // the chunk's request went out
+	claimed bool // a lookup took the ID before the chunk went out, so the chunk leaves it out
+	closed  bool
 }
 
 // AwaitPrefetch waits while the manifest fetch has actionID on the wire. It
 // reports whether it waited, so a caller that did reads its local tier again
 // rather than asking for the same object a second time.
+//
+// An ID whose chunk is still in the queue does not wait: the lookup asks on
+// its own at once, and the chunk leaves the ID out.
 func (b *WebBackend) AwaitPrefetch(actionID string) bool {
 	m := b.manifest
 	if m == nil {
 		return false
 	}
 	m.mu.Lock()
-	done, ok := m.pending[actionID]
+	fetch, ok := m.pending[actionID]
+	if ok && !fetch.onWire {
+		fetch.claimed = true
+		delete(m.pending, actionID)
+		ok = false
+	}
 	m.mu.Unlock()
 	if !ok {
 		return false
@@ -77,7 +95,7 @@ func (b *WebBackend) AwaitPrefetch(actionID string) bool {
 	timer := time.NewTimer(manifestWaitCap)
 	defer timer.Stop()
 	select {
-	case <-done:
+	case <-fetch.done:
 		m.Waited.Increment()
 		return true
 	case <-timer.C:
@@ -87,25 +105,73 @@ func (b *WebBackend) AwaitPrefetch(actionID string) bool {
 	}
 }
 
-// markPending records that a fetch has these action IDs on the wire, and
-// returns the call that clears them.
-func (m *buildManifest) markPending(ids []string) func() {
-	done := make(chan struct{})
+// A pendingChunk is the action IDs of a single manifest batch.
+type pendingChunk struct {
+	m       *buildManifest
+	fetches map[string]*pendingFetch
+	ids     []string
+}
+
+// markPending records the action IDs of a chunk. A lookup waits for them only
+// after send.
+func (m *buildManifest) markPending(ids []string) *pendingChunk {
+	chunk := &pendingChunk{m: m, fetches: make(map[string]*pendingFetch, len(ids)), ids: ids}
 	m.mu.Lock()
 	for _, id := range ids {
-		m.pending[id] = done
+		fetch := &pendingFetch{done: make(chan struct{})}
+		chunk.fetches[id] = fetch
+		m.pending[id] = fetch
 	}
 	m.mu.Unlock()
-	return func() {
-		m.mu.Lock()
-		for _, id := range ids {
-			if m.pending[id] == done {
-				delete(m.pending, id)
-			}
+	return chunk
+}
+
+// send marks the chunk on the wire and answers the IDs it still asks for: every ID a lookup has not claimed.
+func (c *pendingChunk) send() []string {
+	ids := make([]string, 0, len(c.ids))
+	c.m.mu.Lock()
+	for _, id := range c.ids {
+		fetch := c.fetches[id]
+		if fetch.claimed {
+			continue
 		}
-		m.mu.Unlock()
-		close(done)
+		fetch.onWire = true
+		ids = append(ids, id)
 	}
+	c.m.mu.Unlock()
+	return ids
+}
+
+// landed releases the lookups that wait for ids. Their entries are in the local tier.
+func (c *pendingChunk) landed(ids []string) {
+	c.m.mu.Lock()
+	for _, id := range ids {
+		if fetch, ok := c.fetches[id]; ok {
+			c.release(id, fetch)
+		}
+	}
+	c.m.mu.Unlock()
+}
+
+// finish releases every ID of the chunk that has not landed, which the server did not have.
+func (c *pendingChunk) finish() {
+	c.m.mu.Lock()
+	for id, fetch := range c.fetches {
+		c.release(id, fetch)
+	}
+	c.m.mu.Unlock()
+}
+
+// release closes a single ID's channel. The caller holds the manifest's lock.
+func (c *pendingChunk) release(id string, fetch *pendingFetch) {
+	if fetch.closed {
+		return
+	}
+	fetch.closed = true
+	if c.m.pending[id] == fetch {
+		delete(c.m.pending, id)
+	}
+	close(fetch.done)
 }
 
 // manifestFormat names what a manifest holds: lookups and stores, in first-use order.
@@ -361,28 +427,23 @@ func (b *WebBackend) fetchManifest(base string) {
 	if len(ids) == 0 {
 		return
 	}
-	type chunk struct {
-		ids   []string
-		clear func()
-	}
-	// Every chunk is marked before the first goes out, so a lookup also waits on a chunk still in the queue.
-	var chunks []chunk
+	// Every chunk is marked before the first goes out. A lookup for an ID in a queued chunk claims it and asks on its own.
+	var chunks []*pendingChunk
 	for start := 0; start < len(ids); start += batchMaxKeys {
-		part := ids[start:min(start+batchMaxKeys, len(ids))]
-		chunks = append(chunks, chunk{ids: part, clear: b.manifest.markPending(part)})
+		chunks = append(chunks, b.manifest.markPending(ids[start:min(start+batchMaxKeys, len(ids))]))
 	}
-	work := make(chan chunk)
+	work := make(chan *pendingChunk)
 	var wg sync.WaitGroup
 	for range manifestFetchWidth {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for next := range work {
-				if keys := b.stillAbsent(next.ids); len(keys) > 0 {
-					count, _ := b.fetchNamed(keys)
+				if keys := b.stillAbsent(next.send()); len(keys) > 0 {
+					count, _ := b.fetchNamed(keys, next.landed)
 					b.manifest.Fetched.Add(uint32(count))
 				}
-				next.clear()
+				next.finish()
 			}
 		}()
 	}
@@ -464,15 +525,22 @@ func (b *WebBackend) postNamed(keys []string, each func(BatchEntry)) (int, error
 }
 
 // fetchNamed asks for keys by name and hands the entries to the local tier. It
-// answers the count of entries and the action IDs they carry.
-func (b *WebBackend) fetchNamed(keys []string) (int, []string) {
+// answers the count of entries and the action IDs they carry. After each group
+// of entries is in the local tier, it hands their action IDs to landed, so a
+// lookup that waits for one goes on before the batch ends.
+func (b *WebBackend) fetchNamed(keys []string, landed func([]string)) (int, []string) {
 	var chunk []BatchEntry
 	var arrived []string
+	group := 0 // arrived[group:] are the action IDs of chunk
 	flush := func() {
 		if len(chunk) > 0 {
 			b.OnBatchEntries(chunk)
 			chunk = nil
 		}
+		if landed != nil && group < len(arrived) {
+			landed(arrived[group:])
+		}
+		group = len(arrived)
 	}
 	count, err := b.postNamed(keys, func(e BatchEntry) {
 		if actionID, ok := b.ActionIDFromKey(e.Key); ok {

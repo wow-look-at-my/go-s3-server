@@ -11,12 +11,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	admitlimit "github.com/wow-look-at-my/go-s3-server/cacheclient/admission"
 )
 
 const retryAfterSeconds = 2
 
-// admissionWait is how long a request waits for a work slot before it is shed.
-const admissionWait = 10 * time.Second
+// admissionWait is how long a request waits for a work slot before it is shed. The client sizes its slow-answer limit from the same value.
+const admissionWait = admitlimit.Wait
 
 // maxQueuedRequests bounds the requests waiting for a slot.
 const maxQueuedRequests = 1024

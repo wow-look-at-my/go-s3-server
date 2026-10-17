@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -109,6 +110,49 @@ func TestManifestSkipsWhatIsLocal(t *testing.T) {
 	require.True(t, got.Contains("go-buildcache/v1"+two))
 	mu.Unlock()
 	require.Equal(t, uint32(1), b.manifest.Fetched.Load())
+	require.NoError(t, b.Close())
+}
+
+// A chunk does not fetch an object that came into the local tier after the
+// walk named it. On a slow server a lookup fetches such an object itself while
+// the chunk waits in the queue.
+func TestManifestChunkSkipsWhatArrivedSinceTheWalk(t *testing.T) {
+	t.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "0")
+	store := map[string][]byte{}
+	meta := map[string]map[string]string{}
+	one := strings.Repeat("c3", 32)
+	two := strings.Repeat("d4", 32)
+	seedObject(t, store, meta, one, []byte("object one"))
+	seedObject(t, store, meta, two, []byte("object two"))
+	seedObject(t, store, meta, manifestID("example.com/m", "", ""), []byte(one+"\n"+two))
+	srv := fakeBatchServer(t, store, meta)
+	t.Cleanup(srv.Close)
+
+	b, err := NewWebBackend(WebConfig{Bucket: "testbucket", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: t.TempDir()})
+	require.NoError(t, err)
+	b.shortenIndexWait(10 * time.Millisecond)
+	arrived, _ := parseActionHash(one)
+	var asked atomic.Int32
+	// The walk asks first and finds nothing. The chunk asks after, and the lookup's object is there.
+	b.HasLocal = func(h actionHash) bool { return h == arrived && asked.Add(1) > 1 }
+	var mu sync.Mutex
+	got := set.New[string]()
+	b.OnBatchEntries = func(entries []BatchEntry) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, e := range entries {
+			got.Add(e.Key)
+		}
+	}
+	b.SetModule("example.com/m")
+	b.manifestWG.Wait()
+
+	mu.Lock()
+	require.False(t, got.Contains("go-buildcache/v1"+one), "an object that arrived since the walk is fetched again")
+	require.True(t, got.Contains("go-buildcache/v1"+two))
+	mu.Unlock()
+	require.Equal(t, uint32(1), b.manifest.Fetched.Load())
+	require.Equal(t, uint32(1), b.manifest.Skipped.Load())
 	require.NoError(t, b.Close())
 }
 

@@ -50,6 +50,7 @@ type buildManifest struct {
 	GaveUp AtomicCounter // lookups that stopped waiting after manifestWaitCap and asked on their own
 
 	Fetched AtomicCounter // entries the manifest brought into the local tier
+	Skipped AtomicCounter // named entries the client held by the time their chunk went out
 	Named   AtomicCounter // action IDs the manifest named
 
 	trace *manifestTrace
@@ -370,11 +371,7 @@ func (b *WebBackend) fetchManifest(base string) {
 	var chunks []chunk
 	for start := 0; start < len(ids); start += batchMaxKeys {
 		part := ids[start:min(start+batchMaxKeys, len(ids))]
-		keys := make([]string, len(part))
-		for idx, actionID := range part {
-			keys[idx] = b.key(actionID)
-		}
-		chunks = append(chunks, chunk{keys: keys, clear: b.manifest.markPending(part)})
+		chunks = append(chunks, chunk{ids: part, clear: b.manifest.markPending(part)})
 	}
 	work := make(chan chunk)
 	var wg sync.WaitGroup
@@ -383,8 +380,10 @@ func (b *WebBackend) fetchManifest(base string) {
 		go func() {
 			defer wg.Done()
 			for next := range work {
-				count, _ := b.fetchNamed(next.keys)
-				b.manifest.Fetched.Add(uint32(count))
+				if keys := b.stillAbsent(next.ids); len(keys) > 0 {
+					count, _ := b.fetchNamed(keys)
+					b.manifest.Fetched.Add(uint32(count))
+				}
 				next.clear()
 			}
 		}()
@@ -394,6 +393,22 @@ func (b *WebBackend) fetchManifest(base string) {
 	}
 	close(work)
 	wg.Wait()
+}
+
+// stillAbsent answers the keys of the action IDs this client does not hold yet.
+// A chunk waits in the queue behind the ones on the wire. On a slow server a
+// lookup stops waiting for it and fetches its own object, and the chunk must
+// not fetch that object a second time.
+func (b *WebBackend) stillAbsent(ids []string) []string {
+	keys := make([]string, 0, len(ids))
+	for _, actionID := range ids {
+		if h, ok := parseActionHash(actionID); ok && (b.isHeld(h) || b.hasLocal(h)) {
+			b.manifest.Skipped.Increment()
+			continue
+		}
+		keys = append(keys, b.key(actionID))
+	}
+	return keys
 }
 
 // hasLocal reports whether the local tier already holds the action.
@@ -601,6 +616,6 @@ func (b *WebBackend) reportManifest() {
 	if m.Named.Load() == 0 {
 		return
 	}
-	logging.Infof("cacheprog: manifest: named %d keys, fetched %d ahead, %d lookups waited for them, %d gave up waiting",
-		m.Named.Load(), m.Fetched.Load(), m.Waited.Load(), m.GaveUp.Load())
+	logging.Infof("cacheprog: manifest: named %d keys, fetched %d ahead, %d lookups waited for them, %d gave up waiting, %d held before their chunk went out",
+		m.Named.Load(), m.Fetched.Load(), m.Waited.Load(), m.GaveUp.Load(), m.Skipped.Load())
 }

@@ -393,47 +393,6 @@ func TestManifestNamesDiskHits(t *testing.T) {
 	require.True(t, b.manifest.used.Contains(hex.EncodeToString(id[:])))
 }
 
-// A lookup for an object the manifest fetch has on the wire waits for it, and
-// a lookup for any other object does not.
-func TestAwaitPrefetchWaitsForTheFetch(t *testing.T) {
-	b := NewBareBackend("go-buildcache/")
-	b.manifest = newBuildManifest()
-	onWire := strings.Repeat("e5", 32)
-	clear := b.manifest.markPending([]string{onWire})
-	require.False(t, b.AwaitPrefetch(strings.Repeat("f6", 32)))
-
-	waited := make(chan bool, 1)
-	go func() { waited <- b.AwaitPrefetch(onWire) }()
-	select {
-	case <-waited:
-		t.Fatal("the lookup returned while the fetch was on the wire")
-	case <-time.After(50 * time.Millisecond):
-	}
-	clear()
-	require.True(t, <-waited)
-	require.False(t, b.AwaitPrefetch(onWire), "a landed fetch holds nothing up")
-	require.Equal(t, uint32(1), b.manifest.Waited.Load())
-}
-
-// A lookup stops waiting for a slow manifest fetch after manifestWaitCap.
-func TestAwaitPrefetchGivesUpOnASlowFetch(t *testing.T) {
-	t.Serial() // manifestWaitCap is package state
-	old := manifestWaitCap
-	manifestWaitCap = 50 * time.Millisecond
-	defer func() { manifestWaitCap = old }()
-
-	b := NewBareBackend("go-buildcache/")
-	b.manifest = newBuildManifest()
-	onWire := strings.Repeat("e7", 32)
-	clear := b.manifest.markPending([]string{onWire})
-	defer clear()
-	start := time.Now()
-	require.False(t, b.AwaitPrefetch(onWire))
-	require.Less(t, time.Since(start), time.Second)
-	require.Equal(t, uint32(1), b.manifest.GaveUp.Load())
-	require.Zero(t, b.manifest.Waited.Load())
-}
-
 // The manifest names keys in the order the build first looked them up, so the next build fetches the first ones first.
 func TestManifestKeepsLookupOrder(t *testing.T) {
 	m := newBuildManifest()

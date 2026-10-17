@@ -75,7 +75,7 @@ func TestHealthEndpointBypassesAdmissionControl(t *testing.T) {
 	cfg := &Config{Bucket: "testbucket", DisableAuth: true, MaxConcurrentRequests: 1}
 	s := NewServer(cfg, nil)
 	// The probe is handled before admission control, so it must still succeed.
-	s.sem <- struct{}{}
+	require.True(t, s.slots.tryTake())
 
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, healthPath, nil))
@@ -114,7 +114,7 @@ func TestWellKnownUpdateChecksReportDraining(t *testing.T) {
 func TestWellKnownUpdateChecksBypassAdmissionControl(t *testing.T) {
 	cfg := &Config{Bucket: "testbucket", DisableAuth: true, MaxConcurrentRequests: 1}
 	s := NewServer(cfg, nil)
-	s.sem <- struct{}{}
+	require.True(t, s.slots.tryTake())
 
 	for _, path := range []string{wellKnownHealthPath, wellKnownPreUpdatePath} {
 		rec := httptest.NewRecorder()

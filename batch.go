@@ -80,10 +80,26 @@ const prefetchWindow = 30 * time.Second
 const maxPrefetchEntries = 200
 
 // handleBatchGet handles GET and POST /_batch/get requests. The client sends a
-// JSON list of keys it needs. The server responds with a tar stream containing
-// the data and metadata for each found entry. POST is the semantically sound
-// method (the request carries a body; GET-with-a-body is hostile to proxies
-// and caches); GET remains accepted for existing clients.
+// JSON list of keys it needs, and the server responds with a tar stream
+// containing the data and metadata for each found entry. POST is the
+// semantically sound method (the request carries a body; GET-with-a-body is
+// hostile to proxies and caches); GET remains accepted for existing clients.
+//
+// If the server's prefetch config (prefetchEnabled) and the request both ask
+// for it, the server also includes entries whose modification time falls
+// within 30s either side of the requested entries, capturing entries from the same build
+// that the client is likely to need next. The request's own Have filter says
+// which of those the client already holds, and those are left out, so the
+// window keeps moving instead of the same 200-entry pool arriving on every
+// request. The server keeps no record of any of this. With prefetchEnabled
+// false the client's prefetch and prefetch_only flags are ignored: a batch
+// carries only the requested keys, and a prefetch_only request gets an empty
+// manifest.
+//
+// The tar layout is.
+//
+//	manifest.json                    — index of all entries with metadata
+//	data/<key>                       — raw file content for each entry
 func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, agg *logAggregator, prefetchEnabled bool) {
 	if r.Method != "GET" && r.Method != "POST" {
 		writeError(w, 405, "method_not_allowed", "method not allowed")

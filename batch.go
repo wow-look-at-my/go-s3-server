@@ -219,8 +219,17 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 			return
 		}
 		streamed++
-		// Counted where the bytes leave.
+		// Counted where the bytes actually leave: an entry that vanished or
+		// failed above never reached the client and must not appear in the
+		// rate.
 		recordObject(agg, prov, o.meta.Metadata, o.size, false, true)
+		// The bandwidth chart is attributed one entry at a time, for the same
+		// reason: a batch carries entries from as many modules as the build
+		// touches, so the response as a whole has no single module to charge.
+		bandwidthFromContext(r.Context()).record(bandwidthSample{
+			module: projectOf(o.meta.Metadata, prov),
+			bytes:  o.size,
+		})
 	}
 
 	requested, anchors := len(req.Keys), 0

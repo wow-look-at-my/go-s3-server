@@ -7,10 +7,7 @@ import (
 	"time"
 )
 
-// slotQueue hands out the server's work slots. A freed slot goes to the
-// earliest waiting demand request, and to a look-ahead request only when no
-// demand request waits. A build blocks on a demand lookup and on no
-// look-ahead, so a lookup must not queue behind a burst of prefetch batches.
+// slotQueue hands out the server's work slots.
 type slotQueue struct {
 	mu       sync.Mutex
 	free     int

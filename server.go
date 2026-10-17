@@ -136,10 +136,7 @@ type admissionKey struct{}
 // admit takes a work slot, waiting for one when every slot is busy. A slot
 // comes free in the time a single request's work takes. A burst past the
 // limit is served a moment late instead of being shed into a retry that costs
-// the client seconds. Waiters are served in arrival order within their class,
-// and a demand request goes before every look-ahead request. It reports false
-// when the wait is already full, when admitWait passes, or when the client
-// goes away.
+// the client seconds.
 func (s *Server) admit(ctx context.Context, prefetch bool) bool {
 	if s.slots.tryTake() {
 		return true

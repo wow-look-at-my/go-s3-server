@@ -43,18 +43,18 @@ func TestHashSetMatchesAMapThroughEveryCompaction(t *testing.T) {
 	for h := range want.All() {
 		require.True(t, s.Contains(h), "missing a key the set was told to hold")
 	}
-	wantKeys := set.New[hashKey]()
+	wantKeys := set.New[indexKey]()
 	for h := range want.All() {
 		wantKeys.Add(keyOf(h))
 	}
-	seen := map[hashKey]int{}
-	for key := range s.All() {
-		seen[key]++
+	seen := map[actionHash]int{}
+	for h := range s.All() {
+		seen[h]++
 	}
 	require.Len(t, seen, want.Len())
-	for key, n := range seen {
+	for h, n := range seen {
 		assert.Equal(t, 1, n, "yielded a key twice")
-		assert.True(t, wantKeys.Contains(key), "yielded a key that was removed")
+		assert.True(t, wantKeys.Contains(keyOf(h)), "yielded a key that was removed")
 	}
 	for i := range 3000 {
 		h := hashN(i)
@@ -102,8 +102,8 @@ func TestHashSetStaysSortedAcrossMerges(t *testing.T) {
 		s.Add(hashN(rng.Intn(100000)))
 	}
 	s.compact()
-	require.True(t, slices.IsSorted(s.sorted))
-	require.Equal(t, len(s.sorted), len(slices.Compact(slices.Clone(s.sorted))))
+	require.True(t, slices.IsSortedFunc(s.sorted, compareHash))
+	require.Equal(t, len(s.sorted), len(slices.CompactFunc(slices.Clone(s.sorted), func(a, b actionHash) bool { return a == b })))
 }
 
 // Re-adding a removed key restores it rather than duplicating it: the key is
@@ -127,10 +127,9 @@ func TestHashSetReAddCancelsARemoval(t *testing.T) {
 // constructor must still sort a body that does not, because a set built out of
 // order answers wrongly for most of its keys.
 func TestHashSetFromSortedFixesAnUnsortedBody(t *testing.T) {
-	in := []hashKey{keyOf(hashN(9)), keyOf(hashN(3)), keyOf(hashN(3)), keyOf(hashN(5))}
-	s := newHashSetFromSorted(in, 64)
-	require.True(t, slices.IsSorted(s.sorted))
-	require.Equal(t, 3, s.Len())
+	in := []actionHash{hashN(9), hashN(3), hashN(3), hashN(5)}
+	s := adoptSorted(in, compareHash)
+	require.True(t, slices.IsSortedFunc(s.sorted, compareHash))	require.Equal(t, 3, s.Len())
 	for _, n := range []int{3, 5, 9} {
 		assert.True(t, s.Contains(hashN(n)))
 	}
@@ -142,12 +141,11 @@ func TestHashSetFromSortedFixesAnUnsortedBody(t *testing.T) {
 // runner into "Out of memory" with an empty log.
 func TestHashSetHoldsOnlyTheKeyMaterial(t *testing.T) {
 	const n = 50000
-	keys := make([]hashKey, n)
-	for i := range keys {
-		keys[i] = keyOf(hashN(i))
+	hashes := make([]actionHash, n)
+	for i := range hashes {
+		hashes[i] = hashN(i)
 	}
-	s := newHashSetFromSorted(keys, 64)
-	require.Equal(t, n, s.Len())
+	s := adoptSorted(hashes, compareHash)	require.Equal(t, n, s.Len())
 	assert.LessOrEqual(t, cap(s.sorted), n+compactAt, "the sorted slice carries growth slack it never earned")
 	assert.Equal(t, 0, s.pending.Len())
 	assert.Equal(t, 0, s.removed.Len())

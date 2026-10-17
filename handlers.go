@@ -327,6 +327,18 @@ func setIndexGenHeaders(w http.ResponseWriter, gen indexGen) {
 	w.Header().Set(headerIndexSeq, strconv.FormatUint(gen.seq, 10))
 }
 
+// indexFormatQuery names the query parameter that selects the index version.
+const indexFormatQuery = "v"
+
+// indexFormatFromQuery reads the requested index version. Only "2" selects
+// version 2; any other value, or none, is version 1.
+func indexFormatFromQuery(r *http.Request) gbciFormat {
+	if r.URL.Query().Get(indexFormatQuery) == "2" {
+		return gbciPrefix
+	}
+	return gbciFull
+}
+
 // indexGenFromQuery reads a delta request's position. asked is false when the
 // request names none, which asks for the whole index.
 func indexGenFromQuery(r *http.Request) (gen indexGen, asked bool) {

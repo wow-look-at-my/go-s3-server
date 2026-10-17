@@ -17,14 +17,52 @@ import (
 // gbciKeyPrefix is the constant leading portion of every cacheprog cache key.
 const gbciKeyPrefix = "go-buildcache/v1"
 
-// gbciHashSize is the number of bytes per entry in the binary index body.
+// gbciHashSize is the number of bytes in an action hash, and per entry in a version 1 index body.
 const gbciHashSize = 32
+
+// gbciPrefixSize is the hash width of the short form, in bytes.
+const gbciPrefixSize = 8
 
 // gbciHeaderSize is the fixed header size in bytes.
 const gbciHeaderSize = 24
 
-// gbciVersion is the wire-format version stored in the header.
-const gbciVersion = 1
+// The wire-format versions stored in the header. gbciVersion2, the Rice-coded
+// form, is named by indexv2.go.
+const (
+	gbciVersion       = 1
+	gbciPrefixVersion = 2
+)
+
+// gbciFormat is an encoding /_index serves by its short name. Each names one
+// indexForm, and each is serialized and cached on its own.
+type gbciFormat int
+
+const (
+	// gbciFull is version 1: each entry is a whole action hash.
+	gbciFull gbciFormat = iota
+	// gbciPrefix is each entry's leading gbciPrefixSize bytes.
+	gbciPrefix
+)
+
+func (f gbciFormat) version() byte {
+	if f == gbciPrefix {
+		return gbciPrefixVersion
+	}
+	return gbciVersion
+}
+
+func (f gbciFormat) entrySize() int {
+	if f == gbciPrefix {
+		return gbciPrefixSize
+	}
+	return gbciHashSize
+}
+
+// indexForm is the serialization a format names: the version byte and the
+// entry width.
+func (f gbciFormat) form() indexForm {
+	return indexForm{version: f.version(), width: f.entrySize()}
+}
 
 var gbciMagic = [4]byte{'G', 'B', 'C', 'I'}
 
@@ -536,6 +574,11 @@ func (idx *Index) BlobGen() ([]byte, string, indexGen) {
 	return idx.BlobGenForm(indexFormV1(gbciHashSize))
 }
 
+// BlobGenFormat is BlobGenForm in format f.
+func (idx *Index) BlobGenFormat(f gbciFormat) ([]byte, string, indexGen) {
+	return idx.BlobGenForm(f.form())
+}
+
 // BlobGenForm answers the index serialized in form, its ETag, and the add-log
 // position the blob is complete up to.
 //
@@ -544,6 +587,7 @@ func (idx *Index) BlobGen() ([]byte, string, indexGen) {
 // during a serialization wait on the read lock and all receive the blob it
 // produces. A burst of GETs costs a single serialization.
 func (idx *Index) BlobGenForm(form indexForm) ([]byte, string, indexGen) {
+
 	idx.mu.RLock()
 	c := idx.forms[form]
 	if idx.blobServableLocked(c) {

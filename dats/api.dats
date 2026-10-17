@@ -202,6 +202,61 @@ tests:
 			- "after-new-key 184"
 			- "etag moved"
 
+	- desc: the index answers the short form to a client that asks with hash=8, with eight bytes per key, and the full form to one that does not
+	  exit: 0
+	  inputs:
+		files:
+			config.json: '{"listen":"127.0.0.1:19020","bucket":"test-cache","dashboard_listen":"","data_dir":"{outputs.data}","index_blob_interval":"0s","credentials":[{"username":"testuser","password":"testpass"}]}'
+			check.sh: |
+				set -euo pipefail
+				base=http://127.0.0.1:19020/test-cache
+				auth=testuser:testpass
+				put() { curl -sf -u "$auth" -X PUT --data-binary 'data' "$base/go-buildcache/v1$1" > /dev/null; }
+				header() { tr -d '\r' < "$1" | awk -v name="$2" 'tolower($1) == name {print $2}'; }
+				for c in a b c; do put "$(printf "$c%.0s" $(seq 64))"; done
+
+				v1="$(mktemp)"
+				v1headers="$(mktemp)"
+				curl -sf -u "$auth" -o "$v1" -D "$v1headers" "$base/_index"
+				echo "v1 size $(stat -c %s "$v1")"
+				echo "v1 header $(od -An -tu1 -j4 -N2 "$v1" | xargs)"
+
+				v2="$(mktemp)"
+				v2headers="$(mktemp)"
+				curl -sf -u "$auth" -o "$v2" -D "$v2headers" "$base/_index?hash=8"
+				echo "short size $(stat -c %s "$v2")"
+				echo "short header $(od -An -tu1 -j4 -N2 "$v2" | xargs)"
+				echo "short first $(od -An -tx1 -j24 -N8 "$v2" | tr -d ' ')"
+
+				etag1=$(header "$v1headers" etag:)
+				etag2=$(header "$v2headers" etag:)
+				test -n "$etag2" && test "$etag2" != "$etag1" && echo "etags differ"
+				echo "short revalidate $(curl -s -o /dev/null -w '%{http_code}' -u "$auth" -H "If-None-Match: $etag2" "$base/_index?hash=8")"
+				echo "v1 etag on short $(curl -s -o /dev/null -w '%{http_code}' -u "$auth" -H "If-None-Match: $etag1" "$base/_index?hash=8")"
+
+				epoch=$(header "$v2headers" x-index-epoch:)
+				pos=$(header "$v2headers" x-index-seq:)
+				put "$(printf 'd%.0s' $(seq 64))"
+				delta="$(mktemp)"
+				deltaheaders="$(mktemp)"
+				curl -sf -u "$auth" -o "$delta" -D "$deltaheaders" "$base/_index?hash=8&epoch=$epoch&seq=$pos"
+				echo "short delta $(header "$deltaheaders" x-index-delta:) size $(stat -c %s "$delta")"
+				echo "short delta header $(od -An -tu1 -j4 -N2 "$delta" | xargs)"
+				echo "short delta first $(od -An -tx1 -j24 -N8 "$delta" | tr -d ' ')"
+	  cmd: bash {shared.serve.sh} {inputs.config.json} 19020 {inputs.check.sh}
+	  outputs:
+		stdout:
+			- "v1 size 152"
+			- "v1 header 1 32"
+			- "short size 80"
+			- "short header 1 8"
+			- "short first aaaaaaaaaaaaaaaa"
+			- "etags differ"
+			- "short revalidate 304"
+			- "v1 etag on short 200"
+			- "short delta 1 size 64"
+			- "short delta header 1 8"
+			- "short delta first dddddddddddddddd"
 	- desc: v=2 names the Rice-coded index form, with its own ETag
 	  exit: 0
 	  inputs:

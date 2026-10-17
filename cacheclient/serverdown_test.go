@@ -67,6 +67,37 @@ func TestServerDownSkipsRequestsUntilItAnswers(t *testing.T) {
 	require.NoError(t, ask())
 }
 
+// The server queues a request for up to AdmissionWait, so an answer that slow is the queue, not an outage.
+func TestSlowAnswerLimitSitsAboveTheAdmissionWait(t *testing.T) {
+	require.Equal(t, slowAnswerAfter(AdmissionWait), slowAnswer)
+	require.Greater(t, slowAnswer, AdmissionWait, "a queued answer must not mark the server down")
+}
+
+// A lookup the server answers after a full admission wait keeps the server up.
+func TestQueuedAnswerDoesNotMarkTheServerDown(t *testing.T) {
+	t.Serial() // slowAnswer is package state
+	const wait = 200 * time.Millisecond
+	oldSlow := slowAnswer
+	slowAnswer = slowAnswerAfter(wait)
+	defer func() { slowAnswer = oldSlow }()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(wait)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	b := testBackend(t, srv.URL)
+	defer b.Close()
+	req, err := http.NewRequest("POST", srv.URL+"/x", nil)
+	require.NoError(t, err)
+	req.Header.Set(HeaderKind, KindCritical)
+	resp, err := b.doRetryGET(req)
+	require.NoError(t, err)
+	closeBody(resp.Body)
+	require.Zero(t, b.downSince.Load(), "an answer that waited out the admission queue is not an outage")
+}
+
 // A lookup the build waits on that gets a slow answer takes the answer, and
 // marks the server down. A look-ahead request with the same delay does not.
 func TestSlowAnswerToALookupMarksTheServerDown(t *testing.T) {

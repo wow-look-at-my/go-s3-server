@@ -35,7 +35,12 @@ const (
 type Server struct {
 	config  *Config
 	storage *Storage
-	// sem bounds the requests doing work at the same time. A full sem means the server is at capacity.
+	// sem bounds the requests doing work at the same time. A full sem means the
+	// server is at capacity, so an excess request is shed with 503 and
+	// Retry-After rather than queued until memory is gone, which a fronting
+	// proxy reports as a 502. A request whose remaining work is only a body
+	// transfer hands its slot back early (releaseSlot). Buffered to
+	// MaxConcurrentRequests.
 	sem chan struct{}
 	// admitWait and maxQueued bound the wait for a full sem; see admit.
 	admitWait time.Duration

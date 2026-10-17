@@ -20,10 +20,11 @@ func TestDemandRequestGoesBeforeWaitingLookAhead(t *testing.T) {
 	q := newSlotQueue(1)
 	require.True(t, q.tryTake())
 	var prefetch []chan bool
-	for range 3 {
+	// Each waiter is in the queue before the next starts, so arrival order is slice order.
+	for idx := range 3 {
 		prefetch = append(prefetch, waitFor(q, true))
+		require.Eventually(t, func() bool { return q.waiting() == idx+1 }, 5*time.Second, time.Millisecond)
 	}
-	require.Eventually(t, func() bool { return q.waiting() == 3 }, 5*time.Second, time.Millisecond)
 	demand := waitFor(q, false)
 	require.Eventually(t, func() bool { return q.waiting() == 4 }, 5*time.Second, time.Millisecond)
 

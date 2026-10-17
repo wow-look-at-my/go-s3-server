@@ -319,8 +319,19 @@ func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response,
 // downProbeEvery is how often a request still goes out while the server is down. The first to get an answer brings the server back.
 var downProbeEvery = 5 * time.Second
 
+// AdmissionWait is how long the server queues a request for a work slot before it sheds it. The server reads it from here.
+const AdmissionWait = 10 * time.Second
+
+// answerMargin is the time an answer may take beyond the admission wait before the server counts as down.
+const answerMargin = 5 * time.Second
+
+// slowAnswerAfter is the slowest answer a lookup may get from a server that queues it for wait. A queued answer is not an outage.
+func slowAnswerAfter(wait time.Duration) time.Duration {
+	return wait + answerMargin
+}
+
 // slowAnswer is how long a lookup the build waits on may wait for an answer before the server counts as down.
-var slowAnswer = 5 * time.Second
+var slowAnswer = slowAnswerAfter(AdmissionWait)
 
 // errServerDown answers a request that was not sent because the server had stopped answering.
 var errServerDown = errors.New("not sent: the cache server stopped answering; the build compiles instead")

@@ -364,7 +364,7 @@ func (b *WebBackend) fetchManifest(base string) {
 		return
 	}
 	type chunk struct {
-		keys  []string
+		ids   []string
 		clear func()
 	}
 	// Every chunk is marked before the first goes out, so a lookup also waits on a chunk still in the queue.

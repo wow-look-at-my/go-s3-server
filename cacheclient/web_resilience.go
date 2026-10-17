@@ -15,6 +15,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/wow-look-at-my/go-s3-server/cacheclient/admission"
 )
 
 // Failure-handling defaults for the remote cache backend. They are deliberately
@@ -319,8 +321,8 @@ func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response,
 // downProbeEvery is how often a request still goes out while the server is down. The first to get an answer brings the server back.
 var downProbeEvery = 5 * time.Second
 
-// AdmissionWait is how long the server queues a request for a work slot before it sheds it. The server reads it from here.
-const AdmissionWait = 10 * time.Second
+// AdmissionWait is how long the server queues a request for a work slot before it sheds it.
+const AdmissionWait = admission.Wait
 
 // answerMargin is the time an answer may take beyond the admission wait before the server counts as down.
 const answerMargin = 5 * time.Second

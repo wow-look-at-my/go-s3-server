@@ -209,9 +209,7 @@ func (b *WebBackend) manifestCtx() context.Context {
 	return m.ctx
 }
 
-// manifestCloseWait is how long Close lets a manifest fetch finish. The fetch
-// fills the local tier for the next command of the build, so Close does not
-// cancel it at once.
+// manifestCloseWait is how long Close lets a manifest fetch finish.
 var manifestCloseWait = 30 * time.Second
 
 // awaitManifest waits for the manifest fetch. After manifestCloseWait it
@@ -397,8 +395,8 @@ func (b *WebBackend) fetchManifest(base string) {
 
 // stillAbsent answers the keys of the action IDs this client does not hold yet.
 // A chunk waits in the queue behind the ones on the wire. On a slow server a
-// lookup stops waiting for it and fetches its own object, and the chunk must
-// not fetch that object a second time.
+// lookup stops waiting for it and fetches its own object. The chunk must not
+// fetch that object a second time.
 func (b *WebBackend) stillAbsent(ids []string) []string {
 	keys := make([]string, 0, len(ids))
 	for _, actionID := range ids {

@@ -263,14 +263,15 @@ func (b *WebBackend) fetchFallback() {
 			defer wg.Done()
 			for part := range work {
 				// Only a request on the wire is pending. A lookup never waits for a guess still in the queue.
-				clear := m.markPending(part)
+				chunk := m.markPending(part)
+				chunk.send()
 				keys := make([]string, len(part))
 				for idx, actionID := range part {
 					keys[idx] = b.key(actionID)
 				}
-				_, arrived := b.fetchNamed(keys)
+				_, arrived := b.fetchNamed(keys, chunk.landed)
 				f.noteLanded(len(part), arrived)
-				clear()
+				chunk.finish()
 			}
 		}()
 	}

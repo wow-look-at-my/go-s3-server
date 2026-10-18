@@ -598,17 +598,24 @@ func blobETag(blob []byte) string {
 	return `"` + hex.EncodeToString(blob[len(blob)-sha256.Size:]) + `"`
 }
 
-// Merge adds hashes from a client-uploaded index blob into the pending queue.
-// Duplicates are handled during the next Blob() serialization (sort + dedupe).
+// Merge adds hashes from a client-uploaded index blob into the pending queue
+// and the add log, and marks every cached serialization stale. Duplicates are
+// handled during the next Blob() serialization (sort + dedupe).
 func (idx *Index) Merge(hashes [][gbciHashSize]byte) {
 	if len(hashes) == 0 {
 		return
 	}
 	idx.mu.Lock()
 	idx.pending = append(idx.pending, hashes...)
-	idx.dirty.Store(true)
-	// The short form (BlobGenWidth) has its own cache, so it must be invalidated too.
-	idx.prefixDirty.Store(true)
+	for _, h := range hashes {
+		// The add log carries every advertised hash, so a client fetching a
+		// delta learns these too; Put records its hashes the same way.
+		idx.appendAddLocked(h)
+		// mutations stamps a cached blob as current, so bumping it makes
+		// every form's cache — full and short — rebuild on its next read.
+		idx.mutations++
+	}
+	idx.updateGaugesLocked()
 	idx.mu.Unlock()
 	log.Printf("index: merged %d hashes from client upload", len(hashes))
 }

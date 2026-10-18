@@ -608,11 +608,9 @@ func (idx *Index) Merge(hashes [][gbciHashSize]byte) {
 	idx.mu.Lock()
 	idx.pending = append(idx.pending, hashes...)
 	for _, h := range hashes {
-		// The add log carries every advertised hash, so a client fetching a
-		// delta learns these too; Put records its hashes the same way.
+		// Delta clients learn it too, exactly as with a Put.
 		idx.appendAddLocked(h)
-		// mutations stamps a cached blob as current, so bumping it makes
-		// every form's cache — full and short — rebuild on its next read.
+		// Every cached form, full and short, is stale from here.
 		idx.mutations++
 	}
 	idx.updateGaugesLocked()

@@ -299,7 +299,7 @@ func hashCompare(a, b [32]byte) int {
 	return 0
 }
 
-// PUT to /_index with an invalid body returns 400 (bad request).
+// PUT to /_index with an invalid body is a bad request.
 func TestPutIndex_InvalidBody(t *testing.T) {
 	ts := testSetup(t)
 	resp := doRequest(t, ts, "PUT", "/testbucket/_index", []byte("x"), nil)
@@ -311,7 +311,7 @@ func TestPutIndex_InvalidBody(t *testing.T) {
 func TestPutIndex_MergesKeys(t *testing.T) {
 	ts := testSetup(t)
 
-	// Build a GBCI blob with 3 keys.
+	// Build a GBCI blob with a handful of keys.
 	hashes := make([][gbciHashSize]byte, 3)
 	for i := range hashes {
 		hashes[i][0] = byte(i + 0xA0)

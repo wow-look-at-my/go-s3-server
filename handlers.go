@@ -293,10 +293,9 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(blob))
 }
 
-// handlePutIndex accepts a GBCI v1 blob from a client and merges any new keys
-// into the server's in-memory index. This ensures that keys uploaded during a
-// build session are immediately discoverable by subsequent sessions, even if
-// the server's own per-PUT index tracking has a delay.
+// handlePutIndex accepts a GBCI v1 blob from a client and merges its hashes
+// into the server's in-memory index. A later session then finds keys the
+// client uploaded during its build.
 func handlePutIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 	if idx == nil {
 		writeError(w, 500, "internal_error", "index unavailable")

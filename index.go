@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -594,6 +596,60 @@ func (idx *Index) mergePendingLocked() indexGen {
 
 func blobETag(blob []byte) string {
 	return `"` + hex.EncodeToString(blob[len(blob)-sha256.Size:]) + `"`
+}
+
+// Merge adds hashes from a client-uploaded index blob into the pending queue
+// and the add log, and marks every cached serialization stale. Duplicates are
+// handled during the next Blob() serialization (sort + dedupe).
+func (idx *Index) Merge(hashes [][gbciHashSize]byte) {
+	if len(hashes) == 0 {
+		return
+	}
+	idx.mu.Lock()
+	idx.pending = append(idx.pending, hashes...)
+	for _, h := range hashes {
+		// Delta clients learn it too, exactly as with a Put.
+		idx.appendAddLocked(h)
+		// Every cached form, full and short, is stale from here.
+		idx.mutations++
+	}
+	idx.updateGaugesLocked()
+	idx.mu.Unlock()
+	log.Printf("index: merged %d hashes from client upload", len(hashes))
+}
+
+// parseIndexHashes validates a GBCI v1 blob and returns the raw action-ID
+// hashes it contains. Unlike the client-side parseIndexBlob (which reconstructs
+// full key strings), this returns just the binary hashes for direct merge into
+// the server's pending queue.
+func parseIndexHashes(blob []byte) ([][gbciHashSize]byte, error) {
+	if len(blob) < gbciHeaderSize+sha256.Size {
+		return nil, fmt.Errorf("blob too small (%d bytes)", len(blob))
+	}
+	if !bytes.Equal(blob[0:4], gbciMagic[:]) {
+		return nil, fmt.Errorf("bad magic")
+	}
+	if blob[4] != gbciVersion {
+		return nil, fmt.Errorf("unsupported version %d", blob[4])
+	}
+	if blob[5] != gbciHashSize {
+		return nil, fmt.Errorf("unsupported hash size %d", blob[5])
+	}
+	count := binary.LittleEndian.Uint64(blob[16:24])
+	bodyEnd := gbciHeaderSize + int(count)*gbciHashSize
+	if bodyEnd+sha256.Size != len(blob) {
+		return nil, fmt.Errorf("length %d != header+%d*%d+trailer", len(blob), count, gbciHashSize)
+	}
+	expected := sha256.Sum256(blob[:bodyEnd])
+	if !bytes.Equal(expected[:], blob[bodyEnd:]) {
+		return nil, fmt.Errorf("trailer hash mismatch")
+	}
+	hashes := make([][gbciHashSize]byte, count)
+	for i := uint64(0); i < count; i++ {
+		off := gbciHeaderSize + int(i)*gbciHashSize
+		copy(hashes[i][:], blob[off:off+gbciHashSize])
+	}
+	return hashes, nil
 }
 
 func (idx *Index) rebuild(storage *Storage) {

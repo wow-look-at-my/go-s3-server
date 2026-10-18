@@ -288,8 +288,31 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 	releaseSlot(r)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "no-cache")
 	setIndexGenHeaders(w, gen)
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(blob))
+}
+
+// handlePutIndex accepts a GBCI v1 blob from a client and merges its hashes
+// into the server's in-memory index. A later session then finds keys the
+// client uploaded during its build.
+func handlePutIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
+	if idx == nil {
+		writeError(w, 500, "internal_error", "index unavailable")
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
+	if err != nil {
+		writeError(w, 500, "internal_error", "failed to read body")
+		return
+	}
+	hashes, err := parseIndexHashes(data)
+	if err != nil {
+		writeError(w, 400, "invalid_request", fmt.Sprintf("invalid index blob: %v", err))
+		return
+	}
+	idx.Merge(hashes)
+	w.WriteHeader(200)
 }
 
 // indexFormFromQuery reads the form a request asks for. v=2 — or any version
@@ -342,8 +365,8 @@ func indexGenFromQuery(r *http.Request) (gen indexGen, asked bool) {
 	return indexGen{epoch: epoch, seq: seq}, true
 }
 
-// objectLabel builds a short human-readable description of a cache entry from its stored
-// metadata, e.g.
+// objectLabel builds a short human-readable description of a cache entry
+// from its stored metadata, e.g. "go-archive github.com/foo/bar (bar.go) go1.24.0 linux/amd64".
 func objectLabel(meta map[string]string) string {
 	objType := meta["object-type"]
 	if objType == "" {

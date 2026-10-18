@@ -41,7 +41,7 @@ type brokerServer struct {
 
 var liveBroker atomic.Pointer[brokerServer]
 
-// brokerMu orders serveBroker against StopBroker.
+// brokerMu orders serveBroker against StopBroker and Exit. After Exit sets brokerStopped, no broker starts.
 var (
 	brokerMu      sync.Mutex
 	brokerStopped bool
@@ -102,7 +102,6 @@ func BrokerEnviron() []string {
 // after every child it started has gone.
 func StopBroker() {
 	brokerMu.Lock()
-	brokerStopped = true
 	bkr := liveBroker.Swap(nil)
 	brokerMu.Unlock()
 	if bkr != nil {
@@ -116,6 +115,9 @@ func StopBroker() {
 // Exit closes every endpoint this process holds and removes its life socket,
 // which no other process removes while the directory lives.
 func Exit() error {
+	brokerMu.Lock()
+	brokerStopped = true
+	brokerMu.Unlock()
 	StopBroker()
 	if child := liveChild.Swap(nil); child != nil {
 		child.Close()

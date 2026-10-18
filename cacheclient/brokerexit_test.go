@@ -34,11 +34,11 @@ func init() {
 	}
 }
 
-// openAfterStop stops the broker before the cache opens, as an exit does
-// while the open still runs. It prints what the open left in the environment.
+// openAfterStop exits before the cache opens, as a go command can while the
+// open still runs. It prints what the open left in the environment.
 func openAfterStop(dir string) {
 	os.Unsetenv(BrokerEnv)
-	StopBroker()
+	Exit()
 	if _, err := OpenCache(dir, nil); err != nil {
 		fmt.Fprintln(os.Stderr, "open:", err)
 		os.Exit(2)
@@ -57,7 +57,7 @@ func TestNoBrokerAfterStop(t *testing.T) {
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	require.NoError(t, err)
-	require.Equal(t, "[]", strings.TrimSpace(string(out)), "an open after StopBroker served a broker")
+	require.Equal(t, "[]", strings.TrimSpace(string(out)), "an open after Exit served a broker")
 }
 
 // exitThenWait opens the cache as the owner, creates a queue, calls Exit, and

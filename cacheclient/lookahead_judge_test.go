@@ -127,7 +127,8 @@ func TestLookAheadSampleStopsTheWindows(t *testing.T) {
 	require.Zero(t, la.Failed.Load(), "a window the pool cancelled is not a failure")
 
 	// The build makes its lookups and uses none of the sample: the pool stops for good.
-	for range la.sampled.Load() / 2 {
+	// judge asks for half the sample, rounded up. A window the pause cut off can leave the sample odd.
+	for range (la.sampled.Load() + 1) / 2 {
 		b.Get(strings.Repeat("ab", 32))
 	}
 	require.True(t, la.wasteful.Load())

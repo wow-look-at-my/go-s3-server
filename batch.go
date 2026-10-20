@@ -221,6 +221,12 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 		streamed++
 		// Counted where the bytes leave.
 		recordObject(agg, prov, o.meta.Metadata, o.size, false, true)
+		// The bandwidth chart is attributed one entry at a time, for the same
+		// reason.
+		bandwidthFromContext(r.Context()).record(bandwidthSample{
+			module: projectOf(prov),
+			bytes:  o.size,
+		})
 	}
 
 	requested, anchors := len(req.Keys), 0

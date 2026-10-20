@@ -46,6 +46,8 @@ type Server struct {
 	verboseLog bool
 	// It is nil in verbose mode, where every request already prints itself.
 	logAgg *logAggregator
+	// bandwidth is the served-byte history the dashboard's chart draws.
+	bandwidth *bandwidthStore
 	// shuttingDown is set by BeginShutdown when a termination signal is received.
 	shuttingDown atomic.Bool
 }
@@ -62,6 +64,7 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 	s := &Server{
 		config:     cfg,
 		storage:    storage,
+		bandwidth:  newBandwidthStore(),
 		slots:      newSlotQueue(cfg.MaxConcurrentRequests),
 		admitWait:  admissionWait,
 		maxQueued:  maxQueuedRequests,
@@ -291,6 +294,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Timestamp: start,
 	}
 	ctx := context.WithValue(r.Context(), auditKey{}, audit)
+	// The store the dashboard's bandwidth chart draws from rides with the request, the way the audit trail does and for the same reason.
+	ctx = context.WithValue(ctx, bandwidthKey{}, s.bandwidth)
 	r = r.WithContext(context.WithValue(ctx, admissionKey{}, slot))
 
 	// Parse path: /{bucket}/{key...} or /{bucket}

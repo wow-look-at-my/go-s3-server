@@ -41,11 +41,22 @@ type brokerServer struct {
 
 var liveBroker atomic.Pointer[brokerServer]
 
+// brokerMu orders serveBroker against StopBroker and Exit. After Exit sets brokerStopped, no broker starts.
+var (
+	brokerMu      sync.Mutex
+	brokerStopped bool
+)
+
 // serveBroker serves owner under a name of this process's own and puts that
 // name in the environment. It serves nothing when this process must not
 // serve, which is not an error: the cache then works as it did.
 func serveBroker(owner Cache, dir string) {
 	if os.Getenv(brokerOffEnv) != "" || os.Getenv(BrokerEnv) != "" {
+		return
+	}
+	brokerMu.Lock()
+	defer brokerMu.Unlock()
+	if brokerStopped {
 		return
 	}
 	name := endpointName("gobuildcache")
@@ -90,7 +101,10 @@ func BrokerEnviron() []string {
 // StopBroker releases the name. The consumer calls it as the process exits,
 // after every child it started has gone.
 func StopBroker() {
-	if bkr := liveBroker.Swap(nil); bkr != nil {
+	brokerMu.Lock()
+	bkr := liveBroker.Swap(nil)
+	brokerMu.Unlock()
+	if bkr != nil {
 		bkr.shutdown()
 		// The name is gone, so a child handed this environment afterwards
 		// would wait on nobody.
@@ -101,6 +115,9 @@ func StopBroker() {
 // Exit closes every endpoint this process holds and removes its life socket,
 // which no other process removes while the directory lives.
 func Exit() error {
+	brokerMu.Lock()
+	brokerStopped = true
+	brokerMu.Unlock()
 	StopBroker()
 	if child := liveChild.Swap(nil); child != nil {
 		child.Close()

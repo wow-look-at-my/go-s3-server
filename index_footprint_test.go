@@ -137,8 +137,8 @@ func TestIndexWithoutEntriesCostsLess(t *testing.T) {
 
 // The short form carries each key's leading gbciPrefixSize bytes, which is a
 // quarter of the full v1 body, and still names every key. It is a version 1
-// blob of width 8: version byte 2 belongs to the Rice-coded form of
-// indexv2.go, whose width is in bits.
+// blob of a later width. Version a later byte belongs to the Rice-coded form
+// of indexv2.go, whose width is in bits.
 func TestPrefixBlobCostsEightBytesPerKey(t *testing.T) {
 	idx := fillIndexTracking(footprintKeys, false)
 	full, fullETag := idx.Blob()

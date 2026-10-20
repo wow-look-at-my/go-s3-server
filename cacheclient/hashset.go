@@ -56,10 +56,13 @@ func (s *hashSet) addAll(src *hashSet) {
 	mask := s.mask()
 	for k := range src.All() {
 		k &= mask
-		// A key in removed is still in the sorted slice, so re-adding it is the
-		// deletion going away rather than a new entry.
+		// A key in removed is still in the sorted slice, so re-adding it is
+		// the deletion going away rather than a new entry.
 		if s.removed.Contains(k) {
 			s.removed.Remove(k)
+			continue
+		}
+		if s.pending.Contains(k) {
 			continue
 		}
 		if _, found := slices.BinarySearch(s.sorted, k); found {

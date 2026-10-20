@@ -234,9 +234,6 @@ func (s *widthSet) mask() hashKey { return ^hashKey(0) << s.shift }
 // key is h as this set holds it.
 func (s *widthSet) key(h actionHash) hashKey { return keyOf64(h) & s.mask() }
 
-// width is the prefix width in bits.
-func (s *widthSet) width() int { return 64 - int(s.shift) }
-
 // Contains reports whether a key of this set's width is a member.
 func (s *widthSet) Contains(h actionHash) bool { return s.hashSet.Contains(s.key(h)) }
 

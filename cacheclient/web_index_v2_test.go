@@ -63,7 +63,10 @@ func TestMarshalIndexWritesVersion2(t *testing.T) {
 	blob := marshalIndex(s)
 	assert.Equal(t, byte(gbciVersionPrefix), blob[4])
 	assert.Equal(t, byte(indexKeySize*8), blob[5])
-	assert.Len(t, blob, gbciHeaderSize+5*indexKeySize+sha256.Size)
+	values, width, err := ParseIndexV2(blob)
+	require.NoError(t, err)
+	assert.Equal(t, indexKeySize*8, width)
+	assert.Equal(t, []uint64{0, 1 << 56, 2 << 56, 3 << 56, 4 << 56}, values, "each key's whole indexKey is one value")
 }
 
 func TestParseIndexBlobReadsVersion1(t *testing.T) {

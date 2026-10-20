@@ -278,9 +278,7 @@ func TestDashboardReportsTheIndexWireSize(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, values, 6)
 
-	// Hashes that share their first defaultIndexHashBits bits are a single
-	// entry, and the counted size says so before anything serializes: the count
-	// moves only for a new prefix.
+	// Hashes that share their first defaultIndexHashBits bits are a single entry, and the counted size says so before anything serializes.
 	idx.Put(gbciKeyPrefix+"06"+strings.Repeat("0", 8)+"ee"+strings.Repeat("0", 52), 1)
 	stats, err = d.snapshot()
 	require.NoError(t, err)

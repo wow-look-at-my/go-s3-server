@@ -101,19 +101,26 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 		a.Label = objectLabel(meta.Metadata)
 	}
 	getRequestsTotal.WithLabelValues("hit").Inc()
-	recordObject(agg, provenanceOf(r), meta.Metadata, meta.Size, false, false)
+	prov := provenanceOf(r)
+	recordObject(agg, prov, meta.Metadata, meta.Size, false, false)
 
 	emitObjectHeaders(w, meta)
 	w.WriteHeader(200)
 	// The guards are done.
 	releaseSlot(r)
 	// Stream the body, logging DISK-side failures.
-	if _, err := io.Copy(w, f); err != nil {
+	n, err := io.Copy(w, f)
+	if err != nil {
 		var pathErr *fs.PathError
 		if errors.As(err, &pathErr) {
 			log.Printf("get %q: body read failed mid-copy (truncated response; check storage health): %v", key, err)
 		}
 	}
+	// The bandwidth chart is a record of what crossed the wire.
+	bandwidthFromContext(r.Context()).record(bandwidthSample{
+		module: projectOf(prov),
+		bytes:  n,
+	})
 }
 
 // emitObjectHeaders writes an object's user metadata under both the native.
@@ -290,6 +297,21 @@ func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 	w.Header().Set("ETag", etag)
 	setIndexGenHeaders(w, gen)
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(blob))
+	// An index fetch is a series of its own: the blob belongs to no module (a
+	// whole fleet reads the same one).
+	bandwidthFromContext(r.Context()).record(bandwidthSample{
+		index: true,
+		bytes: servedBodyBytes(w, int64(len(blob))),
+	})
+}
+
+// servedBodyBytes is what the response body carried, when the writer kept
+// count of it.
+func servedBodyBytes(w http.ResponseWriter, body int64) int64 {
+	if rec, ok := w.(*statusRecorder); ok {
+		return rec.bytesWritten.Load()
+	}
+	return body
 }
 
 // indexFormFromQuery reads the form a request asks for. v=2 — or any version

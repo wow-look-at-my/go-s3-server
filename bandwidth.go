@@ -5,6 +5,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // The bandwidth chart draws the recent past, so its accounting is a ring of
@@ -206,10 +208,7 @@ func (b *bandwidthStore) window(topModules int) bandwidthWindow {
 	if len(ranked) > topModules {
 		ranked = ranked[:topModules]
 	}
-	named := make(map[string]bool, len(ranked))
-	for _, module := range ranked {
-		named[module] = true
-	}
+	named := set.Of(ranked...)
 	out.Bands = append(append(make([]string, 0, len(ranked)+1), ranked...), bandwidthOtherModule)
 
 	for i := range out.Points {
@@ -225,7 +224,7 @@ func (b *bandwidthStore) window(topModules int) bandwidthWindow {
 		var remainder int64
 		for module, n := range bucket.modules {
 			point.Total += n
-			if !named[module] {
+			if !named.Contains(module) {
 				remainder += n
 				continue
 			}

@@ -21,6 +21,12 @@ const defaultDashboardListen = ":9002"
 // dashboardStatsPath serves the snapshot the page polls.
 const dashboardStatsPath = "/api/stats"
 
+// dashboardBandwidthPath serves the bandwidth time series the page's chart polls.
+const dashboardBandwidthPath = "/api/bandwidth"
+
+// dashboardBandwidthTopModules is how many modules the chart names on its own axis key.
+const dashboardBandwidthTopModules = 5
+
 // metricValue is a metric with no labels (Value) or a labeled metric (Series).
 type metricValue struct {
 	Value  *float64      `json:"value,omitempty"`
@@ -79,21 +85,29 @@ type dashboardStats struct {
 	Projects map[string]projectRow `json:"projects"`
 }
 
-// dashboard answers the page, its assets, and the stats snapshot.
+// dashboard answers the page, its assets, the stats snapshot, and the
+// bandwidth series.
 type dashboard struct {
 	srv      *Server
 	cfg      *Config
 	started  time.Time
 	gatherer prometheus.Gatherer
+	// bandwidth is the served-byte history the chart draws.
+	bandwidth *bandwidthStore
 }
 
 func newDashboard(srv *Server, cfg *Config, started time.Time) *dashboard {
-	return &dashboard{srv: srv, cfg: cfg, started: started, gatherer: prometheus.DefaultGatherer}
+	d := &dashboard{srv: srv, cfg: cfg, started: started, gatherer: prometheus.DefaultGatherer}
+	if srv != nil {
+		d.bandwidth = srv.bandwidth
+	}
+	return d
 }
 
 func (d *dashboard) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(dashboardStatsPath, d.serveStats)
+	mux.HandleFunc(dashboardBandwidthPath, d.serveBandwidth)
 	mux.HandleFunc(healthPath, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("ok\n"))
@@ -146,6 +160,28 @@ func (d *dashboard) serveStats(w http.ResponseWriter, r *http.Request) {
 	enc.SetIndent("", "\t")
 	if err := enc.Encode(stats); err != nil {
 		log.Printf("dashboard: write stats: %v", err)
+	}
+}
+
+// dashboardBandwidth is the body of the bandwidth endpoint: the retained
+// window, stamped with the moment it was read.
+type dashboardBandwidth struct {
+	GeneratedAt time.Time `json:"generated_at"`
+	bandwidthWindow
+}
+
+// serveBandwidth answers the bandwidth chart's series.
+func (d *dashboard) serveBandwidth(w http.ResponseWriter, r *http.Request) {
+	body := dashboardBandwidth{
+		GeneratedAt:     time.Now(),
+		bandwidthWindow: d.bandwidth.window(dashboardBandwidthTopModules),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "\t")
+	if err := enc.Encode(body); err != nil {
+		log.Printf("dashboard: write bandwidth: %v", err)
 	}
 }
 

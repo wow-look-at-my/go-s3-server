@@ -271,7 +271,7 @@ tests:
 
 				body="$(mktemp)"
 				headers="$(mktemp)"
-				code=$(curl -s -o "$body" -D "$headers" -w '%{http_code}' -u "$auth" "$base/_index?v=2&hash=8")
+				code=$(curl -s -o "$body" -D "$headers" -w '%{http_code}' -u "$auth" "$base/_index?v=2")
 				echo "status $code"
 				echo "size $(stat -c %s "$body")"
 				echo "magic $(dd if="$body" bs=1 count=4 2>/dev/null)"

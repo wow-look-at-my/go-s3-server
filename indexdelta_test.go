@@ -143,8 +143,10 @@ func prefixOf(h [gbciHashSize]byte) [gbciPrefixSize]byte {
 	return p
 }
 
-// A client that does not ask for a version is the go toolchain's vendored
-// client, which reads version 1 only. It must keep getting exactly that.
+// A client that does not ask for a form is the go toolchain's vendored client,
+// which reads whole hashes only. It must keep getting exactly that. hash=8 asks
+// for the v1 short form, the same frame with gbciPrefixSize-byte entries, which
+// carries its own ETag.
 func TestIndexHandlerServesV1UnlessAsked(t *testing.T) {
 	idx := newDeltaIndex(t)
 	k1, h1 := deltaKey(1)
@@ -158,19 +160,15 @@ func TestIndexHandlerServesV1UnlessAsked(t *testing.T) {
 	assert.Equal(t, marshalGBCI([][gbciHashSize]byte{h1, h2}, gbciFull), v1.Body.Bytes(), "byte for byte the version 1 blob")
 	assert.Equal(t, byte(gbciVersion), v1.Body.Bytes()[4])
 
-	other := httptest.NewRecorder()
-	handleGetIndex(other, httptest.NewRequest("GET", "/b/_index?v=7", nil), idx)
-	assert.Equal(t, v1.Body.Bytes(), other.Body.Bytes(), "a version this server does not know is answered with version 1")
-
-	v2 := httptest.NewRecorder()
-	handleGetIndex(v2, httptest.NewRequest("GET", "/b/_index?v=2", nil), idx)
-	require.Equal(t, http.StatusOK, v2.Code)
-	assert.Equal(t, [][gbciPrefixSize]byte{prefixOf(h1), prefixOf(h2)}, prefixEntries(t, v2.Body.Bytes()))
-	assert.Len(t, v2.Body.Bytes(), gbciHeaderSize+2*gbciPrefixSize+32)
-	etag1, etag2 := v1.Header().Get("ETag"), v2.Header().Get("ETag")
+	short := httptest.NewRecorder()
+	handleGetIndex(short, httptest.NewRequest("GET", "/b/_index?hash=8", nil), idx)
+	require.Equal(t, http.StatusOK, short.Code)
+	assert.Equal(t, [][gbciPrefixSize]byte{prefixOf(h1), prefixOf(h2)}, prefixEntries(t, short.Body.Bytes()))
+	assert.Len(t, short.Body.Bytes(), gbciHeaderSize+2*gbciPrefixSize+32)
+	etag1, etag2 := v1.Header().Get("ETag"), short.Header().Get("ETag")
 	require.NotEmpty(t, etag2)
 	assert.NotEqual(t, etag1, etag2)
-	assert.Equal(t, v1.Header().Get(headerIndexSeq), v2.Header().Get(headerIndexSeq), "both versions name the same position")
+	assert.Equal(t, v1.Header().Get(headerIndexSeq), short.Header().Get(headerIndexSeq), "both forms name the same position")
 
 	revalidate := func(query, etag string) int {
 		req := httptest.NewRequest("GET", "/b/_index"+query, nil)
@@ -179,19 +177,19 @@ func TestIndexHandlerServesV1UnlessAsked(t *testing.T) {
 		handleGetIndex(rec, req, idx)
 		return rec.Code
 	}
-	assert.Equal(t, http.StatusNotModified, revalidate("?v=2", etag2))
+	assert.Equal(t, http.StatusNotModified, revalidate("?hash=8", etag2))
 	assert.Equal(t, http.StatusNotModified, revalidate("", etag1))
-	assert.Equal(t, http.StatusOK, revalidate("?v=2", etag1), "a version 1 copy is replaced by version 2")
+	assert.Equal(t, http.StatusOK, revalidate("?hash=8", etag1), "a full copy is replaced by the short form")
 	assert.Equal(t, http.StatusOK, revalidate("", etag2))
 }
 
-func TestIndexHandlerServesTheV2Delta(t *testing.T) {
+func TestIndexHandlerServesTheShortFormDelta(t *testing.T) {
 	idx := newDeltaIndex(t)
 	k1, _ := deltaKey(1)
 	idx.Put(k1, 1)
 
 	full := httptest.NewRecorder()
-	handleGetIndex(full, httptest.NewRequest("GET", "/b/_index?v=2", nil), idx)
+	handleGetIndex(full, httptest.NewRequest("GET", "/b/_index?hash=8", nil), idx)
 	require.Equal(t, http.StatusOK, full.Code)
 	epoch, seq := full.Header().Get(headerIndexEpoch), full.Header().Get(headerIndexSeq)
 	require.NotEmpty(t, epoch)
@@ -199,7 +197,7 @@ func TestIndexHandlerServesTheV2Delta(t *testing.T) {
 	k2, h2 := deltaKey(2)
 	idx.Put(k2, 1)
 	delta := httptest.NewRecorder()
-	handleGetIndex(delta, httptest.NewRequest("GET", "/b/_index?v=2&epoch="+epoch+"&seq="+seq, nil), idx)
+	handleGetIndex(delta, httptest.NewRequest("GET", "/b/_index?hash=8&epoch="+epoch+"&seq="+seq, nil), idx)
 	require.Equal(t, http.StatusOK, delta.Code)
 	assert.Equal(t, "1", delta.Header().Get(headerIndexDelta))
 	assert.Equal(t, "2", delta.Header().Get(headerIndexSeq))
@@ -207,7 +205,7 @@ func TestIndexHandlerServesTheV2Delta(t *testing.T) {
 
 	v1Delta := httptest.NewRecorder()
 	handleGetIndex(v1Delta, httptest.NewRequest("GET", "/b/_index?epoch="+epoch+"&seq="+seq, nil), idx)
-	assert.Equal(t, [][gbciHashSize]byte{h2}, gbciHashes(t, v1Delta.Body.Bytes()), "a delta without v=2 stays version 1")
+	assert.Equal(t, [][gbciHashSize]byte{h2}, gbciHashes(t, v1Delta.Body.Bytes()), "a delta that names no form stays version 1")
 }
 
 // Hashes that differ only past the prefix are one version 2 entry, so the
@@ -265,7 +263,7 @@ func TestIndexV2Form(t *testing.T) {
 	counted := idx.WireSize()
 
 	v2 := httptest.NewRecorder()
-	handleGetIndex(v2, httptest.NewRequest("GET", "/b/_index?v=2&hash=8", nil), idx)
+	handleGetIndex(v2, httptest.NewRequest("GET", "/b/_index?v=2", nil), idx)
 	require.Equal(t, http.StatusOK, v2.Code)
 	body := v2.Body.Bytes()
 	values, width, err := cacheclient.ParseIndexV2(body)

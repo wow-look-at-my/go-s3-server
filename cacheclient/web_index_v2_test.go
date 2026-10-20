@@ -34,14 +34,6 @@ func marshalIndexV1(hashes []actionHash) []byte {
 	return blob
 }
 
-// fullHash is an action hash whose leading byte is lead and whose last byte
-// is tail.
-func fullHash(lead, tail byte) actionHash {
-	var h actionHash
-	h[0], h[hashSize-1] = lead, tail
-	return h
-}
-
 // Membership is by indexKey: a hash that shares one with a member is a
 // member, and a hash that does not is absent.
 func TestKeySetMatchesByIndexKey(t *testing.T) {
@@ -61,6 +53,8 @@ func TestKeySetMatchesByIndexKey(t *testing.T) {
 	assert.Equal(t, 0, s.Len())
 }
 
+// marshalIndex writes the Rice-coded v2 form, at the width of the keys it is
+// handed: the whole indexKey, which is indexKeySize bytes of prefix.
 func TestMarshalIndexWritesVersion2(t *testing.T) {
 	s := newKeySet(0)
 	for lead := range byte(5) {
@@ -68,7 +62,7 @@ func TestMarshalIndexWritesVersion2(t *testing.T) {
 	}
 	blob := marshalIndex(s)
 	assert.Equal(t, byte(gbciVersionPrefix), blob[4])
-	assert.Equal(t, byte(indexKeySize), blob[5])
+	assert.Equal(t, byte(indexKeySize*8), blob[5])
 	assert.Len(t, blob, gbciHeaderSize+5*indexKeySize+sha256.Size)
 }
 
@@ -91,13 +85,15 @@ func TestParseIndexBlobFoldsVersion1EntriesThatShareAKey(t *testing.T) {
 }
 
 func TestParseIndexBlobRefusesASizeTheVersionDoesNotCarry(t *testing.T) {
+	// Version 1 carries a whole action hash or its indexKey, and version 2
+	// carries the Rice-coded form's width in bits. 16 bytes is neither.
 	v1 := marshalIndexV1(nil)
-	v1[5] = indexKeySize
+	v1[5] = 16
 	_, _, err := parseIndexBlob(v1)
 	require.Error(t, err)
 
 	v2 := marshalIndex(newKeySet(0))
-	v2[5] = gbciHashSize
+	v2[5] = 16
 	_, _, err = parseIndexBlob(v2)
 	require.Error(t, err)
 }

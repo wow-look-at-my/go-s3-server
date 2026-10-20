@@ -15,7 +15,7 @@ func BenchmarkHashSetDelta(b *testing.B) {
 		base[idx] = rng.Uint64()
 	}
 	slices.Sort(base)
-	delta := newHashSet(0)
+	delta := newWidthSet(0)
 	for range 133_000 {
 		delta.addKey(rng.Uint64())
 	}
@@ -23,7 +23,7 @@ func BenchmarkHashSetDelta(b *testing.B) {
 
 	b.Run("bykey", func(b *testing.B) {
 		for b.Loop() {
-			set := newHashSetFromSorted(slices.Clone(base), 64)
+			set := newWidthSetFromSorted(slices.Clone(base), 64)
 			for key := range delta.All() {
 				set.addKey(key)
 			}
@@ -31,7 +31,7 @@ func BenchmarkHashSetDelta(b *testing.B) {
 	})
 	b.Run("addAll", func(b *testing.B) {
 		for b.Loop() {
-			set := newHashSetFromSorted(slices.Clone(base), 64)
+			set := newWidthSetFromSorted(slices.Clone(base), 64)
 			set.addAll(delta)
 		}
 	})

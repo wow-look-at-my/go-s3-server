@@ -75,9 +75,11 @@ const (
 	gbciVersionPrefix = IndexV2Version
 )
 
-// indexVersionQuery is the query every index request carries: version 2, the
-// Rice-coded form, plus hash=8, the v1 short form a server that predates
-// version 2 reads as its own. The 8 is gbciPrefixSize.
+// indexVersionQuery is the query every index request carries: hash=8, the v1
+// short form of gbciPrefixSize bytes per key, which is the shape this client
+// holds, plus version 2 for a server that selects the form from it. A server
+// that reads neither answers a form this client parses by the blob's own
+// header.
 const indexVersionQuery = "v=2&hash=8"
 
 // gbciMagic is the file-format identifier "GBCI".
@@ -252,7 +254,8 @@ func (b *WebBackend) doIndexGET(ctx context.Context, rawQuery, ifNoneMatch strin
 	// Every request names the v2 form. A server that predates it reads only
 	// hash and sends the short v1 form; one older still sends full hashes.
 	// Every answer parses.
-	target := b.endpoint + "/" + b.bucket + "/_index?" + indexVersionQuery	if rawQuery != "" {
+	target := b.endpoint + "/" + b.bucket + "/_index?" + indexVersionQuery
+	if rawQuery != "" {
 		target += "&" + rawQuery
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", target, nil)
@@ -308,7 +311,8 @@ func (s *stallGuardedReader) Read(p []byte) (int, error) {
 	return s.r.Read(p)
 }
 
-// writeIndexBlob persists a GBCI blob via a temp file private to this// writer and an atomic rename, so processes sharing the directory never
+// writeIndexBlob persists a GBCI blob via a temp file private to this writer
+// and an atomic rename, so processes sharing the directory never
 // interleave into a single file. Best-effort: a stale on-disk cache only
 // forces a fresh GET next time.
 func (b *WebBackend) writeIndexBlob(path string, blob []byte) {
@@ -334,7 +338,8 @@ func (b *WebBackend) writeIndexBlob(path string, blob []byte) {
 
 // parseIndexBlob validates a GBCI blob of either version and returns:
 //
-//   - the key set, as the indexKey of every entry//   - the strong ETag (hex-encoded sha256 trailer, quoted per the HTTP spec)
+//   - the key set, as the indexKey of every entry, at the width the blob carried
+//   - the strong ETag (hex-encoded sha256 trailer, quoted per the HTTP spec)
 //   - or an error if magic, version, entry size, length, or trailer hash don't validate.
 func parseIndexBlob(blob []byte) (*keySet, string, error) {
 	if len(blob) < gbciHeaderSize+sha256.Size {
@@ -353,13 +358,13 @@ func parseIndexBlob(blob []byte) (*keySet, string, error) {
 			return nil, "", err
 		}
 		// A v2 blob carries its width-bit prefixes right-aligned; the index
-		// holds every key left-aligned in its indexKey.
-		shift := 64 - width
+		// holds every key left-aligned in its indexKey, at that width.
+		shift := indexKeySize*8 - width
 		keys := make([]indexKey, len(values))
 		for i, v := range values {
 			binary.BigEndian.PutUint64(keys[i][:], v<<shift)
 		}
-		return adoptSortedKeys(keys), etag, nil
+		return adoptSortedKeysAt(keys, width), etag, nil
 	default:
 		return nil, "", fmt.Errorf("unsupported version %d", blob[4])
 	}
@@ -369,7 +374,8 @@ func parseIndexBlob(blob []byte) (*keySet, string, error) {
 func parseIndexV1(blob []byte, etag string) (*keySet, string, error) {
 	size := int(blob[5])
 	if size != gbciHashSize && size != gbciPrefixSize {
-		return nil, "", fmt.Errorf("unsupported hash size %d", blob[5])	}
+		return nil, "", fmt.Errorf("unsupported hash size %d", blob[5])
+	}
 	count := binary.LittleEndian.Uint64(blob[16:24])
 	bodyLen := len(blob) - gbciHeaderSize - sha256.Size
 	if bodyLen%size != 0 || count != uint64(bodyLen/size) {
@@ -386,16 +392,17 @@ func parseIndexV1(blob []byte, etag string) (*keySet, string, error) {
 		off := gbciHeaderSize + i*size
 		copy(keys[i][:], blob[off:off+indexKeySize])
 	}
-	return adoptSortedKeys(keys), etag, nil}
+	return adoptSortedKeys(keys), etag, nil
+}
 
 // marshalIndex encodes the given key set as a GBCI v2 blob of its width. Used by tests.
 func marshalIndex(keys *keySet) []byte {
 	sorted := slices.SortedFunc(keys.All(), compareKey)
 	values := make([]uint64, len(sorted))
 	for i, k := range sorted {
-		values[i] = binary.BigEndian.Uint64(k[:])
+		values[i] = binary.BigEndian.Uint64(k[:]) >> keys.shift
 	}
-	return MarshalIndexV2(indexKeySize*8, values)
+	return MarshalIndexV2(keys.width(), values)
 }
 
 // decodeActionHash extracts the raw action ID from a cacheprog cache key.

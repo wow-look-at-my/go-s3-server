@@ -186,7 +186,8 @@ func BenchmarkIndexBlob(b *testing.B) {
 			for b.Loop() {
 				idx.mu.Lock()
 				idx.forms = nil
-				idx.mu.Unlock()				idx.Blob()
+				idx.mu.Unlock()
+				idx.Blob()
 			}
 		})
 	}

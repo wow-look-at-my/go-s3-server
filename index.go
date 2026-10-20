@@ -29,20 +29,23 @@ const gbciHeaderSize = 24
 // The wire-format versions stored in the header. gbciVersion2, the Rice-coded
 // form, is named by indexv2.go.
 const (
-	gbciVersion       = 1
-	gbciPrefixVersion = 2
+	gbciVersion = 1
+	// gbciPrefixVersion is the version byte of the short form.
+	gbciPrefixVersion = gbciVersion
 )
 
 // gbciFormat is an encoding /_index serves by its short name.
 type gbciFormat int
 
 const (
-	// gbciFull is version 1: each entry is a whole action hash.
+	// gbciFull is each entry as a whole action hash.
 	gbciFull gbciFormat = iota
-	// gbciPrefix is each entry's leading gbciPrefixSize bytes.
+	// gbciPrefix is each entry's leading gbciPrefixSize bytes: the short form.
 	gbciPrefix
 )
 
+// version is the version byte of this form's frame. Both forms are version 1:
+// a body of sorted, fixed-size entries.
 func (f gbciFormat) version() byte {
 	if f == gbciPrefix {
 		return gbciPrefixVersion

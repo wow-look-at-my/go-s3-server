@@ -19,7 +19,7 @@ The server sends that form and the copy is replaced. `GET /_index` serves it in 
 | `hash=8` | GBCI v1, the first eight bytes of each hash | 8 bytes |
 | `v=2` | GBCI v2, Rice-coded gaps between `index_hash_bits`-bit prefixes | about `index_hash_bits - log2(keys) + 2` bits |
 
-`cacheclient` asks for `v=2&hash=8`, so a server of any age answers the smallest form it has.
+`cacheclient` asks for `v=2&hash=8`: `hash=8` names the short form it holds. A server that does not read it answers the newest form it knows, which the client parses by the blob's own header.
 
 ## Measured, at a million keys
 

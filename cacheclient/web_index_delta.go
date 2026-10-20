@@ -137,7 +137,7 @@ var persistDeltaMin = 16384
 
 // persistDelta writes the copy merged with added, at position gen, over the
 // copy at path.
-func (b *WebBackend) persistDelta(path string, disk diskIndex, added *hashSet, gen indexGen) {
+func (b *WebBackend) persistDelta(path string, disk diskIndex, added *keySet, gen indexGen) {
 	if added.Len() > 0 && added.Len() < persistDeltaMin {
 		return
 	}
@@ -163,7 +163,7 @@ func (b *WebBackend) persistDelta(path string, disk diskIndex, added *hashSet, g
 
 // mergeIndexBlob is a blob of the keys in base and added, at the narrower of
 // their widths.
-func mergeIndexBlob(base []byte, added *hashSet) ([]byte, error) {
+func mergeIndexBlob(base []byte, added *keySet) ([]byte, error) {
 	keys, _, err := parseIndexBlob(base)
 	if err != nil {
 		return nil, err

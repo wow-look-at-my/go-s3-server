@@ -118,7 +118,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	}
 	// The bandwidth chart is a record of what crossed the wire.
 	bandwidthFromContext(r.Context()).record(bandwidthSample{
-		module: projectOf(meta.Metadata, prov),
+		module: projectOf(prov),
 		bytes:  n,
 	})
 }

@@ -224,7 +224,7 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 		// The bandwidth chart is attributed one entry at a time, for the same
 		// reason.
 		bandwidthFromContext(r.Context()).record(bandwidthSample{
-			module: projectOf(o.meta.Metadata, prov),
+			module: projectOf(prov),
 			bytes:  o.size,
 		})
 	}

@@ -26,6 +26,7 @@ const gbciHeaderSize = 24
 // gbciVersion is the wire-format version stored in the header.
 const gbciVersion = 1
 
+// gbciMagic is the four-byte file-format identifier "GBCI".
 var gbciMagic = [4]byte{'G', 'B', 'C', 'I'}
 
 // Index maintains an in-memory map of S3 keys to modification times. Plus
@@ -116,13 +117,13 @@ func (idx *Index) FormV2() indexForm {
 // defaultIndexBlobInterval is the least time between serializations of the index unless the config says otherwise.
 const defaultIndexBlobInterval = 15 * time.Second
 
-// indexEntry is a single indexed object.
+// indexEntry is one indexed object.
 type indexEntry struct {
 	compactKey
 	mtimeUnix int64
 }
 
-// maxRetainedPending caps how much pending-buffer capacity survives a drain.
+// indexEntryBytes is what a single entry costs in the mtime list.
 const indexEntryBytes = gbciHashSize + 16 + 8
 
 // indexHashBytes is what a single key costs in the sorted hash list, which is also what it costs in the serialized blob.
@@ -145,6 +146,8 @@ func resetPending[T any](s []T) []T {
 }
 
 // extractActionHash decodes the 32-byte action ID from a cacheprog cache key.
+// Returns (hash, true) if key matches `^go-buildcache/v1[0-9a-f]{64}$`,
+// otherwise (zero, false).
 func extractActionHash(key string) ([gbciHashSize]byte, bool) {
 	var zero [gbciHashSize]byte
 	if !strings.HasPrefix(key, gbciKeyPrefix) {
@@ -169,7 +172,7 @@ func NewIndex(storage *Storage) *Index {
 	return idx
 }
 
-// SetBlobInterval sets the least time between serializations. empty serializes every PUT on the next read.
+// SetBlobInterval sets the least time between serializations. Zero serializes every PUT on the next read.
 func (idx *Index) SetBlobInterval(d time.Duration) { idx.blobMinInterval.Store(int64(d)) }
 
 // DisableEntryTracking stops the index maintaining the mtime-sorted entry
@@ -206,13 +209,7 @@ func (idx *Index) Put(key string, size int64) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	// Append to the unsorted pending buffer only — O(1). The merge+sort into the
-	// mtime-ordered list is deferred to the next reader (see drainEntriesLocked),
-	// so a burst of concurrent PUTs no longer convoys behind a full re-sort.
-	//
-	// Nothing appends beside this guard. An unguarded append here built the
-	// very list the guard suppresses, so entriesOff saved nothing, and where
-	// tracking was on it recorded every key another time.
+	// Append to the unsorted pending buffer only — O(1).
 	if !idx.entriesOff {
 		idx.pendingEntries = append(idx.pendingEntries, indexEntry{compactKey: ck, mtimeUnix: now})
 	}
@@ -226,7 +223,7 @@ func (idx *Index) Put(key string, size int64) {
 }
 
 // updateGaugesLocked refreshes the index-size gauges. Caller must hold idx.mu.
-// atomic stores — negligible next to the xattr writes on the PUT path.
+// Atomic stores — negligible next to the xattr writes on the PUT path.
 func (idx *Index) updateGaugesLocked() {
 	indexEntriesGauge.Set(float64(len(idx.entries) + len(idx.pendingEntries)))
 	indexHashesGauge.Set(float64(len(idx.hashes)))
@@ -263,7 +260,7 @@ func (idx *Index) Remove(key string) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	// Drain earliest so a key still sitting in pendingEntries is removable too.
+	// Drain first so a key still sitting in pendingEntries is removable too.
 	idx.drainEntriesLocked()
 	for i := range idx.entries {
 		if idx.entries[i].compactKey == ck {
@@ -280,8 +277,8 @@ func (idx *Index) Remove(key string) {
 	idx.updateGaugesLocked()
 }
 
-// RemoveKeys drops a batch of keys from the index in a single pass: their mtime
-// entries and (for well-formed cacheprog keys) their action-ID hashes. a single
+// RemoveKeys drops a batch of keys from the index in one pass: their mtime
+// entries and (for well-formed cacheprog keys) their action-ID hashes. One
 // filter pass over the index is O(n + len(keys)); the per-key Remove would be
 // O(n) each.
 func (idx *Index) RemoveKeys(keys []string) {
@@ -301,7 +298,7 @@ func (idx *Index) RemoveKeys(keys []string) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	// Drain earliest so keys still sitting in pendingEntries are removable too.
+	// Drain first so keys still sitting in pendingEntries are removable too.
 	idx.drainEntriesLocked()
 	w := 0
 	for _, e := range idx.entries {
@@ -335,8 +332,7 @@ func filterHashes(s [][gbciHashSize]byte, victims map[[gbciHashSize]byte]bool) [
 
 // Contains reports whether the action hash is in the index (the sorted master
 // list or the pending buffer) — i.e. whether the key is. Or will be on the
-// next serialization, advertised by /_index. O(log n) on the master plus
-// O(pending); pending is bounded by the PUT burst since the last Blob().
+// next serialization, advertised by /_index.
 func (idx *Index) Contains(h [gbciHashSize]byte) bool {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
@@ -372,8 +368,6 @@ func sortDedupeHashes(s [][gbciHashSize]byte) [][gbciHashSize]byte {
 	return s[:w]
 }
 
-// mergeSortedHashes returns the union of sorted, deduplicated hash lists,
-// sorted and deduplicated, in a single pass.
 func mergeSortedHashes(a, b [][gbciHashSize]byte) [][gbciHashSize]byte {
 	if len(b) == 0 {
 		return a

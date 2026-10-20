@@ -21,16 +21,10 @@ const defaultDashboardListen = ":9002"
 // dashboardStatsPath serves the snapshot the page polls.
 const dashboardStatsPath = "/api/stats"
 
-// dashboardBandwidthPath serves the bandwidth time series the page's chart
-// polls. It is beside dashboardStatsPath and answered without credentials for
-// the same reason: the dashboard port is the one an access proxy fronts, and
-// identity is checked there.
+// dashboardBandwidthPath serves the bandwidth time series the page's chart polls.
 const dashboardBandwidthPath = "/api/bandwidth"
 
-// dashboardBandwidthTopModules is how many modules the chart names on its own
-// axis key. Everything past it is summed into one remainder band, so a fleet of
-// hundreds of modules still reads as one stack instead of as a legend nobody
-// can find anything in.
+// dashboardBandwidthTopModules is how many modules the chart names on its own axis key.
 const dashboardBandwidthTopModules = 5
 
 // metricValue is a metric with no labels (Value) or a labeled metric (Series).
@@ -98,8 +92,7 @@ type dashboard struct {
 	cfg      *Config
 	started  time.Time
 	gatherer prometheus.Gatherer
-	// bandwidth is the served-byte history the chart draws. It is the server's
-	// own store, so the page and the accounting cannot disagree about a byte.
+	// bandwidth is the served-byte history the chart draws.
 	bandwidth *bandwidthStore
 }
 
@@ -178,29 +171,6 @@ type dashboardBandwidth struct {
 }
 
 // serveBandwidth answers the bandwidth chart's series.
-//
-// The retention window is FIXED and small: bandwidthRetentionSeconds (300) of
-// bandwidthBucketSeconds-wide (1 second) buckets, so the answer is always
-// bandwidthBucketCount (300) points, one per second of the last five minutes,
-// whether the server served nothing in them or a fleet's whole day.
-//
-// That window is what keeps the accounting bounded, and bounded in process
-// memory is where it has to live: /metrics holds counters and gauges with no
-// time axis, and a per-module label on one would be unbounded cardinality --
-// the modules a fleet builds into this cache are unbounded, and a series per
-// module per second that is never forgotten is a leak with a graph on top of
-// it. So the store keeps a ring of bandwidthBucketCount buckets, holding at
-// most bandwidthModuleCap module names in each, which is 300 x 32 counters plus
-// one index counter per bucket -- a constant, whatever the traffic. Nothing
-// sweeps it: recording into the second a bucket already covers, or past it,
-// overwrites what was there, so the oldest second is dropped by arithmetic and
-// the store cannot grow.
-//
-// The window is split three ways: the total served (what the chart's axis is
-// scaled to), the index fetches as a series of their own, and the module bands,
-// of which the top dashboardBandwidthTopModules by bytes over the window are
-// named and every other module is summed into one remainder. The bands and the
-// index series add up to the total for every point.
 func (d *dashboard) serveBandwidth(w http.ResponseWriter, r *http.Request) {
 	body := dashboardBandwidth{
 		GeneratedAt:     time.Now(),

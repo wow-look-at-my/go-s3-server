@@ -35,22 +35,18 @@ const (
 type Server struct {
 	config  *Config
 	storage *Storage
-	// sem bounds the requests doing work at the same time. A full sem means the server is at capacity.
-	sem chan struct{}
-	// admitWait and maxQueued bound the wait for a full sem; see admit.
+	// slots bounds the requests doing work at the same time. No free slot means the server is at capacity.
+	slots *slotQueue
+	// admitWait and maxQueued bound the wait for a slot; see admit.
 	admitWait time.Duration
-	maxQueued int64
-	queued    atomic.Int64
+	maxQueued int
 	// mem scales the in-memory caches to fit the process's memory budget.
 	mem *memController
 	// verboseLog prints a single line per request.
 	verboseLog bool
 	// It is nil in verbose mode, where every request already prints itself.
 	logAgg *logAggregator
-	// bandwidth is the served-byte history the dashboard's chart draws. It is
-	// installed whatever the log mode: the log aggregator reports whole seconds
-	// as lines and then forgets them, and the chart has to be able to look back
-	// over the window that was just reported.
+	// bandwidth is the served-byte history the dashboard's chart draws.
 	bandwidth *bandwidthStore
 	// shuttingDown is set by BeginShutdown when a termination signal is received.
 	shuttingDown atomic.Bool
@@ -69,7 +65,7 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 		config:     cfg,
 		storage:    storage,
 		bandwidth:  newBandwidthStore(),
-		sem:        make(chan struct{}, cfg.MaxConcurrentRequests),
+		slots:      newSlotQueue(cfg.MaxConcurrentRequests),
 		admitWait:  admissionWait,
 		maxQueued:  maxQueuedRequests,
 		mem:        newMemController(memoryBudget),
@@ -127,13 +123,13 @@ type auditKey struct{}
 // admission is a single request's hold on a concurrency slot. release is
 // idempotent.
 type admission struct {
-	sem  chan struct{}
-	once sync.Once
+	slots *slotQueue
+	once  sync.Once
 }
 
 func (a *admission) release() {
 	a.once.Do(func() {
-		<-a.sem
+		a.slots.release()
 		httpAdmittedRequests.Dec()
 	})
 }
@@ -143,36 +139,18 @@ type admissionKey struct{}
 // admit takes a work slot, waiting for one when every slot is busy. A slot
 // comes free in the time a single request's work takes. A burst past the
 // limit is served a moment late instead of being shed into a retry that costs
-// the client seconds. Waiters are served in arrival order. It reports false
-// when the wait is already full, when admitWait passes, or when the client
-// goes away.
-func (s *Server) admit(ctx context.Context) bool {
-	select {
-	case s.sem <- struct{}{}:
+// the client seconds.
+func (s *Server) admit(ctx context.Context, prefetch bool) bool {
+	if s.slots.tryTake() {
 		return true
-	default:
-	}
-	if s.queued.Add(1) > s.maxQueued {
-		s.queued.Add(-1)
-		return false
 	}
 	httpQueuedRequests.Inc()
 	start := time.Now()
-	timer := time.NewTimer(s.admitWait)
 	defer func() {
-		timer.Stop()
-		s.queued.Add(-1)
 		httpQueuedRequests.Dec()
 		httpAdmissionWait.Observe(time.Since(start).Seconds())
 	}()
-	select {
-	case s.sem <- struct{}{}:
-		return true
-	case <-timer.C:
-		return false
-	case <-ctx.Done():
-		return false
-	}
+	return s.slots.take(ctx, prefetch, s.admitWait, s.maxQueued)
 }
 
 // releaseSlot hands the request's concurrency slot back before a transfer
@@ -287,8 +265,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// The slot is released on return, or earlier by a handler whose remaining work is a body transfer that holds no per-request memory.
-	slot := &admission{sem: s.sem}
-	if s.admit(r.Context()) {
+	slot := &admission{slots: s.slots}
+	if s.admit(r.Context(), r.Header.Get(headerKind) == kindLookAhead) {
 		httpAdmittedRequests.Inc()
 		defer slot.release()
 	} else {
@@ -316,11 +294,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Timestamp: start,
 	}
 	ctx := context.WithValue(r.Context(), auditKey{}, audit)
-	// The store the dashboard's bandwidth chart draws from rides with the
-	// request, the way the audit trail does and for the same reason: the three
-	// handlers that know which module's bytes are leaving -- the single GET, each
-	// entry of a batch, and the index blob -- are otherwise not about accounting
-	// at all, and one of them takes no dependency that could have carried it.
+	// The store the dashboard's bandwidth chart draws from rides with the request, the way the audit trail does and for the same reason.
 	ctx = context.WithValue(ctx, bandwidthKey{}, s.bandwidth)
 	r = r.WithContext(context.WithValue(ctx, admissionKey{}, slot))
 

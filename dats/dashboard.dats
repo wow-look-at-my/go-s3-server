@@ -173,9 +173,9 @@ tests:
 				set -euo pipefail
 				base=http://127.0.0.1:$PORT/test-cache
 				auth=testuser:testpass
-				# Two modules' bodies. The objects carry no module metadata, so
-				# the attribution is the header the client sends about itself,
-				# which is the derivation the access log's projects already use.
+				# Modules' bodies. The objects carry no module metadata. The
+				# attribution is the header the client sends about itself, which
+				# is the derivation the access log's projects already use.
 				curl -sf -u "$auth" -X PUT -H 'X-Cache-Module: example.com/one' --data-binary 'aaaa' "$base/plain/v1one0000000000001" > /dev/null
 				curl -sf -u "$auth" -H 'X-Cache-Module: example.com/one' "$base/plain/v1one0000000000001" > /dev/null
 				curl -sf -u "$auth" -X PUT -H 'X-Cache-Module: example.com/two' --data-binary 'bbbbbbbb' "$base/plain/v1two0000000000001" > /dev/null

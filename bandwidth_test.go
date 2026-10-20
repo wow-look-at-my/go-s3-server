@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testBandwidthStore builds a store on a clock this test moves by hand: the
-// window is five minutes wide, and a test that had to sleep through one would
-// not be run.
+// testBandwidthStore builds a store on a clock this test moves by hand. The
+// window is a few minutes wide, and a test that had to sleep through one
+// would not be run.
 func testBandwidthStore(at time.Time) (*bandwidthStore, *time.Time) {
 	clock := new(time.Time)
 	*clock = at
@@ -21,8 +21,7 @@ func testBandwidthStore(at time.Time) (*bandwidthStore, *time.Time) {
 	return store, clock
 }
 
-// testBandwidthEpoch is an arbitrary but fixed second, so a failure names the
-// same numbers every run.
+// testBandwidthEpoch is an arbitrary but fixed second, so a failure names the same numbers every run.
 var testBandwidthEpoch = time.Unix(1_700_000_000, 0)
 
 func TestBandwidthBytesLandInTheirModuleAndWindow(t *testing.T) {
@@ -43,8 +42,7 @@ func TestBandwidthBytesLandInTheirModuleAndWindow(t *testing.T) {
 	assert.Equal(t, int64(7), newest.Total)
 	assert.Equal(t, int64(7), newest.Modules["example.com/app"])
 
-	// The second the earliest bytes were served in is four points back, and it
-	// holds what was served in it and nothing else.
+	// The second the earliest bytes were served in is points back.
 	earliest := window.Points[len(window.Points)-5]
 	assert.Equal(t, testBandwidthEpoch.Unix(), earliest.Start)
 	assert.Equal(t, int64(450), earliest.Total)
@@ -52,8 +50,7 @@ func TestBandwidthBytesLandInTheirModuleAndWindow(t *testing.T) {
 	assert.Equal(t, int64(100), earliest.Modules["example.com/tool"])
 	assert.Zero(t, earliest.Index)
 
-	// The quiet seconds between them are reported and empty, so the chart's
-	// axis covers the window rather than only the traffic.
+	// The quiet seconds between them are reported and empty.
 	assert.Zero(t, window.Points[len(window.Points)-2].Total)
 	assert.Zero(t, window.Points[0].Total)
 }
@@ -103,9 +100,7 @@ func TestBandwidthNamesTopModulesAndSumsTheRest(t *testing.T) {
 	assert.Equal(t, int64(2800+4096), point.Total, "the total is every byte served in the second, the index included")
 	assert.NotContains(t, point.Modules, "example.com/six", "a module past the cut is named by the remainder instead")
 
-	// Every byte is accounted for exactly once: the named bands and the
-	// remainder are the module bytes, and the index series sits beside them at
-	// the total the axis is scaled to.
+	// Every byte is accounted for exactly once.
 	var bands int64
 	for _, n := range point.Modules {
 		bands += n
@@ -121,7 +116,6 @@ func TestBandwidthBandsWithEqualBytesAreOrderedByName(t *testing.T) {
 	}
 
 	// Both modules served the same bytes, so only their names decide the order.
-	// An unchanged window must not reshuffle the stack between two polls.
 	for range 3 {
 		assert.Equal(t, []string{"example.com/alpha", "example.com/zeta", bandwidthOtherModule}, store.window(2).Bands)
 	}
@@ -131,8 +125,7 @@ func TestBandwidthWindowIsBoundedAndDropsTheOldestSecond(t *testing.T) {
 	store, clock := testBandwidthStore(testBandwidthEpoch)
 	store.record(bandwidthSample{module: "example.com/early", bytes: 1234})
 
-	// One second short of the window, the earliest bytes are still in it: the
-	// window is the newest bucket and the count-1 before it.
+	// One second short of the window, the earliest bytes are still in it.
 	*clock = testBandwidthEpoch.Add((bandwidthRetentionSeconds - 1) * time.Second)
 	window := store.window(5)
 	require.Len(t, window.Points, bandwidthBucketCount)
@@ -140,9 +133,7 @@ func TestBandwidthWindowIsBoundedAndDropsTheOldestSecond(t *testing.T) {
 	assert.Equal(t, bandwidthBucketSeconds, window.BucketSeconds)
 	assert.Equal(t, int64(1234), window.Points[0].Total, "the oldest second of the window is still inside it")
 
-	// One second later the ring has wrapped onto that second, so its bytes are
-	// gone: dropped by being overwritten, with no sweep to run and no growth to
-	// bound afterwards.
+	// One second later the ring has wrapped onto that second.
 	*clock = testBandwidthEpoch.Add(bandwidthRetentionSeconds * time.Second)
 	store.record(bandwidthSample{module: "example.com/now", bytes: 1})
 
@@ -155,8 +146,7 @@ func TestBandwidthWindowIsBoundedAndDropsTheOldestSecond(t *testing.T) {
 	}
 	assert.Equal(t, int64(1), total, "only what the newest second served is left")
 
-	// The ring itself never grew: the bound is the array, not a policy applied
-	// to a map that keeps growing underneath it.
+	// The ring itself never grew: the bound is the array, not a policy applied to a map that keeps growing underneath it.
 	live := 0
 	for i := range store.buckets {
 		if store.buckets[i].start != 0 {
@@ -189,15 +179,14 @@ func TestBandwidthBucketFoldsModulesPastTheCap(t *testing.T) {
 }
 
 // A second that serves more modules than a bucket can name folds the tail into
-// the remainder band, and that band can then be the largest thing in the window.
-// The store's fold and the dashboard's top-N cut are two reasons to have a
-// remainder, and they name the same one: the band appears once, and the bands
+// the remainder band. And that band can then be the largest thing in the window.
+// The store's fold and the dashboard's top-N cut are reasons to have a
+// remainder, and they name the same one. The band appears once, and the bands
 // plus the index series still add up to the total the chart's axis is drawn
 // against.
 func TestBandwidthFoldedBandIsTheOnlyRemainder(t *testing.T) {
 	store, _ := testBandwidthStore(testBandwidthEpoch)
-	// More modules than a bucket tracks, so modules past the cap are folded and
-	// their bytes go into the remainder band.
+	// More modules than a bucket tracks, so modules past the cap are folded and their bytes go into the remainder band.
 	const modules = bandwidthModuleCap + 8
 	const each = 10
 	var served int64
@@ -231,9 +220,9 @@ func TestBandwidthFoldedBandIsTheOnlyRemainder(t *testing.T) {
 	assert.Equal(t, point.Total, bands+point.Index, "bands + index is the total the axis is drawn against")
 }
 
-// The store is written by every request and read by the dashboard's poll, so the
-// two run at the same time. Here they do it from many goroutines at once, on a
-// clock that does not move, so the correct answer is a constant however the
+// The store is written by every request and read by the dashboard's poll, so
+// both run at the same time. Here they do it from many goroutines at once, on a
+// clock that does not move. The correct answer is a constant however the
 // interleaving falls: every byte recorded is counted once. Under -race this is
 // also what proves the claim the store makes about itself.
 func TestBandwidthConcurrentRecordAndRead(t *testing.T) {
@@ -286,9 +275,7 @@ func TestBandwidthConcurrentRecordAndRead(t *testing.T) {
 
 func TestBandwidthUnattributableBytesAreNamedNotDropped(t *testing.T) {
 	store, _ := testBandwidthStore(testBandwidthEpoch)
-	// An object with no module or pkg metadata, served to a client that sent no
-	// X-Cache-Module header: the bytes are real, so they are counted under a
-	// name that says nothing could be attributed to them.
+	// An object with no module or pkg metadata, served to a client that sent no X-Cache-Module header: the bytes are real.
 	store.record(bandwidthSample{bytes: 99})
 
 	point := store.window(5).Points[bandwidthBucketCount-1]
@@ -298,8 +285,6 @@ func TestBandwidthUnattributableBytesAreNamedNotDropped(t *testing.T) {
 
 func TestBandwidthZeroByteResponsesAreNotRecorded(t *testing.T) {
 	store, _ := testBandwidthStore(testBandwidthEpoch)
-	// A conditional index fetch answered 304 carries no body, so it is not
-	// bandwidth and must not appear as a point of its own.
 	store.record(bandwidthSample{index: true})
 	store.record(bandwidthSample{module: "example.com/app"})
 
@@ -310,9 +295,9 @@ func TestBandwidthZeroByteResponsesAreNotRecorded(t *testing.T) {
 	}
 }
 
-// A server built before the store existed, or a handler driven directly in a
-// test, has no store: the endpoint still answers the window's shape so the page
-// draws an empty chart instead of an error.
+// Consider a server built before the store. That server existed, or a handler
+// driven directly in a test, has no store. The endpoint still answers the
+// window's shape so the page draws an empty chart instead of an error.
 func TestBandwidthNilStoreAnswersTheEmptyWindow(t *testing.T) {
 	var store *bandwidthStore
 	window := store.window(5)

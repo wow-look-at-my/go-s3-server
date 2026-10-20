@@ -466,15 +466,10 @@ function draw(stats) {
 
 // --- bandwidth chart --------------------------------------------------------
 
-// The bandwidth chart is drawn on the page's own canvas rather than by another
-// <perf-graph>: that element draws ONE scalar series, and this chart is a stack
-// of them, one per module, with the index fetches as one more. Nothing is
-// imported for it.
+// The bandwidth chart is drawn on the page's own canvas rather than by
+// another <perf-graph>: that element draws ONE scalar series.
 
-// One alpha per module band over the accent the page already uses. A stack does
-// not overlap, so an alpha ramp reads as a value ramp and the whole chart stays
-// in the one accent the design language reserves for "this is the thing you are
-// looking at". The index series is not a module, so it takes the neutral.
+// One alpha per module band over the accent the page already uses.
 const BAND_ALPHA = [0.95, 0.76, 0.6, 0.47, 0.37];
 const OTHER_ALPHA = 0.2;
 const INDEX_ALPHA = 0.6;
@@ -483,7 +478,7 @@ const bandwidth = { series: null };
 
 // token reads one of the design language's custom properties off an element.
 // The value is handed to the canvas as it stands, so a token that is not a
-// literal colour is checked first: a canvas ignores a colour it cannot parse,
+// literal colour is checked first. A canvas ignores a colour it cannot parse,
 // which would leave the plot painted in whatever was set last.
 function token(ctx, el, name, fallback) {
 	const value = getComputedStyle(el).getPropertyValue(name).trim();
@@ -496,15 +491,13 @@ function token(ctx, el, name, fallback) {
 	return resolved === fallback ? fallback : resolved;
 }
 
-// The last band the endpoint ranks is always the remainder, so the chart can
-// tell it apart from a named module without knowing what the server calls it.
+// The last band the endpoint ranks is always the remainder.
 function bandAlpha(bands, index) {
 	return index === bands.length - 1 ? OTHER_ALPHA : BAND_ALPHA[index % BAND_ALPHA.length];
 }
 
 // swatch is the colour the canvas drew a band in, as a stylesheet value: a
-// canvas has to be handed a real colour, and a legend swatch does not, so the
-// mix is left to the browser, over the same token at the same alpha.
+// canvas has to be handed a real colour.
 function swatch(anchor, alpha) {
 	return `color-mix(in srgb, var(${anchor}) ${Math.round(alpha * 100)}%, transparent)`;
 }
@@ -530,8 +523,7 @@ function legendItem(colour, label, n) {
 // bandwidth the axis stands for.
 function drawBandwidth() {
 	const canvas = $("bandwidth-chart");
-	// Named around the module-level series() helper: this is the whole window,
-	// not one of the snapshot's labeled series.
+	// Named around the module-level series() helper: this is the whole window, not one of the snapshot's labeled series.
 	const chart = bandwidth.series;
 	if (!canvas || !chart || !chart.points) return;
 	const ctx = canvas.getContext("2d");
@@ -561,9 +553,7 @@ function drawBandwidth() {
 	const scale = busiest > 0 ? (plotBottom - plotTop) / busiest : 0;
 	const barWidth = points.length ? cssW / points.length : cssW;
 
-	// The axis: the top of the scale and its middle, ruled and labelled. The top
-	// is the total bandwidth the stack reaches, which is what the chart is read
-	// against; the baseline is zero and needs no label.
+	// The axis: the top of the scale and its middle, ruled and labelled.
 	ctx.textAlign = "right";
 	ctx.textBaseline = "bottom";
 	for (const [level, colour] of [[0, strong], [0.5, label]]) {
@@ -582,9 +572,7 @@ function drawBandwidth() {
 	ctx.lineTo(cssW, plotBottom + 0.5);
 	ctx.stroke();
 
-	// The stack. A band with bytes in it is drawn at least a device pixel tall,
-	// so a module that served anything at all is on the chart however small its
-	// share, and a band with nothing in it is drawn nowhere.
+	// The stack.
 	const totals = new Map();
 	points.forEach((point, i) => {
 		const x = i * barWidth;
@@ -609,16 +597,14 @@ function drawBandwidth() {
 	});
 	ctx.globalAlpha = 1;
 
-	// The key, in the stack's own order, carrying what each band served over the
-	// whole window: the same ranking the endpoint cut the top modules by.
+	// The key, in the stack's own order, carrying what each band served over the whole window.
 	let served = 0;
 	for (const point of points) served += point.total;
 	const legend = bands.map((band, b) => legendItem(swatch("--accent", bandAlpha(bands, b)), band, totals.get(band) || 0));
 	legend.push(legendItem(swatch("--text-muted", INDEX_ALPHA), "index fetches", totals.get("index") || 0));
 	fill($("bandwidth-legend"), legend);
 
-	// The numbers the shape stands for, so the chart is not the only way to read
-	// the window it covers.
+	// The numbers the shape stands for, so the chart is not the only way to read the window it covers.
 	$("bandwidth-note").textContent = `peak ${bytes(busiest)}/s, ${bytes(served)} over the last ${count(chart.retention_seconds)}s, in ${count(chart.bucket_seconds)}s buckets`;
 }
 
@@ -654,9 +640,7 @@ async function poll() {
 		banner.hidden = false;
 		$("footer-note").textContent = `last poll failed: ${err.message}. `;
 	}
-	// The bandwidth series comes from its own endpoint, so it is polled on its
-	// own terms: its failure is a note under its own chart, never the state of a
-	// page whose numbers all arrived.
+	// The bandwidth series comes from its own endpoint, so it is polled on its own terms: its failure is a note under its own chart.
 	await pollBandwidth();
 }
 

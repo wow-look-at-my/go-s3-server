@@ -238,8 +238,8 @@ func TestGatherFlattensHistogramsAndMultiLabelSeries(t *testing.T) {
 	assert.InDelta(t, 1, seriesValue(t, got["cache_http_requests_total"].Series, map[string]string{"method": "GET", "route": "GetObject", "status": "200"}), 0)
 }
 
-// The bandwidth endpoint is what the page's chart polls: a fixed window of
-// buckets, the top modules by bytes with a remainder for the rest, and the index
+// The bandwidth endpoint is what the page's chart polls. A fixed window of
+// buckets, the top modules by bytes with a remainder for the rest. The index
 // fetches kept out of every module's bytes. The store it reads is filled the way
 // the serve paths fill it, so what is asserted here is the shipped accounting.
 func TestDashboardBandwidthEndpointShape(t *testing.T) {
@@ -287,22 +287,20 @@ func TestDashboardBandwidthEndpointShape(t *testing.T) {
 	assert.Equal(t, int64(200+100), newest.Modules[bandwidthOtherModule], "the modules past the cut are summed")
 	assert.Equal(t, int64(700), newest.Modules["example.com/one"])
 
-	// Every byte is in exactly one band, and the index series sits beside them
-	// at the total the chart's axis is scaled to.
+	// Every byte is in exactly one band, and the index series sits beside them at the total the chart's axis is scaled to.
 	var bands int64
 	for _, n := range newest.Modules {
 		bands += n
 	}
 	assert.Equal(t, newest.Total, bands+newest.Index)
 
-	// The quiet seconds of the window are points too: empty, not missing, so
-	// the axis does not move as traffic arrives.
+	// The quiet seconds of the window are points too: empty, not missing, so the axis does not move as traffic arrives.
 	assert.Zero(t, got.Points[0].Total)
 	assert.Equal(t, testBandwidthEpoch.Unix()-int64(bandwidthBucketCount-1), got.Points[0].Start)
 }
 
-// A dashboard built on a server with no accounting still answers the endpoint:
-// the page then draws an empty chart rather than reporting an error beside the
+// A dashboard built on a server with no accounting still answers the endpoint.
+// The page then draws an empty chart rather than reporting an error beside the
 // numbers that did load.
 func TestDashboardBandwidthEndpointAnswersWithoutAStore(t *testing.T) {
 	d := testDashboard(t, prometheus.NewRegistry())
@@ -361,7 +359,15 @@ func TestDashboardReportsTheIndexWireSize(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, values, 6)
 
-	// Hashes that share their first defaultIndexHashBits bits are a single entry, and the count moves only for a new prefix.
+	// Hashes that share their first defaultIndexHashBits bits are a single entry, and the counted size says so before anything serializes.
+	idx.Put(gbciKeyPrefix+"06"+strings.Repeat("0", 8)+"ee"+strings.Repeat("0", 52), 1)
+	stats, err = d.snapshot()
+	require.NoError(t, err)
+	fresh, _, _ = idx.BlobGenForm(idx.FormV2())
+	assert.EqualValues(t, len(fresh), stats.Index.WireBytes)
+	values, _, err = cacheclient.ParseIndexV2(fresh)
+	require.NoError(t, err)
+	assert.Len(t, values, 6, "a hash under an advertised prefix adds no entry")
 	idx.Put(gbciKeyPrefix+fmt.Sprintf("%02x", 6)+strings.Repeat("0", 60)+"ee", 1)
 	idx.Put(key(7), 1)
 	stats, err = d.snapshot()

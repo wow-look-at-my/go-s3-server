@@ -22,10 +22,42 @@ import (
 // exitRoleEnv makes the test binary the process that calls Exit, over the cache directory it names.
 const exitRoleEnv = "CACHECLIENT_TEST_EXIT_DIR"
 
+// openAfterStopEnv makes the test binary the process that stops the broker and then opens the cache over the directory it names.
+const openAfterStopEnv = "CACHECLIENT_TEST_OPEN_AFTER_STOP_DIR"
+
 func init() {
 	if dir := os.Getenv(exitRoleEnv); dir != "" {
 		exitThenWait(dir)
 	}
+	if dir := os.Getenv(openAfterStopEnv); dir != "" {
+		openAfterStop(dir)
+	}
+}
+
+// openAfterStop exits before the cache opens, as a go command can while the
+// open still runs. It prints what the open left in the environment.
+func openAfterStop(dir string) {
+	os.Unsetenv(BrokerEnv)
+	Exit()
+	if _, err := OpenCache(dir, nil); err != nil {
+		fmt.Fprintln(os.Stderr, "open:", err)
+		os.Exit(2)
+	}
+	fmt.Printf("%q\n", BrokerEnviron())
+	os.Exit(0)
+}
+
+// An exit can begin while the cache still opens. The open then serves no
+// broker, so it creates no name that the exit has already passed by.
+func TestNoBrokerAfterStop(t *testing.T) {
+	self, err := os.Executable()
+	require.NoError(t, err)
+	cmd := exec.Command(self, "-test.run=^$")
+	cmd.Env = append(os.Environ(), openAfterStopEnv+"="+t.TempDir(), BrokerEnv+"=")
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	require.NoError(t, err)
+	require.Equal(t, "[]", strings.TrimSpace(string(out)), "an open after Exit served a broker")
 }
 
 // exitThenWait opens the cache as the owner, creates a queue, calls Exit, and

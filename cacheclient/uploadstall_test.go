@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// trickleBody sends a small chunk every gap until total has passed. Before
+// trickleBody sends a small chunk every gap until the deadline passes. Before
 // each chunk it waits on hold, so a test can stop the flow.
 type trickleBody struct {
 	gap   time.Duration
@@ -53,7 +53,8 @@ func trickleRequest(t *testing.T, url string, body *trickleBody) *http.Request {
 
 // An upload that keeps sending for longer than stallTimeout is healthy.
 func TestUploadThatKeepsFlowingOutlastsTheStallTimeout(t *testing.T) {
-	logs := newCaptureLogger(t) // also serializes: stallTimeout is package state
+	t.Serial() // stallTimeout is package state
+	logs := newCaptureLogger(t)
 	oldStall := stallTimeout
 	stallTimeout = 100 * time.Millisecond
 	defer func() { stallTimeout = oldStall }()
@@ -75,7 +76,8 @@ func TestUploadThatKeepsFlowingOutlastsTheStallTimeout(t *testing.T) {
 
 // An upload that stops sending for longer than stallTimeout is cancelled, and the server counts as down.
 func TestUploadThatStopsFlowingIsCancelled(t *testing.T) {
-	logs := newCaptureLogger(t) // also serializes: stallTimeout and downProbeEvery are package state
+	t.Serial() // stallTimeout and downProbeEvery are package state
+	logs := newCaptureLogger(t)
 	oldStall, oldProbe := stallTimeout, downProbeEvery
 	stallTimeout, downProbeEvery = 100*time.Millisecond, time.Hour
 	defer func() { stallTimeout, downProbeEvery = oldStall, oldProbe }()

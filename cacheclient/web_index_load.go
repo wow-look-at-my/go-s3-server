@@ -149,7 +149,7 @@ func (b *WebBackend) indexLoadReport(elapsed time.Duration, source string) strin
 // adoptIndex installs a load's result as the live key set, replaying the
 // claims and drops made while it ran. A nil set, from a cancelled load, keeps
 // the live set as it is.
-func (b *WebBackend) adoptIndex(keys *hashSet, authoritative bool) {
+func (b *WebBackend) adoptIndex(keys *keySet, authoritative bool) {
 	b.keysMu.Lock()
 	defer b.keysMu.Unlock()
 	j := b.keysJournal
@@ -183,7 +183,7 @@ func (b *WebBackend) adoptIndex(keys *hashSet, authoritative bool) {
 // kernel until the holder lets go, which it also does by exiting, and then
 // reads what the holder wrote. A holder whose fetch failed leaves the copy as
 // it was, and the next process to take the lock fetches itself.
-func (b *WebBackend) refreshIndex(ctx context.Context, path string, disk diskIndex) (*hashSet, bool, string) {
+func (b *WebBackend) refreshIndex(ctx context.Context, path string, disk diskIndex) (*keySet, bool, string) {
 	unlock, err := cachedisk.LockFile(ctx, path+".lock")
 	if err != nil && ctx.Err() != nil {
 		return nil, false, "cancelled"

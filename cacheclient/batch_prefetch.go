@@ -22,7 +22,7 @@ func (b *WebBackend) heldFilter() *haveFilter {
 	}
 	b.heldMu.RLock()
 	defer b.heldMu.RUnlock()
-	return newHaveFilter(b.held.Len(), b.held.All())
+	return newHaveFilter(b.held.Len(), haveFilterKeys(b.held.All()))
 }
 
 // The blocking batch path's speculative half.

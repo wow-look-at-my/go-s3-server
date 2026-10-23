@@ -109,7 +109,7 @@ func runDeltaProcesses(t *testing.T) ([]string, diskIndex) {
 		default:
 			w.Header().Set(HeaderIndexSeq, seq)
 			w.Header().Set(HeaderIndexDelta, "1")
-			w.Write(marshalIndex(newHashSet(0)))
+			w.Write(marshalIndex(newKeySet(0)))
 		}
 	}))
 	defer srv.Close()

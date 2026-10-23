@@ -201,7 +201,7 @@ func TestDeltaMergesAcrossWidths(t *testing.T) {
 
 // marshalIndex round-trips a set of any width through the v2 form.
 func TestMarshalIndexKeepsTheWidth(t *testing.T) {
-	s := newHashSet(0)
+	s := newKeySet(0)
 	s.narrowTo(24)
 	for i := range 50 {
 		var h actionHash
@@ -213,7 +213,7 @@ func TestMarshalIndexKeepsTheWidth(t *testing.T) {
 	assert.Equal(t, 40, got.width())
 	assert.Equal(t, s.Len(), got.Len())
 	for k := range s.All() {
-		assert.True(t, got.Contains(hashOfKey64(k)))
+		assert.True(t, got.Contains(hashOfKey64(binary.BigEndian.Uint64(k[:]))))
 	}
 }
 

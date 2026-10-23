@@ -1,3 +1,5 @@
+// storedDigestMetaKey names the sha256 of an object's bytes AS STORED.
+
 package main
 
 import (

@@ -1,3 +1,5 @@
+// httpAdmittedRequests is the admission-control slots held right now: the number that max_concurrent_requests bounds.
+
 package main
 
 import (

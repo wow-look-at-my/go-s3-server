@@ -1,3 +1,5 @@
+// Access tracking is the IN-MEMORY half of eviction's least-recently-used decisions, and the fallback half.
+
 package main
 
 import (

@@ -1,3 +1,5 @@
+// versionPath answers what build is serving.
+
 package main
 
 import (

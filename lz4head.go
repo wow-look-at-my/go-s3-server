@@ -1,3 +1,5 @@
+// The module-index guard needs the earliest decompressed bytes of a body and nothing more.
+
 package main
 
 import (

@@ -1,3 +1,5 @@
+// HTTP server timeouts.
+
 package main
 
 import (

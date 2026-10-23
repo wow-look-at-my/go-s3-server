@@ -1,3 +1,5 @@
+// It is a SEPARATE port from the cache API on purpose.
+
 package main
 
 import (

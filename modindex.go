@@ -1,3 +1,5 @@
+// goModuleIndexMagic is the leading bytes of a Go module index blob.
+
 package main
 
 import (

@@ -1,3 +1,5 @@
+// currentCacheVersion is the on-disk data-dir format version.
+
 package main
 
 import (

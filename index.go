@@ -1,3 +1,5 @@
+// gbciKeyPrefix is the constant leading portion of every cacheprog cache key.
+
 package main
 
 import (

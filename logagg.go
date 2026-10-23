@@ -1,3 +1,5 @@
+// The provenance headers a client stamps on its requests.
+
 package main
 
 import (

@@ -1,3 +1,5 @@
+// Per-project cache traffic.
+
 package main
 
 import (

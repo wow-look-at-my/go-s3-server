@@ -1,3 +1,5 @@
+// batchGetRequest is the JSON body for POST /_batch/get.
+
 package main
 
 import (

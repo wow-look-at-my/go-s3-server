@@ -1,3 +1,5 @@
+// A stored body names its own codec in its earliest bytes.
+
 package main
 
 import (

@@ -1,3 +1,5 @@
+// admissionWait is how long a request waits for a work slot before it is shed.
+
 package main
 
 import (

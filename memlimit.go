@@ -1,3 +1,5 @@
+// How this server stays inside its memory limit: it holds less, never serves less.
+
 package main
 
 import (

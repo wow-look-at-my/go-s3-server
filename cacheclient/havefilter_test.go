@@ -28,7 +28,7 @@ func TestHaveFilterVector(t *testing.T) {
 	f := &haveFilter{Bits: make([]byte, 32), K: 3}
 	m := uint32(len(f.Bits) * 8)
 	for _, fill := range []byte{1, 2, 3, 4} {
-		key := keyOf(vectorHash(fill))
+		key := keyOf64(vectorHash(fill))
 		for i := 0; i < f.K; i++ {
 			idx := haveFilterBit(key, i, m)
 			f.Bits[idx/8] |= 1 << (idx % 8)
@@ -50,7 +50,7 @@ func TestHaveFilterNeverLosesAKey(t *testing.T) {
 	}
 	keys := make([]hashKey, len(hashes))
 	for i, h := range hashes {
-		keys[i] = keyOf(h)
+		keys[i] = keyOf64(h)
 	}
 	f := newHaveFilter(len(keys), slices.Values(keys))
 	require.NotNil(t, f)

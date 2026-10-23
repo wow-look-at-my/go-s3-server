@@ -14,7 +14,7 @@ func NewBareBackend(prefix string) *WebBackend {
 	}
 	b := &WebBackend{
 		prefix:      prefix,
-		keys:        newHashSet(0),
+		keys:        newKeySet(0),
 		knownMiss:   newHashSet(0),
 		indexTiming: defaultIndexTiming(),
 	}

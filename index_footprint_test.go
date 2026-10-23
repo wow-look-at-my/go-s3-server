@@ -135,6 +135,26 @@ func TestIndexWithoutEntriesCostsLess(t *testing.T) {
 	require.Len(t, blob, gbciHeaderSize+footprintKeys*gbciHashSize+sha256.Size)
 }
 
+// The short form carries each key's leading gbciPrefixSize bytes, which is a
+// quarter of the full v1 body, and still names every key. It is a version 1
+// blob of a later width. Version a later byte belongs to the Rice-coded form
+// of indexv2.go, whose width is in bits.
+func TestPrefixBlobCostsEightBytesPerKey(t *testing.T) {
+	idx := fillIndexTracking(footprintKeys, false)
+	full, fullETag := idx.Blob()
+	prefix, prefixETag, _ := idx.BlobGenFormat(gbciPrefix)
+
+	require.Len(t, prefix, gbciHeaderSize+footprintKeys*gbciPrefixSize+sha256.Size)
+	require.Equal(t, byte(gbciVersion), prefix[4])
+	require.Equal(t, byte(gbciPrefixSize), prefix[5])
+	require.NotEqual(t, fullETag, prefixETag, "each form has its own ETag")
+	for i := range footprintKeys {
+		fullEntry := full[gbciHeaderSize+i*gbciHashSize:]
+		prefixEntry := prefix[gbciHeaderSize+i*gbciPrefixSize:]
+		require.Equal(t, fullEntry[:gbciPrefixSize], prefixEntry[:gbciPrefixSize], "entry %d", i)
+	}
+}
+
 // TestIndexEntrySize pins the per-entry struct.
 func TestIndexEntrySize(t *testing.T) {
 	require.Equal(t, uintptr(indexEntryBytes), unsafe.Sizeof(indexEntry{}),

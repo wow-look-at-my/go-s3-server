@@ -416,7 +416,7 @@ func fetchIndexCopy(cfg WebConfig) {
 func (b *WebBackend) skipIndex() {
 	b.indexOnce.Do(func() {
 		b.keysMu.Lock()
-		b.keys = newHashSet(0)
+		b.keys = newKeySet(0)
 		b.keysMu.Unlock()
 	})
 }

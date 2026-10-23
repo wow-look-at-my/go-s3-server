@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -102,4 +105,66 @@ func TestCacheClientColdGetIsServedOverTheWire(t *testing.T) {
 	absent := sha256.Sum256([]byte("never-stored"))
 	_, _, _, miss := reader.Get(hex.EncodeToString(absent[:]))
 	require.True(t, miss)
+}
+
+// The client asks for version 2. This server answers it, and the client's
+// disk copy is that answer: gbciPrefixSize bytes per key, each the leading
+// bytes of a stored action hash. The client then serves hits from it and
+// misses an absent key.
+func TestCacheClientFetchesTheVersion2Index(t *testing.T) {
+	if !inOwnProcess(t) {
+		return
+	}
+	t.Setenv("GO_TOOLCHAIN_CACHE_PUT_WINDOW_MS", "30000")
+	ts, storage := testSetupWithStorage(t)
+	cfg := cacheclient.WebConfig{
+		Bucket:      "testbucket",
+		Endpoint:    ts.URL,
+		AccessKey:   "anyone",
+		SecretKey:   "unchecked",
+		IndexMaxAge: -1,
+	}
+	objs := makeWireObjects(5)
+
+	writerCfg := cfg
+	writerCfg.IndexDir = t.TempDir()
+	writer, err := cacheclient.NewWebBackend(writerCfg)
+	require.NoError(t, err)
+	for _, o := range objs {
+		require.NoError(t, writer.Put(o.actionID, o.outputID, o.body))
+	}
+	require.NoError(t, writer.Close())
+
+	readerCfg := cfg
+	readerCfg.IndexDir = t.TempDir()
+	reader, err := cacheclient.NewWebBackend(readerCfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { reader.Close() })
+	for _, o := range objs {
+		_, got, _, miss := reader.Get(o.actionID)
+		require.False(t, miss)
+		require.Equal(t, o.body, got)
+	}
+	absent := sha256.Sum256([]byte("never-stored"))
+	_, _, _, miss := reader.Get(hex.EncodeToString(absent[:]))
+	require.True(t, miss)
+
+	copies, err := filepath.Glob(filepath.Join(readerCfg.IndexDir, "gocache-web-index-*.bin"))
+	require.NoError(t, err)
+	require.Len(t, copies, 1)
+	blob, err := os.ReadFile(copies[0])
+	require.NoError(t, err)
+	require.Equal(t, "GBCI", string(blob[:4]))
+	require.Equal(t, byte(gbciPrefixVersion), blob[4])
+	require.Equal(t, byte(gbciPrefixSize), blob[5])
+	require.Len(t, blob, gbciHeaderSize+len(objs)*gbciPrefixSize+sha256.Size)
+
+	served, _, _ := storage.Index.BlobGenFormat(gbciPrefix)
+	require.Equal(t, served, blob, "the disk copy is the server's version 2 blob")
+	body := blob[gbciHeaderSize : len(blob)-sha256.Size]
+	for _, o := range objs {
+		hash, ok := extractActionHash(gbciKeyPrefix + o.actionID)
+		require.True(t, ok)
+		require.True(t, bytes.Contains(body, hash[:gbciPrefixSize]), "every stored key's prefix is in the copy")
+	}
 }

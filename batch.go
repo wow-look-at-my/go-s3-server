@@ -63,6 +63,8 @@ type batchPutResult struct {
 // batchPutResponse is the JSON body returned by /_batch/put.
 type batchPutResponse struct {
 	Results []batchPutResult `json:"results"`
+	// A client rolls back every key the results omit.
+	Error string `json:"error,omitempty"`
 }
 
 // batchEntry identifies a cache entry to include in a batch response.
@@ -328,6 +330,16 @@ func handleBatchPut(w http.ResponseWriter, r *http.Request, storage *Storage, ma
 		byDataName[name] = &pending{entry: e, result: &results[i]}
 	}
 
+	// Storing a full batch on a busy disk outlasts the client's silence window, so the answer starts before the work ends.
+	ka := startKeepAlive(w)
+	fail := func(status int, code, message string) {
+		if !ka.stop() {
+			writeError(w, status, code, message)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(batchPutResponse{Results: []batchPutResult{}, Error: code + ": " + message})
+	}
+
 	// Stream the data members.
 	var nStored, nDropped, nConflict, nError int
 	for {
@@ -337,19 +349,19 @@ func handleBatchPut(w http.ResponseWriter, r *http.Request, storage *Storage, ma
 		}
 		if err != nil {
 			if isMaxBytesErr(err) {
-				writeError(w, 413, "too_large", fmt.Sprintf("batch exceeds max size of %d bytes", maxBatchBytes))
+				fail(413, "too_large", fmt.Sprintf("batch exceeds max size of %d bytes", maxBatchBytes))
 				return
 			}
-			writeError(w, 400, "invalid_request", fmt.Sprintf("read tar member: %v", err))
+			fail(400, "invalid_request", fmt.Sprintf("read tar member: %v", err))
 			return
 		}
 		p, ok := byDataName[hdr.Name]
 		if !ok {
-			writeError(w, 400, "invalid_request", fmt.Sprintf("data member %q has no manifest entry", hdr.Name))
+			fail(400, "invalid_request", fmt.Sprintf("data member %q has no manifest entry", hdr.Name))
 			return
 		}
 		if p.seen {
-			writeError(w, 400, "invalid_request", fmt.Sprintf("duplicate data member %q", hdr.Name))
+			fail(400, "invalid_request", fmt.Sprintf("duplicate data member %q", hdr.Name))
 			return
 		}
 		p.seen = true
@@ -379,7 +391,7 @@ func handleBatchPut(w http.ResponseWriter, r *http.Request, storage *Storage, ma
 	// Every manifest entry must have had a matching data member.
 	for name, p := range byDataName {
 		if !p.seen {
-			writeError(w, 400, "invalid_request", fmt.Sprintf("manifest entry %q has no data member %q", p.entry.Key, name))
+			fail(400, "invalid_request", fmt.Sprintf("manifest entry %q has no data member %q", p.entry.Key, name))
 			return
 		}
 	}
@@ -387,8 +399,10 @@ func handleBatchPut(w http.ResponseWriter, r *http.Request, storage *Storage, ma
 	auditFromContext(r.Context()).note("batch_put entries=%d stored=%d dropped=%d conflict=%d error=%d",
 		len(manifest.Entries), nStored, nDropped, nConflict, nError)
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
+	if !ka.stop() {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+	}
 	_ = json.NewEncoder(w).Encode(batchPutResponse{Results: results})
 }
 

@@ -366,10 +366,11 @@ func TestWebBackend_ShedQuietsTheWholeBackend(t *testing.T) {
 func TestWebBackend_SlowButMovingUploadCompletes(t *testing.T) {
 	t.Serial() // stallTimeout is package state
 	old := stallTimeout
-	stallTimeout = 150 * time.Millisecond
+	// Socket buffers of several megabytes make the body reads come in bursts.
+	stallTimeout = time.Second
 	defer func() { stallTimeout = old }()
 
-	const bodySize, chunkSize = 16 << 20, 512 << 10
+	const bodySize, chunkSize = 24 << 20, 64 << 10
 	var received atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		buf := make([]byte, chunkSize)
@@ -379,7 +380,7 @@ func TestWebBackend_SlowButMovingUploadCompletes(t *testing.T) {
 			if err != nil {
 				break
 			}
-			time.Sleep(40 * time.Millisecond) // under the window, every time
+			time.Sleep(10 * time.Millisecond) // under the window, every time
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -396,7 +397,7 @@ func TestWebBackend_SlowButMovingUploadCompletes(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Equal(t, int64(bodySize), received.Load())
 	require.False(t, b.Down(), "a slow upload is not a server that does not answer")
-	require.Greater(t, (bodySize/chunkSize)*40*time.Millisecond, stallTimeout,
+	require.Greater(t, (bodySize/chunkSize)*10*time.Millisecond, stallTimeout,
 		"the upload has to outlast the window for this to prove anything")
 }
 

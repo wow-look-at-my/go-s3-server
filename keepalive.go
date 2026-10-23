@@ -22,7 +22,10 @@ func startKeepAlive(w http.ResponseWriter) *keepAlive {
 	k := &keepAlive{w: w, rc: http.NewResponseController(w)}
 	// An HTTP/1 server closes the request body at the first write of the answer. The tar still has to be read after it.
 	_ = k.rc.EnableFullDuplex()
+	// tick takes the lock, so it cannot run before the timer it resets is assigned.
+	k.mu.Lock()
 	k.timer = time.AfterFunc(batchKeepAlive, k.tick)
+	k.mu.Unlock()
 	return k
 }
 

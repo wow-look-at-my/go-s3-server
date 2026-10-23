@@ -19,10 +19,7 @@ import (
 	"github.com/wow-look-at-my/go-s3-server/cacheclient/admission"
 )
 
-// Failure-handling defaults for the remote cache backend. They are deliberately
-// conservative: the cache is an optimization, never a correctness dependency, so
-// the priority under any backend trouble is to get out of the way of the build
-// fast and quietly rather than to keep trying.
+// Failure-handling defaults for the remote cache backend.
 const (
 	// defaultMaxRetries caps extra attempts after a transient failure, to limit load on a struggling backend.
 	defaultMaxRetries = 2
@@ -35,16 +32,11 @@ const (
 	retryMaxDelay  = 2 * time.Second
 )
 
-// stallTimeout bounds SILENCE, never total duration. Responses here are bulk: a
-// batch get runs to tens of megabytes and the key index further still. a single
-// that keeps delivering bytes is healthy however long it takes, and a single
-// that stops delivering is not, so the clock measures the gap between reads
-// instead of the whole transfer. A var, so a test can shorten it like the index budgets.
+// stallTimeout bounds SILENCE, never total duration.
 var stallTimeout = 30 * time.Second
 
 // guardedBody re-arms a watchdog on every read, so a body that keeps flowing
-// never expires while a single that goes quiet is cancelled. Close stops the
-// watchdog and releases the request context that carries it.
+// never expires while a single that goes quiet is cancelled.
 type guardedBody struct {
 	io.ReadCloser
 	watchdog *time.Timer
@@ -61,6 +53,17 @@ func (g *guardedBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// sendingBody re-arms the watchdog on every read of a request body.
+type sendingBody struct {
+	io.ReadCloser
+	watchdog *time.Timer
+}
+
+func (s *sendingBody) Read(p []byte) (int, error) {
+	s.watchdog.Reset(stallTimeout)
+	return s.ReadCloser.Read(p)
+}
+
 func (g *guardedBody) Close() error {
 	g.watchdog.Stop()
 	err := g.ReadCloser.Close()
@@ -68,18 +71,12 @@ func (g *guardedBody) Close() error {
 	return err
 }
 
-// noteBatchEntries feeds the entry count of a served /_batch/get response to the
-// consecutive-empty-batch backoff. An empty batch is a healthy remote that
-// holds none of this build's keys; after enough of them stack up, the remote
-// has nothing useful for this run, so we disable further batch probing
-// (logged a single time). Any non-empty batch resets the streak — the remote IS serving.
-// An empty-but-healthy response is not a backend failure: the backoff is purely a
-// "nothing here to fetch" optimization, orthogonal to the per-op retry path.
-//
-// The notice is routine, so it is Info. A build with new code misses on each
-// of its own packages, and a disk copy of the index served as
-// non-authoritative probes each of them: the threshold trips on most builds.
-// A consumer whose stderr is compared, as go test does, must not see it.
+// noteBatchEntries feeds the entry count of a served /_batch/get response to
+// the consecutive-empty-batch backoff. An empty batch is a healthy remote
+// that holds none of this build's keys. After enough of them stack up, the
+// remote has nothing useful for this run, so we disable further batch probing
+// (logged a single time). Any non-empty batch resets the streak — the
+// remote IS serving.
 func (b *WebBackend) noteBatchEntries(n int) {
 	if b.emptyBatchBackoffThreshold <= 0 || b.batchProbingDisabled.Load() {
 		return
@@ -180,8 +177,7 @@ func (b *WebBackend) doRetryPUT(req *http.Request, body []byte) (*http.Response,
 	return b.doRetry(req, b.maxRetries)
 }
 
-// heldBackBody is the body of the answer doRetry gives an operation whose
-// every attempt fell in the server's quiet period, so none was sent.
+// heldBackBody is the body of the answer doRetry gives an operation whose every attempt fell in the server's quiet period.
 const heldBackBody = "overloaded: not sent; the server asked for quiet with Retry-After"
 
 // heldBackResponse stands in for the shed the server would have answered.
@@ -220,21 +216,12 @@ func (b *WebBackend) shedRemaining() time.Duration {
 // doRetryPUT. It retries a transient response (transientStatus) up to
 // maxRetries times, sleeping max(exponential-jittered backoff, server
 // Retry-After) capped at retryMaxDelay between attempts, and rewinds the
-// request body from req.GetBody on each retry. It returns the final
-// (resp, err) exactly as http.Client.Do would, so callers handle status codes
-// and bodies unchanged; it never retries a definitive client-error
-// response. An admission shed is transient and so is retried and backed
-// off (honoring Retry-After); if the retry budget is exhausted the caller
-// falls back to a local miss for that operation alone.
-//
-// A Retry-After on a transient answer is a request for quiet to the whole
-// process, not only to the operation that got it. Every concurrent operation
-// here talks to the same server, so each retrying on its own schedule
-// multiplied the load on a server that had just said it was full. An attempt
-// that falls in the quiet period is not sent: it waits the period out (plus
-// jitter, so the waiters do not return together) and counts against the
-// retry budget like an attempt that was shed. An operation left with no
-// attempt sent gets heldBackResponse.
+// request body from req.GetBody on each retry. It returns the final (resp,
+// err) exactly as http.Client.Do would, so callers handle status codes and
+// bodies unchanged. It never retries a definitive client-error response. An
+// admission shed is transient and so is retried and backed off (honoring
+// Retry-After); if the retry budget is exhausted the caller falls back to a
+// local miss for that operation alone.
 func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response, error) {
 	var (
 		resp *http.Response
@@ -269,9 +256,7 @@ func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response,
 				req.Body = body
 			}
 		}
-		// A single watchdog per attempt, armed on the context the attempt runs
-		// under. It survives past this function only on the success path, where
-		// the returned body owns it and the reads re-arm it.
+		// A single watchdog per attempt, armed on the context the attempt runs under.
 		ctx, cancel := context.WithCancel(req.Context())
 		stalled := &atomic.Bool{}
 		watchdog := time.AfterFunc(stallTimeout, func() {
@@ -279,7 +264,11 @@ func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response,
 			cancel()
 		})
 		sent := time.Now()
-		resp, err = b.client.Do(req.WithContext(ctx))
+		attemptReq := req.WithContext(ctx)
+		if attemptReq.Body != nil && attemptReq.Body != http.NoBody {
+			attemptReq.Body = &sendingBody{ReadCloser: attemptReq.Body, watchdog: watchdog}
+		}
+		resp, err = b.client.Do(attemptReq)
 		if err == nil {
 			if waited := time.Since(sent); waited > slowAnswer && req.Header.Get(HeaderKind) == KindCritical {
 				b.noteNoAnswer(fmt.Errorf("a lookup waited %s for an answer", waited.Round(time.Millisecond)))
@@ -423,8 +412,8 @@ func (b *WebBackend) noteAnswered() {
 }
 
 // sleepQuiet waits out the server's quiet period plus full jitter over the
-// attempt's backoff, so the operations held back by a single shed do not
-// all return in the same instant. It returns early on shutdown.
+// attempt's backoff. The operations held back by a single shed do not all
+// return in the same instant. It returns early on shutdown.
 func (b *WebBackend) sleepQuiet(attempt int, quiet time.Duration) {
 	jitter := retryBaseDelay << attempt
 	if jitter > retryMaxDelay || jitter <= 0 {

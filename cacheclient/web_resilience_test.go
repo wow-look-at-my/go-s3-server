@@ -364,6 +364,45 @@ func TestWebBackend_ShedQuietsTheWholeBackend(t *testing.T) {
 	require.Equal(t, before+1, requests.Load(), "a recovered server gets exactly one request per operation")
 }
 
+// The server reads a batch put as fast as it stores it. An upload that keeps moving is progress, however long it runs,
+// and must not read as a server that does not answer.
+func TestWebBackend_SlowButMovingUploadCompletes(t *testing.T) {
+	t.Serial() // stallTimeout is package state
+	old := stallTimeout
+	stallTimeout = 150 * time.Millisecond
+	defer func() { stallTimeout = old }()
+
+	const bodySize, chunkSize = 16 << 20, 512 << 10
+	var received atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, chunkSize)
+		for {
+			n, err := io.ReadFull(r.Body, buf)
+			received.Add(int64(n))
+			if err != nil {
+				break
+			}
+			time.Sleep(40 * time.Millisecond) // under the window, every time
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	b := testBackend(t, srv.URL)
+	defer b.Close()
+
+	req, err := http.NewRequest("PUT", srv.URL+"/slow-upload", nil)
+	require.NoError(t, err)
+	resp, err := b.doRetryPUT(req, make([]byte, bodySize))
+	require.NoError(t, err, "a moving upload must never expire, whatever the total")
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, int64(bodySize), received.Load())
+	require.False(t, b.Down(), "a slow upload is not a server that does not answer")
+	require.Greater(t, (bodySize/chunkSize)*40*time.Millisecond, stallTimeout,
+		"the upload has to outlast the window for this to prove anything")
+}
+
 func testBackend(t *testing.T, endpoint string) *WebBackend {
 	t.Helper()
 	b, err := NewWebBackend(WebConfig{

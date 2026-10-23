@@ -20,6 +20,8 @@ type keepAlive struct {
 
 func startKeepAlive(w http.ResponseWriter) *keepAlive {
 	k := &keepAlive{w: w, rc: http.NewResponseController(w)}
+	// An HTTP/1 server closes the request body at the first write of the answer. The tar still has to be read after it.
+	_ = k.rc.EnableFullDuplex()
 	k.timer = time.AfterFunc(batchKeepAlive, k.tick)
 	return k
 }

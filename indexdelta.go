@@ -60,6 +60,11 @@ func (idx *Index) Delta(from indexGen) (blob []byte, to indexGen, ok bool) {
 	return idx.DeltaForm(from, indexFormV1(gbciHashSize))
 }
 
+// DeltaFormat is DeltaForm in format f.
+func (idx *Index) DeltaFormat(from indexGen, f gbciFormat) (blob []byte, to indexGen, ok bool) {
+	return idx.DeltaForm(from, f.form())
+}
+
 // DeltaForm answers a blob, in form, of the hashes added after from, and the
 // position it brings the client to. ok is false when from is not in the
 // current epoch or is ahead of the log: the client must make a full fetch.
@@ -75,8 +80,10 @@ func (idx *Index) DeltaForm(from indexGen, form indexForm) (blob []byte, to inde
 	return marshalForm(sortDedupeHashes(tail), form), to, true
 }
 
-// gbciPrefixSize is the hash width of the short v1 form, in bytes.
-const gbciPrefixSize = 8
+// marshalGBCI encodes sorted, deduplicated hashes in format f.
+func marshalGBCI(hashes [][gbciHashSize]byte, f gbciFormat) []byte {
+	return marshalForm(hashes, f.form())
+}
 
 // marshalForm encodes sorted, deduplicated hashes in form.
 func marshalForm(hashes [][gbciHashSize]byte, form indexForm) []byte {
@@ -122,16 +129,14 @@ func prefixValues(a, b [][gbciHashSize]byte, bits int) iter.Seq[uint64] {
 func marshalGBCIWidth(hashes [][gbciHashSize]byte, width int) []byte {
 	blob := make([]byte, gbciHeaderSize+len(hashes)*width+sha256.Size)
 	off := gbciHeaderSize
-	var prev []byte
 	for i := range hashes {
-		cur := hashes[i][:width]
-		if prev != nil && string(prev) == string(cur) {
+		entry := hashes[i][:width]
+		if off > gbciHeaderSize && bytes.Equal(blob[off-width:off], entry) {
 			continue
 		}
-		off += copy(blob[off:], cur)
-		prev = cur
+		copy(blob[off:off+width], entry)
+		off += width
 	}
-	blob = blob[:off+sha256.Size]
 	copy(blob[0:4], gbciMagic[:])
 	blob[4] = gbciVersion
 	blob[5] = byte(width)
@@ -140,7 +145,7 @@ func marshalGBCIWidth(hashes [][gbciHashSize]byte, width int) []byte {
 	binary.LittleEndian.PutUint64(blob[8:16], binary.LittleEndian.Uint64(bodyDigest[:8]))
 	digest := sha256.Sum256(blob[:off])
 	copy(blob[off:], digest[:])
-	return blob
+	return blob[:off+sha256.Size]
 }
 
 // WireSize is the length in bytes of the body GET /_index?v=2 sends right

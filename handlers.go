@@ -270,9 +270,10 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request, storage *Storage
 }
 
 // handleGetIndex serves the precomputed GBCI binary cache-key index, in the
-// form the request names. v=2 is the Rice-coded form of cacheclient/indexv2.go,
-// at the server's prefix width. Without it, hash=8 is the v1 short form and
-// nothing is v1 with whole hashes.
+// form the request names. hash=8 is the v1 short form, gbciPrefixSize bytes per
+// key, and a request that names it gets it whatever else it carries. Otherwise
+// v=2 is the Rice-coded form of cacheclient/indexv2.go at the server's prefix
+// width, and nothing is v1 with whole hashes.
 func handleGetIndex(w http.ResponseWriter, r *http.Request, idx *Index) {
 	if idx == nil {
 		writeError(w, 500, "internal_error", "index unavailable")
@@ -316,17 +317,17 @@ func servedBodyBytes(w http.ResponseWriter, body int64) int64 {
 	return body
 }
 
-// indexFormFromQuery reads the form a request asks for. v=2 — or any version
-// this server lacks, which falls back to the newest it has. It is the Rice-coded
-// v2 form at the server's configured prefix width. hash=8 alone is the v1 short
-// form, and nothing at all is v1 with whole hashes.
+// indexFormFromQuery reads the form a request asks for. hash=8 asks for the
+// v1 short form and is read first. This is because that is the form a client
+// holding gbciPrefixSize-byte keys wants and the form. A server that
+// predates v=2 reads out of the same request.
 func indexFormFromQuery(r *http.Request, idx *Index) indexForm {
 	q := r.URL.Query()
-	if v, _ := strconv.Atoi(q.Get("v")); v >= gbciVersion2 {
-		return idx.FormV2()
-	}
 	if q.Get("hash") == strconv.Itoa(gbciPrefixSize) {
 		return indexFormV1(gbciPrefixSize)
+	}
+	if v, _ := strconv.Atoi(q.Get("v")); v >= gbciVersion2 {
+		return idx.FormV2()
 	}
 	return indexFormV1(gbciHashSize)
 }

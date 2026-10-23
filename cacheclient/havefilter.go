@@ -80,7 +80,7 @@ func (f *haveFilter) contains(h actionHash) bool {
 		return false
 	}
 	m := uint32(len(f.Bits) * 8)
-	key := keyOf(h)
+	key := keyOf64(h)
 	for i := 0; i < f.K; i++ {
 		idx := haveFilterBit(key, i, m)
 		if f.Bits[idx/8]&(1<<(idx%8)) == 0 {
@@ -95,4 +95,17 @@ func (f *haveFilter) contains(h actionHash) bool {
 func haveFilterBit(key hashKey, i int, m uint32) uint32 {
 	h1, h2 := uint32(key>>32), uint32(key)|1
 	return (h1 + uint32(i)*h2) % m
+}
+
+// haveFilterKeys is the held set's hashes as the filter states them. The set
+// holds whole action hashes; the filter's bit arithmetic wants each one's
+// leading bytes, which are its hashKey.
+func haveFilterKeys(all iter.Seq[actionHash]) iter.Seq[hashKey] {
+	return func(yield func(hashKey) bool) {
+		for h := range all {
+			if !yield(keyOf64(h)) {
+				return
+			}
+		}
+	}
 }

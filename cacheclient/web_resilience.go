@@ -68,6 +68,33 @@ func (g *guardedBody) Close() error {
 	return err
 }
 
+// sendingBody re-arms the watchdog on every read of the request body.
+type sendingBody struct {
+	io.ReadCloser
+	watchdog *time.Timer
+}
+
+func (s *sendingBody) Read(p []byte) (int, error) {
+	s.watchdog.Reset(stallTimeout)
+	return s.ReadCloser.Read(p)
+}
+
+// guardSend makes the attempt's request body, and each rewind of it, re-arm the watchdog.
+func guardSend(req *http.Request, watchdog *time.Timer) {
+	if req.Body != nil && req.Body != http.NoBody {
+		req.Body = &sendingBody{ReadCloser: req.Body, watchdog: watchdog}
+	}
+	if getBody := req.GetBody; getBody != nil {
+		req.GetBody = func() (io.ReadCloser, error) {
+			body, err := getBody()
+			if err != nil || body == http.NoBody {
+				return body, err
+			}
+			return &sendingBody{ReadCloser: body, watchdog: watchdog}, nil
+		}
+	}
+}
+
 // noteBatchEntries feeds the entry count of a served /_batch/get response to the
 // consecutive-empty-batch backoff. An empty batch is a healthy remote that
 // holds none of this build's keys; after enough of them stack up, the remote
@@ -278,8 +305,10 @@ func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response,
 			stalled.Store(true)
 			cancel()
 		})
+		attemptReq := req.WithContext(ctx)
+		guardSend(attemptReq, watchdog)
 		sent := time.Now()
-		resp, err = b.client.Do(req.WithContext(ctx))
+		resp, err = b.client.Do(attemptReq)
 		if err == nil {
 			if waited := time.Since(sent); waited > slowAnswer && req.Header.Get(HeaderKind) == KindCritical {
 				b.noteNoAnswer(fmt.Errorf("a lookup waited %s for an answer", waited.Round(time.Millisecond)))

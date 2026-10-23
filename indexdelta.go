@@ -1,3 +1,5 @@
+// The add log lets a client that holds a copy of /_index fetch only the hashes stored since that copy.
+
 package main
 
 import (

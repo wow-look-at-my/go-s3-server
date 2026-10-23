@@ -1,3 +1,5 @@
+// digestMemoKind is the label the digest memo reports its size under.
+
 package main
 
 import "os"

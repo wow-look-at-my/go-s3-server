@@ -1,3 +1,5 @@
+// writeError sends a native plain-text error response.
+
 package main
 
 import (

@@ -1,3 +1,5 @@
+// The bandwidth chart draws the recent past, so its accounting is a ring of time buckets rather than a Prometheus counter.
+
 package main
 
 import (

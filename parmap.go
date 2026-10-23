@@ -1,3 +1,5 @@
+// batchKeyWorkers bounds the goroutines one batch request uses for its per-key work: stat, open and the digest hash.
+
 package main
 
 import (

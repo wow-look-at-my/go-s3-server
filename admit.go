@@ -1,3 +1,5 @@
+// slotQueue hands out the server's work slots.
+
 package main
 
 import (

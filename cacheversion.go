@@ -1,3 +1,5 @@
+// The data_dir's format version and the startup hygiene that goes with it: purging a cache written under a version we no longer trust.
+
 package main
 
 // The data_dir's format version and the startup hygiene that goes with it:

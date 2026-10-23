@@ -1,3 +1,5 @@
+// This file centralizes the backward-compatibility shims for the S3-compatible protocol.
+
 package main
 
 import (

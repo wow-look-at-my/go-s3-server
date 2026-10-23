@@ -1,3 +1,5 @@
+// The client's statement of what it already holds.
+
 package main
 
 import "encoding/binary"

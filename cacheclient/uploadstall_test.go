@@ -10,19 +10,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// trickleBody sends a small chunk every gap until the deadline passes. Before
-// each chunk it waits on hold, so a test can stop the flow.
+// trickleBody sends a small chunk every gap until the deadline passes.
 type trickleBody struct {
 	gap   time.Duration
 	until time.Time
-	hold  <-chan struct{}
 }
 
 func (t *trickleBody) Read(p []byte) (int, error) {
 	if time.Now().After(t.until) {
 		return 0, io.EOF
 	}
-	<-t.hold
 	time.Sleep(t.gap)
 	n := min(len(p), 64)
 	for i := range n {
@@ -63,9 +60,7 @@ func TestUploadThatKeepsFlowingOutlastsTheStallTimeout(t *testing.T) {
 	b := testBackend(t, srv.URL)
 	defer b.Close()
 
-	open := make(chan struct{})
-	close(open)
-	body := &trickleBody{gap: 10 * time.Millisecond, until: time.Now().Add(4 * stallTimeout), hold: open}
+	body := &trickleBody{gap: 10 * time.Millisecond, until: time.Now().Add(4 * stallTimeout)}
 	resp, err := b.doRetry(trickleRequest(t, srv.URL, body), 0)
 	require.NoError(t, err, "a body that keeps flowing must not be cancelled")
 	closeBody(resp.Body)
@@ -74,7 +69,7 @@ func TestUploadThatKeepsFlowingOutlastsTheStallTimeout(t *testing.T) {
 	require.NotContains(t, logs.String(), "not responding")
 }
 
-// An upload that stops sending for longer than stallTimeout is cancelled, and the server counts as down.
+// An upload the server stops reading is cancelled, and the server counts as down.
 func TestUploadThatStopsFlowingIsCancelled(t *testing.T) {
 	t.Serial() // stallTimeout and downProbeEvery are package state
 	logs := newCaptureLogger(t)
@@ -82,15 +77,24 @@ func TestUploadThatStopsFlowingIsCancelled(t *testing.T) {
 	stallTimeout, downProbeEvery = 100*time.Millisecond, time.Hour
 	defer func() { stallTimeout, downProbeEvery = oldStall, oldProbe }()
 
-	srv := uploadStallServer(t)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
 	b := testBackend(t, srv.URL)
 	defer b.Close()
 
-	hold := make(chan struct{})
-	defer close(hold)
-	body := &trickleBody{gap: time.Millisecond, until: time.Now().Add(time.Hour), hold: hold}
+	// The body is far larger than the socket buffers, so the send blocks.
+	body := make([]byte, 64<<20)
+	req, err := http.NewRequest("PUT", srv.URL+"/testbucket/_batch/put", nil)
+	require.NoError(t, err)
 	start := time.Now()
-	_, err := b.doRetry(trickleRequest(t, srv.URL, body), 0)
+	_, err = b.doRetryPUT(req, body)
 	require.Error(t, err)
 	require.Less(t, time.Since(start), 20*stallTimeout, "the watchdog cancels a silent upload")
 	require.True(t, b.Down())

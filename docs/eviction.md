@@ -47,7 +47,7 @@ On startup the server reads that marker and:
 
 Both halves matter. A schedule that restarted on every boot meant a deployment that rolls more frequently than the interval — which is the production model. Never swept at all. A schedule that swept on every boot meant walking the whole disk on every rolling update.
 
-The `s3_cache_bytes` gauge is refreshed on its own `cacheBytesRefreshInterval` cadence. So it is not stale by up to a whole interval.
+The `s3_cache_bytes` gauge is refreshed on its own `cacheBytesRefreshInterval` cadence. So it is not stale by up to a whole interval. A refresh that measures more than `max_bytes` sweeps at once and restarts the interval. The interval alone does not bound the cache: a busy CI day writes many GiB between sweeps.
 
 ## Configuration
 

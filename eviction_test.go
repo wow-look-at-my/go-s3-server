@@ -461,6 +461,14 @@ func TestRefreshCacheBytes(t *testing.T) {
 	// A stale temp file must not count.
 	require.NoError(t, os.WriteFile(s.dataDir+"/.tmp-stale", make([]byte, 999), 0644))
 
-	s.RefreshCacheBytes()
+	require.Equal(t, int64(150), s.RefreshCacheBytes())
 	require.Equal(t, float64(150), testutil.ToFloat64(cacheBytes))
+}
+
+// TestOverBudget: a refresh over max_bytes triggers a sweep before the
+// interval, and a disabled budget never does.
+func TestOverBudget(t *testing.T) {
+	assert.True(t, overBudget(151, 150))
+	assert.False(t, overBudget(150, 150))
+	assert.False(t, overBudget(1<<40, 0))
 }

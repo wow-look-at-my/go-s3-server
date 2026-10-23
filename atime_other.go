@@ -1,5 +1,7 @@
 //go:build !linux && !windows
 
+// fileAccessTime has no portable form: the access time lives in a platform-specific field of what info.Sys() returns.
+
 package main
 
 import (

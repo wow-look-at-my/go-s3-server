@@ -1,5 +1,7 @@
 //go:build !windows
 
+// metadataProtectedKeys are load-bearing for the cache protocol.
+
 package main
 
 import (

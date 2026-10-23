@@ -1,3 +1,5 @@
+// stallWindow is how long a request may go without moving a byte in either direction before the server hangs up on it.
+
 package main
 
 import (

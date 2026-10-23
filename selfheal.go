@@ -1,3 +1,5 @@
+// outputIDMetaKey is the metadata field holding the GOCACHEPROG outputID -- the content address of a cached object.
+
 package main
 
 import (

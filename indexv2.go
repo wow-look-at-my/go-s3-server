@@ -1,3 +1,5 @@
+// The v2 index form: Rice-coded gaps between sorted hash prefixes.
+
 package main
 
 import (

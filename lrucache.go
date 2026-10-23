@@ -1,3 +1,5 @@
+// A cache server answers requests.
+
 package main
 
 import (

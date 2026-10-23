@@ -1,5 +1,7 @@
 //go:build !windows
 
+// dirIsZFS reports whether dir lives on a ZFS filesystem.
+
 package main
 
 import "golang.org/x/sys/unix"

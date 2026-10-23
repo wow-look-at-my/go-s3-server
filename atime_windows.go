@@ -1,3 +1,5 @@
+// fileAccessTime reads the access time out of a stat the caller already did, so the walk that feeds eviction pays no extra syscall for it.
+
 package main
 
 import (

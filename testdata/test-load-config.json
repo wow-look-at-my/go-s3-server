@@ -1,0 +1,7 @@
+{
+		"listen": ":8080",
+		"bucket": "mybucket",
+		"data_dir": "/tmp/test",
+		"write_once": {"action": "deny", "notification": "content_differs"},
+		"credentials": [{"username": "admin", "password": "secret"}]
+	}

@@ -1,3 +1,5 @@
+// ConfigString is a string that can be specified as a literal or as an environment variable reference: {"type": "envvar", "name": "VAR_NAME"}.
+
 package main
 
 import (

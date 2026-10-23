@@ -1,3 +1,5 @@
+// cleanEntryBytes is what a single memoized verdict costs: the 32-byte hash, the map bucket and the list element.
+
 package main
 
 // cleanEntryBytes is what a single memoized verdict costs: the 32-byte hash, the map bucket and the list element.

@@ -1,3 +1,5 @@
+// Nothing in this server compresses.
+
 package main
 
 // Nothing in this server compresses.

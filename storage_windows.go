@@ -1,5 +1,7 @@
 //go:build windows
 
+// sidecarSuffixes are the per-object companion files that hold metadata on Windows (where the unix build uses xattrs): user metadata, audit fields.
+
 package main
 
 import (

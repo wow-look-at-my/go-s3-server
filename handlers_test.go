@@ -1,5 +1,7 @@
 package main
 
+import _ "embed"
+
 import (
 	"bytes"
 	"crypto/sha256"
@@ -302,13 +304,7 @@ func TestLoadConfig(t *testing.T) {
 	dir := t.TempDir()
 
 	// Valid config
-	validJSON := `{
-		"listen": ":8080",
-		"bucket": "mybucket",
-		"data_dir": "/tmp/test",
-		"write_once": {"action": "deny", "notification": "content_differs"},
-		"credentials": [{"username": "admin", "password": "secret"}]
-	}`
+	validJSON := testLoadConfigJson
 	validPath := dir + "/valid.json"
 	os.WriteFile(validPath, []byte(validJSON), 0644)
 	cfg, err := LoadConfig(validPath)
@@ -678,3 +674,6 @@ func TestIsKeySafe(t *testing.T) {
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
+
+//go:embed testdata/test-load-config.json
+var testLoadConfigJson string

@@ -1,3 +1,5 @@
+// A client answers many reads from its own copy of /_index and never sends them.
+
 package main
 
 import (

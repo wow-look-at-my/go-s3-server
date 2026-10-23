@@ -1,3 +1,5 @@
+// compactKey holds a cache key without a per-key heap allocation.
+
 package main
 
 import "encoding/hex"

@@ -1,3 +1,5 @@
+// Durable last-use tracking.
+
 package main
 
 // Durable last-use tracking.

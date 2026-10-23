@@ -1,3 +1,5 @@
+// Size and mtime still name the file version.
+
 package main
 
 import "os"

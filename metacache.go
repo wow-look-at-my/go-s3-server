@@ -1,3 +1,5 @@
+// An object's user metadata lives in extended attributes.
+
 package main
 
 import (

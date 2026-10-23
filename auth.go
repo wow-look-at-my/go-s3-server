@@ -1,3 +1,5 @@
+// anonymousUser is the username recorded in audit logs when authentication has been explicitly disabled via disable_auth.
+
 package main
 
 import (

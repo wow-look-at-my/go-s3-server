@@ -53,17 +53,6 @@ func (g *guardedBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// sendingBody re-arms the watchdog on every read of a request body.
-type sendingBody struct {
-	io.ReadCloser
-	watchdog *time.Timer
-}
-
-func (s *sendingBody) Read(p []byte) (int, error) {
-	s.watchdog.Reset(stallTimeout)
-	return s.ReadCloser.Read(p)
-}
-
 func (g *guardedBody) Close() error {
 	g.watchdog.Stop()
 	err := g.ReadCloser.Close()
@@ -71,8 +60,6 @@ func (g *guardedBody) Close() error {
 	return err
 }
 
-<<<<<<< HEAD
-=======
 // sendingBody re-arms the watchdog on every read of the request body.
 type sendingBody struct {
 	io.ReadCloser
@@ -100,7 +87,6 @@ func guardSend(req *http.Request, watchdog *time.Timer) {
 	}
 }
 
->>>>>>> 60e855c7fd82729210c66d50a7302a88ee01de15
 // noteBatchEntries feeds the entry count of a served /_batch/get response to
 // the consecutive-empty-batch backoff. An empty batch is a healthy remote
 // that holds none of this build's keys. After enough of them stack up, the
@@ -296,13 +282,6 @@ func (b *WebBackend) doRetry(req *http.Request, maxRetries int) (*http.Response,
 		attemptReq := req.WithContext(ctx)
 		guardSend(attemptReq, watchdog)
 		sent := time.Now()
-<<<<<<< HEAD
-		attemptReq := req.WithContext(ctx)
-		if attemptReq.Body != nil && attemptReq.Body != http.NoBody {
-			attemptReq.Body = &sendingBody{ReadCloser: attemptReq.Body, watchdog: watchdog}
-		}
-=======
->>>>>>> 60e855c7fd82729210c66d50a7302a88ee01de15
 		resp, err = b.client.Do(attemptReq)
 		if err == nil {
 			if waited := time.Since(sent); waited > slowAnswer && req.Header.Get(HeaderKind) == KindCritical {

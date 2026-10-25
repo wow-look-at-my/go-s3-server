@@ -402,10 +402,10 @@ func (s *Storage) runSweep(maxAge time.Duration, maxBytes int64) {
 }
 
 // RefreshCacheBytes recomputes the total stored size (a size-only WalkDir; no
-// xattrs, no bodies) and updates the s3_cache_bytes gauge. Runs between sweeps
-// so the gauge tracks growth instead of staying frozen at the last sweep's
-// value for up to the whole eviction interval.
-func (s *Storage) RefreshCacheBytes() {
+// xattrs, no bodies), updates the s3_cache_bytes gauge and returns the total.
+// Runs between sweeps so the gauge tracks growth instead of staying frozen at
+// the last sweep's value for up to the whole eviction interval.
+func (s *Storage) RefreshCacheBytes() int64 {
 	var total int64
 	filepath.WalkDir(s.dataDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -420,12 +420,19 @@ func (s *Storage) RefreshCacheBytes() {
 		return nil
 	})
 	cacheBytes.Set(float64(total))
+	return total
+}
+
+// overBudget reports whether a measured total breaks max_bytes.
+func overBudget(total, maxBytes int64) bool {
+	return maxBytes > 0 && total > maxBytes
 }
 
 // RunEvictionLoop sweeps until the process exits. Run it in its own
 // goroutine. the earliest sweep is scheduled from the recorded last sweep
 // (see firstSweepDelay), and each subsequent a single an interval after the
-// finished. The size gauge is refreshed on its own faster cadence in between.
+// finished. The size is measured on its own faster cadence in between, and a
+// measurement over max_bytes sweeps at once.
 func (s *Storage) RunEvictionLoop(maxAge time.Duration, maxBytes int64, interval time.Duration) {
 	next := time.NewTimer(s.firstSweepDelay(interval))
 	defer next.Stop()
@@ -437,7 +444,13 @@ func (s *Storage) RunEvictionLoop(maxAge time.Duration, maxBytes int64, interval
 			s.runSweep(maxAge, maxBytes)
 			next.Reset(interval)
 		case <-refresh.C:
-			s.RefreshCacheBytes()
+			total := s.RefreshCacheBytes()
+			if !overBudget(total, maxBytes) {
+				continue
+			}
+			log.Printf("eviction: cache holds %d bytes, over max_bytes=%d; sweeping now", total, maxBytes)
+			s.runSweep(maxAge, maxBytes)
+			next.Reset(interval)
 		}
 	}
 }

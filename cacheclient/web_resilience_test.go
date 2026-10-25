@@ -13,14 +13,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestWebBackend_RemoteNeverDisabledAfterFailureBurst is the regression for the
-// removed client-side remote-disable behavior. A burst of remote failures
-// (a fault or a shed) must NOT permanently disable the remote tier: every failure
-// degrades to a clean miss for that operation, but the very next GET must still
-// attempt the network. The old behavior turned a transient blip into "no cache
-// hits for the rest of the run". Here, after N failing GETs, the backend recovers
-// and the next GET must be served as a HIT (proving the remote was never
-// disabled).
+// TestWebBackend_RemoteNeverDisabledAfterFailureBurst is the regression for
+// the removed client-side remote-disable behavior. A burst of remote failures
+// (a fault or a shed) must NOT permanently disable the remote tier: every
+// failure degrades to a clean miss for that operation. However, the next GET
+// must still attempt the network. The behavior turned a transient blip into
+// "no cache hits for the rest of the run". Here, after N failing GETs, the
+// backend recovers and the next GET must be served as a HIT (proving the
+// remote was never disabled).
 func TestWebBackend_RemoteNeverDisabledAfterFailureBurst(t *testing.T) {
 	hermeticOTel(t)
 	t.Setenv("GO_TOOLCHAIN_CACHE_MAX_RETRIES", "0") // a single request per op: fast and deterministic
@@ -128,8 +128,8 @@ func TestWebBackend_RetriesTransientThenRecovers(t *testing.T) {
 	require.Equal(t, uint32(1), b.Stats.Hits.Load())
 }
 
-// never corrupt the build. The cache layer must degrade to clean misses, the
-// local tier must keep serving exactly what was stored, and a GET for a
+// never corrupt the build. The cache layer must degrade to clean misses. The
+// local tier must keep serving exactly what was stored. A GET for a
 // never-stored key must miss — never a spurious hit or empty/garbage body.
 func TestWebBackend_PutRetriesTransient503ThenSucceeds(t *testing.T) {
 	hermeticOTel(t)
@@ -200,10 +200,8 @@ func TestBatchGetRequest_JSONShape(t *testing.T) {
 // A bulk-transfer client must not carry an absolute request deadline.
 // http.Client.Timeout spans the whole request INCLUDING the body read, so it
 // kills a transfer that is making perfect progress purely for being large. A
-// batch get is tens of megabytes and the key index is larger, and at the
-// bandwidth a remote CI runner gets, those died mid-body every time. Liveness
-// belongs to the transport's ResponseHeaderTimeout, which bounds a server that
-// never answers without bounding a single that answers slowly.
+// batch get is tens of megabytes. The key index is larger, and at the
+// bandwidth a remote CI runner gets, those died mid-body every time.
 func TestWebBackend_NoAbsoluteRequestDeadline(t *testing.T) {
 	b, err := NewWebBackend(WebConfig{
 		Bucket: "testbucket", Endpoint: "http://127.0.0.1:1",
@@ -353,8 +351,7 @@ func TestWebBackend_ShedQuietsTheWholeBackend(t *testing.T) {
 		ops+1, requests.Load(), perOpBudget)
 	require.Positive(t, b.ShedWaits.Load(), "attempts inside the quiet period are held back, unsent")
 
-	// The quiet period is a pause, never a disable: a single time it
-	// passes and the server recovers, the next operation is sent and served.
+	// The quiet period is a pause, never a disable: a single time it passes and the server recovers.
 	overloaded.Store(false)
 	require.Eventually(t, func() bool { return b.shedRemaining() <= 0 }, 5*time.Second, 10*time.Millisecond)
 	before := requests.Load()

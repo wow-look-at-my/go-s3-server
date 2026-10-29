@@ -1,3 +1,5 @@
+// ErrLogged marks an error already reported to stderr; callers must not log it again.
+
 package cacheclient
 
 import (

@@ -1,3 +1,5 @@
+// A build does not wait at exit for its uploads.
+
 package cacheclient
 
 import (

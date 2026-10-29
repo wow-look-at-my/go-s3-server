@@ -38,3 +38,32 @@ func TestOpenCacheStartsTheIndexLoad(t *testing.T) {
 		t.Fatal("opening the cache did not request the key index")
 	}
 }
+
+// OpenCache starts the index load on a goroutine, which can run after Close.
+// A load that starts then writes its copy into IndexDir after the caller has
+// let the directory go.
+func TestCloseStopsAnIndexLoadThatHasNotStarted(t *testing.T) {
+	asked := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bk/_index" {
+			select {
+			case asked <- struct{}{}:
+			default:
+			}
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	store, err := NewWebBackend(WebConfig{Bucket: "bk", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s", IndexDir: t.TempDir()})
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+	store.ensureIndex()
+
+	select {
+	case <-asked:
+		t.Fatal("a closed store started its key index load")
+	case <-time.After(200 * time.Millisecond):
+	}
+	require.Nil(t, store.indexLoad.Load(), "a closed store holds an index load")
+}

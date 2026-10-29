@@ -1,3 +1,5 @@
+// The build manifest is this client's own look-ahead.
+
 package cacheclient
 
 import (
@@ -60,9 +62,7 @@ func newBuildManifest() *buildManifest {
 	return &buildManifest{used: set.New[string](), pending: map[string]*pendingFetch{}, newest: -1, closing: make(chan struct{}), trace: newManifestTrace()}
 }
 
-// A pendingFetch is a single action ID a manifest chunk names. Its done
-// channel closes when its entry is in the local tier, or when the chunk ends
-// without it.
+// A pendingFetch is a single action ID a manifest chunk names.
 type pendingFetch struct {
 	done    chan struct{}
 	onWire  bool // the chunk's request went out
@@ -75,7 +75,7 @@ type pendingFetch struct {
 // rather than asking for the same object a second time.
 //
 // An ID whose chunk is still in the queue does not wait: the lookup asks on
-// its own at once, and the chunk leaves the ID out.
+// its own at once. The chunk leaves the ID out.
 func (b *WebBackend) AwaitPrefetch(actionID string) bool {
 	m := b.manifest
 	if m == nil {
@@ -526,7 +526,7 @@ func (b *WebBackend) postNamed(keys []string, each func(BatchEntry)) (int, error
 
 // fetchNamed asks for keys by name and hands the entries to the local tier. It
 // answers the count of entries and the action IDs they carry. After each group
-// of entries is in the local tier, it hands their action IDs to landed, so a
+// of entries is in the local tier, it hands their action IDs to landed. A
 // lookup that waits for one goes on before the batch ends.
 func (b *WebBackend) fetchNamed(keys []string, landed func([]string)) (int, []string) {
 	var chunk []BatchEntry

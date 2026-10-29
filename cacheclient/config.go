@@ -1,3 +1,5 @@
+// ConfigEnv holds the client's whole configuration, as base64-encoded JSON.
+
 package cacheclient
 
 import (
@@ -31,7 +33,7 @@ type envConfig struct {
 const DefaultBucket = "gobuildcache"
 
 // ConfigFromEnv reads the client's configuration from ConfigEnv. A returned
-// config with an empty Bucket means "no remote": every consumer treats that as
+// config with an empty Bucket means "no remote". Every consumer treats that as
 // local-only rather than as a failure, since a build without the shared cache
 // is slower and still correct.
 //

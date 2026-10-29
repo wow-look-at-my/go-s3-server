@@ -1,3 +1,5 @@
+// putJob is a claimed object waiting for a prep worker.
+
 package cacheclient
 
 import (
@@ -6,12 +8,6 @@ import (
 )
 
 // putJob is a claimed object waiting for a prep worker.
-//
-// The body arrives any of ways. data carries it for a caller that already
-// holds the bytes. path names a file for a caller that does not, and then the
-// body is not resident while the job waits: the queue is times the worker
-// count deep, so a body held from submit to prepare cost times the peak a body
-// read ON the worker does.
 type putJob struct {
 	actionID string
 	key      string
@@ -24,19 +20,12 @@ type putJob struct {
 // prepPool compresses outgoing objects.
 //
 // A build that stores thousands of objects paid for each of them in build time.
-//
-// It is CPU work, so the pool is sized to the machine's cores rather than to
-// the fetch pools, which are sized to sockets in flight. The queue is bounded:
-// past that depth a build is producing objects faster than this machine can
-// compress them, and the correct answer is to slow the producer rather than to
-// hold an unbounded pile of uncompressed bodies in memory.
 type prepPool struct {
 	b    *WebBackend
 	jobs chan putJob
 	stop chan struct{}
 	wg   sync.WaitGroup
-	// pending counts objects submitted but not yet prepared, so a caller can
-	// wait for the decisions Put made asynchronously.
+	// pending counts objects submitted but not yet prepared.
 	pending sync.WaitGroup
 }
 
@@ -71,11 +60,6 @@ func newPrepPool(b *WebBackend) *prepPool {
 
 // submit queues an object for preparation. It reports false only when the
 // backend is closing, which is the caller's cue to drop the key's claim.
-//
-// It blocks while the queue is full, and that is deliberate: the alternative
-// is dropping an object the build just paid to produce, or letting the queue
-// grow without limit. The wait is bounded by how long a single object takes
-// to compress.
 func (p *prepPool) submit(j putJob) bool {
 	if p == nil {
 		return false

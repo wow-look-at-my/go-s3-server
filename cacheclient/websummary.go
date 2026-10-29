@@ -1,22 +1,22 @@
+// WebSummary is a point-in-time snapshot of the web tier's diagnostic counters — the same numbers the daemon prints as its "web summary" stderr line.
+
 package cacheclient
 
-// WebSummary is a point-in-time snapshot of the web tier's diagnostic
-// counters — the same numbers the daemon prints as its "web summary" stderr
-// line — plus the startup index state. It is serialized into the build
-// profile (build/profile.json) so CI can assert on the poison tripwires
-// (miss_checksum / miss_buildid / miss_modindex — a served object failing an
-// integrity gate) and the dead-remote signature (a populated advertised index
-// yielding no hits).
+// WebSummary is a point-in-time snapshot of the web tier's diagnostic counters
+// — the same numbers the daemon prints as its "web summary" stderr line.
+// Plus the startup index state. It is serialized into the build profile
+// (build/profile.json) so CI can assert on the poison tripwires (miss_checksum
+// / miss_buildid / miss_modindex — a served object failing an integrity
+// gate) and the dead-remote signature (a populated advertised index yielding
+// no hits).
 type WebSummary struct {
 	Hits uint32 `json:"hits"`
 	Puts uint32 `json:"puts"`
 
-	// Wire bytes moved, which is what a transfer budget is spent on: a body
-	// travels compressed, so a count of objects says nothing about its cost.
+	// Wire bytes moved, which is what a transfer budget is spent on.
 	HitBytes uint64 `json:"hit_bytes"`
 	PutBytes uint64 `json:"put_bytes"`
-	// IndexBytes is what the startup index cost. Every process pays it before
-	// it can tell a hit from a miss, so it is not part of either total above.
+	// IndexBytes is what the startup index cost.
 	IndexBytes uint64 `json:"index_bytes"`
 
 	// GET miss reasons; miss_checksum/miss_buildid/miss_modindex are the poison tripwires (a served object a guard refused).
@@ -38,9 +38,7 @@ type WebSummary struct {
 	SkippedKnownMiss    uint32 `json:"skipped_known_miss"`
 	Reclaimed404        uint32 `json:"reclaimed_404"`
 
-	// What the server's prefetch window carried on the blocking path, and how
-	// much of it the local tier kept. Offered with nothing stored means the
-	// window is being paid for and thrown away.
+	// What the server's prefetch window carried on the blocking path, and how much of it the local tier kept.
 	PrefetchOffered uint32 `json:"prefetch_offered"`
 	PrefetchStored  uint32 `json:"prefetch_stored"`
 
@@ -53,9 +51,7 @@ type WebSummary struct {
 	IndexKeys          int  `json:"index_keys"`
 	IndexAuthoritative bool `json:"index_authoritative"`
 
-	// What a batch GET cost, split into coalescing wait and round trip. See
-	// batchtiming.go: the window is only worth its latency while the round
-	// trips it saves cost more than the wait it adds.
+	// What a batch GET cost, split into coalescing wait and round trip.
 	Batch BatchTimings `json:"batch"`
 }
 

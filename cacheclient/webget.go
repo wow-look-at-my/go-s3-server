@@ -1,3 +1,5 @@
+// getIndividual fetches a single object stored under an individual cache key.
+
 package cacheclient
 
 import (
@@ -53,8 +55,7 @@ func (b *WebBackend) getIndividual(actionID, key string, h actionHash) batchResp
 	}
 	rawSize, _ := strconv.ParseInt(resp.Header.Get("X-Cache-Meta-Body-Size"), 10, 64)
 
-	// The header states the length, so the body lands in a single
-	// exactly-sized allocation instead of io.ReadAll's doubling.
+	// The header states the length.
 	var compressed []byte
 	if resp.ContentLength >= 0 {
 		compressed = make([]byte, resp.ContentLength)
@@ -79,8 +80,7 @@ func (b *WebBackend) getIndividual(actionID, key string, h actionHash) batchResp
 		b.Latency.Decompress.Record(time.Since(decompressStart))
 	}
 	if !ok {
-		// This path holds the key, so a refused body also loses its index
-		// claim: the recompute that follows is then free to re-upload it.
+		// This path holds the key, so a refused body also loses its index claim.
 		b.removeClaimed(h)
 		return batchResp{miss: true}
 	}

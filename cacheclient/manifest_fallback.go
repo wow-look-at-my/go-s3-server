@@ -1,3 +1,5 @@
+// A command with no manifest of its own reads the module fallback.
+
 package cacheclient
 
 import (

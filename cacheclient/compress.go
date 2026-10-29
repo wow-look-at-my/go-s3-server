@@ -1,3 +1,5 @@
+// The wire codec is zstd.
+
 package cacheclient
 
 import (
@@ -11,23 +13,13 @@ import (
 	"github.com/pierrec/lz4/v4"
 )
 
-// The wire codec is zstd. It replaced lz4 because the constraint on this cache
-// is bandwidth, not compression speed: a build that waits on a link cares how
-// many bytes cross it, and zstd carries far fewer for a comparable cost. The
-// compression itself runs on the prep pool, off the goroutine that just
-// finished a compile, so what it spends is no longer charged to the build.
-//
-// A stored object names its codec in its own earliest bytes, so a cache
-// holding both is read correctly without consulting metadata, and without a
-// migration. The lz4 reader therefore stays for as long as lz4 objects do.
+// The wire codec is zstd.
 const (
 	zstdMagic = 0xFD2FB528
 	lz4Magic  = 0x184D2204
 )
 
-// zstdEncoder and zstdDecoder are shared. Building either costs far more
-// than a single object, and EncodeAll and DecodeAll are safe for concurrent
-// use, which is what the prep and look-ahead pools need.
+// zstdEncoder and zstdDecoder are shared.
 var (
 	zstdEncoder = mustZstdEncoder()
 	zstdDecoder = mustZstdDecoder()
@@ -84,15 +76,9 @@ func codecMagic(data []byte) uint32 {
 	return binary.LittleEndian.Uint32(data)
 }
 
-// DecompressSized is Decompress when the uncompressed length is already known,
-// which it is for anything the cache stores: the uploader records it as
-// body-size metadata and every read path carries it back.
-//
-// io.ReadAll cannot know the answer, so it grows a buffer by repeated
-// reallocation and copies the whole object several times on the way. A
-// multi-megabyte archive is the common case here, and the copies are pure
-// waste when the size was on the wire all along. A wrong size costs nothing
-// but the old behavior: the buffer is a starting capacity, not a promise.
+// DecompressSized is Decompress when the uncompressed length is already
+// known, which it is for anything the cache stores. The uploader records it
+// as body-size metadata and every read path carries it back.
 func DecompressSized(data []byte, size int64) ([]byte, error) {
 	presized := size > 0 && size <= maxPresizedBody
 
@@ -103,8 +89,7 @@ func DecompressSized(data []byte, size int64) ([]byte, error) {
 		return zstdDecoder.DecodeAll(data, nil)
 	}
 
-	// lz4, the codec this cache used to write. An object stored then is still
-	// served now.
+	// lz4, the codec this cache used to write. An object stored then is still served now.
 	r := lz4.NewReader(bytes.NewReader(data))
 	if !presized {
 		return io.ReadAll(r)
@@ -116,9 +101,7 @@ func DecompressSized(data []byte, size int64) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// maxPresizedBody bounds what a declared size may allocate up front. The size
-// comes off the wire, so a corrupt or hostile value must not turn a single
-// response into an out-of-memory kill; past this the reader grows as it always did.
+// maxPresizedBody bounds what a declared size may allocate up front.
 const maxPresizedBody = 1 << 30
 
 // detectObjectType identifies the type of a cache entry from its magic bytes.
@@ -148,8 +131,8 @@ func detectObjectType(data []byte) string {
 
 // DescribeData returns a short human-readable label for a cache entry from
 // its raw bytes: object type, optional import path, Go version, and target
-// (e.g. "go-archive github.com/foo/bar <goversion> linux/amd64"). Falls back to
-// just the object type for binaries and unknown formats.
+// (e.g. "go-archive github.com/foo/bar <goversion> linux/amd64"). Falls back
+// to the object type for binaries and unknown formats.
 func DescribeData(data []byte) string {
 	objType := detectObjectType(data)
 	goVer, target := parseArchiveHeader(data)

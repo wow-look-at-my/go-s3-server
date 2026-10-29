@@ -1,3 +1,5 @@
+// The look-ahead pool.
+
 package cacheclient
 
 import (
@@ -15,53 +17,22 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// The look-ahead pool. A build asks for a single key at a time, in dependency
-// order, and it cannot ask for the next a single until this answers: a
-// package's action ID is computed from its dependencies' output IDs. So the
-// number of keys the build has outstanding is its own -p, and no amount of
-// batching on the client changes that. What DOES change it is asking for keys
-// nobody has asked for yet.
+// The look-ahead pool. A build asks for a single key at a time, in dependency order, and it cannot ask for the next a single until this answers. A package's action ID is computed from its dependencies' output IDs. So the number of keys the build has outstanding is its own -p, and no amount of batching on the client changes that. What DOES change it is asking for keys nobody has asked for yet.
 //
-// The server can name those keys. It stores an object's modification time, and
-// the objects a single build writes land next to each other in time, so the
-// window around a key this build just wanted is mostly keys this build wants
-// next. That is what /_batch/get's prefetch flag returns.
+// The server can name those keys. It stores an object's modification time. The objects a single build writes land next to each other in time. The window around a key this build wanted is mostly keys this build wants next. That is what /_batch/get's prefetch flag returns.
 //
 // Properties decide where that work runs.
-//
-// It must not ride the request the build is blocked on. A prefetch answer is a
-// window of bodies nobody is waiting for, in front of the the compiler is
-// stalled on, on a single connection. That is how a cache ends up slower than
-// no cache at all.
-//
-// And it must not be bounded by the build's parallelism. The build's -p is a
-// count of compilers, chosen for the machine's cores. Fetching is not
-// compiling: it is a socket read, and the right number of those in flight has
-// nothing to do with core count.
-//
-// So look-ahead runs here, on its own goroutines, over its own requests, and
-// the critical path asks for exactly what it needs.
 type lookAhead struct {
 	b     *WebBackend
 	seeds chan []string
 	stop  chan struct{}
 	wg    sync.WaitGroup
 
-	// seeded guards a key against being seeded again. A seed is a request the
-	// build never made; making it more than a single time is pure cost.
+	// seeded guards a key against being seeded again.
 	mu     sync.Mutex
 	seeded set.Set[string]
 
-	// held is what the workers are carrying right now, in bytes, and budget is
-	// what they may carry between them. A worker reads a whole batch response
-	// into memory before the populator sees any of it, so without this the
-	// pool's peak is workers times whatever the server chose to send.
-	//
-	// The server caps a window at maxPrefetchEntries, which counts ENTRIES. A
-	// count is not a size. It also has no idea how many of these pools exist:
-	// `dist test` runs many go processes at the same time and each builds its
-	// own, so the machine's total is this budget times the number of builds.
-	// That is how a windows runner reached "Out of memory" with an empty log.
+	// held is what the workers are carrying right now, in bytes, and budget is what they may carry between them.
 	held   atomic.Int64
 	budget int64
 	chunk  int64 // bytes a single worker may hold between
@@ -114,15 +85,12 @@ func (la *lookAhead) fail(why string) {
 }
 
 // lookAheadBudget is what a single pool may hold in memory at the same time.
-// Look-ahead is speculation, so the answer to a full budget is to drop the
-// seed rather than to wait: the build never asked for these bytes.
 func lookAheadBudget() int64 {
 	return int64(envInt("GO_TOOLCHAIN_CACHE_LOOKAHEAD_BYTES", 32<<20))
 }
 
 // overBudget reports whether the workers are already carrying everything this
-// pool may hold. A budget of empty or less holds nothing back, which is what
-// a caller asking for no bound gets.
+// pool may hold.
 func (la *lookAhead) overBudget() bool {
 	return la.budget > 0 && la.held.Load() >= la.budget
 }
@@ -139,22 +107,14 @@ func (la *lookAhead) charge(entries []BatchEntry) func() {
 	return func() { la.held.Add(-n) }
 }
 
-// lookAheadChunk is how many entries a worker hands the populator at the same
-// time. It trades a few more calls for a resident set that does not grow with
-// whatever the server chose to send.
-//
-// A COUNT IS NOT A SIZE, which is the whole reason chunkBudget exists beside
-// it.
+// lookAheadChunk is how many entries a worker hands the populator at the same time.
 const lookAheadChunk = 16
 
-// minChunkBudget keeps a worker's hand-off from degenerating to a single entry
-// at a time on a small budget. a single entry is always held whatever this
-// says: a pool that can carry nothing is a pool that fetches and discards.
+// minChunkBudget keeps a worker's hand-off from degenerating to a single entry at a time.
 const minChunkBudget = 256 << 10
 
 // chunkBudget is the bytes a single worker may accumulate before handing them
-// over. The pool's peak is the worker count times this, so dividing the budget
-// across the workers is what makes the budget describe the pool rather than a single fetch.
+// over.
 func chunkBudget(budget int64, workers int) int64 {
 	if budget <= 0 || workers <= 0 {
 		return 0 // unbounded, as an unset budget asks.
@@ -207,9 +167,9 @@ func newLookAhead(b *WebBackend) *lookAhead {
 	return la
 }
 
-// Seed offers the keys a batch just fetched as anchors to look around. It
-// never blocks: a full queue means the pool is already saturated with work of
-// the same kind, and a build goroutine must never wait on speculation.
+// Seed offers the keys a batch fetched as anchors to look around. It never
+// blocks: a full queue means the pool is already saturated with work of the
+// same kind. A build goroutine must never wait on speculation.
 func (la *lookAhead) Seed(keys []string) {
 	if la == nil || len(keys) == 0 || la.off() {
 		return
@@ -418,14 +378,15 @@ func (la *lookAhead) Close() {
 	la.report()
 }
 
-// report states what the pool actually did. Without it a build cannot tell a
-// look-ahead that covered it from a single that fetched nothing: both print the
-// same batch GET line, because the critical path's own requests carry no prefetch.
+// report states what the pool did. Without it a build cannot tell a
+// look-ahead that covered it from a single that fetched nothing. Both print
+// the same batch GET line, because the critical path's own requests carry no
+// prefetch.
 //
-// Entries is what the pool handed the populator, not what the build went on to
-// use. Dropped counts seeds refused for a full queue. A large Requests against
-// a small Entries means the mtime window around this build's keys holds nobody
-// else's work worth having.
+// Entries is what the pool handed the populator, not what the build went on
+// to use. Dropped counts seeds refused for a full queue. A large Requests
+// against a small Entries means the mtime window around this build's keys
+// holds nobody else's work worth having.
 func (la *lookAhead) report() {
 	reqs := la.Requests.Load()
 	if reqs == 0 {
@@ -456,22 +417,19 @@ func (la *lookAhead) worker() {
 
 // expand asks the server for the objects stored around seed and hands them to
 // the populator. PrefetchOnly keeps the seed's own bodies off the wire: this
-// request wants the window, and the caller that asked for the seed already has
+// request wants the window. The caller that asked for the seed already has
 // those bytes.
 func (la *lookAhead) expand(seed []string) {
 	b := la.b
 	if b.OnBatchEntries == nil || !la.wait() || la.off() {
 		return
 	}
-	// Over budget, this seed goes on the floor. Waiting for room would hold a
-	// worker on bodies nobody asked for, and the window is still there to be
-	// asked for again from the next key that hits.
+	// Over budget, this seed goes on the floor.
 	if la.overBudget() {
 		la.Dropped.Add(uint32(len(seed)))
 		return
 	}
-	// The request states what this build already has, which is the whole of
-	// what the server needs to skip: it keeps no memory of its own.
+	// The request states what this build already has, which is the whole of what the server needs to skip.
 	body, err := json.Marshal(batchGetRequest{Keys: seed, Prefetch: true, PrefetchOnly: true, Have: b.heldFilter()})
 	if err != nil {
 		return
@@ -485,8 +443,7 @@ func (la *lookAhead) expand(seed []string) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	b.signRequest(req)
-	// Nobody is blocked on this request. A server that cannot see the
-	// difference reads a burst of look-ahead as a build in trouble.
+	// Nobody is blocked on this request.
 	req.Header.Set(HeaderKind, KindLookAhead)
 
 	la.Requests.Increment()
@@ -519,7 +476,7 @@ func (la *lookAhead) expand(seed []string) {
 	// The window is handed over in chunks as it arrives, so a worker holds a
 	// chunk rather than the whole response. The gate above only decides whether
 	// to START this fetch, so what bounds the pool is the byte cap on a chunk
-	// times the workers, plus the re-check after each hand-off.
+	// times the workers. Plus the re-check after each hand-off.
 	var (
 		chunk     []BatchEntry
 		brought   []actionHash
@@ -528,9 +485,7 @@ func (la *lookAhead) expand(seed []string) {
 		full      bool
 		flush     = func() {}
 		ingest    = func(e BatchEntry) {
-			// The pool filled up while this window was streaming. The rest of it
-			// goes on the floor rather than into memory nobody asked for: the
-			// keys stay in the index, so a later hit asks for them again.
+			// The pool filled up while this window was streaming.
 			if !full && la.off() {
 				// A pause or a stop came while this window streamed. The rest of it is not read.
 				full = true

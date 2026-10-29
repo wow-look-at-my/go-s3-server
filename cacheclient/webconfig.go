@@ -1,3 +1,5 @@
+// WebConfig holds the configuration for a web cache backend.
+
 package cacheclient
 
 import (

@@ -1,3 +1,5 @@
+// storeTier puts the shared store under the disk cache.
+
 package cacheclient
 
 import (
@@ -13,7 +15,7 @@ import (
 
 // storeTier puts the shared store under the disk cache. Disk stays
 // authoritative: a hit there answers without a request, and a body the store
-// serves is written to disk before it is handed back, so a caller reads a file
+// serves is written to disk before it is handed back. A caller reads a file
 // either way.
 type storeTier struct {
 	*DiskCache
@@ -34,9 +36,7 @@ type storeTier struct {
 func layerStore(disk *DiskCache, store *WebBackend) *storeTier {
 	tier := &storeTier{DiskCache: disk, store: store}
 	store.spoolDir = filepath.Join(disk.Dir(), spoolDirName)
-	// The look-ahead pool has somewhere to put what it fetches, which is what
-	// turns it on: an object lands on disk before the build asks for it, so
-	// the ask is a local read.
+	// The look-ahead pool has somewhere to put what it fetches.
 	store.OnBatchEntries = tier.populate
 	store.HasLocal = func(h actionHash) bool {
 		_, err := disk.Get(ActionID(h))

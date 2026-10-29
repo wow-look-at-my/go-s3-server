@@ -1,3 +1,5 @@
+// drainLimit bounds what closeBody reads to save a connection.
+
 package cacheclient
 
 import (

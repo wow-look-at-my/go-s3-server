@@ -215,8 +215,8 @@ func TestLoadOrFetchIndex_StalledRefreshOverDiskCopyIsRoutine(t *testing.T) {
 	cfg := WebConfig{Bucket: "bk", Endpoint: srv.URL, AccessKey: "k", SecretKey: "s"}
 	first, err := NewWebBackend(cfg)
 	require.NoError(t, err)
+	first.WaitIndex()
 	first.Close()
-	first.ensureIndex()
 	require.True(t, first.indexAuthoritative, "the first load must persist a disk copy for the second to refresh")
 
 	defer shrinkIndexBudgets(t, 2*time.Second, 150*time.Millisecond)()

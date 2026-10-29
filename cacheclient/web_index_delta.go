@@ -1,3 +1,5 @@
+// A disk copy of the index lacks every key stored since it was written.
+
 package cacheclient
 
 import (

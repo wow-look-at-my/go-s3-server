@@ -1,3 +1,5 @@
+// A build's go commands follow each other far closer than this.
+
 package cacheclient
 
 import (
@@ -10,19 +12,13 @@ import (
 // A build's go commands follow each other far closer than this.
 const indexRunIdle = 5 * time.Minute
 
-// indexRunMarkerPath is where the run marker for an index copy lives. It sits
-// beside the copy, so every process sharing an IndexDir shares a single run.
+// indexRunMarkerPath is where the run marker for an index copy lives.
 func indexRunMarkerPath(indexPath string) string {
 	return indexPath + ".run"
 }
 
 // indexRunWindow returns how long the run this process belongs to has been
 // using the index at indexPath, and records the use.
-//
-// The run is the marker beside the copy: its content is when the run began,
-// its mtime is when the index was last used. A marker untouched for longer
-// than indexRunIdle belongs to a finished run, so this use begins a new a
-// single and the window is empty.
 func indexRunWindow(indexPath string, now time.Time) time.Duration {
 	path := indexRunMarkerPath(indexPath)
 	start := now

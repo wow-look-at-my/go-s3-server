@@ -1,3 +1,5 @@
+// Bounded by SILENCE, never by total duration.
+
 package cacheclient
 
 import (
@@ -35,8 +37,7 @@ const hashSize = 32
 // gbciHashSize is the entry size of a version 1 index: a whole action ID.
 const gbciHashSize = hashSize
 
-// It is a comparable array, so a set of them is a single flat allocation
-// rather than a single string per entry.
+// It is a comparable array, so a set of them is a single flat allocation rather than a single string per entry.
 type actionHash = [hashSize]byte
 
 // parseActionHash decodes a hex action ID into the bytes the client indexes
@@ -44,9 +45,6 @@ type actionHash = [hashSize]byte
 //
 // Refusing it would break that consumer for a strictness the format already
 // enforces everywhere it matters.
-//
-// Anything that is not even-length hex, or is longer than an action ID, is not
-// an id at all, and no round trip is owed to it.
 func parseActionHash(actionID string) (actionHash, bool) {
 	var h actionHash
 	if len(actionID) == 0 || len(actionID) > hashSize*2 || len(actionID)%2 != 0 {
@@ -63,23 +61,14 @@ const gbciHeaderSize = 24
 
 // The wire-format versions a header can carry.
 const (
-	// gbciVersion is version 1: a whole action hash per entry, or, when the
-	// request asked for hash=8, each entry's indexKey.
 	gbciVersion = 1
 	// gbciVersionFull is gbciVersion under the name this branch gave it.
 	gbciVersionFull = gbciVersion
-	// gbciVersionPrefix is the version byte 2. On the wire that byte now names
-	// the Rice-coded form of indexv2.go (IndexV2Version), whose width is in
-	// bits, not a fixed-width prefix form; the name is kept for the tests this
-	// branch added.
+	// gbciVersionPrefix is the version a later byte.
 	gbciVersionPrefix = IndexV2Version
 )
 
-// indexVersionQuery is the query every index request carries: hash=8, the v1
-// short form of gbciPrefixSize bytes per key, which is the shape this client
-// holds, plus version 2 for a server that selects the form from it. A server
-// that reads neither answers a form this client parses by the blob's own
-// header.
+// indexVersionQuery is the query every index request carries: hash=8, the v1 short form of gbciPrefixSize bytes per key, which is the shape this client holds.
 const indexVersionQuery = "v=2&hash=8"
 
 // gbciMagic is the file-format identifier "GBCI".
@@ -96,7 +85,7 @@ func (b *WebBackend) indexCachePath() string {
 	return filepath.Join(dir, name)
 }
 
-// fetchIndex revalidates the disk copy against the server and returns the set
+// fetchIndex revalidates the disk copy against the server. It returns the set
 // of known cache keys and whether that set is AUTHORITATIVE, i.e.
 // server-confirmed this run (a parsed blob, or a not-modified answer
 // validating the disk copy).
@@ -105,15 +94,8 @@ func (b *WebBackend) indexCachePath() string {
 // disk blob and restarts its age; on a fresh body it adopts and persists it.
 // Any failure produces a NON-authoritative set (the disk copy, or empty):
 // Get/Put still work, and because absences from a non-authoritative set prove
-// nothing, cold keys are batch-probed instead of fast-missed (see
+// nothing. Cold keys are batch-probed instead of fast-missed (see.
 // WebBackend.Get).
-//
-// ctx carries no deadline. Each fetch carries the header and stall budgets
-// above, and those are what a hung server trips; ctx is cancelled only when
-// the backend closes.
-//
-// Each outcome logs a single time here. The consumer's stderr carries only
-// the Warnf lines unless it asks for the routine ones.
 func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex) (*keySet, bool) {
 	diskBlob, diskKeys, diskETag := disk.blob, disk.keys, disk.etag
 
@@ -121,13 +103,11 @@ func (b *WebBackend) fetchIndex(ctx context.Context, path string, disk diskIndex
 	blob, status := reply.body, reply.status
 	if err != nil {
 		if ctx.Err() != nil {
-			// The backend closed under the fetch. Nothing failed that anyone
-			// needs to hear about, and nothing is left to install.
+			// The backend closed under the fetch.
 			return nil, false
 		}
 		if diskBlob != nil {
-			// A failed refresh over a disk copy is routine: the build keeps a
-			// key set, and every go command reports it on a busy host.
+			// A failed refresh over a disk copy is routine: the build keeps a key set.
 			logging.Infof("cacheprog: web index refresh: %v", err)
 			logging.Infof("cacheprog: web index: refresh failed; using %d cached keys", disk.count)
 			return diskKeys, false
@@ -181,12 +161,9 @@ type diskIndex struct {
 	keys *keySet  // its parsed keys; empty when blob is nil
 	etag string   // its strong ETag; empty when blob is nil
 	gen  indexGen // its add-log position; zero when the server named none
-	// count is the key count as read. keys may be installed as the live set
-	// and gain claims after that, so a report on the copy uses this instead.
+	// count is the key count as read. keys may be installed as the live set and gain claims after that, so a report on the copy uses this instead.
 	count int
-	// mtime is when the copy was written or last confirmed current, and the
-	// empty time when there is no file at all. A change in it is how
-	// another process's refresh shows up here.
+	// mtime is when the copy was written or last confirmed current, and the empty time when there is no file at all.
 	mtime time.Time
 }
 
@@ -251,9 +228,7 @@ func (b *WebBackend) doIndexGET(ctx context.Context, rawQuery, ifNoneMatch strin
 		return err
 	}
 
-	// Every request names the v2 form. A server that predates it reads only
-	// hash and sends the short v1 form; one older still sends full hashes.
-	// Every answer parses.
+	// Every request names the v2 form.
 	target := b.endpoint + "/" + b.bucket + "/_index?" + indexVersionQuery
 	if rawQuery != "" {
 		target += "&" + rawQuery
@@ -312,9 +287,9 @@ func (s *stallGuardedReader) Read(p []byte) (int, error) {
 }
 
 // writeIndexBlob persists a GBCI blob via a temp file private to this writer
-// and an atomic rename, so processes sharing the directory never
-// interleave into a single file. Best-effort: a stale on-disk cache only
-// forces a fresh GET next time.
+// and an atomic rename. Processes sharing the directory never interleave
+// into a single file. Best-effort: a stale on-disk cache only forces a fresh
+// GET next time.
 func (b *WebBackend) writeIndexBlob(path string, blob []byte) {
 	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp*")
 	if err != nil {
@@ -357,8 +332,7 @@ func parseIndexBlob(blob []byte) (*keySet, string, error) {
 		if err != nil {
 			return nil, "", err
 		}
-		// A v2 blob carries its width-bit prefixes right-aligned; the index
-		// holds every key left-aligned in its indexKey, at that width.
+		// A v2 blob carries its width-bit prefixes right-aligned.
 		shift := indexKeySize*8 - width
 		keys := make([]indexKey, len(values))
 		for i, v := range values {

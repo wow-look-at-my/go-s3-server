@@ -1,3 +1,5 @@
+// BuildIDHashSize is how many leading action-hash bytes cmd/go stamps into a build id's ACTION field, base64.RawURLEncoding'd.
+
 package cacheclient
 
 import (
@@ -58,11 +60,8 @@ func archiveBuildIDAction(data []byte) string {
 	return action
 }
 
-// BuildIDMatchesAction reports whether body is consistent with cache action
-// actionIDHex, catching a self-consistent body stored under the wrong key.
-// got is the archive's stamped action. ok is false only when the build id
-// proves a DIFFERENT action, or a package archive has none (cmd/go always
-// stamps it). Best-effort integrity, not an authorization boundary.
+// BuildIDMatchesAction reports whether body is consistent with cache action actionIDHex, catching a self-consistent body stored under the wrong key. got is the archive's stamped action. ok is false only when the build id proves a DIFFERENT action, or a package
+// archive has none (cmd/go always stamps it).
 func BuildIDMatchesAction(actionIDHex string, body []byte) (got string, ok bool) {
 	isPkg, action := ArchiveExportInfo(body)
 	want := ExpectedBuildIDAction(actionIDHex)

@@ -136,6 +136,7 @@ func (b *WebBackend) handsOff() bool {
 func (b *WebBackend) closeHandOff() error {
 	b.abort()
 	fetchIndex := false
+	b.indexOnce.Do(func() {})
 	if l := b.indexLoad.Load(); l != nil {
 		select {
 		case <-l.done:

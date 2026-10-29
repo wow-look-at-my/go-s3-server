@@ -589,8 +589,8 @@ func (b *WebBackend) Close() error {
 	if b.handsOff() {
 		return b.closeHandOff()
 	}
-	// An index load still running is abandoned, and its lock on the disk copy
-	// released for the next process.
+	// An index load still running is abandoned, and its lock on the disk copy released for the next process.
+	b.indexOnce.Do(func() {})
 	if l := b.indexLoad.Load(); l != nil {
 		l.cancel()
 		<-l.done

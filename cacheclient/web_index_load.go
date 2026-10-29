@@ -1,3 +1,5 @@
+// IndexWaitDefault is how long the earliest Get or Put waits for the key index when no disk copy exists.
+
 package cacheclient
 
 import (
@@ -12,8 +14,7 @@ import (
 // IndexWaitDefault is how long the earliest Get or Put waits for the key index when no disk copy exists.
 const IndexWaitDefault = 0
 
-// indexSlowLoad is the load time past which the load is reported at warning
-// level, so a slow index shows in a CI log without debug output.
+// indexSlowLoad is the load time past which the load is reported at warning level.
 const indexSlowLoad = 5 * time.Second
 
 // indexTiming holds the waits of an index load. It is per backend so a test
@@ -37,8 +38,7 @@ type indexLoad struct {
 }
 
 // keysJournal holds the claims and drops made on the live key set while a
-// load runs. The set the load installs is replayed through it, so a Put's
-// claim or a confirmed absence made meanwhile is not lost.
+// load runs.
 type keysJournal struct {
 	added   set.Set[actionHash]
 	dropped set.Set[actionHash]
@@ -64,12 +64,6 @@ func (b *WebBackend) dropKeyLocked(h actionHash) {
 
 // ensureIndex loads the key index the earliest time the cache is used.
 // Every path that reads or claims a key calls it earliest.
-//
-// It never blocks on a download while any disk copy exists. A copy younger
-// than the max age is authoritative and final. An older a single is
-// installed at the same time as non-authoritative, and the refresh runs in
-// the background. With no copy at all the earliest use waits up to
-// indexTiming.wait, zero by default, then goes on non-authoritative while the load continues.
 func (b *WebBackend) ensureIndex() {
 	b.indexOnce.Do(b.startIndexLoad)
 }
@@ -159,8 +153,7 @@ func (b *WebBackend) adoptIndex(keys *keySet, authoritative bool) {
 	}
 	b.indexAuthoritative = authoritative
 	if keys == b.keys {
-		// The load confirmed or fell back to the set already installed, which
-		// already carries every claim and drop.
+		// The load confirmed or fell back to the set already installed, which already carries every claim and drop.
 		return
 	}
 	n := keys.Len()
@@ -178,11 +171,10 @@ func (b *WebBackend) adoptIndex(keys *keySet, authoritative bool) {
 // refreshIndex brings the disk copy up to date and returns the keys to
 // install, whether they are authoritative, and where they came from.
 //
-// A single process at a time downloads into a directory, under
-// cachedisk.LockFile on a file next to the copy. A process that finds the lock held blocks in the
-// kernel until the holder lets go, which it also does by exiting, and then
-// reads what the holder wrote. A holder whose fetch failed leaves the copy as
-// it was, and the next process to take the lock fetches itself.
+// A single process at a time downloads into a directory, under cachedisk.LockFile on a file next
+// to the copy. A process that finds the lock held blocks in the kernel until the holder lets go,
+// which it also does by exiting. And then reads what the holder wrote. A holder whose fetch
+// failed leaves the copy as it was, and the next process to take the lock fetches itself.
 func (b *WebBackend) refreshIndex(ctx context.Context, path string, disk diskIndex) (*keySet, bool, string) {
 	unlock, err := cachedisk.LockFile(ctx, path+".lock")
 	if err != nil && ctx.Err() != nil {

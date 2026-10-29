@@ -1,3 +1,5 @@
+// batchGetRequest is the JSON body sent to the server's /_batch/get endpoint.
+
 package cacheclient
 
 import (
@@ -17,14 +19,9 @@ import (
 type batchGetRequest struct {
 	Keys     []string `json:"keys"`
 	Prefetch bool     `json:"prefetch"`
-	// PrefetchOnly asks for the window around Keys without the bodies of Keys
-	// themselves. The look-ahead pool uses it: it names keys the build already
-	// has in order to say WHERE to look, and re-sending those bodies would
-	// throw away the point of the request.
+	// PrefetchOnly asks for the window around Keys without the bodies of Keys themselves.
 	PrefetchOnly bool `json:"prefetch_only,omitempty"`
-	// Have states what this client already holds, so the server can leave it
-	// out of the window. See havefilter.go. An absent filter asks for
-	// everything, which is what a client too old to send a single gets.
+	// Have states what this client already holds, so the server can leave it out of the window. See havefilter.go.
 	Have *haveFilter `json:"have,omitempty"`
 }
 
@@ -40,17 +37,13 @@ type batchGetManifestEntry struct {
 	Prefetch bool              `json:"prefetch,omitempty"`
 }
 
-// BatchEntry holds a single cache entry from a batch GET response. Data is the
-// stored (compressed) body: a consumer that wants only some of a look-ahead's
-// entries must not pay to decompress the rest.
+// BatchEntry holds a single cache entry from a batch GET response.
 type BatchEntry struct {
 	Key      string
 	OutputID string
 	Data     []byte
 	Prefetch bool
 	// RawSize is the body's uncompressed length, as the uploader recorded it.
-	// It lets a reader allocate a single time instead of growing a buffer.
-	// empty when the object predates the metadata or carries a value that will not parse.
 	RawSize int64
 }
 
@@ -59,7 +52,7 @@ type BatchEntry struct {
 //
 // It streams because the alternative was the client's largest resident cost. A
 // response carries up to batchMaxKeys requested bodies plus the server's whole
-// prefetch window, several requests are in flight at the same time, and every
+// prefetch window, several requests are in flight at the same time. And every
 // `go` process in a `dist test` run builds its own. Nothing bounded the BYTES:
 // the caps upstream and downstream both count ENTRIES, and a count is not a
 // size. That is what put a windows runner into ERROR_COMMITMENT_LIMIT.
@@ -73,16 +66,11 @@ func streamBatchResponse(r io.Reader, fn func(BatchEntry)) error {
 	meta := map[string]*batchGetManifestEntry{}
 
 	readMember := func(tr *tar.Reader, hdr *tar.Header) ([]byte, error) {
-		// The header states the size, so the body lands in a single
-		// exactly-sized allocation rather than io.ReadAll's doubling.
+		// The header states the size.
 		raw := make([]byte, hdr.Size)
 		n, err := io.ReadFull(tr, raw)
 		if err != nil {
-			// Say how far it got. A cut response and a server that stopped
-			// after a single member both surface as "unexpected EOF", and the
-			// counts are what tell them apart. Entries handed over before this
-			// point are already the caller's -- streaming means a truncated
-			// response costs the tail, not the batch.
+			// Say how far it got.
 			return nil, fmt.Errorf("read entry %s: %d of %d bytes: %w", hdr.Name, n, hdr.Size, err)
 		}
 		return raw, nil
@@ -98,8 +86,7 @@ func streamBatchResponse(r io.Reader, fn func(BatchEntry)) error {
 		}
 
 		if hdr.Name == "manifest.json" {
-			// The header states the size, so the body lands in a single
-			// exactly-sized allocation rather than io.ReadAll's doubling.
+			// The header states the size.
 			raw, err := readMember(tr, hdr)
 			if err != nil {
 				return err
@@ -118,8 +105,7 @@ func streamBatchResponse(r io.Reader, fn func(BatchEntry)) error {
 		}
 		me, ok := meta[hdr.Name[5:]]
 		if !ok {
-			// A body the manifest never named. The old code dropped it too, by
-			// walking the manifest rather than the members.
+			// A body the manifest never named. The code dropped it too, by walking the manifest rather than the members.
 			continue
 		}
 		raw, err := readMember(tr, hdr)
@@ -157,8 +143,7 @@ func (b *WebBackend) batchCoalescer() {
 	defer close(b.batchDone)
 
 	var pending []batchReq
-	// When the batch's earliest key arrived. Every caller in the batch has
-	// been blocked since at least this instant, so it is what the window costs.
+	// When the batch's earliest key arrived.
 	var firstQueued time.Time
 	var inFlight atomic.Int64
 	sent := make(chan struct{}, 1)
@@ -212,12 +197,10 @@ func (b *WebBackend) batchCoalescer() {
 				flush()
 			}
 		case <-sent:
-			// A request finished and freed the line. Whatever queued behind it
-			// goes now.
+			// A request finished and freed the line. Whatever queued behind it goes now.
 			flush()
 		case <-timer.C:
-			// The safety net for a key that arrived behind a slow request, not
-			// the thing that forms a batch.
+			// The safety net for a key that arrived behind a slow request, not the thing that forms a batch.
 			flush()
 		case <-b.batchStop:
 			flush()
@@ -227,12 +210,12 @@ func (b *WebBackend) batchCoalescer() {
 	}
 }
 
-// sendBatch issues a single HTTP request to /_batch/get for all keys in reqs
-// and distributes the entries back to the waiting callers via their reply
-// channels.
+// sendBatch issues a single HTTP request to /_batch/get for all keys in
+// reqs. It distributes the entries back to the waiting callers via their
+// reply channels.
 //
 // It asks for the requested keys and nothing else. Every caller in this batch
-// is a build goroutine that cannot proceed until this answers, so a megabyte of
+// is a build goroutine that cannot proceed until this answers. A megabyte of
 // speculative bodies queued in front of theirs is latency charged straight to
 // the critical path. Look-ahead runs on its own pool over its own requests;
 // this request stays as small as the build made it.
@@ -302,8 +285,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 	}
 	hit := make([]string, 0, len(reqs))
 	count := 0
-	// A body nobody here asked for goes to the local tier rather than on the
-	// floor. The hand-off waits until every caller in this batch is answered.
+	// A body nobody here asked for goes to the local tier rather than on the floor.
 	prefetched := &prefetchSink{b: b}
 	defer prefetched.deliver()
 
@@ -354,9 +336,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 	b.batchTiming.recordTrip(trip)
 	b.errLog.RecordBatchHTTP(len(reqs), count, trip)
 
-	// The keys that answered are where this build's objects sit in the store's
-	// time order, and that order is the only anchor the look-ahead has. A key
-	// that missed says nothing about where to look.
+	// The keys that answered are where this build's objects sit in the store's time order.
 	b.lookAhead.Seed(hit)
 }
 
@@ -364,7 +344,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 // caller can see it. A body that fails a single is a miss: the recompute that
 // follows re-uploads it clean.
 //
-// It is the thing place the gates live, so a body reaching the build through
+// It is the thing place the gates live. A body reaching the build through
 // the look-ahead pool is checked exactly as hard as a single the build asked
 // for by name. op names the path for the log line.
 func (b *WebBackend) verify(op, actionID, outputID string, stored []byte, rawSize int64) ([]byte, bool) {
@@ -393,7 +373,8 @@ func (b *WebBackend) verify(op, actionID, outputID string, stored []byte, rawSiz
 	}
 	// A compiled object self-certifies its action key in its build id. A body
 	// whose build id names another action is a poisoned mapping the hash check
-	// cannot catch, because both halves of the pair are internally consistent.
+	// cannot catch. This is because both halves of the pair are internally
+	// consistent.
 	if act, ok := BuildIDMatchesAction(actionID, data); !ok {
 		b.MissBuildID.Increment()
 		b.Stats.Corrupt.Increment()

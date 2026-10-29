@@ -1,3 +1,5 @@
+// joinErrors is errors.Join, named here so the tier reads the same whatever the module's Go version allows.
+
 package cacheclient
 
 import (
@@ -6,8 +8,7 @@ import (
 	"fmt"
 )
 
-// joinErrors is errors.Join, named here so the tier reads the same whatever
-// the module's Go version allows.
+// joinErrors is errors.Join, named here so the tier reads the same whatever the module's Go version allows.
 func joinErrors(errs ...error) error { return errors.Join(errs...) }
 
 // decodeOutputID reads an output ID the store reported.

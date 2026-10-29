@@ -1,3 +1,5 @@
+// indexKeySize is how many leading bytes of an action hash the index holds per key.
+
 package cacheclient
 
 import (
@@ -24,11 +26,6 @@ func compareKey(a, b indexKey) int { return bytes.Compare(a[:], b[:]) }
 
 // keySet is the index: the keys this client believes the remote has, each
 // held as its action hash's indexKey.
-//
-// Every key is held left-aligned, with the low bits of the width its blob
-// carried zeroed, so a lookup with a whole hash decides on those bits alone. A
-// delta of a narrower width than the set already holds narrows the set rather
-// than answering wrongly about the keys it parsed from a wider one.
 type keySet struct {
 	keys hashSet[indexKey]
 	// The low shift bits of every key are zero.
@@ -67,8 +64,8 @@ func (s *keySet) mask() uint64 { return ^uint64(0) << s.shift }
 // width is the prefix width in bits.
 func (s *keySet) width() int { return indexKeySize*8 - int(s.shift) }
 
-// maskKey zeroes the low shift bits of k, so a key of a narrower width and one
-// of this set's own agree on the bits this set keeps.
+// maskKey zeroes the low shift bits of k. A key of a narrower width and one of
+// this set's own agree on the bits this set keeps.
 func (s *keySet) maskKey(k indexKey) indexKey {
 	binary.BigEndian.PutUint64(k[:], binary.BigEndian.Uint64(k[:])&s.mask())
 	return k

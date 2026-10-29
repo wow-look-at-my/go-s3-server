@@ -1,22 +1,10 @@
+// What this client already holds, stated in the request.
+
 package cacheclient
 
 import "iter"
 
-// What this client already holds, stated in the request.
-//
-// Only the client knows what it kept.
-//
-// The statement is a Bloom filter over the first several bytes of each action
-// hash. A hash is a sha256 and already uniformly distributed. The filter has
-// no hash function of its own: the k bit positions come from double hashing
-// over both halves of those bytes. The server's copy of this arithmetic is in
-// havefilter.go at the repo root.
-//
-// It fails toward sending. The filter's error is a false positive, which says
-// the client holds a key it does not: the server declines to send that body
-// and the client asks for it by name on the blocking path. Nothing is lost
-// and nothing is answered wrongly. A filter that erred the other way would
-// re-send bodies the client already has, which is the waste this replaces.
+// What this client already holds, stated in the request. Only the client knows what it kept.
 
 // haveFilterHashes is k: how many bit positions each action hash sets.
 const haveFilterHashes = 6
@@ -24,10 +12,7 @@ const haveFilterHashes = 6
 // haveFilterBitsPerKey sizes the filter against what it holds.
 const haveFilterBitsPerKey = 16
 
-// haveFilterMinBytes and haveFilterMaxBytes bound the filter on the wire. The
-// floor keeps a nearly empty filter from being a handful of saturated bytes.
-// The ceiling caps what a prefetch request carries; past it the rate degrades
-// gracefully, and a degraded rate only means bodies the client fetches by name.
+// haveFilterMinBytes and haveFilterMaxBytes bound the filter on the wire.
 const (
 	haveFilterMinBytes = 1 << 10
 	haveFilterMaxBytes = 64 << 10
@@ -39,13 +24,9 @@ type haveFilter struct {
 	K    int    `json:"k"`
 }
 
-// newHaveFilter builds a filter over the n hashes all yields. It answers nil
-// for an empty set: a client holding nothing states nothing, and is sent the
-// full window.
+// newHaveFilter builds a filter over the n hashes all yields. It answers nil for an empty set: a client holding nothing states nothing, and is sent the full window.
 //
-// It takes a sequence rather than a slice because the held set is held under
-// a lock and can be large; materializing it per request is the copy this
-// avoids.
+// It takes a sequence rather than a slice because the held set is held under a lock and can be large. Materializing it per request is the copy this avoids.
 func newHaveFilter(n int, all iter.Seq[hashKey]) *haveFilter {
 	if n == 0 {
 		return nil
@@ -97,9 +78,7 @@ func haveFilterBit(key hashKey, i int, m uint32) uint32 {
 	return (h1 + uint32(i)*h2) % m
 }
 
-// haveFilterKeys is the held set's hashes as the filter states them. The set
-// holds whole action hashes; the filter's bit arithmetic wants each one's
-// leading bytes, which are its hashKey.
+// haveFilterKeys is the held set's hashes as the filter states them.
 func haveFilterKeys(all iter.Seq[actionHash]) iter.Seq[hashKey] {
 	return func(yield func(hashKey) bool) {
 		for h := range all {

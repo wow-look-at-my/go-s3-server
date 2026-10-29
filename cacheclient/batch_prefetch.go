@@ -1,10 +1,11 @@
+// noteHeld records that this process now has the object for h: it received and verified it, or it uploaded it.
+
 package cacheclient
 
 import "sync/atomic"
 
 // noteHeld records that this process now has the object for h: it received
-// and verified it, or it uploaded it. A prefetch request states the set, so
-// the server can skip sending what this build already has.
+// and verified it, or it uploaded it.
 func (b *WebBackend) noteHeld(h actionHash) {
 	if b.held == nil {
 		return
@@ -26,27 +27,9 @@ func (b *WebBackend) heldFilter() *haveFilter {
 }
 
 // The blocking batch path's speculative half.
-//
-// A /_batch/get response can carry entries beyond the keys the request named:
-// the server's prefetch window, the objects stored around them. Nobody in the
-// batch is waiting for those, so the request loop has nothing to hand them to.
-// Reading them off the wire and returning cost the server a disk read and the
-// client its share of the transfer, for nothing at all.
-//
-// They go to OnBatchEntries instead, the sink the look-ahead pool already
-// hands its windows to, which is the consumer's local tier. What arrives there
-// is a body the build has not asked for yet and may well ask for next.
-//
-// Things keep that from charging the critical path. The hand-off runs on its
-// own goroutine, after every caller in the batch has its answer, so no build
-// goroutine waits on a decompress for a body it did not want. And the bytes
-// held between reading an entry and handing it over are bounded by
-// prefetchBudget, because a response's window is whatever the server chose to
-// send and a count of entries is not a size.
 
 // prefetchBudget bounds the bytes of unrequested bodies a backend holds at
-// the same time. A limit of empty or less is unbounded, which is what a
-// directly constructed backend, asking for no bound, gets.
+// the same time.
 type prefetchBudget struct {
 	held  atomic.Int64
 	limit int64
@@ -82,7 +65,7 @@ type prefetchSink struct {
 }
 
 // collect takes an entry nobody in this batch asked for. An entry the sink
-// cannot keep is dropped rather than queued: the key stays in the index, so a
+// cannot keep is dropped rather than queued. The key stays in the index, so a
 // later hit asks for it by name.
 func (s *prefetchSink) collect(e BatchEntry) {
 	s.b.PrefetchOffered.Increment()

@@ -1,3 +1,5 @@
+// AtomicCounter is a uint32 counter with atomic access and JSON support.
+
 package cacheclient
 
 import (
@@ -27,8 +29,7 @@ func (c *AtomicCounter) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// AtomicBytes is a byte total with atomic access and JSON support. A build
-// moves more than a uint32 holds, so this counter is wider than the others.
+// AtomicBytes is a byte total with atomic access and JSON support.
 type AtomicBytes struct{ v atomic.Uint64 }
 
 func (c *AtomicBytes) Add(delta uint64) { c.v.Add(delta) }
@@ -47,7 +48,7 @@ func (c *AtomicBytes) UnmarshalJSON(data []byte) error {
 }
 
 // CacheStats tracks get/put counters for a single cache layer. The byte totals
-// are WIRE bytes, which is what a transfer budget is spent on: a body arrives
+// are WIRE bytes, which is what a transfer budget is spent on. A body arrives
 // compressed and the count of objects says nothing about what that cost.
 type CacheStats struct {
 	Hits     AtomicCounter `json:"hits"`

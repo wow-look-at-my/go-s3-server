@@ -1,3 +1,5 @@
+// parseImportPath extracts the import path from a Go ar archive's __.PKGDEF export data.
+
 package cacheclient
 
 import (
@@ -19,9 +21,7 @@ func parseImportPath(data []byte) string {
 }
 
 // describeObject names an object for a log line: its kind, and the package it
-// carries when it is a compiled archive. A key and a build-id action are both
-// hashes, so a warning that quotes only those says a mis-keyed object exists
-// and nothing about WHICH one.
+// carries when it is a compiled archive.
 func describeObject(data []byte) string {
 	kind := detectObjectType(data)
 	if pkg := parseImportPath(data); pkg != "" {

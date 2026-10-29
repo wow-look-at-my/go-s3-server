@@ -1,3 +1,5 @@
+// Failure-handling defaults for the remote cache backend.
+
 package cacheclient
 
 import (

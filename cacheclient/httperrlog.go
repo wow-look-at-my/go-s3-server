@@ -1,3 +1,5 @@
+// httpErrLogger coalesces repetitive HTTP error messages so a failing remote does not flood stderr with a line per request.
+
 package cacheclient
 
 import (
@@ -58,10 +60,7 @@ type batchHTTPGroup struct {
 	sumDur     time.Duration // sum of HTTP durations
 }
 
-// loggerWriter sends each summary line to the installed Logger. It exists so
-// the aggregation below keeps its io.Writer shape while obeying the package
-// contract: the client writes to no stream of its own, and a consumer that
-// installs no Logger gets silence.
+// loggerWriter sends each summary line to the installed Logger.
 type loggerWriter struct{}
 
 func (loggerWriter) Write(p []byte) (int, error) {
@@ -131,11 +130,6 @@ func (l *httpErrLogger) wake() {
 // (which may carry many keys after client-side coalescing). Buckets are
 // split by hit/all-miss so a flaky cold cache stays distinguishable from
 // a working remote. Nil-safe.
-//
-// It reports no prefetch count. These are the requests the build is blocked
-// on, and they ask for exactly the keys they need: the window rides the
-// look-ahead pool's own requests instead. Printing a count that is empty by
-// construction read as a dead prefetch on every build.
 func (l *httpErrLogger) RecordBatchHTTP(keysRequested, entriesReturned int, dur time.Duration) {
 	if l == nil {
 		logging.Infof("cacheprog: batch GET: %d keys → %d entries in %s",
@@ -191,16 +185,11 @@ func (l *httpErrLogger) flush() {
 	l.batchHTTP = map[batchHTTPKey]*batchHTTPGroup{}
 	l.mu.Unlock()
 	// A failure goes to the writer this logger captured, which is the thing
-	// destination SetLogger cannot reach. A consumer that wants its build's
-	// output clean still has to hear that the cache stopped working.
+	// destination SetLogger cannot reach.
 	for k, g := range groups {
 		fmt.Fprintln(l.w, formatGroup(k, g))
 	}
-	// A batch summary is not a failure. It says the cache is working, a single
-	// time per flush for the life of the process, so it goes through the Logger
-	// like every other routine line and the consumer decides whether to print
-	// it. On the writer it was unreachable by SetLogger, and a consumer whose
-	// output is DATA -- a go command somebody parses -- had no way to quiet it.
+	// A batch summary is not a failure.
 	for k, g := range batchHTTP {
 		logging.Infof("%s", formatBatchHTTPGroup(k, g))
 	}

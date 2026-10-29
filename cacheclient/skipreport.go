@@ -1,3 +1,5 @@
+// The client answers many reads and writes from its own copy of the index and sends nothing.
+
 package cacheclient
 
 import (

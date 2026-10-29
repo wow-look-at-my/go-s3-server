@@ -1,3 +1,5 @@
+// StoredDigestMetaKey names the metadata field carrying the sha256 of the bytes an upload puts on the wire.
+
 package cacheclient
 
 import (
@@ -6,10 +8,7 @@ import (
 	"strings"
 )
 
-// StoredDigestMetaKey names the metadata field carrying the sha256 of the bytes
-// an upload actually puts on the wire. outputID addresses the DECOMPRESSED
-// body, so it says nothing about what arrives; this one lets the server check
-// the upload it received against the one this client sent.
+// StoredDigestMetaKey names the metadata field carrying the sha256 of the bytes an upload puts on the wire.
 const StoredDigestMetaKey = "storedsha256"
 
 // OutputIDMatches verifies body's sha256 against outputID (the GOCACHEPROG

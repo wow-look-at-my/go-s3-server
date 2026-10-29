@@ -1,3 +1,5 @@
+// hashSet holds the action hashes this client believes the remote has.
+
 package cacheclient
 
 import (
@@ -9,20 +11,7 @@ import (
 	"github.com/wow-look-at-my/go-containers/set"
 )
 
-// hashSet holds the action hashes this client believes the remote has. It is a
-// SORTED SLICE, not a map, because of what it costs the machine rather than
-// what it costs a single process.
-//
-// `dist test` runs many of those at the same time, and the machine's total is
-// that number times the count.
-//
-// The index is READ far more than it is written. It arrives whole from /_index
-// at startup and gains a key per stored object after that. What a slice costs
-// is the mutation, which is why the writes land in a small set earliest and
-// are merged in a batch. Depth: docs/memory-limits.md.
-//
-// K is the key material: a whole action hash for the sets that must state
-// every byte of one, an indexKey for the index.
+// hashSet holds the action hashes this client believes the remote has.
 type hashSet[K comparable] struct {
 	// sorted is ascending and deduped: every lookup is a binary search over it.
 	sorted []K
@@ -150,10 +139,10 @@ func (s *hashSet[K]) All() iter.Seq[K] {
 }
 
 // compact folds the buffered mutations into the sorted slice. It filters the
-// deletions out in place and then merges the additions in from the END, so the
-// write cursor never overtakes the read cursor and the existing backing array
-// is reused whenever it has the room. The point of this type is the array, so a
-// merge that allocated another a single every time would hand back what it saved.
+// deletions out in place and then merges the additions in from the END. The write
+// cursor never overtakes the read cursor and the existing backing array is reused
+// whenever it has the room. The point of this type is the array, so a merge that
+// allocated another a single every time would hand back what it saved.
 func (s *hashSet[K]) compact() {
 	if s.removed.Len() > 0 {
 		s.sorted = slices.DeleteFunc(s.sorted, s.removed.Contains)
@@ -187,16 +176,11 @@ type hashKey = uint64
 // gbciPrefixSize is the hash width of the short index form the client asks for.
 const gbciPrefixSize = 8
 
-// keyOf64 is h's leading gbciPrefixSize bytes as a hashKey. indexkey.go's
-// keyOf is the same bytes as an indexKey; this is the form the width-aware
-// set and the have-filter's bit arithmetic want.
+// keyOf64 is h's leading gbciPrefixSize bytes as a hashKey.
 func keyOf64(h actionHash) hashKey { return binary.BigEndian.Uint64(h[:gbciPrefixSize]) }
 
 // widthSet is a set of hashKeys holding widthBits of each, so a lookup with a
-// whole hash decides on those bits alone. It is the shape a GBCI v2 blob
-// arrives in: the blob carries a width, and a delta of a narrower width than
-// the set already holds narrows the set rather than answering wrongly about
-// the keys it parsed from a wider one.
+// whole hash decides on those bits alone.
 type widthSet struct {
 	*hashSet[hashKey]
 	// The low shift bits of every key are zero.
@@ -251,7 +235,7 @@ func (s *widthSet) addKey(k hashKey) {
 
 // bufferKey adds k, masked to this set's width, to the pending buffer only.
 // A bulk addAll runs it per key so that the merge into the sorted slice
-// happens a single time at the end rather than per compactAt keys.
+// happens a single time. At the end rather than per compactAt keys.
 func (s *widthSet) bufferKey(k hashKey) {
 	k &= s.mask()
 	// A key in removed is still in the sorted slice, so re-adding it is the
@@ -273,8 +257,7 @@ func (s *widthSet) bufferKey(k hashKey) {
 func (s *widthSet) Remove(h actionHash) { s.hashSet.Remove(s.key(h)) }
 
 // addAll adds every key in src with a single merge into the sorted slice: a
-// merge per compactAt keys moves the whole slice each time. A src of a
-// narrower width narrows this set first, so every key keeps the same bits.
+// merge per compactAt keys moves the whole slice each time.
 func (s *widthSet) addAll(src *widthSet) {
 	if src.shift > s.shift {
 		s.narrowTo(src.shift)

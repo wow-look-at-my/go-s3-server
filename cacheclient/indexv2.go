@@ -1,3 +1,5 @@
+// GBCI v2 carries the index as the gaps between its sorted hash prefixes.
+
 package cacheclient
 
 import (
@@ -10,13 +12,6 @@ import (
 )
 
 // GBCI v2 carries the index as the gaps between its sorted hash prefixes.
-//
-// A sha256 prefix is incompressible on its own. The gaps are Rice coded:
-// the high part of each gap in unary, the low k bits as they are.
-//
-// Header, many bytes: magic, version 2, prefix width in bits, k, a reserved
-// zero, the content digest at [8:16], the count at [16:24]. The body is the
-// coded gaps, padded to a byte. The trailer is the sha256 of header and body.
 
 // IndexV2Version is the wire-format version byte of this form.
 const IndexV2Version = 2

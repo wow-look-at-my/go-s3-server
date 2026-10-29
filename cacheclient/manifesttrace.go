@@ -1,3 +1,5 @@
+// ManifestTraceEnv names a file that takes one line per manifest event: "<event> <action ID>".
+
 package cacheclient
 
 import (

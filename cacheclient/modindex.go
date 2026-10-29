@@ -1,3 +1,5 @@
+// Leading bytes of a Go module index blob; the version-less prefix matches every index format (v1, v2, future vN).
+
 package cacheclient
 
 import "bytes"
@@ -6,7 +8,7 @@ import "bytes"
 const goModuleIndexMagic = "go index v"
 
 // A module index blob binds to no action key and carries no build id, so a
-// mis-keyed a single silently breaks a build. The client refuses it on GET and PUT.
+// mis-keyed a single silently breaks a build.
 func IsGoModuleIndex(body []byte) bool {
 	return bytes.HasPrefix(body, []byte(goModuleIndexMagic))
 }

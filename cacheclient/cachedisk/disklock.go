@@ -1,3 +1,5 @@
+// lockWait bounds how long transformFile waits for another process's lock.
+
 package cachedisk
 
 import (
@@ -13,7 +15,7 @@ const lockWait = 20 * time.Second
 
 // transformFile reads a file, hands its contents to change, and writes back
 // what change answers. A single process does this at a time, through an OS
-// lock on path+".lock", because cmd/go's own lockedfile package is
+// lock on path+".lock". This is because cmd/go's own lockedfile package is
 // unreachable from this module. An error from change is returned as it
 // stands, and the file keeps its bytes.
 func transformFile(path string, change func([]byte) ([]byte, error)) error {

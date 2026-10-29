@@ -1,3 +1,5 @@
+// putReq is a prepped object queued for the PUT coalescer.
+
 package cacheclient
 
 import (
@@ -9,11 +11,7 @@ import (
 	"time"
 )
 
-// putReq is a prepped object queued for the PUT coalescer. The per-object
-// preparation (guards, lz4, metadata) has already run on a prep worker; the
-// coalescer only frames and ships these.
-//
-// It holds the compressed bytes and nothing else.
+// putReq is a prepped object queued for the PUT coalescer.
 type putReq struct {
 	actionID   string
 	key        string
@@ -24,26 +22,13 @@ type putReq struct {
 }
 
 // Put stores a cached object, compressed, and returns at the same time: the
-// guards, the compression and the upload all happen behind it. Uploads are
-// coalesced into /_batch/put tars, because a build stores thousands of objects
-// and a PUT per object saturates the server's admission control.
-//
-// It takes the body as bytes rather than a reader because everything it does
-// with them happens on another goroutine: a reader would pin the caller here
-// until the read finished, and the caller is a build goroutine that has
-// somewhere better to be. the thing thing Put does synchronously is claim
-// the key, which is what stops callers uploading the same object.
+// guards, the compression and the upload all happen behind it.
 func (b *WebBackend) Put(actionID, outputID string, data []byte) error {
 	return b.enqueuePut(actionID, outputID, data, "")
 }
 
-// PutFile is Put over a body that is still on disk, for a caller holding a file
-// rather than bytes. The read runs on a prep worker, so the caller neither
-// waits for it nor allocates the body, and the queue holds a path instead of
-// megabytes while the job waits its turn.
-//
-// The file must outlive the upload. A Close that hands uploads off leaves the
-// read to a detached uploader, which skips a file that is gone.
+// PutFile is Put over a body that is still on disk, for a caller holding a
+// file rather than bytes.
 func (b *WebBackend) PutFile(actionID, outputID, path string) error {
 	if path == "" {
 		return fmt.Errorf("web put %s: no path to read the body from", ShortID(actionID))
@@ -72,8 +57,7 @@ func (b *WebBackend) enqueuePut(actionID, outputID string, data []byte, path str
 	}
 	b.addKeyLocked(h)
 	b.keysMu.Unlock()
-	// The body came from this machine, so this process has it whatever the
-	// upload goes on to do.
+	// The body came from this machine, so this process has it whatever the upload goes on to do.
 	b.noteHeld(h)
 	b.track(h, pendingPut{actionID: actionID, outputID: outputID, path: path, data: data})
 
@@ -87,18 +71,15 @@ func (b *WebBackend) enqueuePut(actionID, outputID string, data []byte, path str
 
 // prepare turns a claimed object into a queued upload: the guards that decide
 // whether it may be published at all, then lz4, then the metadata. It runs on
-// a prep worker. Compression is the expensive half, and it used to run on the
-// build's own goroutine right after a compile finished -- the thing moment
-// that goroutine could have started the next compile instead.
+// a prep worker. Compression is the expensive half. That moment is one that
+// goroutine could have started the next compile instead.
 func (b *WebBackend) prepare(j putJob) {
 	// After a hand-off the spool carries this upload. Work here is waste.
 	if b.aborted() {
 		return
 	}
 	// A file-backed job carries a path, and the body is read here rather than by
-	// the caller. A file that has gone is a dropped upload, not a broken build,
-	// but it is never silent: the claim must go too, or the key stays claimed
-	// and nothing ever stores it.
+	// the caller.
 	if j.data == nil && j.path != "" {
 		data, err := os.ReadFile(j.path)
 		if err != nil {
@@ -109,12 +90,10 @@ func (b *WebBackend) prepare(j putJob) {
 		j.data = data
 	}
 
-	// Cross-contamination guard: refuse to publish a package under a key that disagrees
-	// with its own build id. The body<->outputID hash alone cannot catch a swapped
-	// (actionID, object) pair, so this is the only defense against poisoning the cache.
-	// The package is named because the key is a hash and the actions are
-	// hashes: a warning carrying only those says a mis-keyed object exists
-	// and nothing about which one, so whoever reads it starts from nothing.
+	// Cross-contamination guard: refuse to publish a package under a key that
+	// disagrees with its own build id. The body<->outputID hash alone cannot
+	// catch a swapped (actionID, object) pair, so this is the only defense
+	// against poisoning the cache.
 	if act, ok := BuildIDMatchesAction(j.actionID, j.data); !ok {
 		b.PutRefusedBuildID.Increment()
 		logging.Warnf("cacheprog: web put %s (%s): refusing upload, build-id action mismatch (want action=%s, got action=%s)",
@@ -144,11 +123,9 @@ func (b *WebBackend) prepare(j putJob) {
 	b.CompressedBytes.Add(uint32(len(compressed)))
 	b.RawBytes.Add(uint32(len(j.data)))
 
-	// meta holds lowercased names without the X-Cache-Meta- prefix; metadataHeaders
-	// derives the single-PUT headers from this same map, keeping both paths in sync.
-	// storedsha256 describes what goes on the wire, which outputid cannot: the
-	// server compares it against the bytes it receives and refuses a body the
-	// transfer changed, rather than storing it for a reader to discover.
+	// meta holds lowercased names without the X-Cache-Meta- prefix;
+	// metadataHeaders derives the single-PUT headers from this same map, keeping
+	// both paths in sync.
 	meta := map[string]string{
 		"outputid":          j.outputID,
 		StoredDigestMetaKey: StoredDigest(compressed),
@@ -218,8 +195,8 @@ const (
 )
 
 // capSrcList renders a source-file basename list as the Src metadata value,
-// bounded to at most srcMetaMaxFiles names and srcMetaMaxBytes bytes in total;
-// names past the cap are summarized as a trailing "+N more".
+// bounded to at most srcMetaMaxFiles names and srcMetaMaxBytes bytes in total.
+// Names past the cap are summarized as a trailing "+N more".
 func capSrcList(files []string) string {
 	total := len(files)
 	if len(files) > srcMetaMaxFiles {

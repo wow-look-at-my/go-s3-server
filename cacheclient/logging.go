@@ -1,8 +1,8 @@
+// Logger receives the client's diagnostics.
+
 package cacheclient
 
-// Logger receives the client's diagnostics. The client never writes to stderr
-// on its own: a consumer that installs nothing gets silence, which is what a
-// program whose stdout is a protocol channel needs.
+// Logger receives the client's diagnostics.
 type Logger interface {
 	Infof(format string, args ...any)
 	Warnf(format string, args ...any)

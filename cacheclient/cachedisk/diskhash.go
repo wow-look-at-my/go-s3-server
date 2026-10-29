@@ -1,3 +1,5 @@
+// HashSize is the length of a cache key in bytes.
+
 package cachedisk
 
 import "sync"

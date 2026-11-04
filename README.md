@@ -138,7 +138,7 @@ Those fields are objects stored, objects served, and the share of them that went
 
 ## Dashboard
 
-An operator dashboard runs on its **own port** (`dashboard_listen`, default `:9002`), separate from the cache protocol port. It shows hit rate, cache size against budget, batch volume, the tripwire counters, memory, and the running config, polled every 5s.
+An operator dashboard runs on its **own port** (`dashboard_listen`, default `:9002`), separate from the cache protocol port. It shows hit rate, cache size against budget, batch volume, why the cache missed, the tripwire counters, memory, and the running config, polled every 5s.
 
 It answers **without credentials, by design**: publish that port through an access proxy such as Cloudflare Zero Trust, and leave the cache port alone (build machines carry basic-auth credentials, not browser sessions). Set `dashboard_listen` to `""`, or pass `--dashboard-listen off`, to run without it.
 
@@ -239,7 +239,8 @@ This server is built to absorb the concurrent load of a parallel CI matrix (many
 - **Timeouts.** The HTTP server sets `ReadHeaderTimeout` (slowloris guard) plus generous `Read`/`Write`/`Idle` timeouts so a stuck connection cannot pin a concurrency slot indefinitely.
 - **Warm-key fast path.** The read-path module-index probe costs a file open plus an lz4 first-block decode, and runs once per key. A sharded in-memory memo remembers keys whose body already passed it, and is invalidated on overwrite, delete and eviction. Steady-state GETs of warm keys skip the decode.
 - **Observability.** When `--metrics-listen` is set, `/metrics` exposes request, storage, in-flight, and rejection counters, plus:
-  - `s3_get_requests_total{outcome}` — every single-object GET by outcome: `hit`, `miss_not_found`, `miss_advertised_unservable` (a 404 on a key `/_index` currently advertises — the index/store-divergence signature that must stay at ~0), `miss_module_index_evicted`, `miss_peek_error`, `miss_selfheal_failed`.
+  - `s3_get_requests_total{outcome}` — every single-object GET by outcome: `hit`, `miss_not_found`, `miss_evicted` (a key the sweeper removed since the client fetched its index), `miss_advertised_unservable` (a 404 on a key `/_index` currently advertises — the index/store-divergence signature that must stay at ~0), `miss_module_index_evicted`, `miss_peek_error`, `miss_selfheal_failed`, `miss_stored_digest`.
+  - `s3_batch_misses_total{reason}` — every key a `/_batch/get` asked for and did not get, by the same reasons without the `miss_` prefix. The dashboard's WHY MISSES panel adds these to the single-GET outcomes and the client's skip report.
   - `s3_put_refusals_total{reason}` — uploads accepted on the wire but refused storage (e.g. `module_index`). This moving during CI activity is the PUT guard's liveness proof.
   - `s3_batch_requests_total` and `s3_batch_keys_total{kind}` (`requested`/`found`/`anchors`/`prefetched`/`client_held`/`streamed`) — batch volume. `anchors` are look-ahead keys, which ask for nothing and never count as requested. A falling found/requested ratio is the earliest cache-degradation signal.
   - index gauges `s3_index_entries`, `s3_index_hashes`, `s3_index_pending_hashes` and `s3_index_rebuild_duration_seconds`.

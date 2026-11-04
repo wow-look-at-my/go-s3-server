@@ -1,6 +1,6 @@
 # The operator dashboard
 
-The server serves one HTML page that shows what the cache does. It reports hit rate, size against budget, batch volume, the tripwire counters, memory, and the running configuration.
+The server serves one HTML page that shows what the cache does. It reports hit rate, size against budget, batch volume, why the cache missed, the tripwire counters, memory, and the running configuration.
 
 The page listens on its **own port**, apart from the cache protocol port. An access proxy publishes that port to people. The port the build machines use stays untouched.
 
@@ -69,6 +69,28 @@ Name orders bands, not by traffic. A band that reorders itself on every poll can
 The panel reads the snapshot's `projects` map, not the Prometheus series. That map keeps an exact row for every project name, with no bound. The Prometheus series are bounded, because the project name arrives on a client header and each label value is a series a scraper keeps. `projectLabeller` bounds them at `maxProjectLabels` in `projectmetrics.go`. A name past it folds into `other` and increments `s3_project_names_folded_total`. That fold changes only the scraped metrics, not the panel.
 
 The snapshot reports configuration, not credentials. `TestDashboardStatsCarryNoCredentials` holds that line.
+
+## The WHY MISSES panel
+
+A hit rate says how frequently the cache missed. This panel says why. It reads the snapshot's `misses` section, which `diagnoseMisses` in `missdiag.go` builds from the same registry as everything else.
+
+Every miss the server knows of lands in one cause. The causes come from multiple places:
+
+| Source | Where the count comes from | Causes |
+| --- | --- | --- |
+| client | `s3_client_skips_total{op="get",reason}`, the skip report | never stored (`not_in_index`), no index yet (`empty_index`), client gave up probing (`batch_backoff`), asked before this run (`known_miss`) |
+| server | `s3_batch_misses_total{reason}` plus the matching `s3_get_requests_total{outcome="miss_<reason>"}` | unknown key (`not_found`), evicted since the client's index (`evicted`), advertised but unservable (`advertised_unservable`) |
+| integrity | the same two counters | module index refused on read, read guard could not inspect the body, body cannot be repaired, body changed on disk, stat failed |
+
+A batch GET used to count a requested key it can not answer as one number, requested minus found. `servableEntry` now reports why each one was left out, and `openVerifiedEntries` reports a body that failed its digest check after the stat. A prefetch candidate that is dropped is not a miss and is not counted.
+
+The `evicted` cause needs a memory the server did not have. `Storage.evicted` is a byte-bounded LRU of the action hashes the sweeper removed, filled by `evictOne` and cleared for a key by `PutStream`. `absentKeyReason` asks it after the index: an advertised key is divergence. A remembered victim is a capacity miss, and anything else was never stored here. The memo is registered with the memory controller under `evicted-keys`. It shrinks with the other caches, and a victim old enough to fall out of it reads as unknown again.
+
+Each cause carries a severity. An `expected` miss means the cache works and the key was never there. A `capacity` miss means the cache held the key and let it go. A `bug` means the cache must have served the key. The verdict names the dominant cause with its share and the action for it. A bug with any count is named beside it, because an expected miss needs nobody and a bug needs somebody.
+
+The page adds the thing the server cannot know: how many of each cause arrived since the last poll. A cause that fired once at startup and a cause that is still firing read the same in a lifetime count.
+
+The supply-side signals under the causes are the ways an upload is lost. The cache size against its budget, objects evicted, requests shed, uploads refused or rejected or failed, and metadata dropped. An object never stored is a miss on every later build.
 
 ## Authentication: there is none, and that is the point
 

@@ -86,6 +86,26 @@
 			<div class="scroll"><table id="project-hit-rates"><tbody></tbody></table></div>
 		</section>
 
+		<section class="panel misses">
+			<h2>WHY MISSES</h2>
+			<p class="muted note">Every miss the server knows of, by its cause: the misses a client answered from its own
+				index copy, the keys the server looked for and lacked, and the bodies it refused to serve.</p>
+			<p id="miss-verdict" class="verdict"></p>
+			<div class="split">
+				<div>
+					<h3>misses by cause</h3>
+					<div class="bars" id="miss-reasons"></div>
+					<p class="muted" id="miss-label">waiting for a second sample</p>
+				</div>
+				<div>
+					<h3>what explains them</h3>
+					<div id="miss-explain" class="explain"></div>
+					<h3>supply side</h3>
+					<table id="miss-signals"><tbody></tbody></table>
+				</div>
+			</div>
+		</section>
+
 		<section class="panel bandwidth">
 			<h2>BANDWIDTH</h2>
 			<h3>bytes served, by module</h3>

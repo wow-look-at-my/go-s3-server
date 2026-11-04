@@ -145,6 +145,36 @@ tests:
 			- '"s3_index_hashes"'
 			- "no-password 0"
 
+	- desc: the stats snapshot sorts every miss into a cause and names the dominant one
+	  exit: 0
+	  inputs:
+		files:
+			config.json: '{"listen":"127.0.0.1:0","dashboard_listen":"127.0.0.1:0","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			check.sh: |
+				set -euo pipefail
+				base=http://127.0.0.1:$PORT/test-cache
+				auth=testuser:testpass
+				# A key nothing stored, asked for over the batch path, and the
+				# client's own report of the misses it answered from its index.
+				key="go-buildcache/v1$(printf 'b%.0s' $(seq 64))"
+				curl -sf -u "$auth" -X POST -H 'Content-Type: application/json' --data-binary "{\"keys\":[\"$key\"]}" "$base/_batch/get" -o /dev/null
+				curl -sf -u "$auth" -X POST -H 'Content-Type: application/json' --data-binary '{"get_not_in_index":3}' "$base/_skips" -o /dev/null
+				stats="$(mktemp)"
+				curl -sf "http://127.0.0.1:$DASHBOARD_PORT/api/stats" -o "$stats"
+				grep -o '"total": 4' "$stats"
+				grep -o '"dominant": "not_in_index"' "$stats"
+				grep -A3 '"key": "not_found"' "$stats" | grep -o '"count": 1'
+				grep -o '"verdict": "75.0% of misses: never stored\.' "$stats"
+				grep -o '"key": "cache_fill"' "$stats"
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
+	  outputs:
+		stdout:
+			- '"total": 4'
+			- '"dominant": "not_in_index"'
+			- '"count": 1'
+			- '"verdict": "75.0% of misses: never stored.'
+			- '"key": "cache_fill"'
+
 	- desc: an empty dashboard_listen opens no dashboard listener
 	  exit: 0
 	  inputs:

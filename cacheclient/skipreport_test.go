@@ -2,6 +2,7 @@ package cacheclient
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -93,6 +94,66 @@ func TestSkipReportSendsDuringARun(t *testing.T) {
 	require.Equal(t, []SkipReport{{GetNotInIndex: 2}}, got, "a skip past the interval must send without waiting for Close")
 	mu.Unlock()
 	require.NoError(t, b.Close())
+}
+
+// An upload the store never confirmed is a miss on every later build, so the
+// report carries it beside the skips.
+func TestSkipReportCarriesTheUploadsThatNeverLanded(t *testing.T) {
+	var status atomic.Int32
+	var got []SkipReport
+	var mu sync.Mutex
+	srv := skipServer(t, &status, &got, &mu)
+	defer srv.Close()
+	b := newSkipBackend(t, srv.URL)
+	status.Store(http.StatusNoContent)
+
+	b.PutFailed.Add(3)
+	b.PutRefusedBuildID.Add(1)
+	b.PutRefusedModIndex.Add(1)
+	b.PutAbandoned.Add(2)
+	require.NoError(t, b.Close())
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []SkipReport{{PutFailed: 3, PutRefused: 2, PutAbandoned: 2}}, got)
+}
+
+// A batch the server answers with an error rolls the claims back and counts
+// every object in it as failed. The report says what the store lost.
+func TestFailedBatchPutCountsEveryObject(t *testing.T) {
+	var reports []SkipReport
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/testbucket/_batch/put":
+			w.WriteHeader(http.StatusInternalServerError)
+		case "/testbucket/_skips":
+			var rep SkipReport
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&rep))
+			mu.Lock()
+			reports = append(reports, rep)
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	b := newSkipBackend(t, srv.URL)
+	b.maxRetries = 0
+	b.skipIndex()
+
+	for i := range 2 {
+		body := []byte(largePayload(600 + i))
+		require.NoError(t, b.Put(testAction(fmt.Sprint("fail", i)), StoredDigest(body), body))
+	}
+	require.NoError(t, b.Close())
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, reports, 1)
+	assert.EqualValues(t, 2, reports[0].PutFailed)
+	assert.EqualValues(t, 2, b.PutFailed.Load())
 }
 
 func TestSkipReportStopsAgainstAnOlderServer(t *testing.T) {

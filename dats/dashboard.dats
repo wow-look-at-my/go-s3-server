@@ -158,13 +158,14 @@ tests:
 				# client's own report of the misses it answered from its index.
 				key="go-buildcache/v1$(printf 'b%.0s' $(seq 64))"
 				curl -sf -u "$auth" -X POST -H 'Content-Type: application/json' --data-binary "{\"keys\":[\"$key\"]}" "$base/_batch/get" -o /dev/null
-				curl -sf -u "$auth" -X POST -H 'Content-Type: application/json' --data-binary '{"get_not_in_index":3}' "$base/_skips" -o /dev/null
+				curl -sf -u "$auth" -X POST -H 'Content-Type: application/json' --data-binary '{"get_not_in_index":3,"put_failed":2,"put_abandoned":1}' "$base/_skips" -o /dev/null
 				stats="$(mktemp)"
 				curl -sf "http://127.0.0.1:$DASHBOARD_PORT/api/stats" -o "$stats"
 				grep -o '"total": 4' "$stats"
 				grep -o '"dominant": "not_in_index"' "$stats"
 				grep -A3 '"key": "not_found"' "$stats" | grep -o '"count": 1'
 				grep -o '"verdict": "75.0% of misses: never stored\.' "$stats"
+				grep -o 'Clients reported 3 uploads that never reached the store (2 failed, 1 abandoned)' "$stats"
 				grep -o '"key": "cache_fill"' "$stats"
 	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
@@ -173,6 +174,7 @@ tests:
 			- '"dominant": "not_in_index"'
 			- '"count": 1'
 			- '"verdict": "75.0% of misses: never stored.'
+			- 'Clients reported 3 uploads that never reached the store (2 failed, 1 abandoned)'
 			- '"key": "cache_fill"'
 
 	- desc: an empty dashboard_listen opens no dashboard listener

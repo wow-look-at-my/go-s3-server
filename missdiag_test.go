@@ -157,6 +157,39 @@ func TestDiagnoseMissesNamesABugBesideTheDominantCause(t *testing.T) {
 	assert.Contains(t, m.Verdict, "Also 3 advertised but unservable, which is a bug")
 }
 
+// An upload a client never completed explains a never-stored count that
+// does not fall on repeat builds, so the verdict names it.
+func TestDiagnoseMissesNamesTheUploadsClientsLost(t *testing.T) {
+	reg, skips, _, _ := missRegistry(t)
+	lost := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "s3_client_uploads_lost_total"}, []string{"reason"})
+	reg.MustRegister(lost)
+	skips.WithLabelValues("get", "not_in_index").Add(50)
+	lost.WithLabelValues("failed").Add(4)
+	lost.WithLabelValues("abandoned").Add(2)
+	lost.WithLabelValues("refused").Add(9)
+
+	stats, err := gatherDashboardMetrics(reg)
+	require.NoError(t, err)
+	m := diagnoseMisses(stats, dashboardEvictionInfo{})
+	assert.Contains(t, m.Verdict, "Clients reported 6 uploads that never reached the store (4 failed, 2 abandoned)")
+	var failed, refused missSignal
+	for _, s := range m.Signals {
+		switch s.Key {
+		case "uploads_failed":
+			failed = s
+		case "uploads_refused":
+			refused = s
+		}
+	}
+	assert.InDelta(t, 4, failed.Count, 0)
+	assert.True(t, failed.Alert)
+	assert.InDelta(t, 9, refused.Count, 0)
+	assert.False(t, refused.Alert, "a refusal is the client doing its job")
+
+	m = diagnoseMisses(map[string]metricValue{}, dashboardEvictionInfo{})
+	assert.NotContains(t, m.Verdict, "Clients reported")
+}
+
 func TestDiagnoseMissesWithNothingRecorded(t *testing.T) {
 	reg, _, _, _ := missRegistry(t)
 	stats, err := gatherDashboardMetrics(reg)

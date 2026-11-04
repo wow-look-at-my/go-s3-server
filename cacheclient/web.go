@@ -196,6 +196,10 @@ type WebBackend struct {
 	PutSkippedKnown    AtomicCounter // key already in the index or claimed by an in-flight upload
 	PutRefusedBuildID  AtomicCounter // refused: build-id action mismatch (mis-keyed object)
 	PutRefusedModIndex AtomicCounter // refused: Go module index (never published to the shared cache)
+	// PutFailed counts uploads the server did not confirm: a network error, a refused answer.
+	PutFailed AtomicCounter
+	// PutAbandoned counts uploads this process gave up without an attempt: a body that could not be read, a backend that was closing.
+	PutAbandoned AtomicCounter
 
 	// maxRetries bounds retries for a transient failure; past the budget the op falls back to a local miss.
 	maxRetries int // bounded retries for transient failures

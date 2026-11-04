@@ -99,13 +99,25 @@ func TestSkipReportRejectsBadBodies(t *testing.T) {
 
 // The server decodes the client's struct.
 func TestSkipReportWireMatchesClient(t *testing.T) {
-	data, err := json.Marshal(cacheclient.SkipReport{GetNotInIndex: 1, GetEmptyIndex: 2, GetBatchBackoff: 3, GetKnownMiss: 4, PutKnown: 5})
+	data, err := json.Marshal(cacheclient.SkipReport{GetNotInIndex: 1, GetEmptyIndex: 2, GetBatchBackoff: 3, GetKnownMiss: 4, PutKnown: 5, PutFailed: 6, PutRefused: 7, PutAbandoned: 8})
 	require.NoError(t, err)
+	failed := clientUploadsLostTotal.WithLabelValues("failed")
+	abandoned := clientUploadsLostTotal.WithLabelValues("abandoned")
+	failedBefore, abandonedBefore := testutil.ToFloat64(failed), testutil.ToFloat64(abandoned)
 	rec := httptest.NewRecorder()
 	handleSkipReport(rec, httptest.NewRequest("POST", "/testbucket/_skips", strings.NewReader(string(data))))
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 
 	var rep skipReport
 	require.NoError(t, json.Unmarshal(data, &rep))
-	assert.Equal(t, skipReport{GetNotInIndex: 1, GetEmptyIndex: 2, GetBatchBackoff: 3, GetKnownMiss: 4, PutKnown: 5}, rep)
+	assert.Equal(t, skipReport{GetNotInIndex: 1, GetEmptyIndex: 2, GetBatchBackoff: 3, GetKnownMiss: 4, PutKnown: 5, PutFailed: 6, PutRefused: 7, PutAbandoned: 8}, rep)
+	assert.Equal(t, 6.0, testutil.ToFloat64(failed)-failedBefore, "an upload the client could not complete is counted")
+	assert.Equal(t, 8.0, testutil.ToFloat64(abandoned)-abandonedBefore)
+}
+
+// An older client sends no loss fields, and its report still counts.
+func TestSkipReportFromAnOlderClient(t *testing.T) {
+	rec := httptest.NewRecorder()
+	handleSkipReport(rec, httptest.NewRequest("POST", "/testbucket/_skips", strings.NewReader(`{"get_not_in_index":1,"get_empty_index":0,"get_batch_backoff":0,"get_known_miss":0,"put_known":2}`)))
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 }

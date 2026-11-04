@@ -64,7 +64,7 @@ func (b *WebBackend) enqueuePut(actionID, outputID string, data []byte, path str
 	j := putJob{actionID: actionID, key: b.key(actionID), hash: h, outputID: outputID, data: data, path: path}
 	if !b.prep.submit(j) {
 		// Nowhere to run the work: drop the claim so a later run re-uploads.
-		b.removeClaimed(h)
+		b.abandonUpload(h)
 	}
 	return nil
 }
@@ -84,7 +84,7 @@ func (b *WebBackend) prepare(j putJob) {
 		data, err := os.ReadFile(j.path)
 		if err != nil {
 			logging.Warnf("cacheprog: web put %s: read body: %v; not uploading this object", ShortID(j.actionID), err)
-			b.dropUpload(j.hash)
+			b.abandonUpload(j.hash)
 			return
 		}
 		j.data = data
@@ -117,7 +117,7 @@ func (b *WebBackend) prepare(j putJob) {
 	}
 	if err != nil {
 		logging.Warnf("cacheprog: web put %s: compress: %v", ShortID(j.actionID), err)
-		b.dropUpload(j.hash)
+		b.abandonUpload(j.hash)
 		return
 	}
 	b.CompressedBytes.Add(uint32(len(compressed)))
@@ -173,7 +173,7 @@ func (b *WebBackend) prepare(j putJob) {
 	case b.putBatchReqCh <- pr:
 	case <-b.putBatchStop:
 		// Backend is closing — drop the claim so a later run re-uploads.
-		b.removeClaimed(pr.hash)
+		b.abandonUpload(pr.hash)
 	}
 }
 

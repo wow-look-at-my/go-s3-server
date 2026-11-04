@@ -130,3 +130,18 @@ func (b *WebBackend) removeClaimed(h actionHash) {
 	b.dropKeyLocked(h)
 	b.keysMu.Unlock()
 }
+
+// failUpload rolls back the claim of an upload the server did not confirm and
+// counts it.
+func (b *WebBackend) failUpload(h actionHash) {
+	b.removeClaimed(h)
+	if !b.aborted() {
+		b.PutFailed.Increment()
+	}
+}
+
+// abandonUpload gives up an upload that was never attempted and counts it.
+func (b *WebBackend) abandonUpload(h actionHash) {
+	b.dropUpload(h)
+	b.PutAbandoned.Increment()
+}

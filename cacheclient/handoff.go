@@ -163,7 +163,6 @@ func (b *WebBackend) closeHandOff() error {
 		close(b.batchStop)
 		<-b.batchDone
 	}
-	b.skips.wg.Wait()
 	b.prefetchWG.Wait()
 	b.lookAhead.Close()
 
@@ -174,10 +173,13 @@ func (b *WebBackend) closeHandOff() error {
 	if len(entries) > 0 || fetchIndex {
 		if err := b.handOff(entries, fetchIndex); err != nil {
 			logging.Warnf("cacheprog: upload hand-off: %v; %d uploads are not stored", err, len(entries))
+			b.PutAbandoned.Add(uint32(len(entries)))
 		} else {
 			b.handedOff.Store(int64(len(entries)))
 		}
 	}
+	// The report goes out after the hand-off, so it counts an upload the hand-off lost.
+	b.stopSkipReporter()
 	if b.errLog != nil {
 		_ = b.errLog.Close()
 	}

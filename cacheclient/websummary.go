@@ -46,6 +46,9 @@ type WebSummary struct {
 	PutSkippedKnown    uint32 `json:"put_skipped_known"`
 	PutRefusedModIndex uint32 `json:"put_refused_modindex"`
 	PutRefusedBuildID  uint32 `json:"put_refused_buildid"`
+	// Uploads the store never confirmed: attempted and failed, or never attempted.
+	PutFailed    uint32 `json:"put_failed"`
+	PutAbandoned uint32 `json:"put_abandoned"`
 
 	// Startup index state: advertised key count, and whether it came from a fresh fetch this run.
 	IndexKeys          int  `json:"index_keys"`
@@ -97,6 +100,8 @@ func (b *WebBackend) SummarySnapshot() WebSummary {
 		PutSkippedKnown:     b.PutSkippedKnown.Load(),
 		PutRefusedModIndex:  b.PutRefusedModIndex.Load(),
 		PutRefusedBuildID:   b.PutRefusedBuildID.Load(),
+		PutFailed:           b.PutFailed.Load(),
+		PutAbandoned:        b.PutAbandoned.Load(),
 		IndexKeys:           indexKeys,
 		IndexAuthoritative:  authoritative,
 		Batch:               b.batchTiming.snapshot(),

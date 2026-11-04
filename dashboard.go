@@ -85,6 +85,8 @@ type dashboardStats struct {
 	Metrics       map[string]metricValue `json:"metrics"`
 	// Projects holds every project's exact totals.
 	Projects map[string]projectRow `json:"projects"`
+	// Misses is why the cache missed, from the same counters.
+	Misses dashboardMisses `json:"misses"`
 }
 
 // dashboard answers the page, its assets, the stats snapshot, and the
@@ -201,6 +203,12 @@ func (d *dashboard) snapshot() (*dashboardStats, error) {
 		return nil, err
 	}
 	now := time.Now()
+	eviction := dashboardEvictionInfo{
+		Enabled:  d.cfg.Eviction.Enabled(),
+		MaxBytes: d.cfg.Eviction.SizeLimit(),
+		MaxAge:   d.cfg.Eviction.AgeLimit().String(),
+		Interval: d.cfg.Eviction.Interval.Std().String(),
+	}
 	return &dashboardStats{
 		GeneratedAt:   now,
 		UptimeSeconds: now.Sub(d.started).Seconds(),
@@ -217,15 +225,11 @@ func (d *dashboard) snapshot() (*dashboardStats, error) {
 			MaxObjectBytes:        d.cfg.MaxObjectBytes,
 			Draining:              d.srv != nil && d.srv.shuttingDown.Load(),
 		},
-		Eviction: dashboardEvictionInfo{
-			Enabled:  d.cfg.Eviction.Enabled(),
-			MaxBytes: d.cfg.Eviction.SizeLimit(),
-			MaxAge:   d.cfg.Eviction.AgeLimit().String(),
-			Interval: d.cfg.Eviction.Interval.Std().String(),
-		},
+		Eviction: eviction,
 		Index:    d.indexInfo(),
 		Metrics:  metrics,
 		Projects: projectTotals.snapshot(),
+		Misses:   diagnoseMisses(metrics, eviction),
 	}, nil
 }
 

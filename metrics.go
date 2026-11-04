@@ -223,7 +223,7 @@ var (
 	// into s3_http_requests_total{status="404"}.
 	getRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "s3_get_requests_total",
-		Help: "Single-object GET requests by outcome (hit, miss_not_found, miss_advertised_unservable, miss_module_index_evicted, miss_peek_error, miss_selfheal_failed).",
+		Help: "Single-object GET requests by outcome (hit, miss_not_found, miss_evicted, miss_advertised_unservable, miss_module_index_evicted, miss_peek_error, miss_selfheal_failed, miss_stored_digest).",
 	}, []string{"outcome"})
 
 	// moduleIndexEvictionsTotal counts already-stored Go module-index blobs that

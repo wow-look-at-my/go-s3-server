@@ -58,6 +58,8 @@ type Storage struct {
 	cleanKeys *lruCache[cleanKey, struct{}]
 	// digestOK memoizes the file version of each key whose body last matched its stored digest.
 	digestOK *lruCache[cleanKey, fileIdentity]
+	// evicted remembers the keys the sweeper removed, so a later request for one reads as a capacity miss.
+	evicted *lruCache[cleanKey, struct{}]
 }
 
 type ObjectMeta struct {
@@ -100,6 +102,7 @@ func NewStorage(dataDir string, writeOnce WriteOnceConfig) (*Storage, error) {
 		cleanKeys: newCleanKeyMemo(cacheBudget(cleanMemoBudgetFraction, defaultCleanMemoBytes)),
 		digestOK:  newDigestMemo(cacheBudget(cleanMemoBudgetFraction, defaultCleanMemoBytes)),
 		metaCache: newMetaCache(cacheBudget(metaCacheBudgetFraction, defaultMetaCacheBytes)),
+		evicted:   newEvictedMemo(cacheBudget(evictedMemoBudgetFraction, defaultEvictedMemoBytes)),
 	}
 
 	s.Index = NewIndex(s)
@@ -328,6 +331,7 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 	// The body under this key changed: the next read must re-probe it rather than trust a stale known-clean verdict for the body.
 	s.forgetClean(key)
 	s.forgetMeta(key)
+	s.forgetEvicted(key)
 	if s.Index != nil {
 		s.Index.Put(key, n)
 	}

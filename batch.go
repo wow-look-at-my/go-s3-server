@@ -131,7 +131,11 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 		requestedSet.Add(key)
 	}
 	entries := parallelFilter(lookup, func(key string) (batchEntry, bool) {
-		return servableEntry(storage, key, false)
+		e, reason := servableEntry(storage, key, false)
+		if reason != "" {
+			batchMissesTotal.WithLabelValues(reason).Inc()
+		}
+		return e, reason == ""
 	})
 	var minMod, maxMod time.Time
 	for _, e := range entries {
@@ -454,58 +458,69 @@ type openedEntry struct {
 	size int64
 }
 
-// openVerifiedEntries opens each entry's body and checks it against the digest
-// recorded with it, the same check the single-object GET makes. A body that
-// vanished since its stat is left out. A body that no longer matches is left
-// out and evicted, so the client reads it as a miss and the next upload
-// replaces it. The caller owns the returned files.
+// openVerifiedEntries opens each entry's body and checks it against the digest recorded with it, the same check the single-object GET makes. A body that vanished since its stat is left out. A body that no longer matches is left out and evicted, so the client
+// reads it as a miss and the next upload replaces it.
 func openVerifiedEntries(storage *Storage, entries []batchEntry) []openedEntry {
 	return parallelFilter(entries, func(e batchEntry) (openedEntry, bool) {
-		f, size, err := storage.OpenBody(e.key)
-		if err != nil {
-			return openedEntry{}, false
+		o, ok := openVerifiedEntry(storage, e)
+		if !ok && !e.prefetch {
+			// A requested body that fails here was found at the stat, so it is a miss of its own kind.
+			batchMissesTotal.WithLabelValues(missStoredDigest).Inc()
 		}
-		ok, verifyErr := storage.verifyStoredDigestFor(e.key, f, e.meta.Metadata)
-		if verifyErr == nil && ok {
-			return openedEntry{batchEntry: e, f: f, size: size}, true
-		}
-		f.Close()
-		if verifyErr != nil {
-			return openedEntry{}, false
-		}
-		storedDigestMismatchTotal.WithLabelValues("batch_get").Inc()
-		log.Printf("stored digest: %q no longer hashes to the digest stored with it; evicting", e.key)
-		if delErr := storage.Delete(e.key); delErr != nil && !errors.Is(delErr, ErrNotFound) {
-			log.Printf("stored digest: evicting %q: %v", e.key, delErr)
-		}
-		return openedEntry{}, false
+		return o, ok
 	})
+}
+
+func openVerifiedEntry(storage *Storage, e batchEntry) (openedEntry, bool) {
+	f, size, err := storage.OpenBody(e.key)
+	if err != nil {
+		return openedEntry{}, false
+	}
+	ok, verifyErr := storage.verifyStoredDigestFor(e.key, f, e.meta.Metadata)
+	if verifyErr == nil && ok {
+		return openedEntry{batchEntry: e, f: f, size: size}, true
+	}
+	f.Close()
+	if verifyErr != nil {
+		return openedEntry{}, false
+	}
+	storedDigestMismatchTotal.WithLabelValues("batch_get").Inc()
+	log.Printf("stored digest: %q no longer hashes to the digest stored with it; evicting", e.key)
+	if delErr := storage.Delete(e.key); delErr != nil && !errors.Is(delErr, ErrNotFound) {
+		log.Printf("stored digest: evicting %q: %v", e.key, delErr)
+	}
+	return openedEntry{}, false
 }
 
 // servableEntry stats key and applies the read guards. It refuses and evicts
 // a stored module-index blob, and it repairs an object with no outputid in
-// place. Bodies are not read here.
-func servableEntry(storage *Storage, key string, prefetch bool) (batchEntry, bool) {
+// place. Bodies are not read here. The reason is "" for a servable entry,
+// and otherwise one of the batchMissesTotal labels.
+func servableEntry(storage *Storage, key string, prefetch bool) (batchEntry, string) {
 	meta, err := storage.Stat(key)
 	if err != nil {
-		if !prefetch && !errors.Is(err, ErrNotFound) {
+		if errors.Is(err, ErrNotFound) {
+			return batchEntry{}, absentKeyReason(storage, key)
+		}
+		if !prefetch {
 			log.Printf("batch get: %s: %v", key, err)
 		}
-		return batchEntry{}, false
+		return batchEntry{}, missStatError
 	}
 	if evictModuleIndexOnReadByKey(storage, key, meta) {
-		return batchEntry{}, false
+		return batchEntry{}, missModuleIndex
 	}
 	if !ensureOutputID(storage, key, meta, nil) {
-		return batchEntry{}, false
+		return batchEntry{}, missSelfHeal
 	}
-	return batchEntry{key: key, meta: meta, prefetch: prefetch}, true
+	return batchEntry{key: key, meta: meta, prefetch: prefetch}, ""
 }
 
 // buildPrefetchEntries returns the servable entries for the prefetch keys. The
 // caller has already left out the keys the client holds.
 func buildPrefetchEntries(storage *Storage, keys []string) []batchEntry {
 	return parallelFilter(keys, func(key string) (batchEntry, bool) {
-		return servableEntry(storage, key, true)
+		e, reason := servableEntry(storage, key, true)
+		return e, reason == ""
 	})
 }

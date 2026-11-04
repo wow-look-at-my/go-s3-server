@@ -89,6 +89,9 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 		if storage.digestOK != nil {
 			s.mem.Register(digestMemoKind, storage.digestOK.Budget(), storage.digestOK)
 		}
+		if storage.evicted != nil {
+			s.mem.Register(evictedMemoKind, storage.evicted.Budget(), storage.evicted)
+		}
 	}
 	return s
 }

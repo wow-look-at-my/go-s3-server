@@ -262,9 +262,10 @@ func provenanceOf(r *http.Request) requestProvenance {
 // wire is the stored (compressed) size, which is what crossed the network.
 // The raw size comes from the object's own metadata. The project is the build
 // that sent the request.
-func recordObject(agg *logAggregator, prov requestProvenance, meta map[string]string, wire int64, put, batched bool) {
+func recordObject(agg *logAggregator, prov requestProvenance, key string, meta map[string]string, wire int64, put, batched bool) {
 	// The metrics are recorded before the log.
 	noteProjectObject(prov, wire, put)
+	packageChurn.observe(key, meta, put, projectOf(prov))
 	if agg == nil {
 		return
 	}

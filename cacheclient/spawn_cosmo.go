@@ -1,5 +1,7 @@
 //go:build cosmo
 
+// spawn_cosmo.go holds the spawn cosmo code.
+
 package cacheclient
 
 import "syscall"

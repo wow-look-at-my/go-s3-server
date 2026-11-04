@@ -87,6 +87,8 @@ type dashboardStats struct {
 	Projects map[string]projectRow `json:"projects"`
 	// Misses is why the cache missed, from the same counters.
 	Misses dashboardMisses `json:"misses"`
+	// Churn is what changed between uploads of the same package.
+	Churn dashboardChurn `json:"churn"`
 }
 
 // dashboard answers the page, its assets, the stats snapshot, and the
@@ -230,6 +232,7 @@ func (d *dashboard) snapshot() (*dashboardStats, error) {
 		Metrics:  metrics,
 		Projects: projectTotals.snapshot(),
 		Misses:   diagnoseMisses(metrics, eviction),
+		Churn:    packageChurn.snapshot(),
 	}, nil
 }
 

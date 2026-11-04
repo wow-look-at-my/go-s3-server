@@ -1,5 +1,7 @@
 //go:build js || wasip1
 
+// lockfile_inproc.go holds the lockfile inproc code.
+
 package cachedisk
 
 import (

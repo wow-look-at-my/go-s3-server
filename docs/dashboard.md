@@ -1,6 +1,6 @@
 # The operator dashboard
 
-The server serves one HTML page that shows what the cache does. It reports hit rate, size against budget, batch volume, why the cache missed, the tripwire counters, memory, and the running configuration.
+The server serves one HTML page that shows what the cache does. It reports hit rate, size against budget, batch volume, why the cache missed, what changed between multiple uploads of one package. The tripwire counters, memory, and the running configuration.
 
 The page listens on its **own port**, apart from the cache protocol port. An access proxy publishes that port to people. The port the build machines use stays untouched.
 
@@ -46,7 +46,7 @@ The client keeps a copy of `/_index`. When that copy is fresh, the client misses
 
 The client therefore reports those skips. It sends `POST /{bucket}/_skips` from a skip that comes at least `skipReportInterval` after the last send, and again at `Close`. That `POST /{bucket}/_skips` is with the counts since the last report the server accepted. A failed report leaves the counts in place for the next one. The code is `cacheclient/skipreport.go` and `skips.go`.
 
-The server counts each report in `s3_client_skips_total{op,reason}`. Each skipped get is also a miss in `s3_project_objects_total` for the project that asked. The hit rate tile divides `found` plus the single-GET hits by `requested` plus the skipped gets plus the single GETs. The hit chart takes the same ratio over the keys asked since the previous poll. A drop shows at once and does not fade into the lifetime average.
+The server counts each report in `s3_client_skips_total{op,reason}`, and the uploads the client lost in `s3_client_uploads_lost_total{reason}`. Each skipped get is also a miss in `s3_project_objects_total` for the project that asked. The hit rate tile divides `found` plus the single-GET hits by `requested` plus the skipped gets plus the single GETs. The hit chart takes the same ratio over the keys asked since the previous poll. A drop shows at once and does not fade into the lifetime average.
 
 A server older than the endpoint answers 405. The client then stops reporting for that run and logs one warning, because that server's hit rate stays too high.
 
@@ -91,6 +91,31 @@ Each cause carries a severity. An `expected` miss means the cache works and the 
 The page adds the thing the server cannot know: how many of each cause arrived since the last poll. A cause that fired once at startup and a cause that is still firing read the same in a lifetime count.
 
 The supply-side signals under the causes are the ways an upload is lost. The cache size against its budget, objects evicted, requests shed, uploads refused or rejected or failed, and metadata dropped. An object never stored is a miss on every later build.
+
+The client reports its own lost uploads in the skip report. `put_failed` is an upload it sent and the store never confirmed. `put_refused` is one its own guards stopped. `put_abandoned` is one it never sent. The server counts them in `s3_client_uploads_lost_total{reason}`, shows them as the first signals, and names the failed and abandoned ones in the verdict. `Close` sends the report last, after every upload drained or was handed off, on a context the hand-off does not cancel.
+
+A process does not exit between its last upload and the report that says what happened to it.
+
+## The WHAT CHANGED panel
+
+A build that stores a package the cache already held under another key compiled it again. The hit rate reads that as a miss. This panel says why the key moved.
+
+The action id hashes every input, and the server sees none of them. It sees what the client said about each upload. The package path, the Go version, the client version, the target, the first source file names, and the output id. `churnTracker` in `churn.go` keeps the last upload or hit of every package, keyed by package and target. That `churnTracker` is in a byte-bounded LRU registered with the memory controller as `package-churn`. A put of a known package under a new key is a re-store.
+
+The first field that differs names its kind:
+
+| Kind | What differed | What it means |
+| --- | --- | --- |
+| `go_version` | the Go version | a new compiler recompiles everything once |
+| `toolchain` | the go-toolchain client version | a client release that carries a new compiler build changes every action id |
+| `target` | GOOS/GOARCH | a fleet that builds for several targets |
+| `sources` | the source file names | a file added or removed |
+| `inputs` | nothing, and the output id is the same | an input the metadata does not carry: a flag, an environment variable, a stamp, a path, a dependency's build id |
+| `output` | nothing, and the output id differs | a file's content, or a dependency whose output changed |
+
+The `inputs` kind is the pointless re-store. Nothing visible changed and the compiled bytes are same. The build still can not find the object. The panel colours it, ranks the packages stored again most frequently, and lists the latest re-stores with each differing field as `from -> to`. The verdict names the dominant kind with its newest example.
+
+A hit teaches the tracker the newest object the cache served, whoever stored it. A put then compares against that. The tracker starts empty at every server start and fills as builds run. `s3_package_restores_total{change,output}` counts the same events for a scrape, and each project's row carries `restores` and `restores_same_output`.
 
 ## Authentication: there is none, and that is the point
 

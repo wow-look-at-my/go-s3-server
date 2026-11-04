@@ -1,5 +1,7 @@
 //go:build windows
 
+// spawn_windows.go holds the spawn windows code.
+
 package cacheclient
 
 import "syscall"

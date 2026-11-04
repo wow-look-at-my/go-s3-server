@@ -122,7 +122,7 @@ func TestNilAggregatorRecordsNothing(t *testing.T) {
 	assert.NotPanics(t, func() {
 		a.Record(objectEvent{put: true})
 		a.Stop()
-		recordObject(a, requestProvenance{}, map[string]string{"module": "example.com/x"}, 10, true, false)
+		recordObject(a, requestProvenance{}, "k", map[string]string{"module": "example.com/x"}, 10, true, false)
 	}, "verbose mode installs no aggregator, and every record site must tolerate that")
 }
 
@@ -154,7 +154,7 @@ func TestHitAndMissCountForTheSameProject(t *testing.T) {
 	missesBefore := testutil.ToFloat64(projectObjectsTotal.WithLabelValues(asker, objKindMiss))
 	writerBefore := testutil.ToFloat64(projectObjectsTotal.WithLabelValues(writer, objKindHit))
 
-	recordObject(nil, prov, stored, 10, false, true)
+	recordObject(nil, prov, "k", stored, 10, false, true)
 	noteProjectMiss(prov, 1)
 
 	assert.Equal(t, hitsBefore+1, testutil.ToFloat64(projectObjectsTotal.WithLabelValues(asker, objKindHit)), "the hit must count for the requester")

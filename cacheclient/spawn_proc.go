@@ -1,5 +1,7 @@
 //go:build !js && !wasip1
 
+// spawn_proc.go holds the spawn proc code.
+
 package cacheclient
 
 import (

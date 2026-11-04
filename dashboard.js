@@ -10,6 +10,7 @@ const state = {
 	projectNames: null,
 	reads: null, // the last read totals, for the per-poll hit rate
 	misses: null, // the last miss counts by cause, for the per-poll rate
+	churn: null, // the last re-store counts by cause, for the per-poll rate
 	raw: null, // the body of the snapshot on screen, verbatim, for "copy json"
 };
 
@@ -468,6 +469,85 @@ function drawMisses(stats) {
 	);
 }
 
+// --- what changed -------------------------------------------------------------
+
+// A cell naming what differed between uploads: each field as "from -> to", or
+// a word for both cases where no field did.
+function diffCell(ev) {
+	const td = document.createElement("td");
+	td.className = "n";
+	if (ev.diffs && ev.diffs.length) {
+		for (const d of ev.diffs) {
+			const line = document.createElement("span");
+			line.className = "diff";
+			line.append(`${d.field}: ${d.from || "(none)"} → `);
+			const to = document.createElement("span");
+			to.className = "to";
+			to.textContent = d.to || "(none)";
+			line.append(to);
+			td.append(line, document.createElement("br"));
+		}
+	}
+	const note = document.createElement("span");
+	note.className = "diff";
+	note.textContent = ev.same_output ? "identical output" : "output changed";
+	td.append(note);
+	return td;
+}
+
+function drawChurn(stats) {
+	const c = stats.churn;
+	if (!c) return;
+	const causes = c.causes || [];
+	const counts = {};
+	for (const r of causes) counts[r.key] = r.count;
+	const prev = state.churn;
+	state.churn = { counts, total: c.restores, at: stats.generated_at };
+	const restarted = prev && c.restores < prev.total;
+	const recent = (r) => (prev && !restarted ? r.count - (prev.counts[r.key] || 0) : 0);
+
+	const verdict = $("churn-verdict");
+	verdict.textContent = c.verdict;
+	// The pointless re-store is the worth a colour: the output did not change and the key did.
+	const inputs = causes.find((r) => r.key === "inputs");
+	verdict.className = `verdict ${inputs && inputs.count > 0 && inputs.count * 2 >= c.restores ? "capacity" : ""}`;
+
+	const scale = Math.max(...causes.map((r) => r.count), 1);
+	fill(
+		$("churn-causes"),
+		causes.map((r) => {
+			const now = recent(r);
+			return bar(r.label, r.count, scale, r.key === "inputs" ? "warn" : "", `${count(r.count)}  ${percent(r.count, c.restores)}${now ? `  +${count(now)}` : ""}`);
+		}),
+	);
+	let moved = 0;
+	for (const r of causes) moved += recent(r);
+	$("churn-label").textContent = `${count(c.restores)} re-stores since the server started, ${count(c.same_output)} with identical output; ${count(c.tracked_packages)} packages tracked${prev ? `; ${count(moved)} since the last poll` : ""}`;
+
+	rows(
+		$("churn-top"),
+		(c.top || []).length
+			? c.top.map((p) => [`${p.pkg}${p.target ? ` (${p.target})` : ""}`, `${count(p.restores)}×, ${count(p.same_output)} identical`, p.last_change === "inputs", p.project])
+			: [["no package stored again yet", "--", false]],
+	);
+
+	const body = $("churn-recent").querySelector("tbody");
+	body.replaceChildren(
+		...(c.recent || []).map((ev) => {
+			const tr = document.createElement("tr");
+			const td = document.createElement("td");
+			td.textContent = ev.pkg;
+			const sub = document.createElement("span");
+			sub.className = "sub";
+			sub.textContent = `${ev.project || "unknown"} at ${new Date(ev.at).toLocaleTimeString()}`;
+			td.append(sub);
+			tr.append(td, diffCell(ev));
+			return tr;
+		}),
+	);
+	if (!(c.recent || []).length) rows($("churn-recent"), [["no package stored again yet", "--", false]]);
+}
+
 // Every entry here is a number that should be empty, or should be falling.
 // The alert flag turns the value red so a rising a single is visible without
 // reading the labels.
@@ -544,6 +624,7 @@ function draw(stats) {
 	drawGauges(stats);
 	drawProjects(stats);
 	drawMisses(stats);
+	drawChurn(stats);
 	drawTripwires(stats);
 	drawMemory(stats);
 	drawConfig(stats);

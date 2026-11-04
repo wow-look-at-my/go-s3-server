@@ -93,6 +93,10 @@ func NewServer(cfg *Config, storage *Storage) *Server {
 			s.mem.Register(evictedMemoKind, storage.evicted.Budget(), storage.evicted)
 		}
 	}
+	// The churn tracker is one per process, like the project totals, and sized here because the memory budget is known here.
+	churnBudget := cacheBudget(churnBudgetFraction, defaultChurnBytes)
+	packageChurn.entries.SetBudget(churnBudget)
+	s.mem.Register(churnKind, churnBudget, packageChurn.entries)
 	return s
 }
 

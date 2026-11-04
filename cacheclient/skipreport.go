@@ -35,6 +35,10 @@ type SkipReport struct {
 	GetKnownMiss    uint64 `json:"get_known_miss"`
 	// Puts the client did not send because the index already holds the key.
 	PutKnown uint64 `json:"put_known"`
+	// Uploads that never reached the store.
+	PutFailed    uint64 `json:"put_failed"`
+	PutRefused   uint64 `json:"put_refused"`
+	PutAbandoned uint64 `json:"put_abandoned"`
 }
 
 func (r SkipReport) empty() bool { return r == SkipReport{} }
@@ -46,6 +50,9 @@ func (r SkipReport) minus(o SkipReport) SkipReport {
 		GetBatchBackoff: r.GetBatchBackoff - o.GetBatchBackoff,
 		GetKnownMiss:    r.GetKnownMiss - o.GetKnownMiss,
 		PutKnown:        r.PutKnown - o.PutKnown,
+		PutFailed:       r.PutFailed - o.PutFailed,
+		PutRefused:      r.PutRefused - o.PutRefused,
+		PutAbandoned:    r.PutAbandoned - o.PutAbandoned,
 	}
 }
 
@@ -69,6 +76,9 @@ func (b *WebBackend) skipTotals() SkipReport {
 		GetBatchBackoff: uint64(b.SkippedBatchBackoff.Load()),
 		GetKnownMiss:    uint64(b.SkippedKnownMiss.Load()),
 		PutKnown:        uint64(b.PutSkippedKnown.Load()),
+		PutFailed:       uint64(b.PutFailed.Load()),
+		PutRefused:      uint64(b.PutRefusedBuildID.Load()) + uint64(b.PutRefusedModIndex.Load()),
+		PutAbandoned:    uint64(b.PutAbandoned.Load()),
 	}
 }
 
@@ -94,14 +104,17 @@ func (b *WebBackend) noteSkip() {
 	}()
 }
 
-// stopSkipReporter waits for a send in flight, then sends what is left.
+// stopSkipReporter waits for a send in flight, then sends what is left. It is
+// the last network call of a Close.
 func (b *WebBackend) stopSkipReporter() {
 	b.skips.wg.Wait()
 	b.FlushSkips()
 }
 
 // FlushSkips sends the skips counted since the last accepted report. It
-// reports whether the server now has every skip this backend counted.
+// reports whether the server now has every skip this backend counted. The
+// request runs on its own context, not the one a hand-off cancels, so the
+// report goes out after the uploads were handed off.
 func (b *WebBackend) FlushSkips() bool {
 	if b.endpoint == "" || b.skips.disabled.Load() {
 		return false
@@ -118,7 +131,7 @@ func (b *WebBackend) FlushSkips() bool {
 		logging.Warnf("cacheprog: skip report: %v", err)
 		return false
 	}
-	ctx, cancel := context.WithTimeout(b.requestCtx(), skipReportTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), skipReportTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", b.url(SkipReportPath), bytes.NewReader(body))
 	if err != nil {

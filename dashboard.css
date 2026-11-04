@@ -90,6 +90,7 @@ main {
 		"projects projects memory traffic"
 		"projects projects tripwires config"
 		"misses misses misses misses"
+		"churn churn churn churn"
 		"bandwidth bandwidth bandwidth bandwidth";
 	align-items: start;
 }
@@ -117,7 +118,10 @@ main {
 /* The miss diagnosis is a list of causes beside the prose that explains them,
    so it takes the full width and splits inside. */
 .misses { grid-area: misses; }
+.churn { grid-area: churn; }
 .split { display: grid; gap: var(--sp-4); grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* The re-store list has no upper bound the page controls, so it scrolls inside a fixed height. */
+.churn-scroll { max-height: 28rem; }
 @media (max-width: 1100px) {
 	main {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -128,6 +132,7 @@ main {
 			"tripwires memory"
 			"config config"
 			"misses misses"
+			"churn churn"
 			"bandwidth bandwidth";
 	}
 	/* The panel has its own row here, so the table needs a fixed limit. */
@@ -137,7 +142,7 @@ main {
 @media (max-width: 720px) {
 	main {
 		grid-template-columns: minmax(0, 1fr);
-		grid-template-areas: "tiles" "projects" "reads" "traffic" "tripwires" "memory" "config" "misses" "bandwidth";
+		grid-template-areas: "tiles" "projects" "reads" "traffic" "tripwires" "memory" "config" "misses" "churn" "bandwidth";
 	}
 	.split { grid-template-columns: minmax(0, 1fr); }
 }
@@ -241,7 +246,11 @@ perf-graph + perf-graph { border-top: 0; }
 .legend .item { display: flex; align-items: center; gap: var(--sp-1); font-size: var(--fs-tiny); color: var(--text-muted); }
 .legend .swatch { width: 9px; height: 9px; flex: none; border: 1px solid var(--border); }
 .legend .n { color: var(--text); }
-#rate-label, #bandwidth-note, #miss-label { margin: var(--sp-2) 0 0; font-family: var(--font-mono); font-size: var(--fs-tiny); }
+#rate-label, #bandwidth-note, #miss-label, #churn-label { margin: var(--sp-2) 0 var(--sp-4); font-family: var(--font-mono); font-size: var(--fs-tiny); }
+/* A re-store row: the package, then what differed, in the mono face a path reads best in. */
+#churn-recent td:first-child, #churn-top td:first-child { width: 60%; font-family: var(--font-mono); }
+.diff { color: var(--text-muted); }
+.diff .to { color: var(--accent); }
 
 /* The verdict is the one sentence the panel exists for. */
 .verdict { margin: 0 0 var(--sp-3); color: var(--text-bright); }

@@ -176,7 +176,7 @@ func (b *WebBackend) sendBatchPut(reqs []putReq) {
 	if err != nil {
 		logging.Warnf("cacheprog: web batch put: build tar: %v", err)
 		for _, r := range reqs {
-			b.removeClaimed(r.hash)
+			b.failUpload(r.hash)
 		}
 		return
 	}
@@ -185,7 +185,7 @@ func (b *WebBackend) sendBatchPut(reqs []putReq) {
 	httpReq, err := http.NewRequestWithContext(b.requestCtx(), "PUT", batchURL, bytes.NewReader(tarBytes))
 	if err != nil {
 		for _, r := range reqs {
-			b.removeClaimed(r.hash)
+			b.failUpload(r.hash)
 		}
 		return
 	}
@@ -201,7 +201,7 @@ func (b *WebBackend) sendBatchPut(reqs []putReq) {
 			logging.Warnf("cacheprog: web batch put: %v", err)
 		}
 		for _, r := range reqs {
-			b.removeClaimed(r.hash)
+			b.failUpload(r.hash)
 		}
 		return
 	}
@@ -227,7 +227,7 @@ func (b *WebBackend) sendBatchPut(reqs []putReq) {
 		b.Pool.Release()
 		b.errLog.Record("web batch put", resp.StatusCode, reqs[0].actionID, string(respBody))
 		for _, r := range reqs {
-			b.removeClaimed(r.hash)
+			b.failUpload(r.hash)
 		}
 		return
 	}
@@ -238,7 +238,7 @@ func (b *WebBackend) sendBatchPut(reqs []putReq) {
 	if err != nil {
 		logging.Warnf("cacheprog: web batch put: read response: %v", err)
 		for _, r := range reqs {
-			b.removeClaimed(r.hash)
+			b.failUpload(r.hash)
 		}
 		return
 	}
@@ -247,7 +247,7 @@ func (b *WebBackend) sendBatchPut(reqs []putReq) {
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		logging.Warnf("cacheprog: web batch put: parse response: %v", err)
 		for _, r := range reqs {
-			b.removeClaimed(r.hash)
+			b.failUpload(r.hash)
 		}
 		return
 	}
@@ -273,7 +273,7 @@ func (b *WebBackend) sendBatchPut(reqs []putReq) {
 			b.settle(r.hash)
 		default:
 			// "error" or an absent/unknown result: roll back the claim so a later run re-uploads it.
-			b.removeClaimed(r.hash)
+			b.failUpload(r.hash)
 			if res.Message != "" {
 				logging.Warnf("cacheprog: web batch put %s: server error: %s", ShortID(r.actionID), res.Message)
 			}
@@ -290,7 +290,7 @@ func (b *WebBackend) sendBatchPut(reqs []putReq) {
 func (b *WebBackend) putSingle(pr putReq) error {
 	req, err := http.NewRequestWithContext(b.requestCtx(), "PUT", b.url(pr.key), bytes.NewReader(pr.compressed))
 	if err != nil {
-		b.removeClaimed(pr.hash)
+		b.failUpload(pr.hash)
 		return fmt.Errorf("web put request: %w", err)
 	}
 	req.ContentLength = int64(len(pr.compressed))
@@ -308,7 +308,7 @@ func (b *WebBackend) putSingle(pr putReq) error {
 		b.Latency.HTTPPut.Record(time.Since(httpStart))
 	}
 	if err != nil {
-		b.removeClaimed(pr.hash)
+		b.failUpload(pr.hash)
 		return fmt.Errorf("web put %s: %w", ShortID(pr.actionID), err)
 	}
 	defer func() {
@@ -317,7 +317,7 @@ func (b *WebBackend) putSingle(pr putReq) error {
 
 	if resp.StatusCode != 200 {
 		respBody, _ := io.ReadAll(resp.Body)
-		b.removeClaimed(pr.hash)
+		b.failUpload(pr.hash)
 		b.errLog.Record("web put", resp.StatusCode, pr.actionID, string(respBody))
 		return fmt.Errorf("web put: HTTP %d: %w", resp.StatusCode, ErrLogged)
 	}

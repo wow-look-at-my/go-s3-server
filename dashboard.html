@@ -106,6 +106,27 @@
 			</div>
 		</section>
 
+		<section class="panel churn">
+			<h2>WHAT CHANGED</h2>
+			<p class="muted note">A package stored again under a new key was compiled again. The action id hashes every input,
+				so the server compares what the client said about the two uploads: the Go version, the client version, the
+				target, the source file names, and whether the compiled output is even different.</p>
+			<p id="churn-verdict" class="verdict"></p>
+			<div class="split">
+				<div>
+					<h3>re-stores by what differed</h3>
+					<div class="bars" id="churn-causes"></div>
+					<p class="muted" id="churn-label">waiting for a second sample</p>
+					<h3>packages stored again most often</h3>
+					<table id="churn-top"><tbody></tbody></table>
+				</div>
+				<div>
+					<h3>latest re-stores</h3>
+					<div class="scroll churn-scroll"><table id="churn-recent"><tbody></tbody></table></div>
+				</div>
+			</div>
+		</section>
+
 		<section class="panel bandwidth">
 			<h2>BANDWIDTH</h2>
 			<h3>bytes served, by module</h3>

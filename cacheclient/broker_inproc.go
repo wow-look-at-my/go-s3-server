@@ -1,5 +1,7 @@
 //go:build js || wasip1
 
+// broker_inproc.go holds the broker inproc code.
+
 package cacheclient
 
 // js and wasip1 start no other process, so no child can ask for the cache.

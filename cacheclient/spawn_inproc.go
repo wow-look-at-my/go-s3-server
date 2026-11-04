@@ -1,5 +1,7 @@
 //go:build js || wasip1
 
+// spawn_inproc.go holds the spawn inproc code.
+
 package cacheclient
 
 import "errors"

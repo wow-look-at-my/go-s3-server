@@ -292,8 +292,28 @@ func diagnoseMisses(stats map[string]metricValue, eviction dashboardEvictionInfo
 		out.Dominant = out.Reasons[top].Key
 	}
 	out.Signals = missSignals(stats, eviction)
-	out.Verdict = missVerdict(out)
+	out.Verdict = missVerdict(out) + lostUploadsVerdict(out.Signals)
 	return out
+}
+
+// lostUploadsVerdict is the sentence added when a client reported uploads
+// it never completed. Those keys miss on every later build, so they explain
+// a never-stored count that does not fall on repeat builds.
+func lostUploadsVerdict(signals []missSignal) string {
+	var failed, abandoned float64
+	for _, s := range signals {
+		switch s.Key {
+		case "uploads_failed":
+			failed = s.Count
+		case "uploads_abandoned":
+			abandoned = s.Count
+		}
+	}
+	if failed+abandoned == 0 {
+		return ""
+	}
+	return " Clients reported " + formatCount(failed+abandoned) + " uploads that never reached the store (" +
+		formatCount(failed) + " failed, " + formatCount(abandoned) + " abandoned); each of those keys misses on every later build until something uploads it again."
 }
 
 // missVerdict is the sentence the panel leads with: the dominant cause, its
@@ -346,8 +366,17 @@ func missSignals(stats map[string]metricValue, eviction dashboardEvictionInfo) [
 	dropped := scalar(stats, "s3_metadata_xattrs_dropped_total")
 	putErrors := labelCount(stats, "cache_storage_operations_total", "operation", "put") -
 		labelCountBoth(stats, "cache_storage_operations_total", "operation", "put", "status", "ok")
+	lostFailed := labelCount(stats, "s3_client_uploads_lost_total", "reason", "failed")
+	lostAbandoned := labelCount(stats, "s3_client_uploads_lost_total", "reason", "abandoned")
+	lostRefused := labelCount(stats, "s3_client_uploads_lost_total", "reason", "refused")
 	return []missSignal{
 		fill,
+		{Key: "uploads_failed", Label: "uploads the client sent and the store never confirmed", Count: lostFailed, Alert: lostFailed > 0,
+			Note: "reported by the client at exit: a network error, a refused answer, or a per-object error. Each is a key that misses on every later build until something uploads it again"},
+		{Key: "uploads_abandoned", Label: "uploads the client gave up without sending", Count: lostAbandoned, Alert: lostAbandoned > 0,
+			Note: "reported by the client at exit: a body it could not read, a backend that was closing, or a hand-off it could not write"},
+		{Key: "uploads_refused", Label: "uploads the client refused itself", Count: lostRefused, Alert: false,
+			Note: "a build id that disagrees with the action, or a module index; neither belongs in a shared cache"},
 		{Key: "evictions", Label: "objects evicted", Count: evictions, Alert: false,
 			Note: "each one is a miss for the next build that wanted it; the evicted row above counts the ones a build has asked for since"},
 		{Key: "shed", Label: "requests shed at capacity", Count: shed, Alert: shed > 0,

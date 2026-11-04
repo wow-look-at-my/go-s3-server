@@ -1,5 +1,7 @@
 //go:build !js && !wasip1
 
+// lockfile.go holds the lockfile code.
+
 package cachedisk
 
 import (

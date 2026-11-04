@@ -101,7 +101,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 	}
 	getRequestsTotal.WithLabelValues("hit").Inc()
 	prov := provenanceOf(r)
-	recordObject(agg, prov, meta.Metadata, meta.Size, false, false)
+	recordObject(agg, prov, key, meta.Metadata, meta.Size, false, false)
 
 	emitObjectHeaders(w, meta)
 	w.WriteHeader(200)
@@ -211,7 +211,7 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, storage *Storage, k
 			a.Label = objectLabel(meta)
 		}
 		// A chunked upload declares no length.
-		recordObject(agg, provenanceOf(r), meta, max(r.ContentLength, 0), true, false)
+		recordObject(agg, provenanceOf(r), key, meta, max(r.ContentLength, 0), true, false)
 	}
 	w.WriteHeader(200)
 }

@@ -1,5 +1,7 @@
 //go:build !js
 
+// etxtbsy.go holds the etxtbsy code.
+
 package cachedisk
 
 import (

@@ -147,6 +147,9 @@ type projectRow struct {
 	HitBytes       uint64 `json:"hit_bytes"`
 	PutBytes       uint64 `json:"put_bytes"`
 	LookAheadBytes uint64 `json:"lookahead_bytes"`
+	// Restores is how many of the puts stored a package.
+	Restores           uint64 `json:"restores"`
+	RestoresSameOutput uint64 `json:"restores_same_output"`
 }
 
 // exactProjects keeps a row for every project name, with no bound.
@@ -185,6 +188,25 @@ func (e *exactProjects) add(name, kind string, objects uint64, wire int64) {
 	case objKindLookAhead:
 		row.LookAhead += objects
 		row.LookAheadBytes += bytes
+	}
+}
+
+// noteRestore counts a put that stored a package again under a new key.
+func (e *exactProjects) noteRestore(name string, sameOutput bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = unknownProject
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	row := e.rows[name]
+	if row == nil {
+		row = &projectRow{}
+		e.rows[name] = row
+	}
+	row.Restores++
+	if sameOutput {
+		row.RestoresSameOutput++
 	}
 }
 

@@ -1,5 +1,7 @@
 //go:build unix && !cosmo
 
+// spawn_unix.go holds the spawn unix code.
+
 package cacheclient
 
 import "syscall"

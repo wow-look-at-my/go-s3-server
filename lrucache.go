@@ -167,6 +167,20 @@ func (c *lruCache[K, V]) Bytes() int64     { return c.bytes.Load() }
 func (c *lruCache[K, V]) Budget() int64    { return c.budget.Load() }
 func (c *lruCache[K, V]) Evictions() int64 { return c.evictions.Load() }
 
+// Range calls fn on every entry, one shard locked at a time. It does not
+// touch the recency order. fn must not call back into the cache.
+func (c *lruCache[K, V]) Range(fn func(K, V)) {
+	for i := range c.shards {
+		sh := &c.shards[i]
+		sh.mu.Lock()
+		for el := sh.ll.Front(); el != nil; el = el.Next() {
+			e := el.Value.(*lruEntry[K, V])
+			fn(e.key, e.val)
+		}
+		sh.mu.Unlock()
+	}
+}
+
 // Len is the number of entries held, for tests and diagnostics.
 func (c *lruCache[K, V]) Len() int {
 	var n int

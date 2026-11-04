@@ -158,13 +158,14 @@ tests:
 				# client's own report of the misses it answered from its index.
 				key="go-buildcache/v1$(printf 'b%.0s' $(seq 64))"
 				curl -sf -u "$auth" -X POST -H 'Content-Type: application/json' --data-binary "{\"keys\":[\"$key\"]}" "$base/_batch/get" -o /dev/null
-				curl -sf -u "$auth" -X POST -H 'Content-Type: application/json' --data-binary '{"get_not_in_index":3}' "$base/_skips" -o /dev/null
+				curl -sf -u "$auth" -X POST -H 'Content-Type: application/json' --data-binary '{"get_not_in_index":3,"put_failed":2,"put_abandoned":1}' "$base/_skips" -o /dev/null
 				stats="$(mktemp)"
 				curl -sf "http://127.0.0.1:$DASHBOARD_PORT/api/stats" -o "$stats"
 				grep -o '"total": 4' "$stats"
 				grep -o '"dominant": "not_in_index"' "$stats"
 				grep -A3 '"key": "not_found"' "$stats" | grep -o '"count": 1'
 				grep -o '"verdict": "75.0% of misses: never stored\.' "$stats"
+				grep -o 'Clients reported 3 uploads that never reached the store (2 failed, 1 abandoned)' "$stats"
 				grep -o '"key": "cache_fill"' "$stats"
 	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
@@ -173,7 +174,48 @@ tests:
 			- '"dominant": "not_in_index"'
 			- '"count": 1'
 			- '"verdict": "75.0% of misses: never stored.'
+			- 'Clients reported 3 uploads that never reached the store (2 failed, 1 abandoned)'
 			- '"key": "cache_fill"'
+
+	- desc: the stats snapshot says what differed when a package is stored again under a new key
+	  exit: 0
+	  inputs:
+		files:
+			config.json: '{"listen":"127.0.0.1:0","dashboard_listen":"127.0.0.1:0","bucket":"test-cache","data_dir":"{outputs.data}","credentials":[{"username":"testuser","password":"testpass"}]}'
+			check.sh: |
+				set -euo pipefail
+				base=http://127.0.0.1:$PORT/test-cache
+				auth=testuser:testpass
+				put() {
+					curl -sf -u "$auth" -X PUT --data-binary 'x' -H 'X-Cache-Module: example.com/churn' \
+						-H 'X-Cache-Meta-Pkg: example.com/churn/p' -H 'X-Cache-Meta-Target: linux/amd64' -H 'X-Cache-Meta-Src: a.go' \
+						-H "X-Cache-Meta-Outputid: $2" -H "X-Cache-Meta-Go-Version: $3" "$base/go-buildcache/v1$(printf "$1%.0s" $(seq 64))" > /dev/null
+				}
+				# The same package a few times: once, then under a new key with
+				# the same output. This also covers then under a new key by a
+				# new Go version.
+				put a out1 go1.27
+				put b out1 go1.27
+				put c out1 go1.28
+				stats="$(mktemp)"
+				curl -sf "http://127.0.0.1:$DASHBOARD_PORT/api/stats" -o "$stats"
+				grep -o '"restores": 2' "$stats" | head -1
+				grep -o '"same_output": 2' "$stats" | head -1
+				grep -o '"change": "inputs"' "$stats"
+				grep -o '"change": "go_version"' "$stats"
+				grep -o '"from": "go1.27"' "$stats"
+				grep -o '"to": "go1.28"' "$stats"
+				grep -o '2 packages were stored again under a new key, 2 of them (100.0%) compiled to the identical output' "$stats"
+	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
+	  outputs:
+		stdout:
+			- '"restores": 2'
+			- '"same_output": 2'
+			- '"change": "inputs"'
+			- '"change": "go_version"'
+			- '"from": "go1.27"'
+			- '"to": "go1.28"'
+			- '2 packages were stored again under a new key, 2 of them (100.0%) compiled to the identical output'
 
 	- desc: an empty dashboard_listen opens no dashboard listener
 	  exit: 0

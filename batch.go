@@ -228,7 +228,7 @@ func handleBatchGet(w http.ResponseWriter, r *http.Request, storage *Storage, ag
 		}
 		streamed++
 		// Counted where the bytes leave.
-		recordObject(agg, prov, o.meta.Metadata, o.size, false, true)
+		recordObject(agg, prov, o.key, o.meta.Metadata, o.size, false, true)
 		// The bandwidth chart is attributed one entry at a time, for the same
 		// reason.
 		bandwidthFromContext(r.Context()).record(bandwidthSample{
@@ -378,7 +378,7 @@ func handleBatchPut(w http.ResponseWriter, r *http.Request, storage *Storage, ma
 		switch status {
 		case storeStatusStored:
 			nStored++
-			recordObject(agg, provenanceOf(r), p.entry.Metadata, hdr.Size, true, true)
+			recordObject(agg, provenanceOf(r), p.entry.Key, p.entry.Metadata, hdr.Size, true, true)
 		case storeStatusDropped:
 			nDropped++
 		case storeStatusConflict:

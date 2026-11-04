@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -341,4 +342,44 @@ func TestRunUploadSpoolFetchesTheIndex(t *testing.T) {
 	require.NoError(t, err)
 	_, err = os.Stat(reader.indexCachePath())
 	require.NoError(t, err, "the uploader wrote the disk copy")
+}
+
+// Close hands the uploads to a detached uploader and cancels every request
+// of its own, and still sends the report. A hand-off that could not be
+// written is an abandoned upload the server must hear of.
+func TestCloseHandOffSendsTheSkipReport(t *testing.T) {
+	handOffTest(t, func(string) error { return errors.New("no uploader") })
+	var reports []SkipReport
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/testbucket/_batch/put":
+			<-r.Context().Done()
+		case "/testbucket/_skips":
+			var rep SkipReport
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&rep))
+			mu.Lock()
+			reports = append(reports, rep)
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	b := newTestBackend(t, srv.URL)
+	b.spoolDir = t.TempDir()
+	b.skipIndex()
+	b.SkippedNotInIndex.Add(5)
+
+	body := []byte(largePayload(700))
+	require.NoError(t, b.Put(testAction("handoff"), StoredDigest(body), body))
+	require.NoError(t, b.Close())
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, reports, 1, "the report goes out after the hand-off")
+	require.EqualValues(t, 5, reports[0].GetNotInIndex)
+	require.EqualValues(t, 1, reports[0].PutAbandoned, "the upload the hand-off could not write")
+	require.Zero(t, reports[0].PutFailed, "a cancelled upload is handed off, not failed")
 }

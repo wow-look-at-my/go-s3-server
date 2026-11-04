@@ -29,6 +29,10 @@ type skipReport struct {
 	GetBatchBackoff uint64 `json:"get_batch_backoff"`
 	GetKnownMiss    uint64 `json:"get_known_miss"`
 	PutKnown        uint64 `json:"put_known"`
+	// Uploads that never reached the store.
+	PutFailed    uint64 `json:"put_failed"`
+	PutRefused   uint64 `json:"put_refused"`
+	PutAbandoned uint64 `json:"put_abandoned"`
 }
 
 var clientSkipsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -36,12 +40,20 @@ var clientSkipsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Help: "Operations a client answered from its own index and never sent, by op (get, put) and reason.",
 }, []string{"op", "reason"})
 
+// clientUploadsLostTotal counts the uploads a client reported it never
+// completed: failed (sent and not confirmed), refused (a client guard),
+// abandoned (never sent).
+var clientUploadsLostTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "s3_client_uploads_lost_total",
+	Help: "Uploads a client reported it never completed, by reason (failed, refused, abandoned).",
+}, []string{"reason"})
+
 func (r skipReport) gets() uint64 {
 	return r.GetNotInIndex + r.GetEmptyIndex + r.GetBatchBackoff + r.GetKnownMiss
 }
 
 func (r skipReport) valid() bool {
-	for _, v := range []uint64{r.GetNotInIndex, r.GetEmptyIndex, r.GetBatchBackoff, r.GetKnownMiss, r.PutKnown} {
+	for _, v := range []uint64{r.GetNotInIndex, r.GetEmptyIndex, r.GetBatchBackoff, r.GetKnownMiss, r.PutKnown, r.PutFailed, r.PutRefused, r.PutAbandoned} {
 		if v >= maxSkipReportCount {
 			return false
 		}
@@ -73,7 +85,10 @@ func handleSkipReport(w http.ResponseWriter, r *http.Request) {
 	clientSkipsTotal.WithLabelValues("get", "batch_backoff").Add(float64(rep.GetBatchBackoff))
 	clientSkipsTotal.WithLabelValues("get", "known_miss").Add(float64(rep.GetKnownMiss))
 	clientSkipsTotal.WithLabelValues("put", "known").Add(float64(rep.PutKnown))
+	clientUploadsLostTotal.WithLabelValues("failed").Add(float64(rep.PutFailed))
+	clientUploadsLostTotal.WithLabelValues("refused").Add(float64(rep.PutRefused))
+	clientUploadsLostTotal.WithLabelValues("abandoned").Add(float64(rep.PutAbandoned))
 	noteProjectMiss(provenanceOf(r), int(rep.gets()))
-	auditFromContext(r.Context()).note("skips get=%d put=%d", rep.gets(), rep.PutKnown)
+	auditFromContext(r.Context()).note("skips get=%d put=%d lost_uploads=%d", rep.gets(), rep.PutKnown, rep.PutFailed+rep.PutRefused+rep.PutAbandoned)
 	w.WriteHeader(http.StatusNoContent)
 }

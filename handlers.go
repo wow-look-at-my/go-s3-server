@@ -26,10 +26,7 @@ func writeError(w http.ResponseWriter, httpStatus int, code, message string) {
 }
 
 func absentKeyOutcome(storage *Storage, key string) string {
-	if h, ok := extractActionHash(key); ok && storage.Index != nil && storage.Index.Contains(h) {
-		return "miss_advertised_unservable"
-	}
-	return "miss_not_found"
+	return "miss_" + absentKeyReason(storage, key)
 }
 
 func handleGetObject(w http.ResponseWriter, r *http.Request, storage *Storage, key string, agg *logAggregator) {

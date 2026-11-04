@@ -9,6 +9,7 @@ const state = {
 	projects: null, // the last per-project totals, for per-project rates
 	projectNames: null,
 	reads: null, // the last read totals, for the per-poll hit rate
+	misses: null, // the last miss counts by cause, for the per-poll rate
 	raw: null, // the body of the snapshot on screen, verbatim, for "copy json"
 };
 
@@ -117,13 +118,20 @@ function fill(container, nodes) {
 	container.replaceChildren(...nodes);
 }
 
+// rows fills a two-column table. A note, when given, sits under the label in its cell.
 function rows(table, entries) {
 	const body = table.querySelector("tbody");
 	body.replaceChildren(
-		...entries.map(([label, text, alert]) => {
+		...entries.map(([label, text, alert, note]) => {
 			const tr = document.createElement("tr");
 			const td1 = document.createElement("td");
 			td1.textContent = label;
+			if (note) {
+				const span = document.createElement("span");
+				span.className = "sub";
+				span.textContent = note;
+				td1.append(span);
+			}
 			const td2 = document.createElement("td");
 			td2.className = alert ? "n alert" : "n";
 			td2.textContent = text;
@@ -218,10 +226,12 @@ function drawTiles(stats) {
 const GET_OUTCOMES = [
 	"hit",
 	"miss_not_found",
+	"miss_evicted",
 	"miss_advertised_unservable",
 	"miss_module_index_evicted",
 	"miss_peek_error",
 	"miss_selfheal_failed",
+	"miss_stored_digest",
 ];
 
 function drawReads(stats) {
@@ -384,6 +394,80 @@ function drawProjectHitRates(totals) {
 	);
 }
 
+// --- why misses -----------------------------------------------------------------
+
+// The server sorts every miss it knows of into a cause and writes the
+// verdict. This page draws the causes as bars, with the share of each, and
+// adds the thing the server cannot know. How many of each arrived since the
+// last poll, which is what separates a cause. That cause is still firing
+// from one that fired once at startup.
+function drawMisses(stats) {
+	const m = stats.misses;
+	if (!m) return;
+	const reasons = m.reasons || [];
+	const counts = {};
+	for (const r of reasons) counts[r.key] = r.count;
+	const prev = state.misses;
+	state.misses = { counts, at: stats.generated_at };
+	const dt = prev ? (new Date(stats.generated_at) - new Date(prev.at)) / 1000 : 0;
+	// A count that dropped means the server restarted between samples.
+	const restarted = prev && reasons.some((r) => r.count < (prev.counts[r.key] || 0));
+	const recent = (r) => (prev && !restarted && dt > 0 ? r.count - (prev.counts[r.key] || 0) : 0);
+
+	const verdict = $("miss-verdict");
+	verdict.textContent = m.verdict;
+	const dominant = reasons.find((r) => r.key === m.dominant);
+	const anyBug = reasons.some((r) => r.count > 0 && r.severity === "bug");
+	verdict.className = `verdict ${anyBug ? "bug" : dominant ? dominant.severity : ""}`;
+
+	// Every cause keeps its row, so a bar that starts moving is easy to spot.
+	const tone = (r) => (r.severity === "bug" ? "bad" : r.severity === "capacity" ? "warn" : "");
+	const scale = Math.max(...reasons.map((r) => r.count), 1);
+	fill(
+		$("miss-reasons"),
+		reasons.map((r) => {
+			const now = recent(r);
+			const right = `${count(r.count)}  ${percent(r.count, m.total)}${now ? `  +${count(now)}` : ""}`;
+			return bar(r.label, r.count, scale, tone(r), right);
+		}),
+	);
+	let moved = 0;
+	for (const r of reasons) moved += recent(r);
+	$("miss-label").textContent = prev
+		? `${count(m.total)} misses in all; ${count(moved)} since the last poll${dt > 0 ? ` (${(moved / dt).toFixed(1)}/s)` : ""}`
+		: `${count(m.total)} misses in all`;
+
+	// The prose for the causes that have fired, worst first: a bug before a capacity miss before an expected one.
+	const rank = { bug: 0, capacity: 1, expected: 2 };
+	const fired = reasons.filter((r) => r.count > 0).sort((a, b) => rank[a.severity] - rank[b.severity] || b.count - a.count);
+	fill(
+		$("miss-explain"),
+		fired.length
+			? fired.map((r) => {
+					const el = document.createElement("div");
+					el.className = `cause ${r.severity}`;
+					el.innerHTML = `<span class="name"></span> <span class="n"></span><span class="why"></span><span class="why"></span>`;
+					el.querySelector(".name").textContent = r.label;
+					el.querySelector(".n").textContent = `${count(r.count)} (${r.source})`;
+					const why = el.querySelectorAll(".why");
+					why[0].textContent = r.explain;
+					why[1].textContent = r.action;
+					return el;
+				})
+			: [para("no cause has fired yet")],
+	);
+
+	rows(
+		$("miss-signals"),
+		(m.signals || []).map((s) => [
+			s.label,
+			s.key === "cache_fill" ? (s.count ? percent(s.count, 1) : "--") : count(s.count),
+			s.alert,
+			s.note,
+		]),
+	);
+}
+
 // Every entry here is a number that should be empty, or should be falling.
 // The alert flag turns the value red so a rising a single is visible without
 // reading the labels.
@@ -459,6 +543,7 @@ function draw(stats) {
 	drawTraffic(stats);
 	drawGauges(stats);
 	drawProjects(stats);
+	drawMisses(stats);
 	drawTripwires(stats);
 	drawMemory(stats);
 	drawConfig(stats);

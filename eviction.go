@@ -319,6 +319,7 @@ func (s *Storage) evictOne(key string, expectMtime int64) bool {
 	s.forgetAccess(key)
 	s.forgetClean(key)
 	s.forgetMeta(key)
+	s.noteEvicted(key)
 	return true
 }
 

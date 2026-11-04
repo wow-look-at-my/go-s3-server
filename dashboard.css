@@ -89,6 +89,7 @@ main {
 		"projects projects reads traffic"
 		"projects projects memory traffic"
 		"projects projects tripwires config"
+		"misses misses misses misses"
 		"bandwidth bandwidth bandwidth bandwidth";
 	align-items: start;
 }
@@ -113,6 +114,10 @@ main {
 /* The bandwidth chart gets the full width: it is the one panel whose subject is
    a shape rather than a number, and a stack of modules needs the room. */
 .bandwidth { grid-area: bandwidth; }
+/* The miss diagnosis is a list of causes beside the prose that explains them,
+   so it takes the full width and splits inside. */
+.misses { grid-area: misses; }
+.split { display: grid; gap: var(--sp-4); grid-template-columns: repeat(2, minmax(0, 1fr)); }
 @media (max-width: 1100px) {
 	main {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -122,6 +127,7 @@ main {
 			"reads traffic"
 			"tripwires memory"
 			"config config"
+			"misses misses"
 			"bandwidth bandwidth";
 	}
 	/* The panel has its own row here, so the table needs a fixed limit. */
@@ -131,8 +137,9 @@ main {
 @media (max-width: 720px) {
 	main {
 		grid-template-columns: minmax(0, 1fr);
-		grid-template-areas: "tiles" "projects" "reads" "traffic" "tripwires" "memory" "config" "bandwidth";
+		grid-template-areas: "tiles" "projects" "reads" "traffic" "tripwires" "memory" "config" "misses" "bandwidth";
 	}
+	.split { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* The one surface treatment. Corner registration marks are the Proto idiom:
@@ -234,7 +241,21 @@ perf-graph + perf-graph { border-top: 0; }
 .legend .item { display: flex; align-items: center; gap: var(--sp-1); font-size: var(--fs-tiny); color: var(--text-muted); }
 .legend .swatch { width: 9px; height: 9px; flex: none; border: 1px solid var(--border); }
 .legend .n { color: var(--text); }
-#rate-label, #bandwidth-note { margin: var(--sp-2) 0 0; font-family: var(--font-mono); font-size: var(--fs-tiny); }
+#rate-label, #bandwidth-note, #miss-label { margin: var(--sp-2) 0 0; font-family: var(--font-mono); font-size: var(--fs-tiny); }
+
+/* The verdict is the one sentence the panel exists for. */
+.verdict { margin: 0 0 var(--sp-3); color: var(--text-bright); }
+.verdict.bug { color: var(--danger); }
+.verdict.capacity { color: var(--accent); }
+/* One entry per cause that has fired: its name, then why and what to do. */
+.explain { display: grid; gap: var(--sp-2); margin-bottom: var(--sp-4); }
+.explain .cause { font-size: var(--fs-small); }
+.explain .cause .name { color: var(--text-bright); font-family: var(--font-mono); }
+.explain .cause.bug .name { color: var(--danger); }
+.explain .cause.capacity .name { color: var(--accent); }
+.explain .cause .why { display: block; color: var(--text-muted); font-size: var(--fs-tiny); }
+/* A signal's note sits under its name, in the same cell. */
+td .sub { display: block; color: var(--text-muted); font-size: var(--fs-tiny); }
 
 footer {
 	padding: 0 var(--sp-5) var(--sp-3);

@@ -48,14 +48,11 @@ type SkipReport struct {
 // skipSampleMax bounds the keys one report carries.
 const skipSampleMax = 64
 
+// empty reports whether the report carries nothing: every count is zero and the sample is empty.
 func (r SkipReport) empty() bool {
-	return len(r.SkippedKeys) == 0 && r.counts() == SkipReport{}
-}
-
-// counts is the report without its sample, so it compares.
-func (r SkipReport) counts() SkipReport {
-	r.SkippedKeys = nil
-	return r
+	return len(r.SkippedKeys) == 0 &&
+		r.GetNotInIndex+r.GetEmptyIndex+r.GetBatchBackoff+r.GetKnownMiss+r.PutKnown+
+			r.PutFailed+r.PutRefusedBuildID+r.PutRefusedModIndex+r.PutAbandoned == 0
 }
 
 func (r SkipReport) minus(o SkipReport) SkipReport {
@@ -117,11 +114,11 @@ func (b *WebBackend) clearSample(n int) {
 // skipTotals reads the client's own skip counters.
 func (b *WebBackend) skipTotals() SkipReport {
 	return SkipReport{
-		GetNotInIndex:   uint64(b.SkippedNotInIndex.Load()),
-		GetEmptyIndex:   uint64(b.SkippedEmptyIndex.Load()),
-		GetBatchBackoff: uint64(b.SkippedBatchBackoff.Load()),
-		GetKnownMiss:    uint64(b.SkippedKnownMiss.Load()),
-		PutKnown:        uint64(b.PutSkippedKnown.Load()),
+		GetNotInIndex:      uint64(b.SkippedNotInIndex.Load()),
+		GetEmptyIndex:      uint64(b.SkippedEmptyIndex.Load()),
+		GetBatchBackoff:    uint64(b.SkippedBatchBackoff.Load()),
+		GetKnownMiss:       uint64(b.SkippedKnownMiss.Load()),
+		PutKnown:           uint64(b.PutSkippedKnown.Load()),
 		PutFailed:          uint64(b.PutFailed.Load()),
 		PutRefusedBuildID:  uint64(b.PutRefusedBuildID.Load()),
 		PutRefusedModIndex: uint64(b.PutRefusedModIndex.Load()),

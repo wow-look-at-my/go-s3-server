@@ -149,7 +149,9 @@ func TestSkipReportSampleIsClassified(t *testing.T) {
 	require.NoError(t, storage.Put(held, []byte("body"), map[string]string{"outputid": "y"}, nil))
 	hexOf := func(key string) string { return strings.TrimPrefix(key, gbciKeyPrefix) }
 
-	counts := func(verdict string) float64 { return testutil.ToFloat64(clientSkipSamplesTotal.WithLabelValues(verdict)) }
+	counts := func(verdict string) float64 {
+		return testutil.ToFloat64(clientSkipSamplesTotal.WithLabelValues(verdict))
+	}
 	evictedBefore, advertisedBefore, unknownBefore := counts("evicted"), counts("advertised"), counts("unknown")
 	body, err := json.Marshal(skipReport{GetNotInIndex: 3, SkippedKeys: []string{hexOf(evicted), hexOf(held), hexOf(cacheprogKey('c'))}})
 	require.NoError(t, err)

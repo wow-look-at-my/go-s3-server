@@ -249,9 +249,9 @@ type dashboardChurn struct {
 	// UnknownOutput is how many came from a client that sent no content hash, so the question has no answer.
 	UnknownOutput uint64         `json:"unknown_output"`
 	Causes        []churnCause   `json:"causes"`
-	Top        []churnPackage `json:"top"`
-	Recent     []restoreEvent `json:"recent"`
-	Verdict    string         `json:"verdict"`
+	Top           []churnPackage `json:"top"`
+	Recent        []restoreEvent `json:"recent"`
+	Verdict       string         `json:"verdict"`
 }
 
 var churnCauseSpecs = map[string]churnCause{

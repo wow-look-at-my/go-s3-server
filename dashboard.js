@@ -825,8 +825,8 @@ function schedule() {
 // --- download json ----------------------------------------------------------
 
 // The snapshot leaves as a file, named by bucket and time, so it can be kept
-// or handed to someone. A download needs no secure context, unlike the
-// clipboard, and the page is often served over plain HTTP on a LAN address.
+// or handed to someone. A download needs no secure context, and the page is
+// often served over plain HTTP on a LAN address.
 function downloadSnapshot(text) {
 	const bucket = $("bucket").textContent || "cache";
 	const stamp = new Date().toISOString().replace(/[:.]/g, "-");

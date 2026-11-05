@@ -17,10 +17,12 @@ func testChurn() *churnTracker {
 	return c
 }
 
-func pkgMeta(outputID, goVersion, toolchain, src string) map[string]string {
+// pkgMeta is an upload's metadata. content is the build id's content hash,
+// which is what says whether uploads compiled the same thing.
+func pkgMeta(content, goVersion, toolchain, src string) map[string]string {
 	return map[string]string{
-		"pkg": "example.com/m/p", "target": "linux/amd64", "outputid": outputID,
-		"go-version": goVersion, "toolchain-version": toolchain, "src": src,
+		"pkg": "example.com/m/p", "target": "linux/amd64", "outputid": "stamped-" + content,
+		"content-id": content, "go-version": goVersion, "toolchain-version": toolchain, "src": src,
 	}
 }
 
@@ -83,12 +85,18 @@ func TestChurnLearnsFromHitsAndCountsOnlyPuts(t *testing.T) {
 	assert.Equal(t, "example.com/writer", s.Recent[0].Project, "the re-store counts for the build that stored it")
 }
 
-// An object with no package, such as a linked binary, is not tracked, and
-// the same package for targets is packages.
+// An object with no package, such as a linked binary, is not tracked. A
+// main package is not either, because every test main and directory build
+// carries that same import path. The same package for another target is
+// another package.
 func TestChurnIgnoresObjectsWithoutAPackageAndSplitsTargets(t *testing.T) {
 	c := testChurn()
 	c.observe(cacheprogKey('a'), map[string]string{"outputid": "x"}, true, "p")
 	c.observe(cacheprogKey('b'), map[string]string{"outputid": "y"}, true, "p")
+	for _, pkg := range []string{"main", "command-line-arguments"} {
+		c.observe(cacheprogKey('c'), map[string]string{"outputid": "x", "pkg": pkg}, true, "p")
+		c.observe(cacheprogKey('d'), map[string]string{"outputid": "x", "pkg": pkg}, true, "p")
+	}
 	assert.Zero(t, c.snapshot().Tracked)
 
 	linux := pkgMeta("out1", "go1.27", "r100", "a.go")
@@ -113,13 +121,40 @@ func TestChurnVerdictAndCounters(t *testing.T) {
 	c.observe(cacheprogKey('b'), pkgMeta("out1", "go1.27", "r101", "a.go"), true, project)
 	c.observe(cacheprogKey('c'), pkgMeta("out1", "go1.27", "r102", "a.go"), true, project)
 	s := c.snapshot()
-	assert.Contains(t, s.Verdict, "2 packages were stored again under a new key, 2 of them (100.0%) compiled to the identical output.")
+	assert.Contains(t, s.Verdict, "2 packages were stored again under a new key, 2 of them (100.0%) compiled to the identical content.")
 	assert.Contains(t, s.Verdict, "100.0% of the re-stores: client version changed.")
 	assert.Contains(t, s.Verdict, "Latest: example.com/m/p toolchain-version r101 -> r102.")
 	assert.Equal(t, before+2, testutil.ToFloat64(packageRestoresTotal.WithLabelValues(changeToolchain, "same")))
 	row := projectTotals.snapshot()[project]
 	assert.EqualValues(t, 2, row.Restores)
 	assert.EqualValues(t, 2, row.RestoresSameOutput)
+}
+
+// An upload with no content hash cannot answer whether the content changed.
+// It is a re-store of unknown output, never a same one, and the verdict
+// says so. cmd/go stamps the action id into every archive, so the output id
+// alone always differs and must not be read as changed content.
+func TestChurnWithoutAContentHashIsUnknownNotChanged(t *testing.T) {
+	c := testChurn()
+	old := pkgMeta("c1", "go1.27", "r100", "a.go")
+	delete(old, "content-id")
+	c.observe(cacheprogKey('a'), old, true, "p")
+	older := pkgMeta("c2", "go1.27", "r100", "a.go")
+	delete(older, "content-id")
+	c.observe(cacheprogKey('b'), older, true, "p")
+	c.observe(cacheprogKey('c'), pkgMeta("c3", "go1.27", "r100", "a.go"), true, "p")
+	c.observe(cacheprogKey('d'), pkgMeta("c3", "go1.27", "r100", "a.go"), true, "p")
+
+	s := c.snapshot()
+	assert.EqualValues(t, 3, s.Restores)
+	assert.EqualValues(t, 2, s.UnknownOutput, "two re-stores had no content hash on one side")
+	assert.EqualValues(t, 1, s.SameOutput)
+	assert.Equal(t, outputUnknown, s.Recent[2].Output)
+	assert.Equal(t, changeOutput, s.Recent[2].Change)
+	assert.Equal(t, outputSame, s.Recent[0].Output)
+	assert.Equal(t, changeInputs, s.Recent[0].Change)
+	assert.Contains(t, s.Verdict, "and 2 came from a client that sent no content hash")
+	assert.NotNil(t, s.Recent[0].Diffs, "a re-store with no differing field still lists an empty set, never null")
 }
 
 // The ring keeps the newest examples and the ranking the busiest packages.
@@ -146,9 +181,9 @@ func TestDashboardStatsCarryTheChurnPanel(t *testing.T) {
 		return
 	}
 	ts, _ := testSetupWithStorage(t)
-	hdr := func(outputID, goVersion string) map[string]string {
+	hdr := func(content, goVersion string) map[string]string {
 		return map[string]string{
-			"X-Cache-Meta-Outputid": outputID, "X-Cache-Meta-Pkg": "example.com/wire/p", "X-Cache-Meta-Target": "linux/amd64",
+			"X-Cache-Meta-Outputid": "o-" + content, "X-Cache-Meta-Content-Id": content, "X-Cache-Meta-Pkg": "example.com/wire/p", "X-Cache-Meta-Target": "linux/amd64",
 			"X-Cache-Meta-Go-Version": goVersion, "X-Cache-Meta-Src": "a.go", "X-Cache-Module": "example.com/wire",
 		}
 	}

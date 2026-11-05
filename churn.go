@@ -49,7 +49,7 @@ var packageRestoresTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 // packageSeen is the last upload or hit of one package.
 type packageSeen struct {
 	hash      [gbciHashSize]byte
-	outputID  string
+	content   string
 	goVersion string
 	toolchain string
 	target    string
@@ -63,7 +63,7 @@ type packageSeen struct {
 }
 
 func (p *packageSeen) bytes() int64 {
-	return churnEntryBytes + int64(len(p.outputID)+len(p.goVersion)+len(p.toolchain)+len(p.target)+len(p.src)+len(p.project)+len(p.lastChange))
+	return churnEntryBytes + int64(len(p.content)+len(p.goVersion)+len(p.toolchain)+len(p.target)+len(p.src)+len(p.project)+len(p.lastChange))
 }
 
 // fieldDiff is one metadata field that differed between uploads.
@@ -80,6 +80,7 @@ type restoreEvent struct {
 	Package    string      `json:"pkg"`
 	Target     string      `json:"target,omitempty"`
 	Change     string      `json:"change"`
+	Output     string      `json:"output"`
 	SameOutput bool        `json:"same_output"`
 	Diffs      []fieldDiff `json:"diffs"`
 }
@@ -93,6 +94,7 @@ type churnTracker struct {
 	recent   []restoreEvent
 	total    uint64
 	same     uint64
+	unknown  uint64
 	byChange map[string]uint64
 	now      func() time.Time
 }
@@ -116,7 +118,8 @@ var packageChurn = newChurnTracker(defaultChurnBytes)
 // served, whoever stored it.
 func (c *churnTracker) observe(key string, meta map[string]string, put bool, project string) {
 	pkg := meta["pkg"]
-	if pkg == "" {
+	if pkg == "" || pkg == "main" || pkg == "command-line-arguments" {
+		// A main package of a test or of a directory build carries the same import path as every other one.
 		return
 	}
 	hash, ok := extractActionHash(key)
@@ -125,7 +128,7 @@ func (c *churnTracker) observe(key string, meta map[string]string, put bool, pro
 	}
 	cur := &packageSeen{
 		hash:      hash,
-		outputID:  meta[outputIDMetaKey],
+		content:   meta["content-id"],
 		goVersion: meta["go-version"],
 		toolchain: meta["toolchain-version"],
 		target:    meta["target"],
@@ -147,7 +150,8 @@ func (c *churnTracker) observe(key string, meta map[string]string, put bool, pro
 		return
 	}
 	diffs, change := classifyChange(prev, cur)
-	same := cur.outputID != "" && cur.outputID == prev.outputID
+	output := outputVerdict(prev, cur)
+	same := output == outputSame
 	cur.restores++
 	cur.lastChange = change
 	if same {
@@ -156,14 +160,15 @@ func (c *churnTracker) observe(key string, meta map[string]string, put bool, pro
 	c.entries.Put(k, cur)
 	c.total++
 	c.byChange[change]++
-	output := "changed"
 	if same {
 		c.same++
-		output = "same"
+	}
+	if output == outputUnknown {
+		c.unknown++
 	}
 	packageRestoresTotal.WithLabelValues(change, output).Inc()
 	projectTotals.noteRestore(project, same)
-	ev := restoreEvent{At: time.Unix(cur.at, 0).UTC(), Project: project, Package: pkg, Target: cur.target, Change: change, SameOutput: same, Diffs: diffs}
+	ev := restoreEvent{At: time.Unix(cur.at, 0).UTC(), Project: project, Package: pkg, Target: cur.target, Change: change, Output: output, SameOutput: same, Diffs: diffs}
 	if len(c.recent) >= churnRecentMax {
 		copy(c.recent, c.recent[1:])
 		c.recent = c.recent[:churnRecentMax-1]
@@ -171,10 +176,29 @@ func (c *churnTracker) observe(key string, meta map[string]string, put bool, pro
 	c.recent = append(c.recent, ev)
 }
 
+// The output label of a re-store. cmd/go stamps the action id into every
+// archive, so the stored bytes always differ between keys.
+const (
+	outputSame    = "same"
+	outputChanged = "changed"
+	outputUnknown = "unknown" // one of the uploads carried no content hash
+)
+
+func outputVerdict(prev, cur *packageSeen) string {
+	switch {
+	case prev.content == "" || cur.content == "":
+		return outputUnknown
+	case prev.content == cur.content:
+		return outputSame
+	default:
+		return outputChanged
+	}
+}
+
 // classifyChange lists the fields that differ and names the kind by the
 // first of them.
 func classifyChange(prev, cur *packageSeen) ([]fieldDiff, string) {
-	var diffs []fieldDiff
+	diffs := []fieldDiff{}
 	add := func(field, from, to string) {
 		if from != to {
 			diffs = append(diffs, fieldDiff{Field: field, From: from, To: to})
@@ -187,10 +211,10 @@ func classifyChange(prev, cur *packageSeen) ([]fieldDiff, string) {
 	switch {
 	case len(diffs) > 0:
 		return diffs, map[string]string{"go-version": changeGoVersion, "toolchain-version": changeToolchain, "target": changeTarget, "src": changeSources}[diffs[0].Field]
-	case cur.outputID != "" && cur.outputID == prev.outputID:
-		return nil, changeInputs
+	case outputVerdict(prev, cur) == outputSame:
+		return diffs, changeInputs
 	default:
-		return nil, changeOutput
+		return diffs, changeOutput
 	}
 }
 
@@ -220,9 +244,11 @@ type dashboardChurn struct {
 	Tracked int `json:"tracked_packages"`
 	// Restores is every package stored again under a new key since the server started.
 	Restores uint64 `json:"restores"`
-	// SameOutput is how many of those compiled to the identical output.
-	SameOutput uint64         `json:"same_output"`
-	Causes     []churnCause   `json:"causes"`
+	// SameOutput is how many of those compiled to the identical content.
+	SameOutput uint64 `json:"same_output"`
+	// UnknownOutput is how many came from a client that sent no content hash, so the question has no answer.
+	UnknownOutput uint64         `json:"unknown_output"`
+	Causes        []churnCause   `json:"causes"`
 	Top        []churnPackage `json:"top"`
 	Recent     []restoreEvent `json:"recent"`
 	Verdict    string         `json:"verdict"`
@@ -241,22 +267,23 @@ var churnCauseSpecs = map[string]churnCause{
 	changeSources: {Label: "source files changed",
 		Explain: "A Go file was added to or removed from the package.",
 		Action:  "Expected on edited code. The list is the first few names, so a change past them reads as unchanged files."},
-	changeInputs: {Label: "same sources, same output, new key",
-		Explain: "The Go version, the client, the target and the files all agree with the last upload, and the compiled output is byte for byte the same. An input the metadata does not carry changed: a build flag, an environment variable, GOFLAGS, a -ldflags stamp, a path without -trimpath, or a dependency's build id.",
+	changeInputs: {Label: "same sources, same content, new key",
+		Explain: "The Go version, the client, the target and the files all agree with the last upload, and the compiled content is the same. An input the metadata does not carry changed: a build flag, an environment variable, GOFLAGS, a -ldflags stamp, a path without -trimpath, or a dependency's build id.",
 		Action:  "This is the pointless re-store. Compare the two builds' go env, GOFLAGS and the flags in the build command; what differs between them is in the action id and not in the output."},
-	changeOutput: {Label: "same files, output changed",
-		Explain: "The Go version, the client, the target and the file names agree with the last upload, but the compiled output differs. A file's content changed, or a dependency's output changed and this package followed it.",
-		Action:  "Expected on edited code. On unchanged code, look for a generated file or a dependency that is stored again on every build."},
+	changeOutput: {Label: "same files, content changed or unknown",
+		Explain: "The Go version, the client, the target and the file names agree with the last upload, but the compiled content differs, or one upload carried no content hash. A file's content changed, or a dependency's output changed and this package followed it.",
+		Action:  "Expected on edited code. On unchanged code, look for a generated file or a dependency that is stored again on every build. A re-store with an unknown output came from a client older than the content hash; an upgraded client answers it."},
 }
 
 // snapshot builds the panel.
 func (c *churnTracker) snapshot() dashboardChurn {
 	c.mu.Lock()
 	out := dashboardChurn{
-		Tracked:    c.entries.Len(),
-		Restores:   c.total,
-		SameOutput: c.same,
-		Recent:     make([]restoreEvent, 0, len(c.recent)),
+		Tracked:       c.entries.Len(),
+		Restores:      c.total,
+		SameOutput:    c.same,
+		UnknownOutput: c.unknown,
+		Recent:        make([]restoreEvent, 0, len(c.recent)),
 	}
 	for i := len(c.recent) - 1; i >= 0; i-- {
 		out.Recent = append(out.Recent, c.recent[i])
@@ -306,8 +333,11 @@ func churnVerdict(c dashboardChurn) string {
 		}
 	}
 	lead := formatCount(float64(c.Restores)) + " packages were stored again under a new key, " +
-		formatCount(float64(c.SameOutput)) + " of them (" + formatShare(float64(c.SameOutput)/float64(c.Restores)) + ") compiled to the identical output. " +
-		formatShare(top.Share) + " of the re-stores: " + top.Label + ". " + top.Action
+		formatCount(float64(c.SameOutput)) + " of them (" + formatShare(float64(c.SameOutput)/float64(c.Restores)) + ") compiled to the identical content"
+	if c.UnknownOutput > 0 {
+		lead += ", and " + formatCount(float64(c.UnknownOutput)) + " came from a client that sent no content hash, so for those the question has no answer"
+	}
+	lead += ". " + formatShare(top.Share) + " of the re-stores: " + top.Label + ". " + top.Action
 	if ex := latestExample(c.Recent, top.Key); ex != "" {
 		lead += " Latest: " + ex
 	}
@@ -324,8 +354,8 @@ func latestExample(recent []restoreEvent, kind string) string {
 		for _, d := range ev.Diffs {
 			s += " " + d.Field + " " + d.From + " -> " + d.To
 		}
-		if len(ev.Diffs) == 0 && ev.SameOutput {
-			s += " (identical output)"
+		if len(ev.Diffs) == 0 {
+			s += " (content " + ev.Output + ")"
 		}
 		return s + "."
 	}

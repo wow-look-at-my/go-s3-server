@@ -147,6 +147,10 @@ func (b *WebBackend) prepare(j putJob) {
 	if pkg := parseImportPath(j.data); pkg != "" {
 		meta["pkg"] = pkg
 	}
+	// The content hash of the build id, so the server can tell a re-store that compiled the same thing from one that did not.
+	if _, _, content := archiveBuildID(j.data); content != "" {
+		meta["content-id"] = content
+	}
 	if files := parseSourceFiles(j.data); len(files) > 0 {
 		meta["src"] = capSrcList(files)
 	}

@@ -21,12 +21,12 @@ const (
 	// Fractions of the process budget each cache may claim when it is fully grown.
 	metaCacheBudgetFraction   = 0.10
 	cleanMemoBudgetFraction   = 0.03
-	evictedMemoBudgetFraction = 0.01
+	evictedMemoBudgetFraction = 0.03
 	churnBudgetFraction       = 0.02
 	// Defaults when there is no discoverable ceiling: what the entry-count bounds worked out to in bytes.
 	defaultMetaCacheBytes   = 32 << 20
 	defaultCleanMemoBytes   = 16 << 20
-	defaultEvictedMemoBytes = 8 << 20
+	defaultEvictedMemoBytes = 24 << 20
 	defaultChurnBytes       = 16 << 20
 
 	// memShrinkFraction: above this share of the budget, shrink the caches.

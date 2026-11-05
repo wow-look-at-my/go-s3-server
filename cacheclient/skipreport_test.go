@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -115,7 +116,45 @@ func TestSkipReportCarriesTheUploadsThatNeverLanded(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Equal(t, []SkipReport{{PutFailed: 3, PutRefused: 2, PutAbandoned: 2}}, got)
+	require.Equal(t, []SkipReport{{PutFailed: 3, PutRefusedBuildID: 1, PutRefusedModIndex: 1, PutAbandoned: 2}}, got)
+}
+
+// The report carries a bounded sample of the keys the client skipped, so the
+// server can say how many of them it evicted. A sample a report carried is
+// gone once the server accepts it, and a refused report keeps it.
+func TestSkipReportSamplesTheSkippedKeys(t *testing.T) {
+	var status atomic.Int32
+	var got []SkipReport
+	var mu sync.Mutex
+	srv := skipServer(t, &status, &got, &mu)
+	defer srv.Close()
+	b := newSkipBackend(t, srv.URL)
+
+	for i := range skipSampleMax + 10 {
+		var h actionHash
+		h[0] = byte(i)
+		h[1] = byte(i >> 8)
+		b.SkippedNotInIndex.Increment()
+		b.sampleSkippedKey(h)
+	}
+	status.Store(http.StatusInternalServerError)
+	require.False(t, b.FlushSkips())
+	status.Store(http.StatusNoContent)
+	require.True(t, b.FlushSkips())
+
+	var h actionHash
+	h[0] = 0xee
+	b.SkippedNotInIndex.Increment()
+	b.sampleSkippedKey(h)
+	require.NoError(t, b.Close())
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, got, 2)
+	assert.EqualValues(t, skipSampleMax+10, got[0].GetNotInIndex)
+	assert.Len(t, got[0].SkippedKeys, skipSampleMax, "the sample is bounded")
+	assert.Equal(t, "0000"+strings.Repeat("00", hashSize-2), got[0].SkippedKeys[0])
+	assert.Equal(t, []string{"ee" + strings.Repeat("00", hashSize-1)}, got[1].SkippedKeys, "an accepted sample does not ride the next report")
 }
 
 // A batch the server answers with an error rolls the claims back and counts

@@ -145,6 +145,8 @@ type dashboardMisses struct {
 	Verdict string `json:"verdict"`
 	// Signals are the supply-side numbers that explain the causes.
 	Signals []missSignal `json:"signals"`
+	// Sample is what the server knows of the keys clients sampled from their index skips.
+	Sample dashboardSkipSample `json:"sample"`
 }
 
 func labelCount(stats map[string]metricValue, name, label, value string) float64 {
@@ -292,8 +294,57 @@ func diagnoseMisses(stats map[string]metricValue, eviction dashboardEvictionInfo
 		out.Dominant = out.Reasons[top].Key
 	}
 	out.Signals = missSignals(stats, eviction)
-	out.Verdict = missVerdict(out) + lostUploadsVerdict(out.Signals)
+	out.Sample = skipSample(stats)
+	for i := range out.Reasons {
+		if out.Reasons[i].Key == "not_in_index" && out.Sample.Keys > 0 {
+			out.Reasons[i].Explain += " " + out.Sample.Explain
+			if out.Sample.EvictedShare >= 0.5 {
+				out.Reasons[i].Severity = missSeverityCapacity
+			}
+		}
+	}
+	out.Verdict = missVerdict(out) + lostUploadsVerdict(out.Signals) + out.Sample.Verdict
 	return out
+}
+
+// dashboardSkipSample is what the server knows of the keys clients sampled
+// from their index skips: the share the sweeper had evicted. The share the
+// server holds now, and the share it never held.
+type dashboardSkipSample struct {
+	Keys            float64 `json:"keys"`
+	Evicted         float64 `json:"evicted"`
+	Advertised      float64 `json:"advertised"`
+	Unknown         float64 `json:"unknown"`
+	EvictedShare    float64 `json:"evicted_share"`
+	AdvertisedShare float64 `json:"advertised_share"`
+	Explain         string  `json:"explain"`
+	Verdict         string  `json:"verdict"`
+}
+
+// skipSample reads the sample verdicts. A never-stored miss the client
+// answered from its own index copy is the one the server never sees. The
+// sample is how it still gets to say what those keys were.
+func skipSample(stats map[string]metricValue) dashboardSkipSample {
+	s := dashboardSkipSample{
+		Evicted:    labelCount(stats, "s3_client_skip_samples_total", "verdict", "evicted"),
+		Advertised: labelCount(stats, "s3_client_skip_samples_total", "verdict", "advertised"),
+		Unknown:    labelCount(stats, "s3_client_skip_samples_total", "verdict", "unknown"),
+	}
+	s.Keys = s.Evicted + s.Advertised + s.Unknown
+	if s.Keys == 0 {
+		return s
+	}
+	s.EvictedShare = s.Evicted / s.Keys
+	s.AdvertisedShare = s.Advertised / s.Keys
+	s.Explain = "Of " + formatCount(s.Keys) + " skipped keys clients sampled, " + formatShare(s.EvictedShare) + " were keys the sweeper had evicted, " +
+		formatShare(s.AdvertisedShare) + " were keys this server holds now (the client's index copy was older than the upload), and the rest it never held."
+	switch {
+	case s.EvictedShare >= 0.5:
+		s.Verdict = " The sample says most of the never-stored misses are evictions: the cache is too small for what the fleet builds, so raise eviction.max_bytes."
+	case s.AdvertisedShare >= 0.5:
+		s.Verdict = " The sample says most of the never-stored misses are keys the server holds now: clients run on an index copy older than the uploads, so the index max age is too long for how fast the fleet uploads."
+	}
+	return s
 }
 
 // lostUploadsVerdict is the sentence added when a client reported uploads
@@ -368,15 +419,19 @@ func missSignals(stats map[string]metricValue, eviction dashboardEvictionInfo) [
 		labelCountBoth(stats, "cache_storage_operations_total", "operation", "put", "status", "ok")
 	lostFailed := labelCount(stats, "s3_client_uploads_lost_total", "reason", "failed")
 	lostAbandoned := labelCount(stats, "s3_client_uploads_lost_total", "reason", "abandoned")
-	lostRefused := labelCount(stats, "s3_client_uploads_lost_total", "reason", "refused")
+	lostBuildID := labelCount(stats, "s3_client_uploads_lost_total", "reason", "refused_buildid")
+	lostModIndex := labelCount(stats, "s3_client_uploads_lost_total", "reason", "refused_modindex") +
+		labelCount(stats, "s3_client_uploads_lost_total", "reason", "refused")
 	return []missSignal{
 		fill,
 		{Key: "uploads_failed", Label: "uploads the client sent and the store never confirmed", Count: lostFailed, Alert: lostFailed > 0,
 			Note: "reported by the client at exit: a network error, a refused answer, or a per-object error. Each is a key that misses on every later build until something uploads it again"},
 		{Key: "uploads_abandoned", Label: "uploads the client gave up without sending", Count: lostAbandoned, Alert: lostAbandoned > 0,
 			Note: "reported by the client at exit: a body it could not read, a backend that was closing, or a hand-off it could not write"},
-		{Key: "uploads_refused", Label: "uploads the client refused itself", Count: lostRefused, Alert: false,
-			Note: "a build id that disagrees with the action, or a module index; neither belongs in a shared cache"},
+		{Key: "uploads_refused_buildid", Label: "uploads the client refused for a build id that disagrees with the key", Count: lostBuildID, Alert: lostBuildID > 0,
+			Note: "the compiled object names another action than the key it was offered under; a mis-keyed object would poison every consumer, so the client keeps it local"},
+		{Key: "uploads_refused_modindex", Label: "uploads the client refused as module indexes", Count: lostModIndex, Alert: false,
+			Note: "a module index never belongs in a shared cache; the client recomputes it locally. A client older than the split reports both refusals here"},
 		{Key: "evictions", Label: "objects evicted", Count: evictions, Alert: false,
 			Note: "each one is a miss for the next build that wanted it; the evicted row above counts the ones a build has asked for since"},
 		{Key: "shed", Label: "requests shed at capacity", Count: shed, Alert: shed > 0,

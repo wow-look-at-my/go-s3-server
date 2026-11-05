@@ -116,16 +116,20 @@ func TestDashboardShowsPollErrorsInABanner(t *testing.T) {
 	assert.Contains(t, string(script), `$("poll-error").hidden = true;`)
 }
 
-// its handler must both exist, and the poll must keep the raw text.
-func TestDashboardHasCopyJSONButton(t *testing.T) {
+// The snapshot leaves the page as a file, so it can be handed to someone.
+// The button, its handler and the download must exist, and the poll must
+// keep the raw text.
+func TestDashboardHasDownloadJSONButton(t *testing.T) {
 	page, err := dashboardAssets.ReadFile("dashboard.html")
 	require.NoError(t, err)
 	script, err := dashboardAssets.ReadFile("dashboard.js")
 	require.NoError(t, err)
-	assert.Contains(t, string(page), `<scratch-button id="copy-json"`)
-	assert.Contains(t, string(script), `$("copy-json").addEventListener("click"`)
+	assert.Contains(t, string(page), `<scratch-button id="download-json"`)
+	assert.Contains(t, string(script), `$("download-json").addEventListener("click"`)
 	assert.Contains(t, string(script), `state.raw = raw;`)
-	assert.Contains(t, string(script), `await writeClipboard(state.raw);`)
+	assert.Contains(t, string(script), `downloadSnapshot(state.raw);`)
+	assert.Contains(t, string(script), `a.download = `)
+	assert.NotContains(t, string(script), "clipboard", "the page saves a file, it does not copy")
 }
 
 // published through an access proxy, which is where identity is checked.

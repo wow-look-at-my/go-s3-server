@@ -491,6 +491,7 @@ func (b *WebBackend) get(actionID string) (outputID string, data []byte, t time.
 			b.SkippedEmptyIndex.Increment()
 		} else {
 			b.SkippedNotInIndex.Increment()
+			b.sampleSkippedKey(h)
 		}
 		b.noteSkip()
 		return "", nil, time.Time{}, true
@@ -527,6 +528,7 @@ func (b *WebBackend) probeDuringLoad(actionID string, h actionHash) batchResp {
 		return <-probe
 	}
 	b.SkippedNotInIndex.Increment()
+	b.sampleSkippedKey(h)
 	b.noteSkip()
 	return batchResp{miss: true}
 }

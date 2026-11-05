@@ -190,6 +190,34 @@ func TestDiagnoseMissesNamesTheUploadsClientsLost(t *testing.T) {
 	assert.NotContains(t, m.Verdict, "Clients reported")
 }
 
+// A client that skips a key its index lacks cannot know whether the sweeper
+// evicted it. The server classifies the keys the client sampled. When most
+// of them were evicted, the never-stored row becomes a capacity miss and
+// the verdict says to grow the cache.
+func TestDiagnoseMissesReadsTheSkipSample(t *testing.T) {
+	reg, skips, _, _ := missRegistry(t)
+	samples := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "s3_client_skip_samples_total"}, []string{"verdict"})
+	reg.MustRegister(samples)
+	skips.WithLabelValues("get", "not_in_index").Add(1000)
+	samples.WithLabelValues("evicted").Add(60)
+	samples.WithLabelValues("advertised").Add(10)
+	samples.WithLabelValues("unknown").Add(30)
+
+	stats, err := gatherDashboardMetrics(reg)
+	require.NoError(t, err)
+	m := diagnoseMisses(stats, dashboardEvictionInfo{})
+	assert.InDelta(t, 100, m.Sample.Keys, 0)
+	assert.InDelta(t, 0.6, m.Sample.EvictedShare, 0.001)
+	assert.Contains(t, m.Verdict, "most of the never-stored misses are evictions")
+	row := reasonByKey(m, "not_in_index")
+	assert.Equal(t, missSeverityCapacity, row.Severity)
+	assert.Contains(t, row.Explain, "Of 100 skipped keys clients sampled, 60.0% were keys the sweeper had evicted")
+
+	m = diagnoseMisses(map[string]metricValue{}, dashboardEvictionInfo{})
+	assert.Zero(t, m.Sample.Keys)
+	assert.Equal(t, missSeverityExpected, reasonByKey(m, "not_in_index").Severity)
+}
+
 func TestDiagnoseMissesWithNothingRecorded(t *testing.T) {
 	reg, _, _, _ := missRegistry(t)
 	stats, err := gatherDashboardMetrics(reg)

@@ -537,7 +537,7 @@ func (b *WebBackend) probeDuringLoad(actionID string, h actionHash) batchResp {
 // exactly the gates a requested object passes. It answers the object's bytes,
 // or false for a body no consumer may see.
 func (b *WebBackend) Verify(e BatchEntry, actionID string) ([]byte, bool) {
-	return b.verify("look-ahead", actionID, e.OutputID, e.Data, e.RawSize)
+	return b.verify("look-ahead", actionID, e.OutputID, e.ActionID, e.Data, e.RawSize)
 }
 
 // ActionIDFromKey recovers the action ID a cache key names, so a consumer

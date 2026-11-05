@@ -54,6 +54,7 @@ func (b *WebBackend) getIndividual(actionID, key string, h actionHash) batchResp
 		outputID = resp.Header.Get("X-Amz-Meta-Outputid")
 	}
 	rawSize, _ := strconv.ParseInt(resp.Header.Get("X-Cache-Meta-Body-Size"), 10, 64)
+	storedAction := resp.Header.Get("X-Cache-Meta-Action-Id")
 
 	// The header states the length.
 	var compressed []byte
@@ -75,7 +76,7 @@ func (b *WebBackend) getIndividual(actionID, key string, h actionHash) batchResp
 	}
 
 	decompressStart := time.Now()
-	data, ok := b.verify("web get", actionID, outputID, compressed, rawSize)
+	data, ok := b.verify("web get", actionID, outputID, storedAction, compressed, rawSize)
 	if b.Latency != nil {
 		b.Latency.Decompress.Record(time.Since(decompressStart))
 	}

@@ -75,6 +75,7 @@ func TestWebBackend_PutAndGet(t *testing.T) {
 	// Verify metadata headers were sent.
 	h := headers["/testbucket/go-buildcache/v1aabbccdd11223344"]
 	require.Equal(t, outputID, h.Get("X-Cache-Meta-Outputid"))
+	require.Equal(t, "aabbccdd11223344", h.Get("X-Cache-Meta-Action-Id"))
 	require.Equal(t, "unknown", h.Get("X-Cache-Meta-Object-Type"))
 	require.Equal(t, strconv.Itoa(len(payload)), h.Get("X-Cache-Meta-Body-Size"))
 	require.Equal(t, "zstd", h.Get("X-Cache-Meta-Compression"))

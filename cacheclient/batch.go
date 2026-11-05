@@ -41,6 +41,8 @@ type batchGetManifestEntry struct {
 type BatchEntry struct {
 	Key      string
 	OutputID string
+	// ActionID is the action the uploader stored the body under, as its action-id metadata.
+	ActionID string
 	Data     []byte
 	Prefetch bool
 	// RawSize is the body's uncompressed length, as the uploader recorded it.
@@ -116,6 +118,7 @@ func streamBatchResponse(r io.Reader, fn func(BatchEntry)) error {
 		fn(BatchEntry{
 			Key:      me.Key,
 			OutputID: me.Metadata["outputid"],
+			ActionID: me.Metadata["action-id"],
 			Data:     raw,
 			Prefetch: me.Prefetch,
 			RawSize:  rawSize,
@@ -297,7 +300,7 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 			return
 		}
 		delete(reqByKey, e.Key)
-		data, ok := b.verify("web batch get", r.actionID, e.OutputID, e.Data, e.RawSize)
+		data, ok := b.verify("web batch get", r.actionID, e.OutputID, e.ActionID, e.Data, e.RawSize)
 		if !ok {
 			r.resp <- batchResp{miss: true}
 			return
@@ -347,12 +350,22 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 // It is the thing place the gates live. A body reaching the build through
 // the look-ahead pool is checked exactly as hard as a single the build asked
 // for by name. op names the path for the log line.
-func (b *WebBackend) verify(op, actionID, outputID string, stored []byte, rawSize int64) ([]byte, bool) {
+func (b *WebBackend) verify(op, actionID, outputID, storedAction string, stored []byte, rawSize int64) ([]byte, bool) {
 	// A missing outputid is a metadata gap, not a corrupt body — count it as
 	// such rather than as the checksum mismatch it would become below.
 	if outputID == "" {
 		b.MissNoOutputID.Increment()
 		logging.Warnf("cacheprog: %s %s: missing outputid metadata", op, ShortID(actionID))
+		return nil, false
+	}
+	// The uploader named its action in the metadata, which travels with the
+	// body. A body whose archive carries a content stamp certifies its key
+	// through this field alone.
+	if storedAction != "" && storedAction != actionID {
+		b.MissBuildID.Increment()
+		b.Stats.Corrupt.Increment()
+		logging.Warnf("cacheprog: %s %s: action-id metadata names %s; treating as miss",
+			op, ShortID(actionID), ShortID(storedAction))
 		return nil, false
 	}
 	data, err := DecompressSized(stored, rawSize)

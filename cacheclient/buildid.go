@@ -70,14 +70,14 @@ func archiveBuildIDAction(data []byte) string {
 // BuildIDMatchesAction reports whether body is consistent with cache action actionIDHex, catching a self-consistent body stored under the wrong key. got is the archive's stamped action. ok is false only when the build id proves a DIFFERENT action, or a package
 // archive has none (cmd/go always stamps it).
 func BuildIDMatchesAction(actionIDHex string, body []byte) (got string, ok bool) {
-	isPkg, action := ArchiveExportInfo(body)
+	isPkg, action, content := archiveBuildID(body)
 	want := ExpectedBuildIDAction(actionIDHex)
 
 	if action != "" {
 		if want == "" {
 			return action, true // no derivable expectation; don't false-positive
 		}
-		return action, action == want
+		return action, action == want || action == content
 	}
 
 	// A package archive with no build id, checked against a real key, is refused.

@@ -2,6 +2,8 @@ package cacheclient
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"os"
 	"testing"
@@ -10,6 +12,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/go-containers/set"
 )
+
+// testAction is a well-formed action ID made from name.
+func testAction(name string) string {
+	sum := sha256.Sum256([]byte("action " + name))
+	return hex.EncodeToString(sum[:])
+}
 
 // useTempDir points os.TempDir at a fresh directory and returns it. Unix reads
 // TMPDIR. Windows reads TMP, then TEMP, and never TMPDIR.
@@ -23,9 +31,8 @@ func useTempDir(t *testing.T) string {
 	return dir
 }
 
-// Shims that keep a test's own vocabulary -- a reader, a key string,
-// return values -- from having to change everywhere the client's internals
-// did. each calls the real code path; none of them stands in for it.
+// Shims that keep a test's own vocabulary, a reader, a key string, return
+// values.
 
 // hashOf is parseActionHash for a test that knows its id is well formed.
 func hashOf(actionID string) actionHash {

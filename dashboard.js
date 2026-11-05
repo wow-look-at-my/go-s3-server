@@ -11,7 +11,7 @@ const state = {
 	reads: null, // the last read totals, for the per-poll hit rate
 	misses: null, // the last miss counts by cause, for the per-poll rate
 	churn: null, // the last re-store counts by cause, for the per-poll rate
-	raw: null, // the body of the snapshot on screen, verbatim, for "copy json"
+	raw: null, // the body of the snapshot on screen, verbatim, for "download json"
 };
 
 const $ = (id) => document.getElementById(id);
@@ -490,7 +490,7 @@ function diffCell(ev) {
 	}
 	const note = document.createElement("span");
 	note.className = "diff";
-	note.textContent = ev.same_output ? "identical output" : "output changed";
+	note.textContent = ev.output === "same" ? "identical content" : ev.output === "unknown" ? "content unknown (no content hash from that client)" : "content changed";
 	td.append(note);
 	return td;
 }
@@ -522,7 +522,7 @@ function drawChurn(stats) {
 	);
 	let moved = 0;
 	for (const r of causes) moved += recent(r);
-	$("churn-label").textContent = `${count(c.restores)} re-stores since the server started, ${count(c.same_output)} with identical output; ${count(c.tracked_packages)} packages tracked${prev ? `; ${count(moved)} since the last poll` : ""}`;
+	$("churn-label").textContent = `${count(c.restores)} re-stores since the server started, ${count(c.same_output)} with identical content, ${count(c.unknown_output)} with no content hash; ${count(c.tracked_packages)} packages tracked${prev ? `; ${count(moved)} since the last poll` : ""}`;
 
 	rows(
 		$("churn-top"),
@@ -822,38 +822,39 @@ function schedule() {
 	if (live()) state.timer = setInterval(poll, POLL_MS);
 }
 
-// --- copy json --------------------------------------------------------------
+// --- download json ----------------------------------------------------------
 
-// navigator.clipboard exists only in a secure context. The dashboard is often
-// served over plain HTTP on a LAN address, so execCommand is the fallback.
-async function writeClipboard(text) {
-	if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
-	const area = document.createElement("textarea");
-	area.value = text;
-	area.style.position = "fixed";
-	area.style.opacity = "0";
-	document.body.append(area);
-	area.select();
-	const ok = document.execCommand("copy");
-	area.remove();
-	if (!ok) throw new Error("the browser refused the copy");
+// The snapshot leaves as a file, named by bucket and time, so it can be kept
+// or handed to someone. A download needs no secure context, and the page is
+// often served over plain HTTP on a LAN address.
+function downloadSnapshot(text) {
+	const bucket = $("bucket").textContent || "cache";
+	const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+	const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+	const a = document.createElement("a");
+	a.href = url;
+	a.download = `cache-stats-${bucket}-${stamp}.json`;
+	document.body.append(a);
+	a.click();
+	a.remove();
+	URL.revokeObjectURL(url);
 }
 
 function flashLabel(el, text) {
 	el.textContent = text;
 	clearTimeout(el.resetTimer);
-	el.resetTimer = setTimeout(() => (el.textContent = "copy json"), 1500);
+	el.resetTimer = setTimeout(() => (el.textContent = "download json"), 1500);
 }
 
-$("copy-json").addEventListener("click", async () => {
-	const btn = $("copy-json");
+$("download-json").addEventListener("click", () => {
+	const btn = $("download-json");
 	if (state.raw === null) return flashLabel(btn, "no snapshot yet");
 	try {
-		await writeClipboard(state.raw);
-		flashLabel(btn, "copied");
+		downloadSnapshot(state.raw);
+		flashLabel(btn, "saved");
 	} catch (err) {
-		console.error("copy json failed:", err);
-		flashLabel(btn, "copy failed");
+		console.error("download json failed:", err);
+		flashLabel(btn, "download failed");
 	}
 });
 

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/hex"
+	"strings"
 )
 
 // BuildIDHashSize is how many leading action-hash bytes cmd/go stamps into a build id's ACTION field, base64.RawURLEncoding'd.
@@ -24,13 +25,19 @@ func ExpectedBuildIDAction(actionIDHex string) string {
 
 // ArchiveExportInfo inspects data as a Go compiled-package object and reports
 // isPkgArchive (an ar archive with a __.PKGDEF export-data member) and action
-// (the field before '/' in `build id "ACTION/CONTENT"`, or "" if none). A
-// non-archive yields (false, ""). Only the header before the "$$" export-data
-// marker is scanned, so binary export bytes can't be mistaken for a build id.
+// (the field before '/' in `build id "ACTION/CONTENT"`, or "" if none).
 func ArchiveExportInfo(data []byte) (isPkgArchive bool, action string) {
+	isPkgArchive, action, _ = archiveBuildID(data)
+	return isPkgArchive, action
+}
+
+// archiveBuildID is ArchiveExportInfo with the CONTENT field too: the hash
+// of the object with its own build id zeroed. Actions that compiled the
+// same thing share it, while their output hashes differ by the stamp alone.
+func archiveBuildID(data []byte) (isPkgArchive bool, action, content string) {
 	pkgdef := arMember(data, "__.PKGDEF")
 	if pkgdef == nil {
-		return false, ""
+		return false, "", ""
 	}
 	header := pkgdef
 	if i := bytes.Index(header, []byte("$$")); i >= 0 {
@@ -39,18 +46,18 @@ func ArchiveExportInfo(data []byte) (isPkgArchive bool, action string) {
 	const marker = `build id "`
 	idx := bytes.Index(header, []byte(marker))
 	if idx < 0 {
-		return true, ""
+		return true, "", ""
 	}
 	rest := header[idx+len(marker):]
 	end := bytes.IndexByte(rest, '"')
 	if end < 0 {
-		return true, ""
+		return true, "", ""
 	}
-	id := rest[:end]
-	if slash := bytes.IndexByte(id, '/'); slash >= 0 {
-		id = id[:slash]
+	id := string(rest[:end])
+	if slash := strings.IndexByte(id, '/'); slash >= 0 {
+		return true, id[:slash], id[slash+1:]
 	}
-	return true, string(id)
+	return true, id, ""
 }
 
 // archiveBuildIDAction returns the ACTION field of data's build id (see

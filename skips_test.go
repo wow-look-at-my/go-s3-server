@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
@@ -99,25 +100,68 @@ func TestSkipReportRejectsBadBodies(t *testing.T) {
 
 // The server decodes the client's struct.
 func TestSkipReportWireMatchesClient(t *testing.T) {
-	data, err := json.Marshal(cacheclient.SkipReport{GetNotInIndex: 1, GetEmptyIndex: 2, GetBatchBackoff: 3, GetKnownMiss: 4, PutKnown: 5, PutFailed: 6, PutRefused: 7, PutAbandoned: 8})
+	data, err := json.Marshal(cacheclient.SkipReport{GetNotInIndex: 1, GetEmptyIndex: 2, GetBatchBackoff: 3, GetKnownMiss: 4, PutKnown: 5, PutFailed: 6, PutRefusedBuildID: 7, PutRefusedModIndex: 9, PutAbandoned: 8, SkippedKeys: []string{strings.Repeat("ab", 32)}})
 	require.NoError(t, err)
 	failed := clientUploadsLostTotal.WithLabelValues("failed")
 	abandoned := clientUploadsLostTotal.WithLabelValues("abandoned")
-	failedBefore, abandonedBefore := testutil.ToFloat64(failed), testutil.ToFloat64(abandoned)
+	buildID := clientUploadsLostTotal.WithLabelValues("refused_buildid")
+	failedBefore, abandonedBefore, buildIDBefore := testutil.ToFloat64(failed), testutil.ToFloat64(abandoned), testutil.ToFloat64(buildID)
 	rec := httptest.NewRecorder()
-	handleSkipReport(rec, httptest.NewRequest("POST", "/testbucket/_skips", strings.NewReader(string(data))))
+	handleSkipReport(rec, httptest.NewRequest("POST", "/testbucket/_skips", strings.NewReader(string(data))), nil)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 
 	var rep skipReport
 	require.NoError(t, json.Unmarshal(data, &rep))
-	assert.Equal(t, skipReport{GetNotInIndex: 1, GetEmptyIndex: 2, GetBatchBackoff: 3, GetKnownMiss: 4, PutKnown: 5, PutFailed: 6, PutRefused: 7, PutAbandoned: 8}, rep)
+	assert.Equal(t, skipReport{GetNotInIndex: 1, GetEmptyIndex: 2, GetBatchBackoff: 3, GetKnownMiss: 4, PutKnown: 5, PutFailed: 6, PutRefusedBuildID: 7, PutRefusedModIndex: 9, PutAbandoned: 8, SkippedKeys: []string{strings.Repeat("ab", 32)}}, rep)
 	assert.Equal(t, 6.0, testutil.ToFloat64(failed)-failedBefore, "an upload the client could not complete is counted")
 	assert.Equal(t, 8.0, testutil.ToFloat64(abandoned)-abandonedBefore)
+	assert.Equal(t, 7.0, testutil.ToFloat64(buildID)-buildIDBefore)
 }
 
-// An older client sends no loss fields, and its report still counts.
+// An older client sends no loss fields, or one refusal count for both
+// kinds, and its report still counts.
 func TestSkipReportFromAnOlderClient(t *testing.T) {
-	rec := httptest.NewRecorder()
-	handleSkipReport(rec, httptest.NewRequest("POST", "/testbucket/_skips", strings.NewReader(`{"get_not_in_index":1,"get_empty_index":0,"get_batch_backoff":0,"get_known_miss":0,"put_known":2}`)))
-	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	refused := clientUploadsLostTotal.WithLabelValues("refused")
+	before := testutil.ToFloat64(refused)
+	for _, body := range []string{
+		`{"get_not_in_index":1,"get_empty_index":0,"get_batch_backoff":0,"get_known_miss":0,"put_known":2}`,
+		`{"get_not_in_index":1,"put_known":2,"put_failed":0,"put_refused":3,"put_abandoned":0}`,
+	} {
+		rec := httptest.NewRecorder()
+		handleSkipReport(rec, httptest.NewRequest("POST", "/testbucket/_skips", strings.NewReader(body)), nil)
+		require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	}
+	assert.Equal(t, 3.0, testutil.ToFloat64(refused)-before)
+}
+
+// The server says what it knows of each sampled key: evicted by the
+// sweeper, advertised now, or never held. A malformed key fails the report.
+func TestSkipReportSampleIsClassified(t *testing.T) {
+	if !inOwnProcess(t) {
+		return
+	}
+	ts, storage := testSetupWithStorage(t)
+	evicted := cacheprogKey('a')
+	require.NoError(t, storage.Put(evicted, []byte("body"), map[string]string{"outputid": "x"}, nil))
+	_, err := storage.Evict(0, 1, time.Now().Add(time.Hour))
+	require.NoError(t, err)
+	held := cacheprogKey('b')
+	require.NoError(t, storage.Put(held, []byte("body"), map[string]string{"outputid": "y"}, nil))
+	hexOf := func(key string) string { return strings.TrimPrefix(key, gbciKeyPrefix) }
+
+	counts := func(verdict string) float64 {
+		return testutil.ToFloat64(clientSkipSamplesTotal.WithLabelValues(verdict))
+	}
+	evictedBefore, advertisedBefore, unknownBefore := counts("evicted"), counts("advertised"), counts("unknown")
+	body, err := json.Marshal(skipReport{GetNotInIndex: 3, SkippedKeys: []string{hexOf(evicted), hexOf(held), hexOf(cacheprogKey('c'))}})
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusNoContent, postSkips(t, ts.URL, string(body)).StatusCode)
+	assert.Equal(t, 1.0, counts("evicted")-evictedBefore)
+	assert.Equal(t, 1.0, counts("advertised")-advertisedBefore)
+	assert.Equal(t, 1.0, counts("unknown")-unknownBefore)
+
+	assert.Equal(t, http.StatusBadRequest, postSkips(t, ts.URL, `{"get_not_in_index":1,"skipped_keys":["nope"]}`).StatusCode)
+	many, err := json.Marshal(skipReport{SkippedKeys: make([]string, maxSkipSample+1)})
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, postSkips(t, ts.URL, string(many)).StatusCode)
 }

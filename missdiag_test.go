@@ -167,27 +167,61 @@ func TestDiagnoseMissesNamesTheUploadsClientsLost(t *testing.T) {
 	lost.WithLabelValues("failed").Add(4)
 	lost.WithLabelValues("abandoned").Add(2)
 	lost.WithLabelValues("refused").Add(9)
+	lost.WithLabelValues("refused_modindex").Add(1)
+	lost.WithLabelValues("refused_buildid").Add(3)
 
 	stats, err := gatherDashboardMetrics(reg)
 	require.NoError(t, err)
 	m := diagnoseMisses(stats, dashboardEvictionInfo{})
 	assert.Contains(t, m.Verdict, "Clients reported 6 uploads that never reached the store (4 failed, 2 abandoned)")
-	var failed, refused missSignal
+	var failed, modIndex, buildID missSignal
 	for _, s := range m.Signals {
 		switch s.Key {
 		case "uploads_failed":
 			failed = s
-		case "uploads_refused":
-			refused = s
+		case "uploads_refused_modindex":
+			modIndex = s
+		case "uploads_refused_buildid":
+			buildID = s
 		}
 	}
 	assert.InDelta(t, 4, failed.Count, 0)
 	assert.True(t, failed.Alert)
-	assert.InDelta(t, 9, refused.Count, 0)
-	assert.False(t, refused.Alert, "a refusal is the client doing its job")
+	assert.InDelta(t, 10, modIndex.Count, 0, "the first report shape's one refusal count lands with the module indexes")
+	assert.False(t, modIndex.Alert, "a refused module index is the client doing its job")
+	assert.InDelta(t, 3, buildID.Count, 0)
+	assert.True(t, buildID.Alert, "a mis-keyed object is a poison the fleet must hear of")
 
 	m = diagnoseMisses(map[string]metricValue{}, dashboardEvictionInfo{})
 	assert.NotContains(t, m.Verdict, "Clients reported")
+}
+
+// A client that skips a key its index lacks cannot know whether the sweeper
+// evicted it. The server classifies the keys the client sampled. When most
+// of them were evicted, the never-stored row becomes a capacity miss and
+// the verdict says to grow the cache.
+func TestDiagnoseMissesReadsTheSkipSample(t *testing.T) {
+	reg, skips, _, _ := missRegistry(t)
+	samples := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "s3_client_skip_samples_total"}, []string{"verdict"})
+	reg.MustRegister(samples)
+	skips.WithLabelValues("get", "not_in_index").Add(1000)
+	samples.WithLabelValues("evicted").Add(60)
+	samples.WithLabelValues("advertised").Add(10)
+	samples.WithLabelValues("unknown").Add(30)
+
+	stats, err := gatherDashboardMetrics(reg)
+	require.NoError(t, err)
+	m := diagnoseMisses(stats, dashboardEvictionInfo{})
+	assert.InDelta(t, 100, m.Sample.Keys, 0)
+	assert.InDelta(t, 0.6, m.Sample.EvictedShare, 0.001)
+	assert.Contains(t, m.Verdict, "most of the never-stored misses are evictions")
+	row := reasonByKey(m, "not_in_index")
+	assert.Equal(t, missSeverityCapacity, row.Severity)
+	assert.Contains(t, row.Explain, "Of 100 skipped keys clients sampled, 60.0% were keys the sweeper had evicted")
+
+	m = diagnoseMisses(map[string]metricValue{}, dashboardEvictionInfo{})
+	assert.Zero(t, m.Sample.Keys)
+	assert.Equal(t, missSeverityExpected, reasonByKey(m, "not_in_index").Severity)
 }
 
 func TestDiagnoseMissesWithNothingRecorded(t *testing.T) {

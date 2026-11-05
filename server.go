@@ -333,7 +333,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		handleBatchGet(rec, r, s.storage, s.logAgg, s.config.PrefetchEnabled())
 	case r.Method == "POST" && key == skipReportKey:
 		route = "SkipReport"
-		handleSkipReport(rec, r)
+		handleSkipReport(rec, r, s.storage)
 	case r.Method == "GET" && key != "":
 		route = "GetObject"
 		handleGetObject(rec, r, s.storage, key, s.logAgg)

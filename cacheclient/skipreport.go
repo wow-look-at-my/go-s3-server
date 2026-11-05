@@ -5,6 +5,7 @@ package cacheclient
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -36,23 +37,35 @@ type SkipReport struct {
 	// Puts the client did not send because the index already holds the key.
 	PutKnown uint64 `json:"put_known"`
 	// Uploads that never reached the store.
-	PutFailed    uint64 `json:"put_failed"`
-	PutRefused   uint64 `json:"put_refused"`
-	PutAbandoned uint64 `json:"put_abandoned"`
+	PutFailed          uint64 `json:"put_failed"`
+	PutRefusedBuildID  uint64 `json:"put_refused_buildid"`
+	PutRefusedModIndex uint64 `json:"put_refused_modindex"`
+	PutAbandoned       uint64 `json:"put_abandoned"`
+	// SkippedKeys is a sample of the keys behind GetNotInIndex, as hex action ids.
+	SkippedKeys []string `json:"skipped_keys,omitempty"`
 }
 
-func (r SkipReport) empty() bool { return r == SkipReport{} }
+// skipSampleMax bounds the keys one report carries.
+const skipSampleMax = 64
+
+// empty reports whether the report carries nothing: every count is zero and the sample is empty.
+func (r SkipReport) empty() bool {
+	return len(r.SkippedKeys) == 0 &&
+		r.GetNotInIndex+r.GetEmptyIndex+r.GetBatchBackoff+r.GetKnownMiss+r.PutKnown+
+			r.PutFailed+r.PutRefusedBuildID+r.PutRefusedModIndex+r.PutAbandoned == 0
+}
 
 func (r SkipReport) minus(o SkipReport) SkipReport {
 	return SkipReport{
-		GetNotInIndex:   r.GetNotInIndex - o.GetNotInIndex,
-		GetEmptyIndex:   r.GetEmptyIndex - o.GetEmptyIndex,
-		GetBatchBackoff: r.GetBatchBackoff - o.GetBatchBackoff,
-		GetKnownMiss:    r.GetKnownMiss - o.GetKnownMiss,
-		PutKnown:        r.PutKnown - o.PutKnown,
-		PutFailed:       r.PutFailed - o.PutFailed,
-		PutRefused:      r.PutRefused - o.PutRefused,
-		PutAbandoned:    r.PutAbandoned - o.PutAbandoned,
+		GetNotInIndex:      r.GetNotInIndex - o.GetNotInIndex,
+		GetEmptyIndex:      r.GetEmptyIndex - o.GetEmptyIndex,
+		GetBatchBackoff:    r.GetBatchBackoff - o.GetBatchBackoff,
+		GetKnownMiss:       r.GetKnownMiss - o.GetKnownMiss,
+		PutKnown:           r.PutKnown - o.PutKnown,
+		PutFailed:          r.PutFailed - o.PutFailed,
+		PutRefusedBuildID:  r.PutRefusedBuildID - o.PutRefusedBuildID,
+		PutRefusedModIndex: r.PutRefusedModIndex - o.PutRefusedModIndex,
+		PutAbandoned:       r.PutAbandoned - o.PutAbandoned,
 	}
 }
 
@@ -66,19 +79,50 @@ type skipReporter struct {
 	lastSend atomic.Int64
 	inFlight atomic.Bool
 	wg       sync.WaitGroup
+	// sample holds the first skipSampleMax keys skipped since the last accepted report.
+	sampleMu sync.Mutex
+	sample   []actionHash
+}
+
+// sampleSkippedKey keeps h for the next report while the sample has room.
+func (b *WebBackend) sampleSkippedKey(h actionHash) {
+	b.skips.sampleMu.Lock()
+	if len(b.skips.sample) < skipSampleMax {
+		b.skips.sample = append(b.skips.sample, h)
+	}
+	b.skips.sampleMu.Unlock()
+}
+
+// takeSample answers the sample as hex, and the length to clear once the server accepts it.
+func (b *WebBackend) takeSample() ([]string, int) {
+	b.skips.sampleMu.Lock()
+	defer b.skips.sampleMu.Unlock()
+	keys := make([]string, len(b.skips.sample))
+	for i, h := range b.skips.sample {
+		keys[i] = hex.EncodeToString(h[:])
+	}
+	return keys, len(keys)
+}
+
+// clearSample drops the first n keys of the sample: the ones a report carried.
+func (b *WebBackend) clearSample(n int) {
+	b.skips.sampleMu.Lock()
+	b.skips.sample = append(b.skips.sample[:0], b.skips.sample[n:]...)
+	b.skips.sampleMu.Unlock()
 }
 
 // skipTotals reads the client's own skip counters.
 func (b *WebBackend) skipTotals() SkipReport {
 	return SkipReport{
-		GetNotInIndex:   uint64(b.SkippedNotInIndex.Load()),
-		GetEmptyIndex:   uint64(b.SkippedEmptyIndex.Load()),
-		GetBatchBackoff: uint64(b.SkippedBatchBackoff.Load()),
-		GetKnownMiss:    uint64(b.SkippedKnownMiss.Load()),
-		PutKnown:        uint64(b.PutSkippedKnown.Load()),
-		PutFailed:       uint64(b.PutFailed.Load()),
-		PutRefused:      uint64(b.PutRefusedBuildID.Load()) + uint64(b.PutRefusedModIndex.Load()),
-		PutAbandoned:    uint64(b.PutAbandoned.Load()),
+		GetNotInIndex:      uint64(b.SkippedNotInIndex.Load()),
+		GetEmptyIndex:      uint64(b.SkippedEmptyIndex.Load()),
+		GetBatchBackoff:    uint64(b.SkippedBatchBackoff.Load()),
+		GetKnownMiss:       uint64(b.SkippedKnownMiss.Load()),
+		PutKnown:           uint64(b.PutSkippedKnown.Load()),
+		PutFailed:          uint64(b.PutFailed.Load()),
+		PutRefusedBuildID:  uint64(b.PutRefusedBuildID.Load()),
+		PutRefusedModIndex: uint64(b.PutRefusedModIndex.Load()),
+		PutAbandoned:       uint64(b.PutAbandoned.Load()),
 	}
 }
 
@@ -123,6 +167,8 @@ func (b *WebBackend) FlushSkips() bool {
 	defer b.skips.mu.Unlock()
 	total := b.skipTotals()
 	delta := total.minus(b.skips.sent)
+	var sampled int
+	delta.SkippedKeys, sampled = b.takeSample()
 	if delta.empty() {
 		return true
 	}
@@ -150,6 +196,7 @@ func (b *WebBackend) FlushSkips() bool {
 	switch {
 	case resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK:
 		b.skips.sent = total
+		b.clearSample(sampled)
 		return true
 	case resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == http.StatusNotFound:
 		// The server is older than the skip endpoint. Its hit rate stays too high.

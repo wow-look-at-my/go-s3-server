@@ -112,6 +112,13 @@ func TestArchiveExportInfo(t *testing.T) {
 	isPkg, action = ArchiveExportInfo([]byte("vet facts, not an archive"))
 	require.False(t, isPkg)
 	require.Equal(t, "", action)
+
+	// The content field is the part after the slash, and it is what the upload names as content-id.
+	_, action, content := archiveBuildID(archiveWithBuildID("EPlPwC3MJFgg3YYfTGwl"))
+	require.Equal(t, "EPlPwC3MJFgg3YYfTGwl", action)
+	require.Equal(t, "Cw9xV7fakecontentid", content)
+	_, _, content = archiveBuildID(archivePkgdefNoBuildID())
+	require.Equal(t, "", content)
 }
 
 // TestWebBackend_GetRejectsBuildIDMismatch is the core regression guard: a body

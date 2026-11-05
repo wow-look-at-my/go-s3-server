@@ -16,8 +16,8 @@ import (
 
 const (
 	skipReportKey = "_skips"
-	// maxSkipReportBytes bounds the body. A real report is a bounded number of bytes.
-	maxSkipReportBytes = 4096
+	// maxSkipReportBytes bounds the body. The counts and a full sample fit well inside it.
+	maxSkipReportBytes = 16 << 10
 	// maxSkipReportCount bounds a single field. The client counts in uint32.
 	maxSkipReportCount = 1 << 32
 )
@@ -30,10 +30,27 @@ type skipReport struct {
 	GetKnownMiss    uint64 `json:"get_known_miss"`
 	PutKnown        uint64 `json:"put_known"`
 	// Uploads that never reached the store.
-	PutFailed    uint64 `json:"put_failed"`
-	PutRefused   uint64 `json:"put_refused"`
-	PutAbandoned uint64 `json:"put_abandoned"`
+	PutFailed          uint64 `json:"put_failed"`
+	PutRefusedBuildID  uint64 `json:"put_refused_buildid"`
+	PutRefusedModIndex uint64 `json:"put_refused_modindex"`
+	PutAbandoned       uint64 `json:"put_abandoned"`
+	// PutRefused is the count a client of the first report shape sends for both refusals.
+	PutRefused uint64 `json:"put_refused"`
+	// SkippedKeys is a sample of the keys behind GetNotInIndex, as hex action ids.
+	SkippedKeys []string `json:"skipped_keys"`
 }
+
+// maxSkipSample bounds the sample one report carries. cacheclient sends at most this many.
+const maxSkipSample = 64
+
+// clientSkipSamplesTotal classifies the sampled keys: evicted (the sweeper
+// removed it since the client fetched its index), advertised (the server
+// holds it now, so the client's index copy was stale), unknown (never held,
+// as far as the server remembers).
+var clientSkipSamplesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "s3_client_skip_samples_total",
+	Help: "Keys clients sampled from their index skips, by what the server knows of them (evicted, advertised, unknown).",
+}, []string{"verdict"})
 
 var clientSkipsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "s3_client_skips_total",
@@ -41,11 +58,12 @@ var clientSkipsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 }, []string{"op", "reason"})
 
 // clientUploadsLostTotal counts the uploads a client reported it never
-// completed: failed (sent and not confirmed), refused (a client guard),
+// completed: failed (sent and not confirmed), refused_buildid (the body's
+// build id disagreed with its key), refused_modindex (a Go module index),
 // abandoned (never sent).
 var clientUploadsLostTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "s3_client_uploads_lost_total",
-	Help: "Uploads a client reported it never completed, by reason (failed, refused, abandoned).",
+	Help: "Uploads a client reported it never completed, by reason (failed, refused_buildid, refused_modindex, abandoned).",
 }, []string{"reason"})
 
 func (r skipReport) gets() uint64 {
@@ -53,17 +71,39 @@ func (r skipReport) gets() uint64 {
 }
 
 func (r skipReport) valid() bool {
-	for _, v := range []uint64{r.GetNotInIndex, r.GetEmptyIndex, r.GetBatchBackoff, r.GetKnownMiss, r.PutKnown, r.PutFailed, r.PutRefused, r.PutAbandoned} {
+	for _, v := range []uint64{r.GetNotInIndex, r.GetEmptyIndex, r.GetBatchBackoff, r.GetKnownMiss, r.PutKnown, r.PutFailed, r.PutRefusedBuildID, r.PutRefusedModIndex, r.PutAbandoned, r.PutRefused} {
 		if v >= maxSkipReportCount {
+			return false
+		}
+	}
+	if len(r.SkippedKeys) > maxSkipSample {
+		return false
+	}
+	for _, k := range r.SkippedKeys {
+		if _, ok := extractActionHash(gbciKeyPrefix + k); !ok {
 			return false
 		}
 	}
 	return true
 }
 
+// classifySkippedKeys says what the server knows of each sampled key.
+func classifySkippedKeys(storage *Storage, keys []string) {
+	for _, k := range keys {
+		verdict := "unknown"
+		switch key := gbciKeyPrefix + k; absentKeyReason(storage, key) {
+		case missAdvertised:
+			verdict = "advertised"
+		case missEvicted:
+			verdict = "evicted"
+		}
+		clientSkipSamplesTotal.WithLabelValues(verdict).Inc()
+	}
+}
+
 // handleSkipReport counts a client's skipped gets as misses and its skipped
 // puts as writes the cache already held.
-func handleSkipReport(w http.ResponseWriter, r *http.Request) {
+func handleSkipReport(w http.ResponseWriter, r *http.Request, storage *Storage) {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSkipReportBytes))
 	dec.DisallowUnknownFields()
 	var rep skipReport
@@ -86,9 +126,15 @@ func handleSkipReport(w http.ResponseWriter, r *http.Request) {
 	clientSkipsTotal.WithLabelValues("get", "known_miss").Add(float64(rep.GetKnownMiss))
 	clientSkipsTotal.WithLabelValues("put", "known").Add(float64(rep.PutKnown))
 	clientUploadsLostTotal.WithLabelValues("failed").Add(float64(rep.PutFailed))
+	clientUploadsLostTotal.WithLabelValues("refused_buildid").Add(float64(rep.PutRefusedBuildID))
+	clientUploadsLostTotal.WithLabelValues("refused_modindex").Add(float64(rep.PutRefusedModIndex))
 	clientUploadsLostTotal.WithLabelValues("refused").Add(float64(rep.PutRefused))
 	clientUploadsLostTotal.WithLabelValues("abandoned").Add(float64(rep.PutAbandoned))
+	if storage != nil {
+		classifySkippedKeys(storage, rep.SkippedKeys)
+	}
 	noteProjectMiss(provenanceOf(r), int(rep.gets()))
-	auditFromContext(r.Context()).note("skips get=%d put=%d lost_uploads=%d", rep.gets(), rep.PutKnown, rep.PutFailed+rep.PutRefused+rep.PutAbandoned)
+	auditFromContext(r.Context()).note("skips get=%d put=%d lost_uploads=%d sampled=%d", rep.gets(), rep.PutKnown,
+		rep.PutFailed+rep.PutRefusedBuildID+rep.PutRefusedModIndex+rep.PutRefused+rep.PutAbandoned, len(rep.SkippedKeys))
 	w.WriteHeader(http.StatusNoContent)
 }

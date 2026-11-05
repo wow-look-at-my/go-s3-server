@@ -24,7 +24,7 @@ A bind failure logs and the cache keeps serving. The data path must not die beca
 | --- | --- |
 | `/` | the page |
 | `/dashboard.css`, `/dashboard.js` | its two assets |
-| `/api/stats` | the JSON snapshot the page polls every 5 seconds |
+| `/api/stats` | the JSON snapshot the page polls every second; the download json button saves the one on screen as a file |
 | `/_health` | `200 ok` |
 
 The page and its assets are embedded in the binary. There is no asset directory to mount. The page cannot disagree with the server that serves it.
@@ -96,6 +96,10 @@ The client reports its own lost uploads in the skip report. `put_failed` is an u
 
 A process does not exit between its last upload and the report that says what happened to it.
 
+A client that skips a key its index copy lacks cannot know whether the sweeper evicted it or nothing ever stored it. The server can. The report carries a sample of the skipped keys, up to `skipSampleMax` per report, and the server says what it knows of each. `evicted` (the sweeper removed it since the client fetched its index), `advertised` (the server holds it now, so the client's index copy was older than the upload), or `unknown`. The counts land in `s3_client_skip_samples_total{verdict}`. The never-stored row explains the sample's split, turns into a capacity miss when most sampled keys were evicted.
+
+The verdict then says to grow the cache.
+
 ## The WHAT CHANGED panel
 
 A build that stores a package the cache already held under another key compiled it again. The hit rate reads that as a miss. This panel says why the key moved.
@@ -112,6 +116,10 @@ The first field that differs names its kind:
 | `sources` | the source file names | a file added or removed |
 | `inputs` | nothing, and the output id is the same | an input the metadata does not carry: a flag, an environment variable, a stamp, a path, a dependency's build id |
 | `output` | nothing, and the output id differs | a file's content, or a dependency whose output changed |
+
+cmd/go stamps the action id into every archive it compiles, so the stored bytes of multiple keys always differ. The output id can never say "same". The build id in the archive carries a second field, the content hash, computed with the stamp zeroed. The client sends it as `content-id`, and the server compares that. Consider an upload from a client older than the field. That upload answers `unknown`, which the panel says beside the re-store rather than reading it as changed content.
+
+A package named `main` or `command-line-arguments` is not tracked. Every test main and every directory build carries that import path, so one name will stand for thousands of packages.
 
 The `inputs` kind is the pointless re-store. Nothing visible changed and the compiled bytes are same. The build still can not find the object. The panel colours it, ranks the packages stored again most frequently, and lists the latest re-stores with each differing field as `from -> to`. The verdict names the dominant kind with its newest example.
 

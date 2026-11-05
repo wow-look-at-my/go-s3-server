@@ -117,7 +117,9 @@ The first field that differs names its kind:
 | `inputs` | nothing, and the output id is the same | an input the metadata does not carry: a flag, an environment variable, a stamp, a path, a dependency's build id |
 | `output` | nothing, and the output id differs | a file's content, or a dependency whose output changed |
 
-cmd/go stamps the action id into every archive it compiles, so the stored bytes of multiple keys always differ. The output id can never say "same". The build id in the archive carries a second field, the content hash, computed with the stamp zeroed. The client sends it as `content-id`, and the server compares that. Consider an upload from a client older than the field. That upload answers `unknown`, which the panel says beside the re-store rather than reading it as changed content.
+Upstream cmd/go stamps the action id into every archive it compiles, so the stored bytes of multiple keys always differ. The output id can never say "same". The build id in the archive carries a second field, the content hash, computed with the stamp zeroed. The client sends it as `content-id`. The server compares that. gosmopolitan stamps that content hash twice, `contentID/contentID`. An archive it compiles under a new key keeps its bytes and its output id too.
+
+Consider an upload from a client older than the field. That upload answers `unknown`, which the panel says beside the re-store rather than reading it as changed content.
 
 A package named `main` or `command-line-arguments` is not tracked. Every test main and every directory build carries that import path, so one name will stand for thousands of packages.
 

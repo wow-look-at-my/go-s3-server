@@ -108,7 +108,7 @@ All flags except `--config` override the corresponding config file value.
 
 - `action: "deny"` + `notification: "never"` — silently skip overwrites (200 response)
 - `action: "deny"` + `notification: "always"` — reject any overwrite try (409 response)
-- `action: "deny"` + `notification: "content_differs"` — reject only when content differs. Same content is idempotent (ideal for content-addressable caches)
+- `action: "deny"` + `notification: "content_differs"` — reject only when content differs. Same content is idempotent (ideal for content-addressable caches). One exception: a Go archive stamped `contentID/contentID` gives way to an upload of the same object stamped `actionID/contentID`. So a client that predates content stamps can use the key (`s3_content_stamp_repairs_total`)
 
 ### `eviction` options
 

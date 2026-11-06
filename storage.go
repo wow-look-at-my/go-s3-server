@@ -284,14 +284,20 @@ func (s *Storage) PutStream(key string, r io.Reader, meta map[string]string, aud
 				return ErrWriteOnceDuplicate
 			case "content_differs":
 				eq, eqErr := filesEqual(tmpPath, path)
-				os.Remove(tmpPath)
 				if eqErr != nil {
+					os.Remove(tmpPath)
 					return fmt.Errorf("write_once compare: %w", eqErr)
 				}
 				if eq {
+					os.Remove(tmpPath)
 					return nil
 				}
-				return ErrWriteOnceConflict
+				if !replacesContentStamp(path, tmpPath) {
+					os.Remove(tmpPath)
+					return ErrWriteOnceConflict
+				}
+				// The stored archive carries a content stamp that a client older than the stamp refuses.
+				contentStampRepairsTotal.Inc()
 			default:
 				os.Remove(tmpPath)
 				return nil

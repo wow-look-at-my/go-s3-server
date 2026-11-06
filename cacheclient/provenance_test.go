@@ -95,6 +95,8 @@ func TestProvenanceArchive_Decodes(t *testing.T) {
 	require.Equal(t, "example.com/provpkg", parseImportPath(raw))
 	require.Equal(t, []string{"alpha.go", "beta.go"}, parseSourceFiles(raw))
 	require.Equal(t, "/work/src", parseSourceDir(raw), "the directory the compile recorded, which a key without -trimpath carries")
+	windows := "$$B\nu" + string(buildPkgbitsWithSources("example.com/w", []string{`D:\a\src\w.go`})) + "\n$$\n"
+	require.Equal(t, `D:\a\src`, parseSourceDir(buildAr("__.PKGDEF", []byte(windows))), "a Windows path keeps its separators on every host")
 	require.Empty(t, parseSourceDir([]byte("not an archive")))
 	goVer, target := parseArchiveHeader(raw)
 	require.Equal(t, "go1.25.0", goVer)

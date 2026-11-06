@@ -119,8 +119,8 @@ func TestDashboardShowsPollErrorsInABanner(t *testing.T) {
 }
 
 // The snapshot leaves the page as a file, so it can be handed to someone.
-// The button, its handler and the download must exist, and the poll must
-// keep the raw text.
+// The button, its handler and the download must exist. The poll keeps the
+// snapshot with its vocabulary merged in, and the download writes it indented.
 func TestDashboardHasDownloadJSONButton(t *testing.T) {
 	page, err := dashboardAssets.ReadFile("dashboard.html")
 	require.NoError(t, err)
@@ -128,8 +128,9 @@ func TestDashboardHasDownloadJSONButton(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(page), `<scratch-button id="download-json"`)
 	assert.Contains(t, string(script), `$("download-json").addEventListener("click"`)
-	assert.Contains(t, string(script), `state.raw = raw;`)
-	assert.Contains(t, string(script), `downloadSnapshot(state.raw);`)
+	assert.Contains(t, string(script), `state.snapshot = stats;`)
+	assert.Contains(t, string(script), `describe(await res.json(), state.vocab)`)
+	assert.Contains(t, string(script), `downloadSnapshot(JSON.stringify(state.snapshot, null, "\t"));`)
 	assert.Contains(t, string(script), `a.download = `)
 	assert.NotContains(t, string(script), "clipboard", "the page saves a file, it does not copy")
 }

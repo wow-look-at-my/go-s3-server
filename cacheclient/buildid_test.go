@@ -37,8 +37,8 @@ func TestDescribeObjectNamesTheKind(t *testing.T) {
 // hermeticOTel clears the OTEL endpoint so the process-global tracer provider's sync.Once memoizes disabled.
 func hermeticOTel(t *testing.T) { t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "") }
 
-// TestExpectedBuildIDAction_Golden pins the encoding against a real `go build` stamp, verified with
-// `go tool buildid`. If Go ever changes HashToString, this catches it.
+// TestExpectedBuildIDAction_Golden pins the encoding against a real `go
+// build` stamp, verified with `go tool buildid`.
 func TestExpectedBuildIDAction_Golden(t *testing.T) {
 	const actionID = "10f94fc02dcc245820dd861f4c6c25dee23ceb750f6be498fe84f67dfd2f1f9b"
 	require.Equal(t, "EPlPwC3MJFgg3YYfTGwl", ExpectedBuildIDAction(actionID))
@@ -95,6 +95,123 @@ func TestBuildIDMatchesAction(t *testing.T) {
 	// ...but with no derivable expectation (short key) it must not false-positive.
 	_, ok = BuildIDMatchesAction("aabbccdd", archivePkgdefNoBuildID())
 	require.True(t, ok)
+
+	// A content stamp, contentID/contentID, names no action and passes under any key.
+	_, ok = BuildIDMatchesAction(actionA, archiveWithBuildID("Cw9xV7fakecontentid"))
+	require.True(t, ok, "a content stamp must pass the build-id gate")
+	_, ok = BuildIDMatchesAction(actionB, archiveWithBuildID("Cw9xV7fakecontentid"))
+	require.True(t, ok)
+}
+
+// TestWebBackend_GetRejectsActionIDMetadataMismatch: a body stored with
+// action-id metadata naming another action is a miss, whatever its stamp.
+// A content-stamped archive has no other tie to its key.
+func TestWebBackend_GetRejectsActionIDMetadataMismatch(t *testing.T) {
+	hermeticOTel(t)
+	const actionID = "10f94fc02dcc245820dd861f4c6c25dee23ceb750f6be498fe84f67dfd2f1f9b"
+	otherAction := strings.Repeat("ab", 32)
+	body := string(archiveWithBuildID("Cw9xV7fakecontentid"))
+	outputID := testOutputID(body)
+
+	objectPath := "/testbucket/go-buildcache/v1" + actionID
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != objectPath {
+			w.WriteHeader(404)
+			return
+		}
+		w.Header().Set("X-Cache-Meta-Outputid", outputID)
+		w.Header().Set("X-Cache-Meta-Action-Id", otherAction)
+		w.WriteHeader(200)
+		c, _ := Compress([]byte(body))
+		w.Write(c)
+	}))
+	defer srv.Close()
+
+	b, err := NewWebBackend(WebConfig{
+		Bucket: "testbucket", Endpoint: srv.URL,
+		AccessKey: "testkey", SecretKey: "testsecret",
+	})
+	require.NoError(t, err)
+	defer b.Close()
+	primeIndex(b, actionID)
+
+	_, _, _, _, miss, _, err := b.getTest(actionID)
+	require.NoError(t, err)
+	require.True(t, miss, "action-id metadata naming another action must be a miss")
+	require.Equal(t, uint32(1), b.MissBuildID.Load())
+	require.Equal(t, uint32(1), b.Stats.Corrupt.Load())
+	require.Equal(t, uint32(0), b.Stats.Hits.Load())
+}
+
+// TestWebBackend_GetServesContentStamp: a content-stamped archive whose
+// action-id metadata names the requested action is a hit.
+func TestWebBackend_GetServesContentStamp(t *testing.T) {
+	hermeticOTel(t)
+	const actionID = "10f94fc02dcc245820dd861f4c6c25dee23ceb750f6be498fe84f67dfd2f1f9b"
+	good := string(archiveWithBuildID("Cw9xV7fakecontentid"))
+	outputID := testOutputID(good)
+
+	objectPath := "/testbucket/go-buildcache/v1" + actionID
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != objectPath {
+			w.WriteHeader(404)
+			return
+		}
+		w.Header().Set("X-Cache-Meta-Outputid", outputID)
+		w.Header().Set("X-Cache-Meta-Action-Id", actionID)
+		w.WriteHeader(200)
+		c, _ := Compress([]byte(good))
+		w.Write(c)
+	}))
+	defer srv.Close()
+
+	b, err := NewWebBackend(WebConfig{
+		Bucket: "testbucket", Endpoint: srv.URL,
+		AccessKey: "testkey", SecretKey: "testsecret",
+	})
+	require.NoError(t, err)
+	defer b.Close()
+	primeIndex(b, actionID)
+
+	_, body, _, _, miss, _, err := b.getTest(actionID)
+	require.NoError(t, err)
+	require.False(t, miss)
+	require.Equal(t, uint32(0), b.MissBuildID.Load())
+	require.Equal(t, uint32(1), b.Stats.Hits.Load())
+	data, _ := io.ReadAll(body)
+	require.Equal(t, good, string(data))
+}
+
+// TestGetBatch_RejectsActionIDMetadataMismatch: the batch path reads the
+// action-id metadata from the manifest and applies the same gate.
+func TestGetBatch_RejectsActionIDMetadataMismatch(t *testing.T) {
+	hermeticOTel(t)
+	store := make(map[string][]byte)
+	meta := make(map[string]map[string]string)
+	srv := fakeBatchServer(t, store, meta)
+	defer srv.Close()
+
+	b, err := NewWebBackend(WebConfig{
+		Bucket: "testbucket", Endpoint: srv.URL,
+		AccessKey: "key", SecretKey: "secret",
+	})
+	require.NoError(t, err)
+	defer b.Close()
+
+	const actionID = "10f94fc02dcc245820dd861f4c6c25dee23ceb750f6be498fe84f67dfd2f1f9b"
+	otherAction := strings.Repeat("cd", 32)
+	body := string(archiveWithBuildID("Cw9xV7fakecontentid"))
+	key := "go-buildcache/v1" + actionID
+	compressed, _ := Compress([]byte(body))
+	store[key] = compressed
+	meta[key] = map[string]string{"outputid": testOutputID(body), "action-id": otherAction}
+
+	_, _, _, _, miss, _, err := b.getBatchTest(actionID, key)
+	require.NoError(t, err)
+	require.True(t, miss, "a batched entry whose action-id names another action must be a miss")
+	require.Equal(t, uint32(1), b.MissBuildID.Load())
+	require.Equal(t, uint32(1), b.Stats.Corrupt.Load())
+	require.Equal(t, uint32(0), b.Stats.Hits.Load())
 }
 
 func TestArchiveExportInfo(t *testing.T) {
@@ -121,10 +238,10 @@ func TestArchiveExportInfo(t *testing.T) {
 	require.Equal(t, "", content)
 }
 
-// TestWebBackend_GetRejectsBuildIDMismatch is the core regression guard: a body
+// TestWebBackend_GetRejectsBuildIDMismatch is the core regression guard. A body
 // that hashes to its advertised outputID (so it passes the existing checksum
 // gate) but whose build id belongs to a DIFFERENT action -- the exact
-// "internal/reflectlite served for the runtime action" poisoning -- must be
+// "internal/reflectlite served for the runtime action" poisoning. It must be
 // refused as a miss and its key evicted so a recompute re-uploads it clean.
 func TestWebBackend_GetRejectsBuildIDMismatch(t *testing.T) {
 	hermeticOTel(t)
@@ -172,11 +289,11 @@ func TestWebBackend_GetRejectsBuildIDMismatch(t *testing.T) {
 	require.False(t, contains(), "poisoned key must be evicted so a recompute re-uploads it clean")
 }
 
-// TestWebBackend_GetRejectsStrippedBuildID is the deliberate-evasion guard: a
-// package archive (loadable __.PKGDEF export data) that hashes to its advertised
-// outputID but carries NO build id -- a corrupt object, or an object crafted with the
-// build id stripped to evade the cross-check -- must be refused as a miss and
-// its key evicted, exactly like a mismatched build id.
+// TestWebBackend_GetRejectsStrippedBuildID is the deliberate-evasion guard: a package
+// archive (loadable __.PKGDEF export data) that hashes to its advertised outputID but
+// carries NO build id. A corrupt object, or an object crafted with the build id
+// stripped to evade the cross-check. The build id must be refused as a miss and its
+// key evicted, exactly like a mismatched build id.
 func TestWebBackend_GetRejectsStrippedBuildID(t *testing.T) {
 	hermeticOTel(t)
 	const actionID = "10f94fc02dcc245820dd861f4c6c25dee23ceb750f6be498fe84f67dfd2f1f9b"
@@ -291,7 +408,7 @@ func TestGetBatch_RejectsBuildIDMismatch(t *testing.T) {
 
 // TestWebBackend_PutRefusesBuildIDMismatch verifies poison can never be written
 // to the shared cache: a Put whose body's build id disagrees with the key is
-// skipped (no upload) and the optimistic index claim is released.
+// skipped (no upload). The optimistic index claim is released.
 func TestWebBackend_PutRefusesBuildIDMismatch(t *testing.T) {
 	hermeticOTel(t)
 	const actionID = "10f94fc02dcc245820dd861f4c6c25dee23ceb750f6be498fe84f67dfd2f1f9b"

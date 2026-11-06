@@ -128,6 +128,7 @@ func (b *WebBackend) prepare(j putJob) {
 	// both paths in sync.
 	meta := map[string]string{
 		"outputid":          j.outputID,
+		"action-id":         j.actionID,
 		StoredDigestMetaKey: StoredDigest(compressed),
 		"object-type":       detectObjectType(j.data),
 		"body-size":         strconv.Itoa(len(j.data)),

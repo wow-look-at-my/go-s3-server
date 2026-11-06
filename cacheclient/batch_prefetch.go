@@ -119,7 +119,7 @@ func (b *WebBackend) storePrefetched(entries []BatchEntry) {
 			// No action ID means no gate can be applied to it at all.
 			continue
 		}
-		if _, ok := b.verify("web batch prefetch", actionID, e.OutputID, e.Data, e.RawSize); !ok {
+		if _, ok := b.verify("web batch prefetch", actionID, e.OutputID, e.ActionID, e.Data, e.RawSize); !ok {
 			continue
 		}
 		if h, ok := parseActionHash(actionID); ok {

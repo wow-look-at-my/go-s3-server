@@ -330,7 +330,7 @@ func (b *WebBackend) readManifest(id string) ([]byte, bool) {
 	var data []byte
 	found := false
 	_, err := b.postNamed([]string{b.key(id)}, func(e BatchEntry) {
-		if body, ok := b.verify("manifest", id, e.OutputID, e.Data, e.RawSize); ok {
+		if body, ok := b.verify("manifest", id, e.OutputID, e.ActionID, e.Data, e.RawSize); ok {
 			data, found = body, true
 		}
 	})

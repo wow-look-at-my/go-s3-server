@@ -4,7 +4,6 @@ package cacheclient
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -79,12 +78,6 @@ func useStoreConfig(t *testing.T, url string) {
 	raw, err := json.Marshal(envConfig{Endpoint: url, Bucket: "testbucket", Username: "k", Password: "s"})
 	require.NoError(t, err)
 	t.Setenv(ConfigEnv, encodeConfig(t, string(raw)))
-}
-
-// testAction is a well-formed action ID made from name.
-func testAction(name string) string {
-	sum := sha256.Sum256([]byte("action " + name))
-	return hex.EncodeToString(sum[:])
 }
 
 func readSpool(t *testing.T, path string) spoolFile {

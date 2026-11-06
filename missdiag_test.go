@@ -285,7 +285,7 @@ func TestDiagnoseMissesSignalsCacheFill(t *testing.T) {
 	}
 }
 
-// The snapshot carries the diagnosis, so the page and "copy json" both have it.
+// The snapshot carries the diagnosis, so the page and "download json" both have it.
 func TestDashboardStatsCarryTheMissDiagnosis(t *testing.T) {
 	reg, skips, _, _ := missRegistry(t)
 	skips.WithLabelValues("get", "batch_backoff").Add(7)
@@ -298,7 +298,7 @@ func TestDashboardStatsCarryTheMissDiagnosis(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	assert.InDelta(t, 7, got.Misses.Total, 0)
 	assert.Equal(t, "batch_backoff", got.Misses.Dominant)
-	assert.Contains(t, rec.Body.String(), `"verdict": "100.0% of misses: client gave up probing.`)
+	assert.Contains(t, rec.Body.String(), `"verdict":"100.0% of misses: client gave up probing.`)
 }
 
 // The page draws every cause the server can report and the verdict it writes.

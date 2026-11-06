@@ -165,8 +165,12 @@ func TestSkipReportSampleIsClassified(t *testing.T) {
 	many, err := json.Marshal(skipReport{SkippedKeys: make([]string, maxSkipSample+1)})
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusBadRequest, postSkips(t, ts.URL, string(many)).StatusCode)
-	assert.Equal(t, http.StatusBadRequest, postSkips(t, ts.URL, `{"skipped_keys":["`+hexOf(held)+`"],"skipped_ago":[-1]}`).StatusCode)
-	assert.Equal(t, http.StatusBadRequest, postSkips(t, ts.URL, `{"skipped_keys":[],"skipped_ago":[1]}`).StatusCode)
+	negative, err := json.Marshal(skipReport{SkippedKeys: []string{hexOf(held)}, SkippedAgo: []int64{-1}})
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, postSkips(t, ts.URL, string(negative)).StatusCode, "an age is never negative")
+	extra, err := json.Marshal(skipReport{SkippedAgo: []int64{1}})
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, postSkips(t, ts.URL, string(extra)).StatusCode, "an age belongs to a key")
 }
 
 // A report arrives when the client exits, after it uploaded what it built.

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -100,7 +101,7 @@ func TestSkipReportRejectsBadBodies(t *testing.T) {
 
 // The server decodes the client's struct.
 func TestSkipReportWireMatchesClient(t *testing.T) {
-	data, err := json.Marshal(cacheclient.SkipReport{GetNotInIndex: 1, GetEmptyIndex: 2, GetBatchBackoff: 3, GetKnownMiss: 4, PutKnown: 5, PutFailed: 6, PutRefusedBuildID: 7, PutRefusedModIndex: 9, PutAbandoned: 8, SkippedKeys: []string{strings.Repeat("ab", 32)}})
+	data, err := json.Marshal(cacheclient.SkipReport{GetNotInIndex: 1, GetEmptyIndex: 2, GetBatchBackoff: 3, GetKnownMiss: 4, PutKnown: 5, PutFailed: 6, PutRefusedBuildID: 7, PutRefusedModIndex: 9, PutAbandoned: 8, SkippedKeys: []string{strings.Repeat("ab", 32)}, SkippedAgo: []int64{12}})
 	require.NoError(t, err)
 	failed := clientUploadsLostTotal.WithLabelValues("failed")
 	abandoned := clientUploadsLostTotal.WithLabelValues("abandoned")
@@ -112,7 +113,7 @@ func TestSkipReportWireMatchesClient(t *testing.T) {
 
 	var rep skipReport
 	require.NoError(t, json.Unmarshal(data, &rep))
-	assert.Equal(t, skipReport{GetNotInIndex: 1, GetEmptyIndex: 2, GetBatchBackoff: 3, GetKnownMiss: 4, PutKnown: 5, PutFailed: 6, PutRefusedBuildID: 7, PutRefusedModIndex: 9, PutAbandoned: 8, SkippedKeys: []string{strings.Repeat("ab", 32)}}, rep)
+	assert.Equal(t, skipReport{GetNotInIndex: 1, GetEmptyIndex: 2, GetBatchBackoff: 3, GetKnownMiss: 4, PutKnown: 5, PutFailed: 6, PutRefusedBuildID: 7, PutRefusedModIndex: 9, PutAbandoned: 8, SkippedKeys: []string{strings.Repeat("ab", 32)}, SkippedAgo: []int64{12}}, rep)
 	assert.Equal(t, 6.0, testutil.ToFloat64(failed)-failedBefore, "an upload the client could not complete is counted")
 	assert.Equal(t, 8.0, testutil.ToFloat64(abandoned)-abandonedBefore)
 	assert.Equal(t, 7.0, testutil.ToFloat64(buildID)-buildIDBefore)
@@ -164,4 +165,38 @@ func TestSkipReportSampleIsClassified(t *testing.T) {
 	many, err := json.Marshal(skipReport{SkippedKeys: make([]string, maxSkipSample+1)})
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusBadRequest, postSkips(t, ts.URL, string(many)).StatusCode)
+	negative, err := json.Marshal(skipReport{SkippedKeys: []string{hexOf(held)}, SkippedAgo: []int64{-1}})
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, postSkips(t, ts.URL, string(negative)).StatusCode, "an age is never negative")
+	extra, err := json.Marshal(skipReport{SkippedAgo: []int64{1}})
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, postSkips(t, ts.URL, string(extra)).StatusCode, "an age belongs to a key")
+}
+
+// A report arrives when the client exits, after it uploaded what it built.
+// A held key the server stored after the client skipped it is that upload,
+// not a stale index copy, and the sample says so.
+func TestSkipReportSeparatesKeysStoredAfterTheSkip(t *testing.T) {
+	if !inOwnProcess(t) {
+		return
+	}
+	ts, storage := testSetupWithStorage(t)
+	stale := cacheprogKey('d')
+	require.NoError(t, storage.Put(stale, []byte("body"), map[string]string{"outputid": "x"}, nil))
+	old := time.Now().Add(-10 * time.Minute)
+	require.NoError(t, os.Chtimes(storage.keyToPath(stale), old, old))
+	later := cacheprogKey('e')
+	require.NoError(t, storage.Put(later, []byte("body"), map[string]string{"outputid": "y"}, nil))
+	hexOf := func(key string) string { return strings.TrimPrefix(key, gbciKeyPrefix) }
+
+	counts := func(verdict string) float64 {
+		return testutil.ToFloat64(clientSkipSamplesTotal.WithLabelValues(verdict))
+	}
+	advertisedBefore, laterBefore := counts("advertised"), counts("stored_later")
+	// Both keys were skipped a minute before the report.
+	body, err := json.Marshal(skipReport{GetNotInIndex: 2, SkippedKeys: []string{hexOf(stale), hexOf(later)}, SkippedAgo: []int64{60, 60}})
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusNoContent, postSkips(t, ts.URL, string(body)).StatusCode)
+	assert.Equal(t, 1.0, counts("advertised")-advertisedBefore, "stored ten minutes before the skip: the client's index copy was stale")
+	assert.Equal(t, 1.0, counts("stored_later")-laterBefore, "stored after the skip: an upload during the run")
 }

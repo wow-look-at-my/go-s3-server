@@ -43,6 +43,8 @@ type SkipReport struct {
 	PutAbandoned       uint64 `json:"put_abandoned"`
 	// SkippedKeys is a sample of the keys behind GetNotInIndex, as hex action ids.
 	SkippedKeys []string `json:"skipped_keys,omitempty"`
+	// SkippedAgo holds, for each sampled key, how many seconds before this report the client skipped it.
+	SkippedAgo []int64 `json:"skipped_ago,omitempty"`
 }
 
 // skipSampleMax bounds the keys one report carries.
@@ -81,27 +83,37 @@ type skipReporter struct {
 	wg       sync.WaitGroup
 	// sample holds the first skipSampleMax keys skipped since the last accepted report.
 	sampleMu sync.Mutex
-	sample   []actionHash
+	sample   []skippedKey
+}
+
+// skippedKey is one sampled skip and the moment it happened.
+type skippedKey struct {
+	hash actionHash
+	at   time.Time
 }
 
 // sampleSkippedKey keeps h for the next report while the sample has room.
 func (b *WebBackend) sampleSkippedKey(h actionHash) {
 	b.skips.sampleMu.Lock()
 	if len(b.skips.sample) < skipSampleMax {
-		b.skips.sample = append(b.skips.sample, h)
+		b.skips.sample = append(b.skips.sample, skippedKey{hash: h, at: time.Now()})
 	}
 	b.skips.sampleMu.Unlock()
 }
 
-// takeSample answers the sample as hex, and the length to clear once the server accepts it.
-func (b *WebBackend) takeSample() ([]string, int) {
+// takeSample answers the sample as hex with each key's age in seconds, and
+// the length to clear once the server accepts it.
+func (b *WebBackend) takeSample() ([]string, []int64, int) {
 	b.skips.sampleMu.Lock()
 	defer b.skips.sampleMu.Unlock()
+	now := time.Now()
 	keys := make([]string, len(b.skips.sample))
-	for i, h := range b.skips.sample {
-		keys[i] = hex.EncodeToString(h[:])
+	ages := make([]int64, len(b.skips.sample))
+	for idx, s := range b.skips.sample {
+		keys[idx] = hex.EncodeToString(s.hash[:])
+		ages[idx] = int64(now.Sub(s.at) / time.Second)
 	}
-	return keys, len(keys)
+	return keys, ages, len(keys)
 }
 
 // clearSample drops the first n keys of the sample: the ones a report carried.
@@ -168,7 +180,7 @@ func (b *WebBackend) FlushSkips() bool {
 	total := b.skipTotals()
 	delta := total.minus(b.skips.sent)
 	var sampled int
-	delta.SkippedKeys, sampled = b.takeSample()
+	delta.SkippedKeys, delta.SkippedAgo, sampled = b.takeSample()
 	if delta.empty() {
 		return true
 	}

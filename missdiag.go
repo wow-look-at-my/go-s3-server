@@ -366,14 +366,17 @@ func diagnoseMisses(stats map[string]metricValue, eviction dashboardEvictionInfo
 // from their index skips: the share the sweeper had evicted. The share the
 // server holds now, and the share it never held.
 type dashboardSkipSample struct {
-	Keys            float64 `json:"keys"`
-	Evicted         float64 `json:"evicted"`
-	Advertised      float64 `json:"advertised"`
-	Unknown         float64 `json:"unknown"`
-	EvictedShare    float64 `json:"evicted_share"`
-	AdvertisedShare float64 `json:"advertised_share"`
-	Explain         string  `json:"explain"`
-	Verdict         string  `json:"verdict"`
+	Keys       float64 `json:"keys"`
+	Evicted    float64 `json:"evicted"`
+	Advertised float64 `json:"advertised"`
+	// StoredLater is the sampled keys the server stored after the client skipped them.
+	StoredLater      float64 `json:"stored_later"`
+	Unknown          float64 `json:"unknown"`
+	EvictedShare     float64 `json:"evicted_share"`
+	AdvertisedShare  float64 `json:"advertised_share"`
+	StoredLaterShare float64 `json:"stored_later_share"`
+	Explain          string  `json:"explain"`
+	Verdict          string  `json:"verdict"`
 }
 
 // skipSample reads the sample verdicts. A never-stored miss the client
@@ -381,18 +384,21 @@ type dashboardSkipSample struct {
 // sample is how it still gets to say what those keys were.
 func skipSample(stats map[string]metricValue) dashboardSkipSample {
 	s := dashboardSkipSample{
-		Evicted:    labelCount(stats, "s3_client_skip_samples_total", "verdict", "evicted"),
-		Advertised: labelCount(stats, "s3_client_skip_samples_total", "verdict", "advertised"),
-		Unknown:    labelCount(stats, "s3_client_skip_samples_total", "verdict", "unknown"),
+		Evicted:     labelCount(stats, "s3_client_skip_samples_total", "verdict", "evicted"),
+		Advertised:  labelCount(stats, "s3_client_skip_samples_total", "verdict", "advertised"),
+		StoredLater: labelCount(stats, "s3_client_skip_samples_total", "verdict", "stored_later"),
+		Unknown:     labelCount(stats, "s3_client_skip_samples_total", "verdict", "unknown"),
 	}
-	s.Keys = s.Evicted + s.Advertised + s.Unknown
+	s.Keys = s.Evicted + s.Advertised + s.StoredLater + s.Unknown
 	if s.Keys == 0 {
 		return s
 	}
 	s.EvictedShare = s.Evicted / s.Keys
 	s.AdvertisedShare = s.Advertised / s.Keys
+	s.StoredLaterShare = s.StoredLater / s.Keys
 	s.Explain = "Of " + formatCount(s.Keys) + " skipped keys clients sampled, " + formatShare(s.EvictedShare) + " were keys the sweeper had evicted, " +
-		formatShare(s.AdvertisedShare) + " were keys this server holds now (the client's index copy was older than the upload), and the rest it never held."
+		formatShare(s.AdvertisedShare) + " were keys this server held before the skip (the client's index copy was older than the upload), " +
+		formatShare(s.StoredLaterShare) + " were stored after the skip (mostly the client's own upload of what it built), and the rest it never held."
 	switch {
 	case s.EvictedShare >= 0.5:
 		s.Verdict = " The sample says most of the never-stored misses are evictions: the cache is too small for what the fleet builds, so raise eviction.max_bytes."

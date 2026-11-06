@@ -553,16 +553,17 @@ function drawChurn(stats) {
 
 	const verdict = $("churn-verdict");
 	verdict.textContent = c.verdict;
-	// The pointless re-store is the worth a colour: the output did not change and the key did.
-	const inputs = causes.find((r) => r.key === "inputs");
-	verdict.className = `verdict ${inputs && inputs.count > 0 && inputs.count * 2 >= c.restores ? "capacity" : ""}`;
+	// The pointless re-stores are worth a colour: the source did not change and the key did.
+	const pointless = (key) => key === "inputs" || key === "path";
+	const wasted = causes.filter((r) => pointless(r.key)).reduce((a, r) => a + r.count, 0);
+	verdict.className = `verdict ${wasted > 0 && wasted * 2 >= c.restores ? "capacity" : ""}`;
 
 	const scale = Math.max(...causes.map((r) => r.count), 1);
 	fill(
 		$("churn-causes"),
 		causes.map((r) => {
 			const now = recent(r);
-			return bar(r.label, r.count, scale, r.key === "inputs" ? "warn" : "", `${count(r.count)}  ${percent(r.count, c.restores)}${now ? `  +${count(now)}` : ""}`);
+			return bar(r.label, r.count, scale, pointless(r.key) ? "warn" : "", `${count(r.count)}  ${percent(r.count, c.restores)}${now ? `  +${count(now)}` : ""}`);
 		}),
 	);
 	let moved = 0;
@@ -572,7 +573,7 @@ function drawChurn(stats) {
 	rows(
 		$("churn-top"),
 		(c.top || []).length
-			? c.top.map((p) => [`${p.pkg}${p.target ? ` (${p.target})` : ""}`, `${count(p.restores)}×, ${count(p.same_output)} identical`, p.last_change === "inputs", p.project])
+			? c.top.map((p) => [`${p.pkg}${p.target ? ` (${p.target})` : ""}`, `${count(p.restores)}×, ${count(p.same_output)} identical`, pointless(p.last_change), p.project])
 			: [["no package stored again yet", "--", false]],
 	);
 

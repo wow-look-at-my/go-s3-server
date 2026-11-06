@@ -133,17 +133,25 @@ tests:
 					echo "the stats endpoint answered $code"
 					exit 1
 				fi
-				grep -o '"bucket": "test-cache"' "$stats"
-				grep -A2 '"outcome": "hit"' "$stats" | grep -o '"value": 1'
+				# The snapshot is one line with no indent, so a cell reads as key:value.
+				grep -o '"bucket":"test-cache"' "$stats"
+				grep -o '"labels":{"outcome":"hit"},"value":1' "$stats"
 				grep -o '"s3_index_hashes"' "$stats"
 				echo "no-password $(grep -c testpass "$stats" || true)"
+				echo "lines $(wc -l < "$stats")"
+				# A client that takes gzip gets it.
+				curl -sI -H 'Accept-Encoding: gzip' "http://127.0.0.1:$DASHBOARD_PORT/api/stats" | grep -io 'content-encoding: gzip' | tr 'A-Z' 'a-z'
+				curl -s --compressed "http://127.0.0.1:$DASHBOARD_PORT/api/stats" | grep -o '"bucket":"test-cache"' | head -1 | tr -d '\n'; echo " via gzip"
 	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
-			- '"bucket": "test-cache"'
-			- '"value": 1'
+			- '"bucket":"test-cache"'
+			- '"labels":{"outcome":"hit"},"value":1'
 			- '"s3_index_hashes"'
 			- "no-password 0"
+			- "lines 1"
+			- "content-encoding: gzip"
+			- '"bucket":"test-cache" via gzip'
 
 	- desc: the stats snapshot sorts every miss into a cause and names the dominant one
 	  exit: 0
@@ -162,23 +170,28 @@ tests:
 				curl -sf -u "$auth" -X POST -H 'Content-Type: application/json' --data-binary "{\"get_not_in_index\":3,\"put_failed\":2,\"put_abandoned\":1,\"skipped_keys\":[\"$(printf 'c%.0s' $(seq 64))\"]}" "$base/_skips" -o /dev/null
 				stats="$(mktemp)"
 				curl -sf "http://127.0.0.1:$DASHBOARD_PORT/api/stats" -o "$stats"
-				grep -o '"total": 4' "$stats"
-				grep -o '"dominant": "not_in_index"' "$stats"
-				grep -A3 '"key": "not_found"' "$stats" | grep -o '"count": 1'
-				grep -o '"verdict": "75.0% of misses: never stored\.' "$stats"
+				grep -o '"total":4' "$stats"
+				grep -o '"dominant":"not_in_index"' "$stats"
+				grep -o '"key":"not_found","count":1' "$stats"
+				grep -o '"verdict":"75.0% of misses: never stored\.' "$stats"
 				grep -o 'Clients reported 3 uploads that never reached the store (2 failed, 1 abandoned)' "$stats"
 				grep -o 'Of 1 skipped keys clients sampled, 0.0% were keys the sweeper had evicted' "$stats"
-				grep -o '"key": "cache_fill"' "$stats"
+				grep -o '"key":"cache_fill"' "$stats"
+				# The text behind each key is in the vocabulary, not the snapshot.
+				echo "prose-in-snapshot $(grep -c 'did not list the key' "$stats" || true)"
+				curl -sf "http://127.0.0.1:$DASHBOARD_PORT/api/vocab" | grep -o '"key":"not_in_index","label":"never stored"'
 	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
-			- '"total": 4'
-			- '"dominant": "not_in_index"'
-			- '"count": 1'
-			- '"verdict": "75.0% of misses: never stored.'
+			- '"total":4'
+			- '"dominant":"not_in_index"'
+			- '"key":"not_found","count":1'
+			- '"verdict":"75.0% of misses: never stored.'
 			- 'Clients reported 3 uploads that never reached the store (2 failed, 1 abandoned)'
 			- 'Of 1 skipped keys clients sampled, 0.0% were keys the sweeper had evicted'
-			- '"key": "cache_fill"'
+			- '"key":"cache_fill"'
+			- "prose-in-snapshot 0"
+			- '"key":"not_in_index","label":"never stored"'
 
 	- desc: the stats snapshot says what differed when a package is stored again under a new key
 	  exit: 0
@@ -202,22 +215,22 @@ tests:
 				put c c1 go1.28
 				stats="$(mktemp)"
 				curl -sf "http://127.0.0.1:$DASHBOARD_PORT/api/stats" -o "$stats"
-				grep -o '"restores": 2' "$stats" | head -1
-				grep -o '"same_output": 2' "$stats" | head -1
-				grep -o '"change": "inputs"' "$stats"
-				grep -o '"change": "go_version"' "$stats"
-				grep -o '"from": "go1.27"' "$stats"
-				grep -o '"to": "go1.28"' "$stats"
+				grep -o '"restores":2' "$stats" | head -1
+				grep -o '"same_output":2' "$stats" | head -1
+				grep -o '"change":"inputs"' "$stats"
+				grep -o '"change":"go_version"' "$stats"
+				grep -o '"from":"go1.27"' "$stats"
+				grep -o '"to":"go1.28"' "$stats"
 				grep -o '2 packages were stored again under a new key, 2 of them (100.0%) compiled to the identical content' "$stats"
 	  cmd: bash {shared.serve.sh} {inputs.config.json} {inputs.check.sh}
 	  outputs:
 		stdout:
-			- '"restores": 2'
-			- '"same_output": 2'
-			- '"change": "inputs"'
-			- '"change": "go_version"'
-			- '"from": "go1.27"'
-			- '"to": "go1.28"'
+			- '"restores":2'
+			- '"same_output":2'
+			- '"change":"inputs"'
+			- '"change":"go_version"'
+			- '"from":"go1.27"'
+			- '"to":"go1.28"'
 			- '2 packages were stored again under a new key, 2 of them (100.0%) compiled to the identical content'
 
 	- desc: an empty dashboard_listen opens no dashboard listener

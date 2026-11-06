@@ -105,16 +105,14 @@ const (
 	missSeverityBug      = "bug"      // the cache should have served the key
 )
 
-// missReasonRow is one cause on the WHY MISSES panel.
+// missReasonRow is one cause on the WHY MISSES panel: the part that moves
+// between snapshots. The label and the prose are in the vocabulary.
 type missReasonRow struct {
 	Key      string  `json:"key"`
-	Label    string  `json:"label"`
 	Count    float64 `json:"count"`
 	Share    float64 `json:"share"`
 	Source   string  `json:"source"`
 	Severity string  `json:"severity"`
-	Explain  string  `json:"explain"`
-	Action   string  `json:"action"`
 }
 
 // missReasonSpec is the fixed part of a row.
@@ -123,14 +121,76 @@ type missReasonSpec struct {
 	count                                         func(stats map[string]metricValue) float64
 }
 
+// missReasonText is the vocabulary entry of a cause: what never changes
+// between snapshots. The severity here is the one at rest. A row carries
+// its own, because a sample can raise it.
+type missReasonText struct {
+	Key      string `json:"key"`
+	Label    string `json:"label"`
+	Source   string `json:"source"`
+	Severity string `json:"severity"`
+	Explain  string `json:"explain"`
+	Action   string `json:"action"`
+}
+
+// missReasonVocab is every cause's text, in display order.
+func missReasonVocab() []missReasonText {
+	out := make([]missReasonText, 0, len(missReasonSpecs))
+	for _, spec := range missReasonSpecs {
+		out = append(out, missReasonText{Key: spec.key, Label: spec.label, Source: spec.source, Severity: spec.severity, Explain: spec.explain, Action: spec.action})
+	}
+	return out
+}
+
+func missReasonSpecByKey(key string) missReasonSpec {
+	for _, spec := range missReasonSpecs {
+		if spec.key == key {
+			return spec
+		}
+	}
+	return missReasonSpec{}
+}
+
 // missSignal is a number that explains a cause without being one. A rising
 // upload refusal count explains a rising never-stored count.
 type missSignal struct {
 	Key   string  `json:"key"`
-	Label string  `json:"label"`
 	Count float64 `json:"count"`
 	Alert bool    `json:"alert"`
-	Note  string  `json:"note"`
+	Note  string  `json:"note,omitempty"`
+}
+
+// missSignalText is the vocabulary entry of a signal.
+type missSignalText struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Note  string `json:"note,omitempty"`
+}
+
+// missSignalVocab is every signal's label and note, in display order. The
+// cache_fill note depends on the numbers, so its row carries it instead.
+var missSignalVocab = []missSignalText{
+	{Key: "cache_fill", Label: "cache size against its budget"},
+	{Key: "uploads_failed", Label: "uploads the client sent and the store never confirmed",
+		Note: "reported by the client at exit: a network error, a refused answer, or a per-object error. Each is a key that misses on every later build until something uploads it again"},
+	{Key: "uploads_abandoned", Label: "uploads the client gave up without sending",
+		Note: "reported by the client at exit: a body it could not read, a backend that was closing, or a hand-off it could not write"},
+	{Key: "uploads_refused_buildid", Label: "uploads the client refused for a build id that disagrees with the key",
+		Note: "the compiled object names another action than the key it was offered under; a mis-keyed object would poison every consumer, so the client keeps it local"},
+	{Key: "uploads_refused_modindex", Label: "uploads the client refused as module indexes",
+		Note: "a module index never belongs in a shared cache; the client recomputes it locally. A client older than the split reports both refusals here"},
+	{Key: "evictions", Label: "objects evicted",
+		Note: "each one is a miss for the next build that wanted it; the evicted row above counts the ones a build has asked for since"},
+	{Key: "shed", Label: "requests shed at capacity",
+		Note: "a shed upload is an object the cache never stored, and a shed read quiets the client for the Retry-After window"},
+	{Key: "put_refused", Label: "uploads refused as module indexes",
+		Note: "refused on purpose; the client recomputes a module index locally"},
+	{Key: "put_digest_mismatch", Label: "uploads rejected for a bad digest",
+		Note: "the bytes disagreed with the digest the uploader sent, so the wire corrupted them"},
+	{Key: "put_errors", Label: "uploads that failed to store",
+		Note: "a store error is an object the next build misses; the server log has the cause"},
+	{Key: "xattrs_dropped", Label: "metadata dropped for lack of xattr space",
+		Note: "the object stored without optional metadata; a build that needs it cannot use the hit"},
 }
 
 // dashboardMisses is the WHY MISSES panel.
@@ -275,11 +335,7 @@ func diagnoseMisses(stats map[string]metricValue, eviction dashboardEvictionInfo
 	for _, spec := range missReasonSpecs {
 		n := spec.count(stats)
 		out.Total += n
-		out.Reasons = append(out.Reasons, missReasonRow{
-			Key: spec.key, Label: spec.label, Count: n,
-			Source: spec.source, Severity: spec.severity,
-			Explain: spec.explain, Action: spec.action,
-		})
+		out.Reasons = append(out.Reasons, missReasonRow{Key: spec.key, Count: n, Source: spec.source, Severity: spec.severity})
 	}
 	if out.Total > 0 {
 		for i := range out.Reasons {
@@ -295,12 +351,11 @@ func diagnoseMisses(stats map[string]metricValue, eviction dashboardEvictionInfo
 	}
 	out.Signals = missSignals(stats, eviction)
 	out.Sample = skipSample(stats)
+	// The sample's own explanation sits in out.Sample; the page shows it
+	// under the never-stored cause.
 	for i := range out.Reasons {
-		if out.Reasons[i].Key == "not_in_index" && out.Sample.Keys > 0 {
-			out.Reasons[i].Explain += " " + out.Sample.Explain
-			if out.Sample.EvictedShare >= 0.5 {
-				out.Reasons[i].Severity = missSeverityCapacity
-			}
+		if out.Reasons[i].Key == "not_in_index" && out.Sample.EvictedShare >= 0.5 {
+			out.Reasons[i].Severity = missSeverityCapacity
 		}
 	}
 	out.Verdict = missVerdict(out) + lostUploadsVerdict(out.Signals) + out.Sample.Verdict
@@ -390,18 +445,20 @@ func missVerdict(m dashboardMisses) string {
 			break
 		}
 	}
-	lead := formatShare(dominant.Share) + " of misses: " + dominant.Label + ". " + dominant.Action
+	text := missReasonSpecByKey(dominant.Key)
+	lead := formatShare(dominant.Share) + " of misses: " + text.label + ". " + text.action
 	if bug == nil || bug.Key == dominant.Key {
 		return lead
 	}
-	return lead + " Also " + formatCount(bug.Count) + " " + bug.Label + ", which is a bug: " + bug.Action
+	bugText := missReasonSpecByKey(bug.Key)
+	return lead + " Also " + formatCount(bug.Count) + " " + bugText.label + ", which is a bug: " + bugText.action
 }
 
 // missSignals are the supply-side numbers: an object never uploaded is a
 // miss on every later build. Each of these is a way an upload is lost.
 func missSignals(stats map[string]metricValue, eviction dashboardEvictionInfo) []missSignal {
 	cacheBytes := scalar(stats, "s3_cache_bytes")
-	fill := missSignal{Key: "cache_fill", Label: "cache size against its budget", Note: "no size budget: nothing is evicted for size"}
+	fill := missSignal{Key: "cache_fill", Note: "no size budget: nothing is evicted for size"}
 	if eviction.Enabled && eviction.MaxBytes > 0 {
 		fill.Count = cacheBytes / float64(eviction.MaxBytes)
 		fill.Alert = fill.Count > 0.9
@@ -422,28 +479,19 @@ func missSignals(stats map[string]metricValue, eviction dashboardEvictionInfo) [
 	lostBuildID := labelCount(stats, "s3_client_uploads_lost_total", "reason", "refused_buildid")
 	lostModIndex := labelCount(stats, "s3_client_uploads_lost_total", "reason", "refused_modindex") +
 		labelCount(stats, "s3_client_uploads_lost_total", "reason", "refused")
+	// The order is missSignalVocab's order.
 	return []missSignal{
 		fill,
-		{Key: "uploads_failed", Label: "uploads the client sent and the store never confirmed", Count: lostFailed, Alert: lostFailed > 0,
-			Note: "reported by the client at exit: a network error, a refused answer, or a per-object error. Each is a key that misses on every later build until something uploads it again"},
-		{Key: "uploads_abandoned", Label: "uploads the client gave up without sending", Count: lostAbandoned, Alert: lostAbandoned > 0,
-			Note: "reported by the client at exit: a body it could not read, a backend that was closing, or a hand-off it could not write"},
-		{Key: "uploads_refused_buildid", Label: "uploads the client refused for a build id that disagrees with the key", Count: lostBuildID, Alert: lostBuildID > 0,
-			Note: "the compiled object names another action than the key it was offered under; a mis-keyed object would poison every consumer, so the client keeps it local"},
-		{Key: "uploads_refused_modindex", Label: "uploads the client refused as module indexes", Count: lostModIndex, Alert: false,
-			Note: "a module index never belongs in a shared cache; the client recomputes it locally. A client older than the split reports both refusals here"},
-		{Key: "evictions", Label: "objects evicted", Count: evictions, Alert: false,
-			Note: "each one is a miss for the next build that wanted it; the evicted row above counts the ones a build has asked for since"},
-		{Key: "shed", Label: "requests shed at capacity", Count: shed, Alert: shed > 0,
-			Note: "a shed upload is an object the cache never stored, and a shed read quiets the client for the Retry-After window"},
-		{Key: "put_refused", Label: "uploads refused as module indexes", Count: refusals, Alert: false,
-			Note: "refused on purpose; the client recomputes a module index locally"},
-		{Key: "put_digest_mismatch", Label: "uploads rejected for a bad digest", Count: putMismatch, Alert: putMismatch > 0,
-			Note: "the bytes disagreed with the digest the uploader sent, so the wire corrupted them"},
-		{Key: "put_errors", Label: "uploads that failed to store", Count: putErrors, Alert: putErrors > 0,
-			Note: "a store error is an object the next build misses; the server log has the cause"},
-		{Key: "xattrs_dropped", Label: "metadata dropped for lack of xattr space", Count: dropped, Alert: dropped > 0,
-			Note: "the object stored without optional metadata; a build that needs it cannot use the hit"},
+		{Key: "uploads_failed", Count: lostFailed, Alert: lostFailed > 0},
+		{Key: "uploads_abandoned", Count: lostAbandoned, Alert: lostAbandoned > 0},
+		{Key: "uploads_refused_buildid", Count: lostBuildID, Alert: lostBuildID > 0},
+		{Key: "uploads_refused_modindex", Count: lostModIndex},
+		{Key: "evictions", Count: evictions},
+		{Key: "shed", Count: shed, Alert: shed > 0},
+		{Key: "put_refused", Count: refusals},
+		{Key: "put_digest_mismatch", Count: putMismatch, Alert: putMismatch > 0},
+		{Key: "put_errors", Count: putErrors, Alert: putErrors > 0},
+		{Key: "xattrs_dropped", Count: dropped, Alert: dropped > 0},
 	}
 }
 

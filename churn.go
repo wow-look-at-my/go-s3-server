@@ -82,7 +82,7 @@ type restoreEvent struct {
 	Change     string      `json:"change"`
 	Output     string      `json:"output"`
 	SameOutput bool        `json:"same_output"`
-	Diffs      []fieldDiff `json:"diffs"`
+	Diffs      []fieldDiff `json:"diffs,omitempty"`
 }
 
 // churnTracker remembers the last upload of every package it has seen and
@@ -218,14 +218,31 @@ func classifyChange(prev, cur *packageSeen) ([]fieldDiff, string) {
 	}
 }
 
-// churnCause is one change kind on the panel.
+// churnCause is one change kind on the panel: the part that moves between
+// snapshots. The label and the prose are in the vocabulary.
 type churnCause struct {
-	Key     string  `json:"key"`
-	Label   string  `json:"label"`
-	Count   float64 `json:"count"`
-	Share   float64 `json:"share"`
-	Explain string  `json:"explain"`
-	Action  string  `json:"action"`
+	Key   string  `json:"key"`
+	Count float64 `json:"count"`
+	Share float64 `json:"share"`
+}
+
+// churnCauseText is the vocabulary entry of a change kind.
+type churnCauseText struct {
+	Key     string `json:"key"`
+	Label   string `json:"label"`
+	Explain string `json:"explain"`
+	Action  string `json:"action"`
+}
+
+// churnCauseVocab is every change kind's text, in display order.
+func churnCauseVocab() []churnCauseText {
+	out := make([]churnCauseText, 0, len(changeKinds))
+	for _, kind := range changeKinds {
+		text := churnCauseSpecs[kind]
+		text.Key = kind
+		out = append(out, text)
+	}
+	return out
 }
 
 // churnPackage is one ranked package.
@@ -254,7 +271,7 @@ type dashboardChurn struct {
 	Verdict       string         `json:"verdict"`
 }
 
-var churnCauseSpecs = map[string]churnCause{
+var churnCauseSpecs = map[string]churnCauseText{
 	changeGoVersion: {Label: "Go version changed",
 		Explain: "The package was last stored by another Go version. The compiler's own build id is part of every action id, so a new Go recompiles everything once.",
 		Action:  "Expected once per Go upgrade. If versions alternate, two fleets build with different toolchains and neither shares with the other."},
@@ -289,9 +306,7 @@ func (c *churnTracker) snapshot() dashboardChurn {
 		out.Recent = append(out.Recent, c.recent[i])
 	}
 	for _, kind := range changeKinds {
-		cause := churnCauseSpecs[kind]
-		cause.Key = kind
-		cause.Count = float64(c.byChange[kind])
+		cause := churnCause{Key: kind, Count: float64(c.byChange[kind])}
 		if c.total > 0 {
 			cause.Share = cause.Count / float64(c.total)
 		}
@@ -337,7 +352,8 @@ func churnVerdict(c dashboardChurn) string {
 	if c.UnknownOutput > 0 {
 		lead += ", and " + formatCount(float64(c.UnknownOutput)) + " came from a client that sent no content hash, so for those the question has no answer"
 	}
-	lead += ". " + formatShare(top.Share) + " of the re-stores: " + top.Label + ". " + top.Action
+	text := churnCauseSpecs[top.Key]
+	lead += ". " + formatShare(top.Share) + " of the re-stores: " + text.Label + ". " + text.Action
 	if ex := latestExample(c.Recent, top.Key); ex != "" {
 		lead += " Latest: " + ex
 	}

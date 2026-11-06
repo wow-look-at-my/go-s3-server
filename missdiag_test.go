@@ -137,9 +137,20 @@ func TestDiagnoseMissesSortsEveryMissIntoACause(t *testing.T) {
 	assert.Equal(t, missSeverityCapacity, reasonByKey(m, missEvicted).Severity)
 	assert.Contains(t, m.Verdict, "60.0% of misses: never stored.")
 	assert.Len(t, m.Reasons, len(missReasonSpecs), "every cause keeps its row, zero or not")
-	for _, r := range m.Reasons {
-		assert.NotEmpty(t, r.Explain, r.Key)
-		assert.NotEmpty(t, r.Action, r.Key)
+	vocab := missReasonVocab()
+	require.Len(t, vocab, len(m.Reasons), "the vocabulary names every row")
+	for i, r := range m.Reasons {
+		assert.Equal(t, r.Key, vocab[i].Key, "the vocabulary is in row order")
+		assert.NotEmpty(t, vocab[i].Label, r.Key)
+		assert.NotEmpty(t, vocab[i].Explain, r.Key)
+		assert.NotEmpty(t, vocab[i].Action, r.Key)
+	}
+	signals := missSignals(stats, dashboardEvictionInfo{})
+	require.Len(t, missSignalVocab, len(signals), "the vocabulary names every signal")
+	for i, s := range signals {
+		assert.Equal(t, s.Key, missSignalVocab[i].Key, "the vocabulary is in signal order")
+		assert.NotEmpty(t, missSignalVocab[i].Label, s.Key)
+		assert.True(t, s.Note != "" || missSignalVocab[i].Note != "", "a signal has a note somewhere: %s", s.Key)
 	}
 }
 
@@ -217,7 +228,7 @@ func TestDiagnoseMissesReadsTheSkipSample(t *testing.T) {
 	assert.Contains(t, m.Verdict, "most of the never-stored misses are evictions")
 	row := reasonByKey(m, "not_in_index")
 	assert.Equal(t, missSeverityCapacity, row.Severity)
-	assert.Contains(t, row.Explain, "Of 100 skipped keys clients sampled, 60.0% were keys the sweeper had evicted")
+	assert.Contains(t, m.Sample.Explain, "Of 100 skipped keys clients sampled, 60.0% were keys the sweeper had evicted")
 
 	m = diagnoseMisses(map[string]metricValue{}, dashboardEvictionInfo{})
 	assert.Zero(t, m.Sample.Keys)
@@ -274,7 +285,7 @@ func TestDiagnoseMissesSignalsCacheFill(t *testing.T) {
 	}
 }
 
-// The snapshot carries the diagnosis, so the page and "copy json" both have it.
+// The snapshot carries the diagnosis, so the page and "download json" both have it.
 func TestDashboardStatsCarryTheMissDiagnosis(t *testing.T) {
 	reg, skips, _, _ := missRegistry(t)
 	skips.WithLabelValues("get", "batch_backoff").Add(7)
@@ -287,7 +298,7 @@ func TestDashboardStatsCarryTheMissDiagnosis(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	assert.InDelta(t, 7, got.Misses.Total, 0)
 	assert.Equal(t, "batch_backoff", got.Misses.Dominant)
-	assert.Contains(t, rec.Body.String(), `"verdict": "100.0% of misses: client gave up probing.`)
+	assert.Contains(t, rec.Body.String(), `"verdict":"100.0% of misses: client gave up probing.`)
 }
 
 // The page draws every cause the server can report and the verdict it writes.

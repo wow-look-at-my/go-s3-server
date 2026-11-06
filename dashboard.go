@@ -3,11 +3,17 @@
 package main
 
 import (
+	"compress/gzip"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"log"
 	"net"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -25,6 +31,29 @@ const dashboardStatsPath = "/api/stats"
 
 // dashboardBandwidthPath serves the bandwidth time series the page's chart polls.
 const dashboardBandwidthPath = "/api/bandwidth"
+
+// dashboardVocabPath serves the text the snapshot leaves out: the label and the prose of every cause.
+const dashboardVocabPath = "/api/vocab"
+
+// dashboardVocab is the body of the vocabulary endpoint.
+type dashboardVocab struct {
+	Reasons []missReasonText `json:"reasons"`
+	Signals []missSignalText `json:"signals"`
+	Causes  []churnCauseText `json:"causes"`
+}
+
+// vocabBody is the vocabulary encoded once, with the ETag of its bytes.
+var vocabBody = sync.OnceValues(func() ([]byte, string) {
+	body, err := json.Marshal(dashboardVocab{Reasons: missReasonVocab(), Signals: missSignalVocab, Causes: churnCauseVocab()})
+	if err != nil {
+		panic("dashboard: encode vocabulary: " + err.Error())
+	}
+	sum := sha256.Sum256(body)
+	return body, `"` + hex.EncodeToString(sum[:8]) + `"`
+})
+
+// projectSeriesNames are the metrics the snapshot's projects map already carries, cell for cell.
+var projectSeriesNames = []string{"s3_project_objects_total", "s3_project_bytes_total"}
 
 // dashboardBandwidthTopModules is how many modules the chart names on its own axis key.
 const dashboardBandwidthTopModules = 5
@@ -113,6 +142,7 @@ func newDashboard(srv *Server, cfg *Config, started time.Time) *dashboard {
 func (d *dashboard) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(dashboardStatsPath, d.serveStats)
+	mux.HandleFunc(dashboardVocabPath, serveVocab)
 	mux.HandleFunc(dashboardBandwidthPath, d.serveBandwidth)
 	mux.HandleFunc(healthPath, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -162,12 +192,45 @@ func (d *dashboard) serveStats(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "\t")
-	if err := enc.Encode(stats); err != nil {
+	// The page polls this every second, so the body is compact: no indent, and gzip for a client that takes it.
+	body := compressedWriter(w, r)
+	defer body.Close()
+	if err := json.NewEncoder(body).Encode(stats); err != nil {
 		log.Printf("dashboard: write stats: %v", err)
 	}
 }
+
+// serveVocab answers the vocabulary. The body changes only with the build,
+// so it carries an ETag and a browser revalidates it instead of downloading
+// it again.
+func serveVocab(w http.ResponseWriter, r *http.Request) {
+	body, etag := vocabBody()
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "no-cache")
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	out := compressedWriter(w, r)
+	defer out.Close()
+	_, _ = out.Write(body)
+}
+
+// compressedWriter wraps w in gzip when the request accepts it, and sets
+// the headers that say so. The caller closes it, which flushes the stream.
+func compressedWriter(w http.ResponseWriter, r *http.Request) io.WriteCloser {
+	if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		return nopCloser{w}
+	}
+	w.Header().Set("Content-Encoding", "gzip")
+	w.Header().Add("Vary", "Accept-Encoding")
+	return gzip.NewWriter(w)
+}
+
+type nopCloser struct{ io.Writer }
+
+func (nopCloser) Close() error { return nil }
 
 // dashboardBandwidth is the body of the bandwidth endpoint: the retained
 // window, stamped with the moment it was read.
@@ -211,6 +274,10 @@ func (d *dashboard) snapshot() (*dashboardStats, error) {
 		MaxAge:   d.cfg.Eviction.AgeLimit().String(),
 		Interval: d.cfg.Eviction.Interval.Std().String(),
 	}
+	misses := diagnoseMisses(metrics, eviction)
+	for _, name := range projectSeriesNames {
+		delete(metrics, name)
+	}
 	return &dashboardStats{
 		GeneratedAt:   now,
 		UptimeSeconds: now.Sub(d.started).Seconds(),
@@ -231,7 +298,7 @@ func (d *dashboard) snapshot() (*dashboardStats, error) {
 		Index:    d.indexInfo(),
 		Metrics:  metrics,
 		Projects: projectTotals.snapshot(),
-		Misses:   diagnoseMisses(metrics, eviction),
+		Misses:   misses,
 		Churn:    packageChurn.snapshot(),
 	}, nil
 }

@@ -11,10 +11,55 @@ const state = {
 	reads: null, // the last read totals, for the per-poll hit rate
 	misses: null, // the last miss counts by cause, for the per-poll rate
 	churn: null, // the last re-store counts by cause, for the per-poll rate
-	raw: null, // the body of the snapshot on screen, verbatim, for "download json"
+	vocab: null, // the text behind every key, fetched once; the snapshot carries keys only
+	snapshot: null, // the snapshot on screen with its text merged in, for "download json"
 };
 
 const $ = (id) => document.getElementById(id);
+
+// --- the vocabulary ---------------------------------------------------------
+
+// The snapshot is polled every second and carries keys and numbers.
+function byKey(list) {
+	const out = {};
+	for (const entry of list || []) out[entry.key] = entry;
+	return out;
+}
+
+function describe(stats, vocab) {
+	const reasons = byKey(vocab.reasons);
+	const signals = byKey(vocab.signals);
+	const causes = byKey(vocab.causes);
+	const m = stats.misses;
+	if (m) {
+		for (const r of m.reasons || []) {
+			const text = reasons[r.key] || {};
+			r.label = text.label || r.key;
+			r.explain = text.explain || "";
+			r.action = text.action || "";
+			// The sample's verdict on the skipped keys belongs under the never-stored cause.
+			if (r.key === "not_in_index" && m.sample && m.sample.keys > 0) r.explain = `${r.explain} ${m.sample.explain}`.trim();
+		}
+		for (const s of m.signals || []) {
+			const text = signals[s.key] || {};
+			s.label = text.label || s.key;
+			s.note = s.note || text.note || "";
+		}
+	}
+	for (const c of (stats.churn && stats.churn.causes) || []) {
+		const text = causes[c.key] || {};
+		c.label = text.label || c.key;
+		c.explain = text.explain || "";
+		c.action = text.action || "";
+	}
+	return stats;
+}
+
+async function loadVocab() {
+	const res = await fetch("/api/vocab");
+	if (!res.ok) throw new Error(`vocabulary endpoint answered ${res.status}`);
+	state.vocab = await res.json();
+}
 
 // --- reading the snapshot ---------------------------------------------------
 
@@ -791,11 +836,13 @@ async function pollBandwidth() {
 
 async function poll() {
 	try {
+		// The vocabulary is fetched until it lands; a poll without it has no text to draw.
+		if (!state.vocab) await loadVocab();
 		const res = await fetch("/api/stats", { cache: "no-store" });
 		if (!res.ok) throw new Error(`stats endpoint answered ${res.status}`);
-		const raw = await res.text();
-		draw(JSON.parse(raw));
-		state.raw = raw;
+		const stats = describe(await res.json(), state.vocab);
+		draw(stats);
+		state.snapshot = stats;
 		$("poll-error").hidden = true;
 	} catch (err) {
 		// The numbers on the page are now stale, so the failure goes in a red banner.
@@ -848,9 +895,10 @@ function flashLabel(el, text) {
 
 $("download-json").addEventListener("click", () => {
 	const btn = $("download-json");
-	if (state.raw === null) return flashLabel(btn, "no snapshot yet");
+	if (state.snapshot === null) return flashLabel(btn, "no snapshot yet");
 	try {
-		downloadSnapshot(state.raw);
+		// The file carries the text the wire left out, indented, so it reads on its own.
+		downloadSnapshot(JSON.stringify(state.snapshot, null, "\t"));
 		flashLabel(btn, "saved");
 	} catch (err) {
 		console.error("download json failed:", err);

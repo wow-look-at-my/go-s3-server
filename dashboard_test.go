@@ -1,8 +1,10 @@
 package main
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -171,7 +173,9 @@ func seriesValue(t *testing.T, series []seriesPoint, want map[string]string) flo
 
 // A labelled counter reaches the page as a list of series, each carrying its
 // labels as an object. The page reads a label by name and never parses a key.
-func TestDashboardStatsCarryThePerProjectSeries(t *testing.T) {
+// The per-project series themselves stay out of the snapshot: its projects
+// map carries the same cells.
+func TestDashboardStatsCarryLabelledSeriesAsObjects(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	objects := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "s3_project_objects_total"}, []string{"project", "kind"})
 	reg.MustRegister(objects)
@@ -179,21 +183,95 @@ func TestDashboardStatsCarryThePerProjectSeries(t *testing.T) {
 	objects.WithLabelValues("github.com/wow-look-at-my/go-toolchain", objKindMiss).Add(1)
 	objects.WithLabelValues("github.com/wow-look-at-my/js-snippets", objKindPut).Add(4)
 
-	d := testDashboard(t, reg)
-	stats, err := d.snapshot()
+	metrics, err := gatherDashboardMetrics(reg)
 	require.NoError(t, err)
-
-	got := stats.Metrics["s3_project_objects_total"].Series
-	require.NotNil(t, got, "the per-project counter reaches the snapshot as a series")
+	got := metrics["s3_project_objects_total"].Series
+	require.NotNil(t, got, "the per-project counter gathers as a series")
 	assert.InDelta(t, 9, seriesValue(t, got, map[string]string{"kind": "hit", "project": "github.com/wow-look-at-my/go-toolchain"}), 0)
 	assert.InDelta(t, 1, seriesValue(t, got, map[string]string{"kind": "miss", "project": "github.com/wow-look-at-my/go-toolchain"}), 0)
 	assert.InDelta(t, 4, seriesValue(t, got, map[string]string{"kind": "put", "project": "github.com/wow-look-at-my/js-snippets"}), 0)
 
 	// The wire shape itself: labels are an object, never a "k=v,k=v" key.
-	body, err := json.Marshal(stats.Metrics["s3_project_objects_total"])
+	body, err := json.Marshal(metrics["s3_project_objects_total"])
 	require.NoError(t, err)
 	assert.Contains(t, string(body), `{"labels":{"kind":"hit","project":"github.com/wow-look-at-my/go-toolchain"},"value":9}`)
 	assert.NotContains(t, string(body), "kind=")
+
+	d := testDashboard(t, reg)
+	stats, err := d.snapshot()
+	require.NoError(t, err)
+	for _, name := range projectSeriesNames {
+		_, present := stats.Metrics[name]
+		assert.False(t, present, "%s is the projects map again; the snapshot leaves it out", name)
+	}
+}
+
+// The snapshot carries keys and counts. The text a key stands for comes from
+// the vocabulary, once, with an ETag a browser revalidates against.
+func TestDashboardVocabularyNamesEveryKey(t *testing.T) {
+	d := testDashboard(t, prometheus.NewRegistry())
+	rec := httptest.NewRecorder()
+	d.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, dashboardVocabPath, nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	etag := rec.Header().Get("ETag")
+	require.NotEmpty(t, etag)
+
+	var vocab dashboardVocab
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &vocab))
+	stats, err := d.snapshot()
+	require.NoError(t, err)
+	require.Len(t, vocab.Reasons, len(stats.Misses.Reasons))
+	for i, r := range stats.Misses.Reasons {
+		assert.Equal(t, r.Key, vocab.Reasons[i].Key)
+	}
+	require.Len(t, vocab.Signals, len(stats.Misses.Signals))
+	for i, s := range stats.Misses.Signals {
+		assert.Equal(t, s.Key, vocab.Signals[i].Key)
+	}
+	require.Len(t, vocab.Causes, len(stats.Churn.Causes))
+	for i, c := range stats.Churn.Causes {
+		assert.Equal(t, c.Key, vocab.Causes[i].Key)
+		assert.NotEmpty(t, vocab.Causes[i].Explain)
+	}
+	// The snapshot carries none of that prose.
+	body, err := json.Marshal(stats)
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), vocab.Reasons[0].Explain)
+	assert.NotContains(t, string(body), vocab.Causes[0].Explain)
+
+	req := httptest.NewRequest(http.MethodGet, dashboardVocabPath, nil)
+	req.Header.Set("If-None-Match", etag)
+	rec = httptest.NewRecorder()
+	d.handler().ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNotModified, rec.Code, "a browser holding the vocabulary downloads nothing")
+}
+
+// The page polls the snapshot every second, so the body is compact: one
+// line, and gzip for a client that accepts it.
+func TestDashboardStatsAreCompactAndGzipped(t *testing.T) {
+	d := testDashboard(t, prometheus.NewRegistry())
+	rec := httptest.NewRecorder()
+	d.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, dashboardStatsPath, nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Empty(t, rec.Header().Get("Content-Encoding"))
+	plain := rec.Body.Bytes()
+	assert.Equal(t, 1, strings.Count(string(plain), "\n"), "one line, no indent")
+
+	req := httptest.NewRequest(http.MethodGet, dashboardStatsPath, nil)
+	req.Header.Set("Accept-Encoding", "gzip, deflate")
+	rec = httptest.NewRecorder()
+	d.handler().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "gzip", rec.Header().Get("Content-Encoding"))
+	assert.Equal(t, "Accept-Encoding", rec.Header().Get("Vary"))
+	zr, err := gzip.NewReader(rec.Body)
+	require.NoError(t, err)
+	unzipped, err := io.ReadAll(zr)
+	require.NoError(t, err)
+	var got dashboardStats
+	require.NoError(t, json.Unmarshal(unzipped, &got))
+	assert.Equal(t, "test-cache", got.Server.Bucket)
+	assert.Less(t, rec.Body.Len(), len(plain), "the compressed body is smaller")
 }
 
 // The snapshot is built for a browser, so it must not carry a credential from

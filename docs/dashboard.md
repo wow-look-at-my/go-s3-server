@@ -24,7 +24,8 @@ A bind failure logs and the cache keeps serving. The data path must not die beca
 | --- | --- |
 | `/` | the page |
 | `/dashboard.css`, `/dashboard.js` | its two assets |
-| `/api/stats` | the JSON snapshot the page polls every second; the download json button saves the one on screen as a file |
+| `/api/stats` | the JSON snapshot the page polls every second: one line, gzip for a client that accepts it, keys and numbers only. The download json button saves the one on screen as an indented file with its text merged in |
+| `/api/vocab` | the label and the prose behind every cause, signal and change kind. It is a constant of the build with an ETag, so the page fetches it once |
 | `/_health` | `200 ok` |
 
 The page and its assets are embedded in the binary. There is no asset directory to mount. The page cannot disagree with the server that serves it.
@@ -32,6 +33,10 @@ The page and its assets are embedded in the binary. There is no asset directory 
 ## Where the numbers come from
 
 `/api/stats` flattens the same Prometheus registry that `/metrics` serves. The dashboard keeps no counters of its own. The page and a scrape can never report different values for one counter.
+
+The snapshot leaves out what the page already has. `s3_project_objects_total` and `s3_project_bytes_total` stay in `/metrics` and out of the snapshot, because the `projects` map carries every cell they hold. Measured on a live snapshot, those series were fifths of the body. Each cause, signal and change kind travels as its key, its count and its flags. The label and the prose behind a key come from `/api/vocab`, which the page fetches once and merges into every snapshot before it draws. A note that depends on the numbers, the cache fill for one, rides the row.
+
+The body is one line, and gzip when the client accepts it.
 
 A counter with no labels becomes `{"value": N}`. A labeled one becomes `{"series": [{"labels": {"method": "GET", "route": "Index"}, "value": N}, ...]}`, with one entry per label set. A reader looks a label up by name and never parses a key. A histogram contributes `<name>_count` and `<name>_sum`, which is what an average needs. The buckets stay in `/metrics` for a time-series database to read.
 

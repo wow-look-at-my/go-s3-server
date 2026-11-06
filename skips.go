@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -38,18 +39,18 @@ type skipReport struct {
 	PutRefused uint64 `json:"put_refused"`
 	// SkippedKeys is a sample of the keys behind GetNotInIndex, as hex action ids.
 	SkippedKeys []string `json:"skipped_keys"`
+	// SkippedAgo is, per sampled key, how many seconds before the report the client skipped it.
+	SkippedAgo []int64 `json:"skipped_ago"`
 }
 
 // maxSkipSample bounds the sample one report carries. cacheclient sends at most this many.
 const maxSkipSample = 64
 
-// clientSkipSamplesTotal classifies the sampled keys: evicted (the sweeper
-// removed it since the client fetched its index), advertised (the server
-// holds it now, so the client's index copy was stale), unknown (never held,
-// as far as the server remembers).
+// clientSkipSamplesTotal classifies the sampled keys: evicted (the sweeper removed it since the client fetched its index), advertised (the server held it before the client skipped it, so the client's index copy was stale), stored_later (stored
+// after the skip, mostly by the skipping client itself), unknown (never held, as far as the server remembers).
 var clientSkipSamplesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "s3_client_skip_samples_total",
-	Help: "Keys clients sampled from their index skips, by what the server knows of them (evicted, advertised, unknown).",
+	Help: "Keys clients sampled from their index skips, by what the server knows of them (evicted, advertised, stored_later, unknown).",
 }, []string{"verdict"})
 
 var clientSkipsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -76,8 +77,13 @@ func (r skipReport) valid() bool {
 			return false
 		}
 	}
-	if len(r.SkippedKeys) > maxSkipSample {
+	if len(r.SkippedKeys) > maxSkipSample || len(r.SkippedAgo) > len(r.SkippedKeys) {
 		return false
+	}
+	for _, age := range r.SkippedAgo {
+		if age < 0 {
+			return false
+		}
 	}
 	for _, k := range r.SkippedKeys {
 		if _, ok := extractActionHash(gbciKeyPrefix + k); !ok {
@@ -88,17 +94,30 @@ func (r skipReport) valid() bool {
 }
 
 // classifySkippedKeys says what the server knows of each sampled key.
-func classifySkippedKeys(storage *Storage, keys []string) {
-	for _, k := range keys {
+func classifySkippedKeys(storage *Storage, keys []string, ago []int64, now time.Time) {
+	for idx, k := range keys {
+		key := gbciKeyPrefix + k
 		verdict := "unknown"
-		switch key := gbciKeyPrefix + k; absentKeyReason(storage, key) {
+		switch absentKeyReason(storage, key) {
 		case missAdvertised:
 			verdict = "advertised"
+			// The report arrives when the client exits, after it built and uploaded
+			// what it skipped.
+			if idx < len(ago) && storedAfter(storage, key, now.Add(-time.Duration(ago[idx])*time.Second)) {
+				verdict = "stored_later"
+			}
 		case missEvicted:
 			verdict = "evicted"
 		}
 		clientSkipSamplesTotal.WithLabelValues(verdict).Inc()
 	}
+}
+
+// storedAfter reports whether the object under key was stored after moment.
+// An object the store cannot stat is not known to be later.
+func storedAfter(storage *Storage, key string, moment time.Time) bool {
+	meta, err := storage.Stat(key)
+	return err == nil && meta.ModTime.After(moment)
 }
 
 // handleSkipReport counts a client's skipped gets as misses and its skipped
@@ -131,7 +150,7 @@ func handleSkipReport(w http.ResponseWriter, r *http.Request, storage *Storage) 
 	clientUploadsLostTotal.WithLabelValues("refused").Add(float64(rep.PutRefused))
 	clientUploadsLostTotal.WithLabelValues("abandoned").Add(float64(rep.PutAbandoned))
 	if storage != nil {
-		classifySkippedKeys(storage, rep.SkippedKeys)
+		classifySkippedKeys(storage, rep.SkippedKeys, rep.SkippedAgo, time.Now())
 	}
 	noteProjectMiss(provenanceOf(r), int(rep.gets()))
 	auditFromContext(r.Context()).note("skips get=%d put=%d lost_uploads=%d sampled=%d", rep.gets(), rep.PutKnown,

@@ -17,12 +17,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// buildPkgbitsWithSources constructs a synthetic pkgbits V0 payload (no sync
-// markers) that encodes importPath as the SectionPkg element's package path and each
-// srcPaths entry as a SectionPosBase file name — enough structure for
-// parseImportPath and parseSourceFiles to decode real values, so the
-// provenance tests exercise the same extraction path a genuine `go build`
-// archive takes.
 func buildPkgbitsWithSources(importPath string, srcPaths []string) []byte {
 	strs := append([]string{importPath}, srcPaths...)
 
@@ -72,9 +66,9 @@ func buildPkgbitsWithSources(importPath string, srcPaths []string) []byte {
 	return buf
 }
 
-// provenanceAction returns a (hex actionID, build-id action) pair that agree:
-// action is base64.RawURLEncoding of actionID's leading bytes, the stamp
-// `go build` writes, so an archive carrying it passes the build-id guard.
+// provenanceAction returns a (hex actionID, build-id action) pair that agree.
+// Action is base64.RawURLEncoding of actionID's leading bytes, the stamp `go
+// build` writes, so an archive carrying it passes the build-id guard.
 func provenanceAction() (actionHex, action string) {
 	raw15 := []byte("provenance-15bb") // exactly BuildIDHashSize bytes
 	action = base64.RawURLEncoding.EncodeToString(raw15)
@@ -83,9 +77,9 @@ func provenanceAction() (actionHex, action string) {
 }
 
 // provenanceArchive builds a Go package archive whose __.PKGDEF carries a
-// header line, a build id for the given action, and a decodable pkgbits
-// payload — so every provenance metadata field (pkg, src, go-version, target)
-// has a real value to extract.
+// header line. A build id for the given action, and a decodable pkgbits payload
+// — so every provenance metadata field (pkg, src, go-version, target) has a
+// real value to extract.
 func provenanceArchive(action string) []byte {
 	pb := buildPkgbitsWithSources("example.com/provpkg",
 		[]string{"/work/src/alpha.go", "/work/src/beta.go"})
@@ -100,6 +94,8 @@ func TestProvenanceArchive_Decodes(t *testing.T) {
 	raw := provenanceArchive(action)
 	require.Equal(t, "example.com/provpkg", parseImportPath(raw))
 	require.Equal(t, []string{"alpha.go", "beta.go"}, parseSourceFiles(raw))
+	require.Equal(t, "/work/src", parseSourceDir(raw), "the directory the compile recorded, which a key without -trimpath carries")
+	require.Empty(t, parseSourceDir([]byte("not an archive")))
 	goVer, target := parseArchiveHeader(raw)
 	require.Equal(t, "go1.25.0", goVer)
 	require.Equal(t, "linux/amd64", target)
@@ -107,7 +103,7 @@ func TestProvenanceArchive_Decodes(t *testing.T) {
 }
 
 // requireProvenanceMeta asserts the full provenance metadata set assembled by
-// Put — identical between the batch manifest and single-PUT headers, since
+// Put. Identical between the batch manifest and single-PUT headers, since
 // both derive from the same map.
 func requireProvenanceMeta(t *testing.T, md map[string]string, outputID string) {
 	t.Helper()
@@ -116,6 +112,7 @@ func requireProvenanceMeta(t *testing.T, md map[string]string, outputID string) 
 	require.Equal(t, "zstd", md["compression"])
 	require.Equal(t, "example.com/provpkg", md["pkg"])
 	require.Equal(t, "alpha.go beta.go", md["src"])
+	require.Equal(t, "/work/src", md["src-dir"])
 	require.Equal(t, "go1.25.0", md["go-version"])
 	require.Equal(t, "linux/amd64", md["target"])
 	require.Equal(t, "example.com/mymod", md["module"])
@@ -138,7 +135,7 @@ func newProvenanceBackend(t *testing.T, url string) *WebBackend {
 // TestPutProvenance_BatchManifestMetadata proves the full provenance metadata
 // set (pkg / src / go-version / target / module / toolchain-version and the
 // protocol fields) travels in the /_batch/put manifest — the primary upload
-// path — by inspecting what the client actually shipped.
+// path — by inspecting what the client shipped.
 func TestPutProvenance_BatchManifestMetadata(t *testing.T) {
 	hermeticOTel(t)
 	t.Setenv("GO_TOOLCHAIN_CACHE_PUT_WINDOW_MS", "5000")
@@ -176,7 +173,8 @@ func TestPutProvenance_BatchManifestMetadata(t *testing.T) {
 
 // TestPutProvenance_SinglePutHeaders proves the same metadata set arrives as
 // X-Cache-Meta-* headers on the single-PUT fallback path (server without
-// /_batch/put), keeping both upload paths byte-equivalent.
+// /_batch/put). Those TestPutProvenance_SinglePutHeaders are keeping both
+// upload paths byte-equivalent.
 func TestPutProvenance_SinglePutHeaders(t *testing.T) {
 	hermeticOTel(t)
 
@@ -248,7 +246,7 @@ func TestCapSrcList(t *testing.T) {
 	require.LessOrEqual(t, len(got), srcMetaMaxBytes)
 	require.Contains(t, got, "more")
 
-	// A single name longer than the whole budget degrades to just the summary.
+	// A single name longer than the whole budget degrades to the summary.
 	huge := strings.Repeat("y", srcMetaMaxBytes+10) + ".go"
 	require.Equal(t, "+1 more", capSrcList([]string{huge}))
 }

@@ -101,7 +101,7 @@ The client reports its own lost uploads in the skip report. `put_failed` is an u
 
 A process does not exit between its last upload and the report that says what happened to it.
 
-A client that skips a key its index copy lacks cannot know whether the sweeper evicted it or nothing ever stored it. The server can. The report carries a sample of the skipped keys, up to `skipSampleMax` per report, and the server says what it knows of each. `evicted` (the sweeper removed it since the client fetched its index), `advertised` (the server holds it now, so the client's index copy was older than the upload), or `unknown`. The counts land in `s3_client_skip_samples_total{verdict}`. The never-stored row explains the sample's split, turns into a capacity miss when most sampled keys were evicted.
+A client that skips a key its index copy lacks cannot know whether the sweeper evicted it or nothing ever stored it. The server can. The report carries a sample of the skipped keys, up to `skipSampleMax` per report, and the server says what it knows of each. `evicted` (the sweeper removed it since the client fetched its index), `advertised` (the server stored it before the client skipped it, so the client's index copy was older than the upload), `stored_later`, or `unknown`. The report arrives when the client exits, after it built and uploaded what it skipped. So the client sends each sampled key's age in seconds, and the server compares the moment of the skip with the object's store time. A key stored after the skip is `stored_later`: mostly the client's own upload, and no evidence of a stale index. An age needs no clock the machines share. The counts land in `s3_client_skip_samples_total{verdict}`. The never-stored row explains the sample's split, turns into a capacity miss when most sampled keys were evicted.
 
 The verdict then says to grow the cache.
 
@@ -119,7 +119,8 @@ The first field that differs names its kind:
 | `toolchain` | the go-toolchain client version | a client release that carries a new compiler build changes every action id |
 | `target` | GOOS/GOARCH | a fleet that builds for several targets |
 | `sources` | the source file names | a file added or removed |
-| `inputs` | nothing, and the output id is the same | an input the metadata does not carry: a flag, an environment variable, a stamp, a path, a dependency's build id |
+| `path` | the directory the package compiled from (`src-dir`) | another checkout path or another GOMODCACHE, in a build without `-trimpath` |
+| `inputs` | nothing, and the output id is the same | an input the metadata does not carry: a flag, an environment variable, a stamp, a dependency's build id |
 | `output` | nothing, and the output id differs | a file's content, or a dependency whose output changed |
 
 Upstream cmd/go stamps the action id into every archive it compiles, so the stored bytes of multiple keys always differ. The output id can never say "same". The build id in the archive carries a second field, the content hash, computed with the stamp zeroed. The client sends it as `content-id`. The server compares that. gosmopolitan stamps that content hash twice, `contentID/contentID`. An archive it compiles under a new key keeps its bytes and its output id too.
@@ -128,7 +129,9 @@ Consider an upload from a client older than the field. That upload answers `unkn
 
 A package named `main` or `command-line-arguments` is not tracked. Every test main and every directory build carries that import path, so one name will stand for thousands of packages.
 
-The `inputs` kind is the pointless re-store. Nothing visible changed and the compiled bytes are same. The build still can not find the object. The panel colours it, ranks the packages stored again most frequently, and lists the latest re-stores with each differing field as `from -> to`. The verdict names the dominant kind with its newest example.
+The client reads `src-dir` from the archive's own position table, the directory its Go files compiled from. A compile without `-trimpath` writes that absolute path into the object and into its key. A build from a directory the cache has not seen therefore misses every package it compiles there, and its content hash differs too. Without this field such a re-store reads as changed content. An upload from a client older than the field carries no directory. The panel does not read a move into it.
+
+The `inputs` and `path` kinds are the pointless re-stores. Nothing visible changed and the compiled bytes are same. The build still can not find the object. The panel colours it, ranks the packages stored again most frequently, and lists the latest re-stores with each differing field as `from -> to`. The verdict names the dominant kind with its newest example.
 
 A hit teaches the tracker the newest object the cache served, whoever stored it. A put then compares against that. The tracker starts empty at every server start and fills as builds run. `s3_package_restores_total{change,output}` counts the same events for a scrape, and each project's row carries `restores` and `restores_same_output`.
 

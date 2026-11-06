@@ -33,17 +33,18 @@ const (
 	changeToolchain = "toolchain"
 	changeTarget    = "target"
 	changeSources   = "sources"
+	changePath      = "path"   // only the directory the package compiled from differs: another checkout or module cache
 	changeInputs    = "inputs" // every field agrees and the output is the same: an input the metadata does not carry
 	changeOutput    = "output" // every field agrees and the output differs: a file's content, or a dependency
 )
 
-var changeKinds = []string{changeGoVersion, changeToolchain, changeTarget, changeSources, changeInputs, changeOutput}
+var changeKinds = []string{changeGoVersion, changeToolchain, changeTarget, changeSources, changePath, changeInputs, changeOutput}
 
 // packageRestoresTotal counts packages stored again under a new key, by what
 // differed and whether the compiled output did.
 var packageRestoresTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "s3_package_restores_total",
-	Help: "Packages stored again under a new action id, by the field that differed from the last upload (go_version, toolchain, target, sources, inputs, output) and by output (same, changed).",
+	Help: "Packages stored again under a new action id, by the field that differed from the last upload (go_version, toolchain, target, sources, path, inputs, output) and by output (same, changed, unknown).",
 }, []string{"change", "output"})
 
 // packageSeen is the last upload or hit of one package.
@@ -54,6 +55,7 @@ type packageSeen struct {
 	toolchain string
 	target    string
 	src       string
+	srcDir    string
 	project   string
 	at        int64
 	// restores and sameOutput count the re-stores seen for this package since the server started.
@@ -63,7 +65,7 @@ type packageSeen struct {
 }
 
 func (p *packageSeen) bytes() int64 {
-	return churnEntryBytes + int64(len(p.content)+len(p.goVersion)+len(p.toolchain)+len(p.target)+len(p.src)+len(p.project)+len(p.lastChange))
+	return churnEntryBytes + int64(len(p.content)+len(p.goVersion)+len(p.toolchain)+len(p.target)+len(p.src)+len(p.srcDir)+len(p.project)+len(p.lastChange))
 }
 
 // fieldDiff is one metadata field that differed between uploads.
@@ -133,6 +135,7 @@ func (c *churnTracker) observe(key string, meta map[string]string, put bool, pro
 		toolchain: meta["toolchain-version"],
 		target:    meta["target"],
 		src:       meta["src"],
+		srcDir:    meta["src-dir"],
 		project:   project,
 		at:        c.now().Unix(),
 	}
@@ -208,9 +211,14 @@ func classifyChange(prev, cur *packageSeen) ([]fieldDiff, string) {
 	add("toolchain-version", prev.toolchain, cur.toolchain)
 	add("target", prev.target, cur.target)
 	add("src", prev.src, cur.src)
+	// An upload from a client older than the field carries no directory, and
+	// an absent directory is no evidence that it moved.
+	if prev.srcDir != "" && cur.srcDir != "" {
+		add("src-dir", prev.srcDir, cur.srcDir)
+	}
 	switch {
 	case len(diffs) > 0:
-		return diffs, map[string]string{"go-version": changeGoVersion, "toolchain-version": changeToolchain, "target": changeTarget, "src": changeSources}[diffs[0].Field]
+		return diffs, map[string]string{"go-version": changeGoVersion, "toolchain-version": changeToolchain, "target": changeTarget, "src": changeSources, "src-dir": changePath}[diffs[0].Field]
 	case outputVerdict(prev, cur) == outputSame:
 		return diffs, changeInputs
 	default:
@@ -284,6 +292,9 @@ var churnCauseSpecs = map[string]churnCauseText{
 	changeSources: {Label: "source files changed",
 		Explain: "A Go file was added to or removed from the package.",
 		Action:  "Expected on edited code. The list is the first few names, so a change past them reads as unchanged files."},
+	changePath: {Label: "built from another directory",
+		Explain: "The Go version, the client, the target and the files agree with the last upload, and the package compiled from another directory: another checkout path, or another GOMODCACHE. A compile without -trimpath writes that absolute path into the object and into its key, so a build from a directory the cache has not seen misses every package it compiles there.",
+		Action:  "Build from one fixed directory, or build with -trimpath. A module-cache dependency is path-free from a toolchain that keys it by module version; a client older than that rebuilds it for each module cache."},
 	changeInputs: {Label: "same sources, same content, new key",
 		Explain: "The Go version, the client, the target and the files all agree with the last upload, and the compiled content is the same. An input the metadata does not carry changed: a build flag, an environment variable, GOFLAGS, a -ldflags stamp, a path without -trimpath, or a dependency's build id.",
 		Action:  "This is the pointless re-store. Compare the two builds' go env, GOFLAGS and the flags in the build command; what differs between them is in the action id and not in the output."},

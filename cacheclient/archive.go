@@ -53,6 +53,23 @@ func parseSourceFiles(data []byte) []string {
 	return files
 }
 
+// parseSourceDir returns the directory the archive's Go files were compiled
+// from, as the compile recorded it. This also covers an absolute path, or
+// module@version and an import path for a trimmed compile.
+func parseSourceDir(data []byte) string {
+	p := openPkgbits(data)
+	if p == nil {
+		return ""
+	}
+	for i := 0; i < p.sectionLen(pbSectionPosBase); i++ {
+		full := p.readSectionString(pbSectionPosBase, i, pbSyncPosBase)
+		if filepath.Ext(full) == ".go" {
+			return filepath.Dir(full)
+		}
+	}
+	return ""
+}
+
 // arMember finds and returns the body of a named member in an ar archive.
 func arMember(data []byte, name string) []byte {
 	const globalHdr = "!<arch>\n"

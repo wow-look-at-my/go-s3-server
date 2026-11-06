@@ -26,6 +26,42 @@ func pkgMeta(content, goVersion, toolchain, src string) map[string]string {
 	}
 }
 
+// A key that changed with only the source directory names the move, with
+// both directories, and not "content changed". The absolute path is in the
+// object, so its content hash differs as well. An upload without the field
+// is no evidence of a move.
+func TestChurnNamesABuildFromAnotherDirectory(t *testing.T) {
+	c := testChurn()
+	at := func(dir string) map[string]string {
+		meta := pkgMeta("", "go1.27", "r100", "a.go")
+		meta["content-id"] = "content-" + dir
+		if dir != "" {
+			meta["src-dir"] = dir
+		}
+		return meta
+	}
+	c.observe(cacheprogKey('a'), at("/home/runner/work/m/m/p"), true, "example.com/m")
+	c.observe(cacheprogKey('b'), at("/tmp/checkout-41/p"), true, "example.com/m")
+	s := c.snapshot()
+	require.EqualValues(t, 1, s.Restores)
+	require.Len(t, s.Recent, 1)
+	assert.Equal(t, changePath, s.Recent[0].Change)
+	assert.Equal(t, []fieldDiff{{Field: "src-dir", From: "/home/runner/work/m/m/p", To: "/tmp/checkout-41/p"}}, s.Recent[0].Diffs)
+
+	c.observe(cacheprogKey('c'), at(""), true, "example.com/m")
+	assert.Equal(t, changeOutput, c.snapshot().Recent[0].Change, "a client that sends no directory says nothing about a move")
+
+	vocab := churnCauseVocab()
+	var found bool
+	for _, text := range vocab {
+		if text.Key == changePath {
+			found = true
+			assert.Contains(t, text.Explain, "-trimpath")
+		}
+	}
+	assert.True(t, found, "the vocabulary names the path cause")
+}
+
 // A put of a package the tracker knows under another key is a re-store.
 // The field that differs names the change, and an identical output is
 // noted beside it.

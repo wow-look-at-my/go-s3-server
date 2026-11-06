@@ -155,6 +155,9 @@ func (b *WebBackend) prepare(j putJob) {
 	if files := parseSourceFiles(j.data); len(files) > 0 {
 		meta["src"] = capSrcList(files)
 	}
+	if dir := parseSourceDir(j.data); dir != "" {
+		meta["src-dir"] = dir
+	}
 
 	pr := putReq{
 		actionID:   j.actionID,

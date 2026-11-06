@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"path/filepath"
+	"strings"
 )
 
 // parseImportPath extracts the import path from a Go ar archive's __.PKGDEF export data.
@@ -63,8 +64,10 @@ func parseSourceDir(data []byte) string {
 	}
 	for i := 0; i < p.sectionLen(pbSectionPosBase); i++ {
 		full := p.readSectionString(pbSectionPosBase, i, pbSyncPosBase)
-		if filepath.Ext(full) == ".go" {
-			return filepath.Dir(full)
+		// Cut at the last separator of either kind. filepath.Dir would rewrite
+		// the separators on Windows, and the server compares this text as sent.
+		if cut := strings.LastIndexAny(full, `/\`); cut > 0 && filepath.Ext(full) == ".go" {
+			return full[:cut]
 		}
 	}
 	return ""

@@ -87,12 +87,12 @@ func TestChurnTracksEachBuildShapeOnItsOwn(t *testing.T) {
 	run('d', "v2")
 	s = c.snapshot()
 	require.EqualValues(t, 3, s.Restores)
-	shapes := map[string]bool{}
+	var shapes []string
 	for _, ev := range s.Recent {
 		assert.Equal(t, changeOutput, ev.Change, "an edited file is changed content, not changed sources: %s", ev.Variant)
-		shapes[ev.Variant] = true
+		shapes = append(shapes, ev.Variant)
 	}
-	assert.Equal(t, map[string]bool{"plain": true, "test untrimmed": true, "cover+test untrimmed": true}, shapes)
+	assert.ElementsMatch(t, []string{"plain", "test untrimmed", "cover+test untrimmed"}, shapes)
 	require.Len(t, s.Top, 3)
 	assert.Equal(t, "cover+test untrimmed", s.Top[0].Variant, "equal counts rank by name, so the order is stable")
 }

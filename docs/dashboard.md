@@ -109,7 +109,20 @@ The verdict then says to grow the cache.
 
 A build that stores a package the cache already held under another key compiled it again. The hit rate reads that as a miss. This panel says why the key moved.
 
-The action id hashes every input, and the server sees none of them. It sees what the client said about each upload. The package path, the Go version, the client version, the target, the first source file names, and the output id. `churnTracker` in `churn.go` keeps the last upload or hit of every package, keyed by package and target. That `churnTracker` is in a byte-bounded LRU registered with the memory controller as `package-churn`. A put of a known package under a new key is a re-store.
+The action id hashes every input, and the server sees none of them. It sees what the client said about each upload. The package path, the Go version, the client version, the target, the first source file names, and the output id. `churnTracker` in `churn.go` keeps the last upload or hit of every package, keyed by package, target and build shape. That `churnTracker` is in a byte-bounded LRU registered with the memory controller as `package-churn`. A put of a known package under a new key is a re-store.
+
+One CI run compiles a package in several shapes: for the binary, with its test files, and with coverage counters. Each shape has its own key by design. A tracker with one slot per package reads every switch between shapes as a re-store with changed source files. So the build shape is part of the slot.
+
+| `variant` | The archive's position table names |
+| --- | --- |
+| `plain` | neither kind of file below |
+| `test` | a `_test.go` file |
+| `cover` | a `.cover.go` file or `covervars.go` |
+| `cover+test` | both |
+
+The client reads the shape and sends it as `variant`. The server adds `untrimmed` when `src-dir` is an absolute path. An upload from a client older than the field is read from the names in `src`, which can miss a test file past the cap.
+
+`src` lists the package's own files. The position table also names each file an inlined call came from. That set moves when a dependency changes. The client leaves those names out.
 
 The first field that differs names its kind:
 
@@ -119,6 +132,7 @@ The first field that differs names its kind:
 | `toolchain` | the go-toolchain client version | a client release that carries a new compiler build changes every action id |
 | `target` | GOOS/GOARCH | a fleet that builds for several targets |
 | `sources` | the source file names | a file added or removed |
+| `module_version` | only the version in a module-cache `src-dir` | a dependency bump, which stores every package of the module again |
 | `path` | the directory the package compiled from (`src-dir`) | another checkout path or another GOMODCACHE, in a build without `-trimpath` |
 | `inputs` | nothing, and the output id is the same | an input the metadata does not carry: a flag, an environment variable, a stamp, a dependency's build id |
 | `output` | nothing, and the output id differs | a file's content, or a dependency whose output changed |

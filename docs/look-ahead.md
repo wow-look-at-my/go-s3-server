@@ -34,7 +34,7 @@ A build manifest (`manifest.go`) names the action IDs one command of one module 
 
 A manifest is write-once, so a stale one gets a successor generation. A generation is stale when the keys it names and the keys this build used differ by more than `manifestDrift` percent of the used keys. Both directions count. A key named and not used is a download the next build never reads. An authoritative index names the newest generation with no request.
 
-`GO_CACHE_MANIFEST_TRACE=<file>` appends one line per event to that file: `newest` and `store` (the generation read and the one written), `named`, `fetch`, `ahead`, `get`, `disk` and `put`, each with its action ID. Compare the `named` and `fetch` keys with the `get`. `disk` keys to find what a build fetched and never read.
+`GO_CACHE_MANIFEST_TRACE=<file>` appends one line per event to that file. Compare the `named` and `fetch` keys with the `get`. `disk` keys to find what a build fetched and never read.
 
 ## What the pool is worth
 
@@ -93,6 +93,6 @@ The index was built as one prefixed hex string per key. A key string is the same
 
 ## Provenance
 
-Every request carries who asks. The headers are `X-Cache-Module`, `X-Cache-Toolchain`, `X-Cache-Target`, `X-Cache-Client`, and `X-Cache-Kind`. The last one is `critical` or `look-ahead`. A key says nothing about who wanted it. A server that cannot separate a waiting build from a reading-ahead one reports the two identically.
+Every request carries who asks. The last one is `critical` or `look-ahead`. A key says nothing about who wanted it. A server that cannot separate a waiting build from a reading-ahead one reports the two identically.
 
 The server names those headers itself rather than importing the client for them. It reads them the way it reads `Content-Type`: as a wire contract any client version may or may not honor. Importing the client puts that whole package in the server's dependency graph, and therefore in the server's coverage, for multiple strings. `TestProvenanceHeadersMatchTheClient` pins the spellings together, in a test, where the import costs nothing.

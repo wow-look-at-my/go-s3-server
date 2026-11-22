@@ -101,7 +101,9 @@ The client reports its own lost uploads in the skip report. `put_failed` is an u
 
 A process does not exit between its last upload and the report that says what happened to it.
 
-A client that skips a key its index copy lacks cannot know whether the sweeper evicted it or nothing ever stored it. The server can. The report carries a sample of the skipped keys, up to `skipSampleMax` per report, and the server says what it knows of each. `evicted` (the sweeper removed it since the client fetched its index), `advertised` (the server stored it before the client skipped it, so the client's index copy was older than the upload), `stored_later`, or `unknown`. The report arrives when the client exits, after it built and uploaded what it skipped. So the client sends each sampled key's age in seconds, and the server compares the moment of the skip with the object's store time. A key stored after the skip is `stored_later`: mostly the client's own upload, and no evidence of a stale index. An age needs no clock the machines share. The counts land in `s3_client_skip_samples_total{verdict}`. The never-stored row explains the sample's split, turns into a capacity miss when most sampled keys were evicted.
+A client that skips a key its index copy lacks cannot know whether the sweeper evicted it or nothing ever stored it. The server can. The report carries a sample of the skipped keys, up to `skipSampleMax` per report, and the server says what it knows of each. The report arrives when the client exits, after it built and uploaded what it skipped. So the client sends each sampled key's age in seconds, and the server compares the moment of the skip with the object's store time. A key stored after the skip is `stored_later`: mostly the client's own upload, and no evidence of a stale index.
+
+An age needs no clock the machines share. The counts land in `s3_client_skip_samples_total{verdict}`. The never-stored row explains the sample's split, turns into a capacity miss when most sampled keys were evicted.
 
 The verdict then says to grow the cache.
 

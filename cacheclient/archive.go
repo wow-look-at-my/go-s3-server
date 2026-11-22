@@ -46,7 +46,13 @@ func parseSourceFiles(data []byte) []string {
 		if full == "" {
 			continue
 		}
-		base := filepath.Base(full)
+		// Cut at the last separator of either kind: a Windows path keeps its
+		// backslashes inside the archive, and filepath.Base does not split
+		// them on a host that is not Windows.
+		base := full
+		if cut := strings.LastIndexAny(full, `/\`); cut >= 0 {
+			base = full[cut+1:]
+		}
 		if filepath.Ext(base) == ".go" && seen.Add(base) {
 			files = append(files, base)
 		}

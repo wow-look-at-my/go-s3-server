@@ -111,10 +111,7 @@ func (b *WebBackend) refreshLiveDelta() bool {
 	b.deltaAt = time.Now()
 	reply, err := b.doIndexGET(context.Background(), deltaQuery(gen), "")
 	if reply.status == http.StatusGone {
-		// The epoch ended. The set stays as it is, and no later miss asks again.
-		logging.Infof("cacheprog: web index: live updates stopped (HTTP 410)")
-		b.setLiveGen(indexGen{})
-		return false
+		return b.refetchAfterEpoch()
 	}
 	if err != nil || !reply.delta {
 		if err != nil {
@@ -131,6 +128,37 @@ func (b *WebBackend) refreshLiveDelta() bool {
 	b.keys.addAll(added)
 	b.liveGen = reply.gen
 	b.keysMu.Unlock()
+	return true
+}
+
+// EpochRefetchInterval is the least time between whole fetches after an ended epoch.
+const EpochRefetchInterval = 30 * time.Second
+
+// refetchAfterEpoch fetches the whole index, because the server ended the
+// epoch the live set's position is in and can send no delta from it. The keys
+// are added to the live set. A key the server removed stays claimed until a
+// lookup finds it absent. A fetch that fails keeps the position, so a later
+// miss asks again. The caller holds deltaMu.
+func (b *WebBackend) refetchAfterEpoch() bool {
+	if !b.refetchAt.IsZero() && time.Since(b.refetchAt) < EpochRefetchInterval {
+		return false
+	}
+	b.refetchAt = time.Now()
+	reply, err := b.doIndexGET(context.Background(), "", "")
+	if err != nil || reply.status != http.StatusOK || reply.delta {
+		logging.Infof("cacheprog: web index: the server started a new epoch, and the whole fetch failed (HTTP %d): %v", reply.status, err)
+		return false
+	}
+	keys, _, err := parseIndexBlob(reply.body)
+	if err != nil {
+		logging.Warnf("cacheprog: web index: the server started a new epoch, and the whole fetch does not parse: %v", err)
+		return false
+	}
+	b.keysMu.Lock()
+	b.keys.addAll(keys)
+	b.liveGen = reply.gen
+	b.keysMu.Unlock()
+	logging.Infof("cacheprog: web index: the server started a new epoch; fetched %d keys whole", keys.Len())
 	return true
 }
 

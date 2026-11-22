@@ -24,14 +24,12 @@ var ErrLogged = errors.New("web: already logged")
 // MaxConnsPerHost is the HTTP connection pool size for the remote cache.
 const MaxConnsPerHost = 64
 
-// defaultIndexMaxAge resolves a empty IndexMaxAge for the index copy at
-// indexPath. The package's tests replace it with a single returning a
-// negative duration, so a test of the revalidation path sees a request.
+// defaultIndexMaxAge resolves a empty IndexMaxAge for the index copy at indexPath.
 var defaultIndexMaxAge = resolveDefaultIndexMaxAge
 
-// resolveDefaultIndexMaxAge is the default index max age for the copy at
-// indexPath: unbounded in CI, and otherwise the longer of the current run's
-// window and IndexMaxAgeDefault.
+// resolveDefaultIndexMaxAge is the default index max age for the copy. This
+// holds at indexPath: unbounded in CI, and otherwise the longer of the
+// current run's window and IndexMaxAgeDefault.
 func resolveDefaultIndexMaxAge(indexPath string) time.Duration {
 	if runningInCI() {
 		return IndexMaxAgeCI
@@ -70,42 +68,35 @@ type WebBackend struct {
 	target    string // GOOS/GOARCH this build produces, for request provenance
 	command   string // what this process builds; part of the manifest key
 	indexDir  string // where the key index's disk copy lives; empty is os.TempDir
-	// indexMaxAge is how long the disk copy is served with no request. The
-	// index loads on the earliest Get or Put, under indexOnce, so a go
-	// command that never touches the cache never pays for it.
+	// indexMaxAge is how long the disk copy is served with no request.
 	indexMaxAge time.Duration
 	indexOnce   sync.Once
-	// indexTiming bounds the earliest use's wait for an index and paces the
-	// lock that keeps processes sharing IndexDir to a single download.
+	// indexTiming bounds the earliest use's wait for an index.
 	indexTiming indexTiming
-	// indexLoad is the load running in the background, or nil before the
-	// earliest use. See web_index_load.go.
+	// indexLoad is the load running in the background, or nil before the earliest use. See web_index_load.go.
 	indexLoad atomic.Pointer[indexLoad]
-	// moduleLate carries a module path learned after the backend was built. A
-	// consumer often knows its endpoint before it knows which module it is
-	// building, and the requests in between still deserve an attribution.
+	// moduleLate carries a module path learned after the backend was built.
 	moduleLate atomic.Pointer[string]
 	Stats      CacheStats
 	Pool       ConcurrencyTracker // HTTP connection pool usage (shared across all Servers)
 	Latency    *LatencyStats      // optional; set by Server for sub-operation tracking
 	keysMu     sync.RWMutex
-	// keys holds RAW ACTION HASHES, not cache-key strings. A large cache is
-	// hundreds of thousands of entries, and that set is built at startup
-	// before the build does anything at all.
+	// keys holds RAW ACTION HASHES, not cache-key strings.
 	keys       *keySet // known keys, from the startup index fetch + Put claims
 	indexEmpty bool    // remote index was empty at startup.
 	// indexAuthoritative marks a fresh, server-confirmed index: an absent key can then miss without a probe.
 	indexAuthoritative bool
 	// indexKeysAtStart is the key count from the startup index fetch, reported in WebSummary to flag a dead remote.
 	indexKeysAtStart int
-	// keysJournal records the claims and drops made while a background index
-	// load runs, so the set it installs keeps them. Nil when no load runs.
+	// keysJournal records the claims and drops made while a background index load runs, so the set it installs keeps them.
 	keysJournal *keysJournal
 	// liveGen is the add-log position the live key set is complete up to, zero when the server named none. keysMu guards it.
 	liveGen indexGen
 	// deltaMu serializes the live delta refreshes; deltaAt is when the last one started.
 	deltaMu sync.Mutex
 	deltaAt time.Time
+	// refetchAt is when the last whole fetch after an ended epoch started. deltaMu guards it.
+	refetchAt time.Time
 	// indexBytes is what that fetch cost on the wire, which no hit or put total covers.
 	indexBytes AtomicBytes
 	missesMu   sync.RWMutex
@@ -117,16 +108,7 @@ type WebBackend struct {
 	batchProbingDisabled       atomic.Bool  // true after the backoff has tripped
 	batchBackoffLogOnce        sync.Once    // logs the disable notice a single time
 
-	// OnBatchEntries receives the objects the look-ahead pool fetched ahead of
-	// the build. Leaving it nil turns look-ahead off entirely: with nowhere to
-	// put an object nobody has asked for yet, fetching it is pure cost. That is
-	// not hypothetical -- the pool's ancestor rode every batch response and its
-	// entries went straight to the garbage collector, because the thing
-	// consumer never set this.
-	//
-	// Entries arrive on the pool's own goroutines, several at the same time,
-	// and carry COMPRESSED bodies: a consumer that already holds an object
-	// locally drops it without paying to decompress it. Verify anything kept with Verify.
+	// OnBatchEntries receives the objects the look-ahead pool fetched ahead of the build.
 	OnBatchEntries func(entries []BatchEntry)
 	// HasLocal reports whether the local tier holds an action. A fetch ahead skips such a key.
 	HasLocal func(h actionHash) bool
@@ -143,35 +125,24 @@ type WebBackend struct {
 	MissModuleIndex AtomicCounter // module-index blobs refused: unverifiable under a key
 	MissNetwork     AtomicCounter
 
-	// RawBytes and CompressedBytes are what this process offered the store,
-	// before and after lz4. Their ratio is what compression actually bought on
-	// this build's objects, rather than on a benchmark corpus.
+	// RawBytes and CompressedBytes are what this process offered the store, before and after lz4.
 	RawBytes        AtomicCounter
 	CompressedBytes AtomicCounter
 
-	// PrefetchOffered counts entries a batch response carried that nobody in
-	// that batch asked for. It is the client's view of what the server's
-	// prefetch window is actually costing.
+	// PrefetchOffered counts entries a batch response carried that nobody in that batch asked for.
 	PrefetchOffered AtomicCounter
 
-	// PrefetchStored counts those entries that passed the read gates and were
-	// handed to OnBatchEntries. The gap to PrefetchOffered is what the client
-	// threw away: no sink, no budget, or a body that failed a gate.
+	// PrefetchStored counts those entries that passed the read gates and were handed to OnBatchEntries.
 	PrefetchStored AtomicCounter
 
 	// heldMu guards held.
 	heldMu sync.RWMutex
-	// held is the action hashes whose bodies this process actually has: every
-	// object it received and verified, and every object it uploaded. It is NOT
-	// the index, which says what the server has. A prefetch request states it
-	// so the server can skip what this build is not going to need.
+	// held is the action hashes whose bodies this process has: every object it received and verified.
 	held *hashSet[actionHash]
 
-	// prefetchHold bounds the bytes of unrequested bodies this backend is
-	// carrying between reading them off a response and handing them over.
+	// prefetchHold bounds the bytes of unrequested bodies this backend is carrying between reading them off a response and handing them over.
 	prefetchHold prefetchBudget
-	// prefetchWG tracks the hand-offs still running, so Close does not return
-	// while a consumer callback is in flight.
+	// prefetchWG tracks the hand-offs still running, so Close does not return while a consumer callback is in flight.
 	prefetchWG sync.WaitGroup
 
 	// SkippedEmptyIndex counts clean misses skipped because the startup index was empty.
@@ -192,7 +163,7 @@ type WebBackend struct {
 	// Reclaimed404 counts stale index claims dropped after the server reported the key absent.
 	Reclaimed404 AtomicCounter
 
-	// PUT-side skip/refusal counters: what Put(nil, no error) actually did instead of uploading.
+	// PUT-side skip/refusal counters: what Put(nil, no error) did instead of uploading.
 	PutSkippedKnown    AtomicCounter // key already in the index or claimed by an in-flight upload
 	PutRefusedBuildID  AtomicCounter // refused: build-id action mismatch (mis-keyed object)
 	PutRefusedModIndex AtomicCounter // refused: Go module index (never published to the shared cache)
@@ -204,9 +175,7 @@ type WebBackend struct {
 	// maxRetries bounds retries for a transient failure; past the budget the op falls back to a local miss.
 	maxRetries int // bounded retries for transient failures
 
-	// shedUntil is the UnixNano time until which the server asked for quiet: a
-	// transient answer carrying Retry-After sets it. Until then no attempt from
-	// this backend is sent (see doRetry).
+	// shedUntil is the UnixNano time until which the server asked for quiet.
 	shedUntil atomic.Int64
 	// ShedWaits counts attempts held back, unsent, because the server had asked for quiet.
 	ShedWaits AtomicCounter
@@ -235,8 +204,7 @@ type WebBackend struct {
 	putBatchHTTPWG      sync.WaitGroup
 	batchPutUnsupported atomic.Bool // sticky after the server refuses /_batch/put; Put then uses doRetryPUT
 
-	// lookAhead fetches objects the build has not asked for yet, on its own
-	// goroutines. See lookahead.go.
+	// lookAhead fetches objects the build has not asked for yet, on its own goroutines. See lookahead.go.
 	lookAhead *lookAhead
 
 	// manifest lists what this build used, and fetches what the last one used.
@@ -266,10 +234,7 @@ type batchReq struct {
 	resp     chan batchResp
 }
 
-// batchResp carries a decompressed, fully verified body. It is a []byte rather
-// than a reader because the client has the whole object in memory by the time
-// it can answer at all: handing back a reader only bought the consumer another
-// copy on its way to a file.
+// batchResp carries a decompressed, fully verified body.
 type batchResp struct {
 	outputID string
 	data     []byte
@@ -333,17 +298,7 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	b := &WebBackend{
 		maxRetries:                 envInt("GO_TOOLCHAIN_CACHE_MAX_RETRIES", defaultMaxRetries),
 		emptyBatchBackoffThreshold: envInt("GO_TOOLCHAIN_CACHE_EMPTY_BATCH_BACKOFF", defaultEmptyBatchBackoff),
-		// NO absolute Timeout. http.Client.Timeout is a deadline over the WHOLE
-		// request, body included, so it kills a transfer that is making perfect
-		// progress purely for being big. This client's responses are bulk: a
-		// batch get is tens of megabytes and the key index is larger still. At
-		// the bandwidth a remote CI runner actually gets, anything past about
-		// megabytes could not finish inside the old deadline, and each of them
-		// died mid-body and was retried from the start.
-		//
-		// Liveness is the transport's job instead: ResponseHeaderTimeout above
-		// bounds a server that never answers, which is what a deadline here was
-		// reaching for. The index fetch adds its own stall guard on top.
+		// NO absolute Timeout.
 		transport: transport,
 		client: &http.Client{
 			Transport: &firstDial{next: transport, ready: make(chan struct{})},
@@ -396,21 +351,17 @@ func NewWebBackend(cfg WebConfig) (*WebBackend, error) {
 	b.prep = newPrepPool(b)
 	b.lookAhead = newLookAhead(b)
 	b.manifest = newBuildManifest()
-	// The same knob bounds both speculative paths, since both hold bodies the
-	// build never asked for.
+	// The same knob bounds both speculative paths, since both hold bodies the build never asked for.
 	b.prefetchHold.limit = lookAheadBudget()
 	b.knownMiss = newHashSet(0)
 	b.held = newHashSet(0)
-	// Empty stays empty. The default depends on the copy's own path and on
-	// how long this run has been going, which is known at load time and not here.
+	// Empty stays empty.
 	b.indexMaxAge = cfg.IndexMaxAge
 	b.indexTiming = defaultIndexTiming()
 	return b, nil
 }
 
-// KeyPrefix returns what a cache key carries ahead of its action ID. The
-// client owns the key grammar, so a consumer recovering an action ID from a
-// BatchEntry asks for the prefix rather than rebuilding it.
+// KeyPrefix returns what a cache key carries ahead of its action ID.
 func (b *WebBackend) KeyPrefix() string {
 	return b.prefix + "v1"
 }
@@ -430,12 +381,6 @@ func (b *WebBackend) url(key string) string {
 //   - Key in the index: fetch via the coalescing batch endpoint — a single round-trip
 //     serves many callers and carries prefetch entries from the same build.
 //     Servers without /_batch/get fall back to individual GETs (sendBatch).
-//
-//   - Key absent from an AUTHORITATIVE index (freshly fetched or revalidated this run): miss
-//     cleanly with no network.
-//
-//   - Key absent but the index fetch FAILED: batch-probe the key (the recovery
-//     path), bounded by the consecutive-empty-batch backoff.
 func (b *WebBackend) Get(actionID string) (outputID string, data []byte, t time.Time, miss bool) {
 	if b.manifest != nil && !b.manifest.started.Load() {
 		b.startManifest(b.moduleName())
@@ -534,13 +479,12 @@ func (b *WebBackend) probeDuringLoad(actionID string, h actionHash) batchResp {
 }
 
 // Verify decompresses and checks a stored body from a look-ahead entry, under
-// exactly the gates a requested object passes. It answers the object's bytes,
-// or false for a body no consumer may see.
+// exactly the gates a requested object passes.
 func (b *WebBackend) Verify(e BatchEntry, actionID string) ([]byte, bool) {
 	return b.verify("look-ahead", actionID, e.OutputID, e.ActionID, e.Data, e.RawSize)
 }
 
-// ActionIDFromKey recovers the action ID a cache key names, so a consumer
+// ActionIDFromKey recovers the action ID a cache key names. A consumer
 // holding a look-ahead entry can find the action it belongs to without
 // rebuilding the client's key grammar.
 func (b *WebBackend) ActionIDFromKey(key string) (string, bool) {
@@ -615,15 +559,13 @@ func (b *WebBackend) Close() error {
 		<-b.putBatchDone
 	}
 	// The GET coalescer before the look-ahead, because a batch SEEDS the
-	// look-ahead as its last act. Closing the pool earliest dropped every seed
-	// an in-flight batch was about to make, silently and on timing alone.
+	// look-ahead as its last act.
 	if b.batchStop != nil {
 		close(b.batchStop)
 		<-b.batchDone
 	}
 	b.stopSkipReporter()
-	// The coalescer is done, so no further hand-off can start; the ones running
-	// still owe the consumer their callback.
+	// The coalescer is done, so no further hand-off can start; the ones running still owe the consumer their callback.
 	b.prefetchWG.Wait()
 	// Now nothing can seed it, so what it holds is all it will ever hold.
 	b.lookAhead.Close()
@@ -636,12 +578,6 @@ func (b *WebBackend) Close() error {
 func (b *WebBackend) GetStats() *CacheStats { return &b.Stats }
 
 // signRequest authenticates an HTTP request and stamps its provenance.
-//
-// The provenance is what turns the server's log from a stream of hashes into
-// something an operator can act on. A key says nothing about who wanted it; the
-// module says which project's build is running, the target says which port it
-// is building for, and the kind separates the requests a build is blocked on
-// from the ones the look-ahead pool made on its own.
 func (b *WebBackend) signRequest(req *http.Request) {
 	req.SetBasicAuth(b.accessKey, b.secretKey)
 	if module := b.moduleName(); module != "" {
@@ -689,14 +625,7 @@ const (
 	HeaderBuild     = "X-Cache-Build"     // a single build, so prefetch suppression ends
 )
 
-// buildID names this process's build. It is random per process, and it exists
-// for the server's prefetch suppression.
-//
-// Scoped to the build, suppression still moves the window within a build and
-// ends when the build does.
-//
-// A collision costs a single build a suppressed window, so a failed read of
-// the system source falls back to the clock and the pid rather than to a constant.
+// buildID names this process's build. It is random per process, and it exists for the server's prefetch suppression.
 var buildID = newBuildID()
 
 func newBuildID() string {
@@ -714,6 +643,5 @@ const (
 	KindLookAhead = "look-ahead"
 )
 
-// clientVersion names the wire contract, so a server log can attribute a
-// request to the client that made it.
+// clientVersion names the wire contract, so a server log can attribute a request to the client that made it.
 const clientVersion = "cacheclient/2"

@@ -154,6 +154,8 @@ func (b *WebBackend) prepare(j putJob) {
 	}
 	if files := parseSourceFiles(j.data); len(files) > 0 {
 		meta["src"] = capSrcList(files)
+		// The capped list can hide the test and coverage files, so the shape is its own field.
+		meta["variant"] = buildVariant(files)
 	}
 	if dir := parseSourceDir(j.data); dir != "" {
 		meta["src-dir"] = dir

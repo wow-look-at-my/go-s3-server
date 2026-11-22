@@ -54,6 +54,39 @@ func parseSourceFiles(data []byte) []string {
 	return files
 }
 
+// The build shapes an archive can have. The server compares an upload with
+// the last upload of the same shape.
+const (
+	VariantPlain     = "plain"
+	VariantTest      = "test"
+	VariantCover     = "cover"
+	VariantCoverTest = "cover+test"
+)
+
+// buildVariant names the shape of a compile from every file name its
+// position table holds. A test compile names a _test.go file. A coverage
+// compile names the files that cmd/cover wrote.
+func buildVariant(files []string) string {
+	var test, cover bool
+	for _, name := range files {
+		switch {
+		case strings.HasSuffix(name, "_test.go"):
+			test = true
+		case strings.HasSuffix(name, ".cover.go") || name == "covervars.go":
+			cover = true
+		}
+	}
+	switch {
+	case cover && test:
+		return VariantCoverTest
+	case cover:
+		return VariantCover
+	case test:
+		return VariantTest
+	}
+	return VariantPlain
+}
+
 // parseSourceDir returns the directory the archive's Go files were compiled
 // from, as the compile recorded it. This also covers an absolute path, or
 // module@version and an import path for a trimmed compile.

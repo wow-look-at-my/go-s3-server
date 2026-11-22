@@ -1,6 +1,5 @@
-// All rights reserved. Use of this source code is
-// governed by a BSD-style license that can be found
-// in the LICENSE file.
+// All rights reserved. Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 package cacheclient
 
@@ -18,16 +17,14 @@ const BrokerEnv = "GO_BUILDCACHE_BROKER"
 // brokerOffEnv makes every process open the cache for itself, which is what a bisect of a broker-shaped problem wants.
 const brokerOffEnv = "GO_BUILDCACHE_BROKER_OFF"
 
-// The broker's records. A request and a reply are each record in a
-// shared-memory ring: an opcode in the record's type word, a correlation ID in
-// the earliest bytes, and fixed-width fields after it.
-//
-// No body ever travels. Both processes can open the cache directory, so an
-// answer names a file rather than carrying it.
+// The broker's records.
 const (
 	opHello = 1 // a child names the channel it created
 	opGet   = 2 // action ID -> entry
 	opPut   = 3 // action ID and a path -> entry
+	// The local forms ask the owner's directory alone. The shared store never hears of the action: no lookup, no upload.
+	opGetLocal = 4
+	opPutLocal = 5
 )
 
 // The reply's type word. A miss is a status rather than an error, because it
@@ -45,8 +42,7 @@ const idBytes = 8
 // entryBytes is a reply's fixed part: the output ID, the size and the time.
 const entryBytes = cachedisk.HashSize + 8 + 8
 
-// errShortRecord says a record is too small to hold what its opcode needs. A
-// peer that sends a single is not this version of the protocol.
+// errShortRecord says a record is too small to hold what its opcode needs.
 var errShortRecord = errors.New("cache broker: truncated record")
 
 // putRecord writes a store request: the correlation ID, the action, and the

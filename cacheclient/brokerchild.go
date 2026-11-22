@@ -1,6 +1,5 @@
-// All rights reserved. Use of this source code is
-// governed by a BSD-style license that can be found
-// in the LICENSE file.
+// All rights reserved. Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 //go:build !js && !wasip1
 
@@ -23,29 +22,16 @@ import (
 )
 
 // brokerCache is the cache in a process that did not open the directory. It
-// holds no DiskCache, writes no index entry and trims nothing. Every read and
-// write goes to the owner, and what comes back is the identity of a file the
-// owner has already written.
-//
-// OutputFile still answers a path, because that is what the contract promises
-// and what a compiler opens. The layout is the owner's, and this process
-// computes the same name from the same directory.
+// holds no DiskCache, writes no index entry and trims nothing.
 type brokerCache struct {
 	link *brokerLink
 	dir  string
 }
 
-// errBrokerMiss is why a broker answer is not an entry: the owner reported no
-// such action, or answered something this process cannot read.
+// errBrokerMiss is why a broker answer is not an entry: the owner reported no such action.
 var errBrokerMiss = errors.New("the build cache owner has no such entry")
 
 // A brokerLink is this process's channel to the owner.
-//
-// A build compiles in parallel, so its cache reads are parallel, and the
-// replies come back in whatever order the owner finishes. a single goroutine
-// reads them and hands each to the caller that is waiting for its correlation
-// ID. Every wait is a park: a sender blocks on its own channel, and the
-// reader blocks in the ring.
 type brokerLink struct {
 	channel *ipc.Channel
 	next    atomic.Uint64
@@ -56,6 +42,9 @@ type brokerLink struct {
 
 	stop context.CancelFunc
 	done chan struct{}
+
+	// noLocal is set when the owner refused a local request it does not know.
+	noLocal atomic.Bool
 }
 
 // A reply is what the owner answered a single request with.
@@ -64,6 +53,8 @@ type reply struct {
 	entry Entry
 	tier  string
 	err   error
+	// unknown marks a refusal that carries no message: the owner does not know the request's opcode.
+	unknown bool
 }
 
 // dialBroker answers the cache this process should use when a live owner is
@@ -82,8 +73,7 @@ func dialBroker(dir string) Cache {
 	}
 	defer hello.Close()
 
-	// The channel exists before the owner hears of it, so the owner's open
-	// never races the create.
+	// The channel exists before the owner hears of it, so the owner's open never races the create.
 	mine := endpointName("gobuildcache-child")
 	channel, err := ipc.CreateChannel(mine)
 	if err != nil {
@@ -156,6 +146,8 @@ func (link *brokerLink) read(ctx context.Context) {
 			answer.err = cachedisk.Miss(errBrokerMiss)
 		default:
 			answer.err = fmt.Errorf("cache: the build cache owner refused the request")
+			// A failed request carries the failure's text after the action. An unknown opcode carries none.
+			answer.unknown = len(rec) == idBytes+cachedisk.HashSize
 		}
 		link.deliver(id, answer)
 	}
@@ -218,9 +210,64 @@ func (c *brokerCache) Get(id ActionID) (Entry, error) {
 
 // GetTiered is Get, naming the tier the owner answered from.
 func (c *brokerCache) GetTiered(id ActionID) (Entry, string, error) {
-	answer, err := c.link.ask(opGet, func(at uint64) []byte {
+	return c.get(opGet, id)
+}
+
+// Local answers the owner's directory alone, for an output the shared store must not see.
+func (c *brokerCache) Local() Cache { return brokerLocal{c} }
+
+// brokerLocal is a brokerCache whose requests stop at the owner's directory.
+type brokerLocal struct{ *brokerCache }
+
+func (l brokerLocal) Get(id ActionID) (Entry, error) {
+	entry, _, err := l.GetTiered(id)
+	return entry, err
+}
+
+func (l brokerLocal) GetTiered(id ActionID) (Entry, string, error) {
+	return l.get(l.localOp(opGetLocal, opGet), id)
+}
+
+func (l brokerLocal) Put(id ActionID, file io.ReadSeeker) (OutputID, int64, error) {
+	return l.put(l.localOp(opPutLocal, opPut), id, file)
+}
+
+// Close leaves the channel open: it belongs to the brokerCache.
+func (l brokerLocal) Close() error { return nil }
+
+// localOp answers local, or shared once the owner has refused a local request.
+func (c *brokerCache) localOp(local, shared uint32) uint32 {
+	if c.link.noLocal.Load() {
+		return shared
+	}
+	return local
+}
+
+// sharedOp answers the shared form of a local opcode the owner did not know.
+// An owner older than the local requests answers the shared form, as it did
+// before a child had a local one to send.
+func (c *brokerCache) sharedOp(typ uint32, answer reply) (uint32, bool) {
+	if !answer.unknown {
+		return typ, false
+	}
+	switch typ {
+	case opGetLocal:
+		c.link.noLocal.Store(true)
+		return opGet, true
+	case opPutLocal:
+		c.link.noLocal.Store(true)
+		return opPut, true
+	}
+	return typ, false
+}
+
+func (c *brokerCache) get(typ uint32, id ActionID) (Entry, string, error) {
+	answer, err := c.link.ask(typ, func(at uint64) []byte {
 		return getRecord(nil, at, id)
 	})
+	if shared, retry := c.sharedOp(typ, answer); err != nil && retry {
+		return c.get(shared, id)
+	}
 	if err != nil {
 		tier := answer.tier
 		if tier == "" {
@@ -238,21 +285,25 @@ func (c *brokerCache) GetTiered(id ActionID) (Entry, string, error) {
 	return answer.entry, tier, nil
 }
 
-// Put hands a body to the owner by naming the file it sits in. The owner reads
-// it before it answers, so this process may exit as soon as Put returns.
-//
-// A caller that already holds an open file names that file. A caller holding
-// anything else spills to a temporary file: the bytes have to reach another
-// process, and a path is what this protocol carries.
+// Put hands a body to the owner by naming the file it sits in.
 func (c *brokerCache) Put(id ActionID, file io.ReadSeeker) (OutputID, int64, error) {
+	return c.put(opPut, id, file)
+}
+
+func (c *brokerCache) put(typ uint32, id ActionID, file io.ReadSeeker) (OutputID, int64, error) {
 	path, cleanup, err := readerPath(file)
 	if err != nil {
 		return OutputID{}, 0, err
 	}
 	defer cleanup()
-	answer, err := c.link.ask(opPut, func(at uint64) []byte {
+	answer, err := c.link.ask(typ, func(at uint64) []byte {
 		return putRecord(nil, at, id, path)
 	})
+	if shared, retry := c.sharedOp(typ, answer); err != nil && retry {
+		answer, err = c.link.ask(shared, func(at uint64) []byte {
+			return putRecord(nil, at, id, path)
+		})
+	}
 	if err != nil {
 		return OutputID{}, 0, err
 	}

@@ -1,6 +1,5 @@
-// All rights reserved. Use of this source code is
-// governed by a BSD-style license that can be found
-// in the LICENSE file.
+// All rights reserved. Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 //go:build !js && !wasip1
 
@@ -14,17 +13,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/wow-look-at-my/go-s3-server/cacheclient/cachedisk"
+
 	ipc "github.com/wow-look-at-my/go-ipc"
 )
 
-// A build spreads over many processes, and a cache each of them opens for
-// itself charges each of them an index write, a trim, a connection to the
-// store, and an exit held open to drain uploads. Whichever process opens the
-// cache owns it instead, and serves the rest over shared memory.
-//
-// That leaves a single writer for the directory, so the trim has a single
-// owner. Nothing spins: a send into a ring with room makes no system call, and
-// a side with nothing to do parks on a kernel wait rather than looking again.
+// A build spreads over many processes.
 
 // brokerServer serves the owner's cache to the processes below it.
 type brokerServer struct {
@@ -87,10 +81,6 @@ func endpointName(kind string) string {
 
 // BrokerEnviron is what a child needs in its environment to find this
 // process's cache, or nothing when this process serves none.
-//
-// A consumer that starts its children with os.Environ needs none of this. A
-// consumer that builds a curated environment, as the go command does for a
-// test binary, adds these entries to it.
 func BrokerEnviron() []string {
 	if bkr := liveBroker.Load(); bkr != nil {
 		return []string{BrokerEnv + "=" + bkr.name}
@@ -106,8 +96,7 @@ func StopBroker() {
 	brokerMu.Unlock()
 	if bkr != nil {
 		bkr.shutdown()
-		// The name is gone, so a child handed this environment afterwards
-		// would wait on nobody.
+		// The name is gone, so a child handed this environment afterwards would wait on nobody.
 		os.Unsetenv(BrokerEnv)
 	}
 }
@@ -196,15 +185,15 @@ func (bkr *brokerServer) answer(ctx context.Context, child *ipc.Channel, typ uin
 		return
 	}
 	switch typ {
-	case opGet:
-		entry, tier, miss := bkr.lookup(action)
+	case opGet, opGetLocal:
+		entry, tier, miss := bkr.lookup(action, typ == opGetLocal)
 		if miss != nil {
 			child.SendTyped(ctx, stMiss, getRecord(nil, id, action))
 			return
 		}
 		child.SendTyped(ctx, stEntry, entryRecord(nil, id, entry, tier))
-	case opPut:
-		entry, err := bkr.store(action, string(rest))
+	case opPut, opPutLocal:
+		entry, err := bkr.store(action, string(rest), typ == opPutLocal)
 		if err != nil {
 			child.SendTyped(ctx, stError, append(getRecord(nil, id, action), err.Error()...))
 			return
@@ -217,13 +206,16 @@ func (bkr *brokerServer) answer(ctx context.Context, child *ipc.Channel, typ uin
 
 // lookup answers an action. Everyone who asks for that action while the
 // earliest ask runs shares its result, and parks until the close wakes them.
-func (bkr *brokerServer) lookup(action ActionID) (Entry, string, error) {
-	key := string(action[:])
+//
+// A local lookup asks the directory alone, for an output the shared store
+// must not see.
+func (bkr *brokerServer) lookup(action ActionID, local bool) (Entry, string, error) {
+	key := flightKey(action, local)
 	flight, mine := bkr.fly.startGet(key)
 	if mine {
 		func() {
 			defer bkr.fly.finishGet(key, flight)
-			entry, tier, err := bkr.ownerGet(action)
+			entry, tier, err := bkr.ownerGet(action, local)
 			flight.entry, flight.tier, flight.miss = entry, tier, err != nil
 		}()
 	} else {
@@ -240,12 +232,16 @@ func (bkr *brokerServer) lookup(action ActionID) (Entry, string, error) {
 //
 // Children that built the same object offer it at the same time. the
 // earliest offer is the store that happens, so the body is read and stored a single time.
-func (bkr *brokerServer) store(action ActionID, path string) (Entry, error) {
-	key := string(action[:])
+func (bkr *brokerServer) store(action ActionID, path string, local bool) (Entry, error) {
+	owner := bkr.owner
+	if local {
+		owner = cachedisk.Local(owner)
+	}
+	key := flightKey(action, local)
 	flight, mine := bkr.fly.startPut(key)
 	if !mine {
 		<-flight.done
-		if entry, err := bkr.owner.Get(action); err == nil {
+		if entry, err := owner.Get(action); err == nil {
 			return entry, nil
 		}
 	} else {
@@ -259,14 +255,27 @@ func (bkr *brokerServer) store(action ActionID, path string) (Entry, error) {
 		return Entry{}, err
 	}
 	defer file.Close()
-	out, size, err := bkr.owner.Put(action, file)
+	out, size, err := owner.Put(action, file)
 	if err != nil {
 		return Entry{}, err
 	}
 	return Entry{OutputID: out, Size: size, Time: time.Now()}, nil
 }
 
-func (bkr *brokerServer) ownerGet(id ActionID) (Entry, string, error) {
+// flightKey names an action in flight. A local ask and a shared ask of one
+// action are different work, so each has its own flight.
+func flightKey(action ActionID, local bool) string {
+	if local {
+		return "local\x00" + string(action[:])
+	}
+	return string(action[:])
+}
+
+func (bkr *brokerServer) ownerGet(id ActionID, local bool) (Entry, string, error) {
+	if local {
+		entry, err := cachedisk.Local(bkr.owner).Get(id)
+		return entry, TierDisk, err
+	}
 	if tiered, ok := bkr.owner.(Tiered); ok {
 		return tiered.GetTiered(id)
 	}

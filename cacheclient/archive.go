@@ -46,12 +46,82 @@ func parseSourceFiles(data []byte) []string {
 		if full == "" {
 			continue
 		}
-		base := filepath.Base(full)
+		// Cut at the last separator of either kind: a Windows path keeps its
+		// backslashes inside the archive, and filepath.Base does not split
+		// them on a host that is not Windows.
+		base := full
+		if cut := strings.LastIndexAny(full, `/\`); cut >= 0 {
+			base = full[cut+1:]
+		}
 		if filepath.Ext(base) == ".go" && seen.Add(base) {
 			files = append(files, base)
 		}
 	}
 	return files
+}
+
+// parseOwnSourceFiles is parseSourceFiles without the files of other
+// packages. The position table also names each file an inlined call came
+// from, and that set moves when a dependency changes. A file is the
+// package's own when it sits in dir, or carries no directory at all.
+func parseOwnSourceFiles(data []byte, dir string) []string {
+	p := openPkgbits(data)
+	if p == nil {
+		return nil
+	}
+	n := p.sectionLen(pbSectionPosBase)
+	seen := set.New[string](n)
+	var files []string
+	for i := 0; i < n; i++ {
+		full := p.readSectionString(pbSectionPosBase, i, pbSyncPosBase)
+		if filepath.Ext(full) != ".go" {
+			continue
+		}
+		base := full
+		if cut := strings.LastIndexAny(full, `/\`); cut >= 0 {
+			if full[:cut] != dir {
+				continue
+			}
+			base = full[cut+1:]
+		}
+		if seen.Add(base) {
+			files = append(files, base)
+		}
+	}
+	return files
+}
+
+// The build shapes an archive can have. The server compares an upload with
+// the last upload of the same shape.
+const (
+	VariantPlain     = "plain"
+	VariantTest      = "test"
+	VariantCover     = "cover"
+	VariantCoverTest = "cover+test"
+)
+
+// buildVariant names the shape of a compile from every file name its
+// position table holds. A test compile names a _test.go file. A coverage
+// compile names the files that cmd/cover wrote.
+func buildVariant(files []string) string {
+	var test, cover bool
+	for _, name := range files {
+		switch {
+		case strings.HasSuffix(name, "_test.go"):
+			test = true
+		case strings.HasSuffix(name, ".cover.go") || name == "covervars.go":
+			cover = true
+		}
+	}
+	switch {
+	case cover && test:
+		return VariantCoverTest
+	case cover:
+		return VariantCover
+	case test:
+		return VariantTest
+	}
+	return VariantPlain
 }
 
 // parseSourceDir returns the directory the archive's Go files were compiled

@@ -33,12 +33,90 @@ const (
 	changeToolchain = "toolchain"
 	changeTarget    = "target"
 	changeSources   = "sources"
-	changePath      = "path"   // only the directory the package compiled from differs: another checkout or module cache
-	changeInputs    = "inputs" // every field agrees and the output is the same: an input the metadata does not carry
-	changeOutput    = "output" // every field agrees and the output differs: a file's content, or a dependency
+	changeModule    = "module_version" // only the version in the module-cache directory differs: the dependency was bumped
+	changePath      = "path"           // only the directory the package compiled from differs: another checkout or module cache
+	changeInputs    = "inputs"         // every field agrees and the output is the same: an input the metadata does not carry
+	changeOutput    = "output"         // every field agrees and the output differs: a file's content, or a dependency
 )
 
-var changeKinds = []string{changeGoVersion, changeToolchain, changeTarget, changeSources, changePath, changeInputs, changeOutput}
+var changeKinds = []string{changeGoVersion, changeToolchain, changeTarget, changeSources, changeModule, changePath, changeInputs, changeOutput}
+
+// The build shapes of one package. A CI run compiles a package once for the
+// binary, once with its test files and once with coverage counters.
+const (
+	shapePlain     = "plain"
+	shapeTest      = "test"
+	shapeCover     = "cover"
+	shapeCoverTest = "cover+test"
+	// shapeUntrimmed marks a compile that kept its absolute directory.
+	shapeUntrimmed = " untrimmed"
+)
+
+// buildShape names how an upload was compiled. The client sends the test
+// and coverage half as `variant`. An upload without it is read from the
+// source names that fit in `src`, which can miss a file past the cap.
+func buildShape(meta map[string]string) string {
+	shape := meta["variant"]
+	if shape == "" {
+		shape = shapeFromSources(meta["src"])
+	}
+	if isAbsoluteDir(meta["src-dir"]) {
+		shape += shapeUntrimmed
+	}
+	return shape
+}
+
+func shapeFromSources(src string) string {
+	var test, cover bool
+	for _, name := range strings.Fields(src) {
+		switch {
+		case strings.HasSuffix(name, "_test.go"):
+			test = true
+		case strings.HasSuffix(name, ".cover.go") || name == "covervars.go":
+			cover = true
+		}
+	}
+	switch {
+	case cover && test:
+		return shapeCoverTest
+	case cover:
+		return shapeCover
+	case test:
+		return shapeTest
+	}
+	return shapePlain
+}
+
+// isAbsoluteDir reports whether dir is a path on the build machine, of
+// either separator. A trimmed compile records an import path or
+// module@version, which is neither.
+func isAbsoluteDir(dir string) bool {
+	if strings.HasPrefix(dir, "/") || strings.HasPrefix(dir, `\\`) {
+		return true
+	}
+	return len(dir) >= 3 && dir[1] == ':' && (dir[2] == '\\' || dir[2] == '/')
+}
+
+// moduleVersionOnly reports whether source directories differ in
+// nothing but the version after the `@` of a module-cache directory.
+func moduleVersionOnly(from, to string) bool {
+	a, okA := stripModuleVersion(from)
+	b, okB := stripModuleVersion(to)
+	return okA && okB && a == b
+}
+
+// stripModuleVersion cuts the `@version` element out of dir.
+func stripModuleVersion(dir string) (string, bool) {
+	at := strings.LastIndexByte(dir, '@')
+	if at < 0 {
+		return dir, false
+	}
+	rest := dir[at:]
+	if end := strings.IndexAny(rest, `/\`); end >= 0 {
+		return dir[:at] + rest[end:], true
+	}
+	return dir[:at], true
+}
 
 // packageRestoresTotal counts packages stored again under a new key, by what
 // differed and whether the compiled output did.
@@ -81,6 +159,7 @@ type restoreEvent struct {
 	Project    string      `json:"project"`
 	Package    string      `json:"pkg"`
 	Target     string      `json:"target,omitempty"`
+	Variant    string      `json:"variant,omitempty"`
 	Change     string      `json:"change"`
 	Output     string      `json:"output"`
 	SameOutput bool        `json:"same_output"`
@@ -139,7 +218,8 @@ func (c *churnTracker) observe(key string, meta map[string]string, put bool, pro
 		project:   project,
 		at:        c.now().Unix(),
 	}
-	k := pkg + "\x00" + cur.target
+	shape := buildShape(meta)
+	k := pkg + "\x00" + cur.target + "\x00" + shape
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	prev, known := c.entries.Get(k)
@@ -171,7 +251,7 @@ func (c *churnTracker) observe(key string, meta map[string]string, put bool, pro
 	}
 	packageRestoresTotal.WithLabelValues(change, output).Inc()
 	projectTotals.noteRestore(project, same)
-	ev := restoreEvent{At: time.Unix(cur.at, 0).UTC(), Project: project, Package: pkg, Target: cur.target, Change: change, Output: output, SameOutput: same, Diffs: diffs}
+	ev := restoreEvent{At: time.Unix(cur.at, 0).UTC(), Project: project, Package: pkg, Target: cur.target, Variant: shape, Change: change, Output: output, SameOutput: same, Diffs: diffs}
 	if len(c.recent) >= churnRecentMax {
 		copy(c.recent, c.recent[1:])
 		c.recent = c.recent[:churnRecentMax-1]
@@ -217,6 +297,8 @@ func classifyChange(prev, cur *packageSeen) ([]fieldDiff, string) {
 		add("src-dir", prev.srcDir, cur.srcDir)
 	}
 	switch {
+	case len(diffs) > 0 && diffs[0].Field == "src-dir" && moduleVersionOnly(diffs[0].From, diffs[0].To):
+		return diffs, changeModule
 	case len(diffs) > 0:
 		return diffs, map[string]string{"go-version": changeGoVersion, "toolchain-version": changeToolchain, "target": changeTarget, "src": changeSources, "src-dir": changePath}[diffs[0].Field]
 	case outputVerdict(prev, cur) == outputSame:
@@ -257,6 +339,7 @@ func churnCauseVocab() []churnCauseText {
 type churnPackage struct {
 	Package    string `json:"pkg"`
 	Target     string `json:"target,omitempty"`
+	Variant    string `json:"variant,omitempty"`
 	Project    string `json:"project"`
 	Restores   uint32 `json:"restores"`
 	SameOutput uint32 `json:"same_output"`
@@ -292,6 +375,9 @@ var churnCauseSpecs = map[string]churnCauseText{
 	changeSources: {Label: "source files changed",
 		Explain: "A Go file was added to or removed from the package.",
 		Action:  "Expected on edited code. The list is the first few names, so a change past them reads as unchanged files."},
+	changeModule: {Label: "dependency version changed",
+		Explain: "The package comes from the module cache, and only the version of its module differs from the last upload. The compile names its files as module@version, so the version is in the key and in the object. Every package of the module is stored again, also a package whose files did not change.",
+		Action:  "Expected once per dependency bump. A dependency that follows a branch gets a new version on every commit to that branch, so each of its packages is compiled again by every consumer."},
 	changePath: {Label: "built from another directory",
 		Explain: "The Go version, the client, the target and the files agree with the last upload, and the package compiled from another directory: another checkout path, or another GOMODCACHE. A compile without -trimpath writes that absolute path into the object and into its key, so a build from a directory the cache has not seen misses every package it compiles there.",
 		Action:  "Build from one fixed directory, or build with -trimpath. A module-cache dependency is path-free from a toolchain that keys it by module version; a client older than that rebuilds it for each module cache."},
@@ -330,14 +416,18 @@ func (c *churnTracker) snapshot() dashboardChurn {
 		if p.restores == 0 {
 			return
 		}
-		pkg, target, _ := strings.Cut(k, "\x00")
-		ranked = append(ranked, churnPackage{Package: pkg, Target: target, Project: p.project, Restores: p.restores, SameOutput: p.sameOutput, LastChange: p.lastChange})
+		pkg, rest, _ := strings.Cut(k, "\x00")
+		target, shape, _ := strings.Cut(rest, "\x00")
+		ranked = append(ranked, churnPackage{Package: pkg, Target: target, Variant: shape, Project: p.project, Restores: p.restores, SameOutput: p.sameOutput, LastChange: p.lastChange})
 	})
 	sort.Slice(ranked, func(i, j int) bool {
 		if ranked[i].Restores != ranked[j].Restores {
 			return ranked[i].Restores > ranked[j].Restores
 		}
-		return ranked[i].Package < ranked[j].Package
+		if ranked[i].Package != ranked[j].Package {
+			return ranked[i].Package < ranked[j].Package
+		}
+		return ranked[i].Target+ranked[i].Variant < ranked[j].Target+ranked[j].Variant
 	})
 	if len(ranked) > churnTopMax {
 		ranked = ranked[:churnTopMax]

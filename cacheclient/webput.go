@@ -152,11 +152,17 @@ func (b *WebBackend) prepare(j putJob) {
 	if _, _, content := archiveBuildID(j.data); content != "" {
 		meta["content-id"] = content
 	}
-	if files := parseSourceFiles(j.data); len(files) > 0 {
-		meta["src"] = capSrcList(files)
-	}
-	if dir := parseSourceDir(j.data); dir != "" {
+	dir := parseSourceDir(j.data)
+	if dir != "" {
 		meta["src-dir"] = dir
+	}
+	if files := parseSourceFiles(j.data); len(files) > 0 {
+		// The capped list can hide the test and coverage files, so the shape is its own field.
+		meta["variant"] = buildVariant(files)
+		if own := parseOwnSourceFiles(j.data, dir); len(own) > 0 {
+			files = own
+		}
+		meta["src"] = capSrcList(files)
 	}
 
 	pr := putReq{

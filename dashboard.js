@@ -573,7 +573,7 @@ function drawChurn(stats) {
 	rows(
 		$("churn-top"),
 		(c.top || []).length
-			? c.top.map((p) => [`${p.pkg}${p.target ? ` (${p.target})` : ""}`, `${count(p.restores)}×, ${count(p.same_output)} identical`, pointless(p.last_change), p.project])
+			? c.top.map((p) => [`${p.pkg}${p.target ? ` (${[p.target, p.variant].filter(Boolean).join(", ")})` : ""}`, `${count(p.restores)}×, ${count(p.same_output)} identical`, pointless(p.last_change), p.project])
 			: [["no package stored again yet", "--", false]],
 	);
 
@@ -585,7 +585,7 @@ function drawChurn(stats) {
 			td.textContent = ev.pkg;
 			const sub = document.createElement("span");
 			sub.className = "sub";
-			sub.textContent = `${ev.project || "unknown"} at ${new Date(ev.at).toLocaleTimeString()}`;
+			sub.textContent = `${[ev.project || "unknown", ev.target, ev.variant].filter(Boolean).join(", ")} at ${new Date(ev.at).toLocaleTimeString()}`;
 			td.append(sub);
 			tr.append(td, diffCell(ev));
 			return tr;

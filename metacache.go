@@ -20,7 +20,7 @@ type kvPair struct {
 }
 
 // sharedMetaValueKeys are the attributes whose values repeat across objects: every archive of a package carries the same pkg, src, module.
-var sharedMetaValueKeys = set.Of("pkg", "src", "module", "target", "go-version", "toolchain-version", "object-type", "compression")
+var sharedMetaValueKeys = set.Of("pkg", "src", "variant", "module", "target", "go-version", "toolchain-version", "object-type", "compression")
 
 // maxSharedMetaStrings bounds the shared copies.
 const maxSharedMetaStrings = 1 << 16

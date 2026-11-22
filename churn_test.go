@@ -48,7 +48,10 @@ func TestChurnNamesABuildFromAnotherDirectory(t *testing.T) {
 	assert.Equal(t, changePath, s.Recent[0].Change)
 	assert.Equal(t, []fieldDiff{{Field: "src-dir", From: "/home/runner/work/m/m/p", To: "/tmp/checkout-41/p"}}, s.Recent[0].Diffs)
 
-	c.observe(cacheprogKey('c'), at(""), true, "example.com/m")
+	// An upload with no directory is tracked with the trimmed compiles.
+	c.observe(cacheprogKey('c'), at("example.com/m/p"), true, "example.com/m")
+	require.EqualValues(t, 1, c.snapshot().Restores, "a trimmed compile is another shape, not a move")
+	c.observe(cacheprogKey('d'), at(""), true, "example.com/m")
 	assert.Equal(t, changeOutput, c.snapshot().Recent[0].Change, "a client that sends no directory says nothing about a move")
 
 	vocab := churnCauseVocab()
@@ -60,6 +63,89 @@ func TestChurnNamesABuildFromAnotherDirectory(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "the vocabulary names the path cause")
+}
+
+// One CI run compiles a package for the binary, with its test files, and
+// with coverage counters. Each shape has its own key by design. A run that
+// stores all of them is no re-store. The next run's change is compared
+// with the same shape of the last run.
+func TestChurnTracksEachBuildShapeOnItsOwn(t *testing.T) {
+	c := testChurn()
+	run := func(first byte, content string) {
+		plain := pkgMeta(content, "go1.27", "r100", "a.go")
+		plain["variant"], plain["src-dir"] = "plain", "example.com/m/p"
+		test := pkgMeta(content+"-test", "go1.27", "r100", "a.go a_test.go")
+		test["variant"], test["src-dir"] = "test", "/home/runner/work/m/m/p"
+		cover := pkgMeta(content+"-cover", "go1.27", "r100", "a.go a.cover.go a_test.go")
+		cover["variant"], cover["src-dir"] = "cover+test", "/home/runner/work/m/m/p"
+		c.observe(cacheprogKey(first), plain, true, "example.com/m")
+		c.observe(cacheprogKey(first+1), test, true, "example.com/m")
+		c.observe(cacheprogKey(first+2), cover, true, "example.com/m")
+	}
+	run('a', "v1")
+	s := c.snapshot()
+	assert.Zero(t, s.Restores, "three shapes of one package in one run are three packages")
+	assert.Equal(t, 3, s.Tracked)
+
+	run('d', "v2")
+	s = c.snapshot()
+	require.EqualValues(t, 3, s.Restores)
+	var shapes []string
+	for _, ev := range s.Recent {
+		assert.Equal(t, changeOutput, ev.Change, "an edited file is changed content, not changed sources: %s", ev.Variant)
+		shapes = append(shapes, ev.Variant)
+	}
+	assert.ElementsMatch(t, []string{"plain", "test untrimmed", "cover+test untrimmed"}, shapes)
+	require.Len(t, s.Top, 3)
+	assert.Equal(t, "cover+test untrimmed", s.Top[0].Variant, "equal counts rank by name, so the order is stable")
+}
+
+// An upload from a client older than the variant field is read from the
+// source names it sent. An absolute directory marks an untrimmed
+// compile on either kind of machine.
+func TestChurnReadsTheShapeOfAnOlderClient(t *testing.T) {
+	shape := func(src, dir string) string {
+		return buildShape(map[string]string{"src": src, "src-dir": dir})
+	}
+	assert.Equal(t, "plain", shape("a.go b.go +3 more", "example.com/m/p"))
+	assert.Equal(t, "plain", shape("a.go", "example.com/dep@v1.2.3/p"))
+	assert.Equal(t, "test untrimmed", shape("a.go a_test.go", "/home/runner/work/m/m/p"))
+	assert.Equal(t, "cover untrimmed", shape("a.go a.cover.go covervars.go", `D:\a\m\m\p`))
+	assert.Equal(t, "cover+test untrimmed", shape("a.go covervars.go a_test.go", `\\host\share\p`))
+	assert.Equal(t, "cover+test", buildShape(map[string]string{"variant": "cover+test", "src": "a.go"}), "the client's own answer wins")
+	assert.Equal(t, "plain", shape("", ""))
+}
+
+// A dependency bump changes only the version in the module-cache directory.
+// It is named as that, with both versions, and a move to another directory
+// is not read as a bump.
+func TestChurnNamesADependencyBump(t *testing.T) {
+	c := testChurn()
+	at := func(dir string) map[string]string {
+		meta := pkgMeta("content-"+dir, "go1.27", "r100", "a.go")
+		meta["src-dir"] = dir
+		return meta
+	}
+	c.observe(cacheprogKey('a'), at("example.com/dep@v0.0.0-20261121200720-486eb2bb3ae5/cell"), true, "example.com/m")
+	c.observe(cacheprogKey('b'), at("example.com/dep@v0.0.0-20261122031822-a85e418f809e/cell"), true, "example.com/m")
+	c.observe(cacheprogKey('c'), at("example.com/dep@v0.0.0-20261122031822-a85e418f809e/other"), true, "example.com/m")
+	s := c.snapshot()
+	require.Len(t, s.Recent, 2)
+	assert.Equal(t, changePath, s.Recent[0].Change, "another directory of the same version is a move")
+	assert.Equal(t, changeModule, s.Recent[1].Change)
+	assert.Equal(t, []fieldDiff{{Field: "src-dir", From: "example.com/dep@v0.0.0-20261121200720-486eb2bb3ae5/cell", To: "example.com/dep@v0.0.0-20261122031822-a85e418f809e/cell"}}, s.Recent[1].Diffs)
+
+	assert.True(t, moduleVersionOnly("example.com/dep@v1.0.0", "example.com/dep@v1.1.0"), "the module root has no directory after the version")
+	assert.True(t, moduleVersionOnly("/home/u/go/pkg/mod/example.com/dep@v1.0.0/p", "/home/u/go/pkg/mod/example.com/dep@v1.1.0/p"))
+	assert.False(t, moduleVersionOnly("example.com/m/p", "example.com/m/q"), "a directory with no version is not a bump")
+	assert.False(t, moduleVersionOnly("example.com/dep@v1.0.0/p", "example.com/m/p"))
+	for _, text := range churnCauseVocab() {
+		if text.Key == changeModule {
+			assert.Contains(t, text.Explain, "module@version")
+			return
+		}
+	}
+	t.Fatal("the vocabulary names the dependency bump")
 }
 
 // A put of a package the tracker knows under another key is a re-store.

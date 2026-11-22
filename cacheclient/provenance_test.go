@@ -104,6 +104,29 @@ func TestProvenanceArchive_Decodes(t *testing.T) {
 	require.Equal(t, action, archiveBuildIDAction(raw))
 }
 
+// The shape of a compile comes from every file name in the position table,
+// and the source list keeps only the package's own files. A file an inlined
+// call came from sits in another directory, and its presence is not a
+// change to this package.
+func TestProvenanceNamesTheBuildShapeAndOwnFiles(t *testing.T) {
+	archive := func(paths ...string) []byte {
+		body := "go object linux amd64 go1.25.0\n\n\n$$B\nu" + string(buildPkgbitsWithSources("example.com/shape", paths)) + "\n$$\n"
+		return buildAr("__.PKGDEF", []byte(body))
+	}
+	shape := func(paths ...string) string { return buildVariant(parseSourceFiles(archive(paths...))) }
+
+	require.Equal(t, VariantPlain, shape("example.com/shape/a.go", "/goroot/src/sync/mutex.go"))
+	require.Equal(t, VariantTest, shape("/work/shape/a.go", "/work/shape/a_test.go", "/goroot/src/testing/testing.go"))
+	require.Equal(t, VariantCover, shape("/work/shape/a.go", "/tmp/go-build1/b001/a.cover.go", "/tmp/go-build1/b001/covervars.go"))
+	require.Equal(t, VariantCoverTest, shape("/work/shape/a.go", "a.cover.go", "/work/shape/a_test.go"))
+
+	raw := archive("/work/shape/a.go", "/goroot/src/sync/mutex.go", "/work/shape/b.go", "covervars.go", `D:\other\c.go`)
+	require.Equal(t, []string{"a.go", "mutex.go", "b.go", "covervars.go", "c.go"}, parseSourceFiles(raw))
+	require.Equal(t, []string{"a.go", "b.go", "covervars.go"}, parseOwnSourceFiles(raw, parseSourceDir(raw)),
+		"another directory's file is dropped, and a file with no directory is kept")
+	require.Nil(t, parseOwnSourceFiles([]byte("not an archive"), "/work/shape"))
+}
+
 // requireProvenanceMeta asserts the full provenance metadata set assembled by
 // Put. Identical between the batch manifest and single-PUT headers, since
 // both derive from the same map.
@@ -115,6 +138,7 @@ func requireProvenanceMeta(t *testing.T, md map[string]string, outputID string) 
 	require.Equal(t, "example.com/provpkg", md["pkg"])
 	require.Equal(t, "alpha.go beta.go", md["src"])
 	require.Equal(t, "/work/src", md["src-dir"])
+	require.Equal(t, VariantPlain, md["variant"])
 	require.Equal(t, "go1.25.0", md["go-version"])
 	require.Equal(t, "linux/amd64", md["target"])
 	require.Equal(t, "example.com/mymod", md["module"])

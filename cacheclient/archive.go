@@ -54,6 +54,37 @@ func parseSourceFiles(data []byte) []string {
 	return files
 }
 
+// parseOwnSourceFiles is parseSourceFiles without the files of other
+// packages. The position table also names each file an inlined call came
+// from, and that set moves when a dependency changes. A file is the
+// package's own when it sits in dir, or carries no directory at all.
+func parseOwnSourceFiles(data []byte, dir string) []string {
+	p := openPkgbits(data)
+	if p == nil {
+		return nil
+	}
+	n := p.sectionLen(pbSectionPosBase)
+	seen := set.New[string](n)
+	var files []string
+	for i := 0; i < n; i++ {
+		full := p.readSectionString(pbSectionPosBase, i, pbSyncPosBase)
+		if filepath.Ext(full) != ".go" {
+			continue
+		}
+		base := full
+		if cut := strings.LastIndexAny(full, `/\`); cut >= 0 {
+			if full[:cut] != dir {
+				continue
+			}
+			base = full[cut+1:]
+		}
+		if seen.Add(base) {
+			files = append(files, base)
+		}
+	}
+	return files
+}
+
 // The build shapes an archive can have. The server compares an upload with
 // the last upload of the same shape.
 const (

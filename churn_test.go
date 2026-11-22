@@ -48,7 +48,10 @@ func TestChurnNamesABuildFromAnotherDirectory(t *testing.T) {
 	assert.Equal(t, changePath, s.Recent[0].Change)
 	assert.Equal(t, []fieldDiff{{Field: "src-dir", From: "/home/runner/work/m/m/p", To: "/tmp/checkout-41/p"}}, s.Recent[0].Diffs)
 
-	c.observe(cacheprogKey('c'), at(""), true, "example.com/m")
+	// An upload with no directory is tracked with the trimmed compiles.
+	c.observe(cacheprogKey('c'), at("example.com/m/p"), true, "example.com/m")
+	require.EqualValues(t, 1, c.snapshot().Restores, "a trimmed compile is another shape, not a move")
+	c.observe(cacheprogKey('d'), at(""), true, "example.com/m")
 	assert.Equal(t, changeOutput, c.snapshot().Recent[0].Change, "a client that sends no directory says nothing about a move")
 
 	vocab := churnCauseVocab()

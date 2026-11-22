@@ -1,3 +1,5 @@
+// keepalive.go holds batchKeepAlive.
+
 package main
 
 import (

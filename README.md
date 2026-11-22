@@ -104,7 +104,6 @@ All flags except `--config` override the corresponding config file value.
 | Field | Values | Default | Description |
 |-------|--------|---------|-------------|
 | `action` | `allow`, `deny` | `allow` | Whether to allow overwriting existing keys |
-| `notification` | `never`, `always`, `content_differs` | `never` | When to return HTTP 409 on overwrite attempts |
 
 - `action: "deny"` + `notification: "never"` — silently skip overwrites (200 response)
 - `action: "deny"` + `notification: "always"` — reject any overwrite try (409 response)
@@ -214,7 +213,7 @@ A build cache accumulates entries forever as code changes. Every new action ID i
 
 "Used" means the later of an entry's write time (mtime) and its last read. Last-read time is tracked in memory while the server runs. A frequently fetched but rarely rewritten object therefore stays alive, which is what a content-addressed cache wants. Read time is *not* written back to the file's mtime. mtime stays the entry's write time, which the prefetch system groups "same build" entries by. Across a start the in-memory read times reset, so entries age from their mtime until read again. At worst that delays an eviction, and it never hastens one incorrectly.
 
-Eviction never threatens correctness: a incorrectly evicted entry is simply a cache miss that the next build recomputes and re-uploads. Evicted counts and reclaimed bytes are exported as `s3_evictions_total`, `s3_evicted_bytes_total`, and `s3_cache_bytes` (see below).
+Eviction never threatens correctness: a incorrectly evicted entry is a cache miss that the next build recomputes and re-uploads.
 
 The sweeper runs its **first sweep a jittered 1-5 minutes after startup**, then every `interval`. (Waiting a full interval for the first sweep meant a deployment that restarts more frequently than the interval — rolling updates — never evicted at all.) Between sweeps the `s3_cache_bytes` gauge is refreshed every few minutes from a size-only walk, so growth is visible without waiting for a sweep. Before deleting a victim the sweeper re-checks its on-disk mtime, and skips anything overwritten since the scan. Every victim is dropped from `/_index` *before* its file is unlinked. A mid-sweep fetch therefore sees a re-uploadable miss, not a 404 on an advertised key.
 
@@ -239,21 +238,19 @@ This server is built to absorb the concurrent load of a parallel CI matrix (many
 - **Timeouts.** The HTTP server sets `ReadHeaderTimeout` (slowloris guard) plus generous `Read`/`Write`/`Idle` timeouts so a stuck connection cannot pin a concurrency slot indefinitely.
 - **Warm-key fast path.** The read-path module-index probe costs a file open plus an lz4 first-block decode, and runs once per key. A sharded in-memory memo remembers keys whose body already passed it, and is invalidated on overwrite, delete and eviction. Steady-state GETs of warm keys skip the decode.
 - **Observability.** When `--metrics-listen` is set, `/metrics` exposes request, storage, in-flight, and rejection counters, plus:
-  - `s3_get_requests_total{outcome}` — every single-object GET by outcome: `hit`, `miss_not_found`, `miss_evicted` (a key the sweeper removed since the client fetched its index), `miss_advertised_unservable` (a 404 on a key `/_index` currently advertises — the index/store-divergence signature that must stay at ~0), `miss_module_index_evicted`, `miss_peek_error`, `miss_selfheal_failed`, `miss_stored_digest`.
+  - `s3_get_requests_total{outcome}` — every single-object GET by outcome.
   - `s3_batch_misses_total{reason}` — every key a `/_batch/get` asked for and did not get, by the same reasons without the `miss_` prefix. The dashboard's WHY MISSES panel adds these to the single-GET outcomes and the client's skip report.
-  - `s3_client_uploads_lost_total{reason}` — uploads a client reported it never completed: `failed` (sent, not confirmed), `refused_buildid` (the object's build id disagrees with its key), `refused_modindex` (a Go module index), `abandoned` (never sent). Each is a key that misses on every later build.
-  - `s3_client_skip_samples_total{verdict}` — the keys clients sampled from their index skips, by what the server knows of them: `evicted` (the sweeper removed it since the client fetched its index), `advertised` (stored before the skip, so the client's index copy was stale), `stored_later` (stored after the skip, mostly the client's own upload), `unknown`.
-  - `s3_package_restores_total{change,output}` — packages stored again under a new action id. That `s3_package_restores_total{change,output}` is by the metadata field that differed from the last upload (`go_version`, `toolchain`, `target`, `sources`, `inputs`, `output`) and whether the compiled output was `same` or `changed`. The dashboard's WHAT CHANGED panel lists the latest ones with each field's old and new value.
+  - Each is a key that misses on every later build.
+  - `s3_client_skip_samples_total{verdict}` — the keys clients sampled from their index skips, by what the server knows of them.
+  - `s3_package_restores_total{change,output}` — packages stored again under a new action id. That `s3_package_restores_total{change,output}` is by the metadata field that differed from the last upload and whether the compiled output was `same` or `changed`. The dashboard's WHAT CHANGED panel lists the latest ones with each field's old and new value.
   - `s3_put_refusals_total{reason}` — uploads accepted on the wire but refused storage (e.g. `module_index`). This moving during CI activity is the PUT guard's liveness proof.
   - `s3_batch_requests_total` and `s3_batch_keys_total{kind}` (`requested`/`found`/`anchors`/`prefetched`/`client_held`/`streamed`) — batch volume. `anchors` are look-ahead keys, which ask for nothing and never count as requested. A falling found/requested ratio is the earliest cache-degradation signal.
-  - index gauges `s3_index_entries`, `s3_index_hashes`, `s3_index_pending_hashes` and `s3_index_rebuild_duration_seconds`.
   - eviction counters (`s3_evictions_total`, `s3_evicted_bytes_total`) and the cache size `s3_cache_bytes` (refreshed every few minutes, not just at sweep end).
-  - self-heal counters: `s3_self_heal_repairs_total` (outputid-less relics repaired in place on read), `s3_self_heal_failures_total` (unrepairable bodies, de-advertised so consumers re-upload), and `s3_outputid_mismatch_total` (a stored outputid found disagreeing with its body hash — stale-stamp corruption, repaired in place).
   - `s3_module_index_evictions_total` (module-index blobs refused + evicted on a read path) and `s3_metadata_xattrs_dropped_total` (optional metadata dropped under xattr-space pressure instead of failing the PUT).
   - `s3_meta_cache_hits_total` / `s3_meta_cache_misses_total` — object metadata served from memory vs read back from extended attributes. On a warm cache this ratio is the read path's CPU story.
-  - memory: `s3_memory_limit_bytes` (the discovered ceiling, 0 = none found), `s3_memory_in_use_bytes`, `s3_memory_shrinks_total` (times cache budgets were cut under pressure) and `s3_cache_memory_bytes{cache}` / `s3_cache_memory_budget_bytes{cache}` (what each cache holds and is allowed to hold). There is no "refused for memory" metric because nothing is.
+  - There is no "refused for memory" metric because nothing is.
 
-All alongside the standard Go runtime and process collectors (`go_memstats_*`, `process_resident_memory_bytes`, `go_goroutines`) — enough to see saturation, memory pressure, cache growth, and cache health directly. A busy metrics port no longer prevents the cache from starting. The server logs the failure and runs without metrics.
+All alongside the standard Go runtime and process collectors — enough to see saturation, memory pressure, cache growth, and cache health directly. A busy metrics port no longer prevents the cache from starting. The server logs the failure and runs without metrics.
 
 ## Graceful shutdown & rolling updates
 

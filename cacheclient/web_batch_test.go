@@ -141,8 +141,8 @@ func TestGetBatch_ReturnsRequestedEntry(t *testing.T) {
 }
 
 // TestGetBatch_RejectsCorruptEntry verifies the batch serve path applies the
-// same end-to-end integrity check as individual GETs: a batched entry whose
-// body does not hash to its advertised outputID is refused (miss), never served.
+// same end-to-end integrity check as individual GETs. A batched entry whose body
+// does not hash to its advertised outputID is refused (miss), never served.
 func TestGetBatch_RejectsCorruptEntry(t *testing.T) {
 	store := make(map[string][]byte)
 	meta := make(map[string]map[string]string)
@@ -170,7 +170,7 @@ func TestGetBatch_RejectsCorruptEntry(t *testing.T) {
 
 // TestGetBatch_MissingOutputIDNotCorrupt verifies that a batched entry with no
 // outputid metadata is counted as a no-outputid miss (a metadata gap), not as a
-// checksum mismatch / corruption — mirroring getIndividual.
+// checksum mismatch / corruption. Mirroring getIndividual.
 func TestGetBatch_MissingOutputIDNotCorrupt(t *testing.T) {
 	store := make(map[string][]byte)
 	meta := make(map[string]map[string]string)
@@ -388,7 +388,7 @@ func TestGetBatch_Miss(t *testing.T) {
 	require.True(t, miss)
 }
 
-// TestGet_UsessBatchForUnknownKeys verifies that Get() routes through getBatch
+// TestGet_UsesBatchForUnknownKeys verifies that Get() routes through getBatch
 // when the key is not in the local index.
 func TestGet_UsesBatchForUnknownKeys(t *testing.T) {
 	store := make(map[string][]byte)
@@ -457,7 +457,7 @@ func TestSendBatch_AnswersEveryCallerOfOneKey(t *testing.T) {
 }
 
 // TestGet_CoalescesConcurrentRequestsIntoOneHTTPRequest is the headline test
-// for client-side batching: many concurrent Get callers must funnel through
+// for client-side batching. Many concurrent Get callers must funnel through
 // a single /_batch/get HTTP request rather than producing a request each.
 func TestGet_CoalescesConcurrentRequestsIntoOneHTTPRequest(t *testing.T) {
 	const N = 200
@@ -532,11 +532,7 @@ func TestGet_CoalescesConcurrentRequestsIntoOneHTTPRequest(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Coalescing must fold hundreds of callers into a handful of requests. Both
-	// bounds below are far from what this actually measures, on purpose.
-	//
-	// The exact count is scheduler noise. What cannot happen with coalescing
-	// working is a request per caller.
+	// Coalescing must fold hundreds of callers into a handful of requests.
 	calls := atomic.LoadInt32(&batchHTTPCalls)
 	require.LessOrEqual(t, calls, int32(N/10),
 		"expected ≤%d HTTP requests for %d parallel Gets, got %d (no client-side batching)", N/10, N, calls)

@@ -135,7 +135,7 @@ The first field that differs names its kind:
 | `target` | GOOS/GOARCH | a fleet that builds for several targets |
 | `sources` | the source file names | a file added or removed |
 | `module_version` | only the version in a module-cache `src-dir` | a dependency bump, which stores every package of the module again |
-| `path` | the directory the package compiled from (`src-dir`) | another checkout path or another GOMODCACHE, in a build without `-trimpath` |
+| `path` | the directory the package compiled from (`src-dir`) | another checkout path or another GOMODCACHE, from a client older than the path-free compile, or from a cgo package |
 | `inputs` | nothing, and the output id is the same | an input the metadata does not carry: a flag, an environment variable, a stamp, a dependency's build id |
 | `output` | nothing, and the output id differs | a file's content, or a dependency whose output changed |
 

@@ -419,6 +419,43 @@ func TestGet_UsesBatchForUnknownKeys(t *testing.T) {
 	require.Equal(t, "batch hit", string(data))
 }
 
+// TestSendBatch_AnswersEveryCallerOfOneKey holds a batch that names each key
+// twice. A caller left without an answer blocks its build forever.
+func TestSendBatch_AnswersEveryCallerOfOneKey(t *testing.T) {
+	store := make(map[string][]byte)
+	meta := make(map[string]map[string]string)
+	srv := fakeBatchServer(t, store, meta)
+	defer srv.Close()
+
+	b, err := NewWebBackend(WebConfig{
+		Bucket: "testbucket", Endpoint: srv.URL,
+		AccessKey: "key", SecretKey: "secret",
+	})
+	require.NoError(t, err)
+
+	const held, absent = "aabbccdd11223344", "ffeeddcc11223344"
+	compressed, err := Compress([]byte("hello world"))
+	require.NoError(t, err)
+	store["go-buildcache/v1"+held] = compressed
+	meta["go-buildcache/v1"+held] = map[string]string{"outputid": testOutputID("hello world")}
+
+	var reqs []batchReq
+	for _, id := range []string{held, absent, held, absent} {
+		reqs = append(reqs, batchReq{actionID: id, key: "go-buildcache/v1" + id, hash: hashOf(id), resp: make(chan batchResp, 1)})
+	}
+	b.sendBatch(reqs)
+
+	for _, r := range reqs {
+		select {
+		case got := <-r.resp:
+			require.Equal(t, r.actionID == absent, got.miss, "action %s", r.actionID)
+		default:
+			require.Fail(t, "a caller got no answer", "action %s", r.actionID)
+		}
+	}
+	require.Equal(t, uint32(2), b.Stats.Hits.Load())
+}
+
 // TestGet_CoalescesConcurrentRequestsIntoOneHTTPRequest is the headline test
 // for client-side batching: many concurrent Get callers must funnel through
 // a single /_batch/get HTTP request rather than producing a request each.

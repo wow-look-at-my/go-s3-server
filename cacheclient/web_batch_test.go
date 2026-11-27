@@ -141,8 +141,8 @@ func TestGetBatch_ReturnsRequestedEntry(t *testing.T) {
 }
 
 // TestGetBatch_RejectsCorruptEntry verifies the batch serve path applies the
-// same end-to-end integrity check as individual GETs: a batched entry whose
-// body does not hash to its advertised outputID is refused (miss), never served.
+// same end-to-end integrity check as individual GETs. A batched entry whose body
+// does not hash to its advertised outputID is refused (miss), never served.
 func TestGetBatch_RejectsCorruptEntry(t *testing.T) {
 	store := make(map[string][]byte)
 	meta := make(map[string]map[string]string)
@@ -170,7 +170,7 @@ func TestGetBatch_RejectsCorruptEntry(t *testing.T) {
 
 // TestGetBatch_MissingOutputIDNotCorrupt verifies that a batched entry with no
 // outputid metadata is counted as a no-outputid miss (a metadata gap), not as a
-// checksum mismatch / corruption — mirroring getIndividual.
+// checksum mismatch / corruption. Mirroring getIndividual.
 func TestGetBatch_MissingOutputIDNotCorrupt(t *testing.T) {
 	store := make(map[string][]byte)
 	meta := make(map[string]map[string]string)
@@ -200,7 +200,7 @@ func TestGetBatch_MissingOutputIDNotCorrupt(t *testing.T) {
 // populator. The request the build was blocked on carries only what the build
 // asked for: the extra entry arrives on the pool's own request, afterwards.
 func TestGetBatch_SeedsLookAheadWhichFeedsThePopulator(t *testing.T) {
-	t.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "8") // the pool is off unless asked for
+	t.Setenv("GO_TOOLCHAIN_CACHE_LOOKAHEAD", "8") // the pool is off unless asked.
 	store := make(map[string][]byte)
 	meta := make(map[string]map[string]string)
 	srv := fakeBatchServer(t, store, meta)
@@ -388,7 +388,7 @@ func TestGetBatch_Miss(t *testing.T) {
 	require.True(t, miss)
 }
 
-// TestGet_UsessBatchForUnknownKeys verifies that Get() routes through getBatch
+// TestGet_UsesBatchForUnknownKeys verifies that Get() routes through getBatch
 // when the key is not in the local index.
 func TestGet_UsesBatchForUnknownKeys(t *testing.T) {
 	store := make(map[string][]byte)
@@ -419,8 +419,45 @@ func TestGet_UsesBatchForUnknownKeys(t *testing.T) {
 	require.Equal(t, "batch hit", string(data))
 }
 
+// TestSendBatch_AnswersEveryCallerOfOneKey holds a batch that names each key
+// twice. A caller left without an answer blocks its build forever.
+func TestSendBatch_AnswersEveryCallerOfOneKey(t *testing.T) {
+	store := make(map[string][]byte)
+	meta := make(map[string]map[string]string)
+	srv := fakeBatchServer(t, store, meta)
+	defer srv.Close()
+
+	b, err := NewWebBackend(WebConfig{
+		Bucket: "testbucket", Endpoint: srv.URL,
+		AccessKey: "key", SecretKey: "secret",
+	})
+	require.NoError(t, err)
+
+	const held, absent = "aabbccdd11223344", "ffeeddcc11223344"
+	compressed, err := Compress([]byte("hello world"))
+	require.NoError(t, err)
+	store["go-buildcache/v1"+held] = compressed
+	meta["go-buildcache/v1"+held] = map[string]string{"outputid": testOutputID("hello world")}
+
+	var reqs []batchReq
+	for _, id := range []string{held, absent, held, absent} {
+		reqs = append(reqs, batchReq{actionID: id, key: "go-buildcache/v1" + id, hash: hashOf(id), resp: make(chan batchResp, 1)})
+	}
+	b.sendBatch(reqs)
+
+	for _, r := range reqs {
+		select {
+		case got := <-r.resp:
+			require.Equal(t, r.actionID == absent, got.miss, "action %s", r.actionID)
+		default:
+			require.Fail(t, "a caller got no answer", "action %s", r.actionID)
+		}
+	}
+	require.Equal(t, uint32(2), b.Stats.Hits.Load())
+}
+
 // TestGet_CoalescesConcurrentRequestsIntoOneHTTPRequest is the headline test
-// for client-side batching: many concurrent Get callers must funnel through
+// for client-side batching. Many concurrent Get callers must funnel through
 // a single /_batch/get HTTP request rather than producing a request each.
 func TestGet_CoalescesConcurrentRequestsIntoOneHTTPRequest(t *testing.T) {
 	const N = 200
@@ -495,11 +532,7 @@ func TestGet_CoalescesConcurrentRequestsIntoOneHTTPRequest(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Coalescing must fold hundreds of callers into a handful of requests. Both
-	// bounds below are far from what this actually measures, on purpose.
-	//
-	// The exact count is scheduler noise. What cannot happen with coalescing
-	// working is a request per caller.
+	// Coalescing must fold hundreds of callers into a handful of requests.
 	calls := atomic.LoadInt32(&batchHTTPCalls)
 	require.LessOrEqual(t, calls, int32(N/10),
 		"expected ≤%d HTTP requests for %d parallel Gets, got %d (no client-side batching)", N/10, N, calls)

@@ -224,9 +224,14 @@ func (b *WebBackend) batchCoalescer() {
 // this request stays as small as the build made it.
 func (b *WebBackend) sendBatch(reqs []batchReq) {
 	start := time.Now()
-	keys := make([]string, len(reqs))
-	for i, r := range reqs {
-		keys[i] = r.key
+	// Callers can ask for one key in the same batch. The key goes out once, and each caller gets the answer.
+	waiters := make(map[string][]batchReq, len(reqs))
+	keys := make([]string, 0, len(reqs))
+	for _, r := range reqs {
+		if _, asked := waiters[r.key]; !asked {
+			keys = append(keys, r.key)
+		}
+		waiters[r.key] = append(waiters[r.key], r)
 	}
 
 	// Transient failure only; never marks knownMiss, since only an
@@ -282,11 +287,14 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 		return
 	}
 
-	reqByKey := make(map[string]batchReq, len(reqs))
-	for _, r := range reqs {
-		reqByKey[r.key] = r
+	// answer hands resp to every caller of key and forgets the key.
+	answer := func(key string, resp batchResp) {
+		for _, r := range waiters[key] {
+			r.resp <- resp
+		}
+		delete(waiters, key)
 	}
-	hit := make([]string, 0, len(reqs))
+	hit := make([]string, 0, len(keys))
 	count := 0
 	// A body nobody here asked for goes to the local tier rather than on the floor.
 	prefetched := &prefetchSink{b: b}
@@ -294,42 +302,43 @@ func (b *WebBackend) sendBatch(reqs []batchReq) {
 
 	err = streamBatchResponse(resp.Body, func(e BatchEntry) {
 		count++
-		r, ok := reqByKey[e.Key]
-		if !ok {
+		asked := waiters[e.Key]
+		if len(asked) == 0 {
 			prefetched.collect(e)
 			return
 		}
-		delete(reqByKey, e.Key)
+		r := asked[0]
 		data, ok := b.verify("web batch get", r.actionID, e.OutputID, e.ActionID, e.Data, e.RawSize)
 		if !ok {
-			r.resp <- batchResp{miss: true}
+			answer(e.Key, batchResp{miss: true})
 			return
 		}
-		b.Stats.Hits.Increment()
+		b.Stats.Hits.Add(uint32(len(asked)))
 		b.Stats.HitBytes.Add(uint64(len(e.Data)))
 		b.noteHeld(r.hash)
 		hit = append(hit, r.key)
-		r.resp <- batchResp{outputID: e.OutputID, data: data, t: time.Now()}
+		answer(e.Key, batchResp{outputID: e.OutputID, data: data, t: time.Now()})
 	})
 	closeBody(resp.Body)
 	b.Pool.Release()
 	if err != nil {
-		logging.Warnf("cacheprog: web batch get: parse: %v; retrying %d keys one by one", err, len(reqByKey))
+		logging.Warnf("cacheprog: web batch get: parse: %v; retrying %d keys one by one", err, len(waiters))
 		// A cut stream says nothing about the keys it never reached, so each is
 		// asked for on its own.
-		for _, r := range reqByKey {
-			r.resp <- b.getIndividual(r.actionID, r.key, r.hash)
+		for key, asked := range waiters {
+			r := asked[0]
+			answer(key, b.getIndividual(r.actionID, r.key, r.hash))
 		}
 		return
 	}
 
 	// Whatever the stream never named is authoritatively absent. Drop the stale
 	// index claim (reclaimAbsent) so the PUT path re-uploads it.
-	for _, r := range reqByKey {
-		if b.reclaimAbsent(r.hash) {
+	for key, asked := range waiters {
+		if b.reclaimAbsent(asked[0].hash) {
 			b.MissHTTP404.Increment()
 		}
-		r.resp <- batchResp{miss: true}
+		answer(key, batchResp{miss: true})
 	}
 
 	// A run of empty batches stops probing after a threshold; any non-empty batch resets it.
